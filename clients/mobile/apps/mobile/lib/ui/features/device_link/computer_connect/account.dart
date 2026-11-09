@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:mobile/device_link/desktop/legacy_key_cleanup.dart';
 import 'package:mobile/device_link/desktop/relay.dart';
 import 'package:mobile/device_link/desktop/saved_connection.dart';
 import 'package:mobile/device_link/protocol.dart';
 import 'package:mobile/device_link/store.dart';
 import '../desktop_link_model.dart';
 import 'engine.dart';
+import 'reconnect_status.dart';
 
 /// Owns one signed-in account's setup, saved computers and foreground recovery.
 /// Only an explicit connect can pair. Recovery never grants new trust.
@@ -15,8 +17,8 @@ final class ComputerConnectAccount extends ChangeNotifier {
     required this.store,
     required String accountId,
     required String origin,
-    required this.createCredential,
-    this.fetchToken = fetchDesktopRelayToken,
+    required this.fetchToken,
+    required this.revokeLegacyKey,
     this.createTimer = Timer.new,
     this.now = DateTime.now,
   }) : saved = SavedComputerConnection(accountId: accountId, origin: origin) {
@@ -31,21 +33,32 @@ final class ComputerConnectAccount extends ChangeNotifier {
   final ComputerConnectEngine engine;
   final DeviceLinkStore store;
   final SavedComputerConnection saved;
-  final Future<ComputerConnectCredential> Function() createCredential;
-  final Future<DesktopRelayToken> Function(DesktopRelayCredentials, String)
-  fetchToken;
+
+  /// Mints a relay token with the sign-in session for this phone's device ID.
+  final DesktopTokenProvider fetchToken;
+
+  /// Revokes an API key an earlier build created and stored for this account.
+  final Future<void> Function(String id) revokeLegacyKey;
   final Timer Function(Duration, void Function()) createTimer;
   final DateTime Function() now;
   final peers = <String, DesktopRelayPeer>{};
   bool ready = false, busy = false, finding = false, accessDenied = false;
   int? accessStatus;
+
+  /// The account's plan does not include Remote Control. Set only for the
+  /// token route's entitlement denial, never for other access failures.
+  bool planRequired = false;
   String? error;
   String? _connectingId;
   bool _disposed = false, _foreground = true, _unreadable = false;
   // The app's lifecycle, apart from whether sessions are open: a resume can
   // still be closing stale sessions when the app is hidden again.
   bool _hidden = false;
-  bool _credentialNeedsSave = false;
+  late final _legacyKeyCleanup = LegacyComputerConnectKeyCleanup(
+    saved: saved,
+    revoke: revokeLegacyKey,
+    persist: _save,
+  );
   int _attempt = 0;
   Timer? _retry, _closing;
   DateTime? _hiddenAt;
@@ -56,19 +69,43 @@ final class ComputerConnectAccount extends ChangeNotifier {
   List<SavedComputer> get computers => saved.computers.values.toList();
   String? get selectedName => saved.computers[engine.selectedId]?.name;
 
-  /// Saved computers whose session is open or briefly recovering, in saved
-  /// order. These are the ones a person can switch between.
+  late final _reconnectStatus = ComputerReconnectStatus(
+    onChanged: _notify,
+    createTimer: createTimer,
+  );
+  bool get offline => _reconnectStatus.offline;
+
+  /// A saved auto-reconnecting computer opens before discovery or handshake.
+  /// Explicitly disconnected computers still open setup.
+  bool get hasSelectedComputer =>
+      selectableComputers.any((computer) => computer.id == engine.selectedId);
+
+  /// Keep saved reconnecting computers available even before their sessions open.
+  List<SavedComputer> get selectableComputers => [
+    for (final computer in computers)
+      if (computer.reconnect ||
+          engine.sessions[computer.id]?.chats.online == true ||
+          engine.sessions[computer.id]?.chats.connection.reconnecting == true)
+        computer,
+  ];
+
+  /// Recents follows live or recovering sessions, not saved picker choices.
   List<SavedComputer> get connectedComputers => [
     for (final computer in computers)
       if (engine.sessions[computer.id]?.chats case final chats?
           when chats.online || chats.connection.reconnecting)
         computer,
   ];
-  bool get setupUncertain =>
-      saved.creatingCredential && saved.credential == null;
-  bool get hasCredential => saved.credential != null;
+
+  /// Discovery has reached the relay at least once since this screen opened.
+  bool get discovered => _relay != null;
   void _notify() {
-    if (!_disposed) notifyListeners();
+    if (_disposed) return;
+    _reconnectStatus.update(
+      computerId: hasSelectedComputer ? engine.selectedId : null,
+      online: engine.selected.chats.online,
+    );
+    notifyListeners();
   }
 
   Future<void> _save() {
@@ -85,9 +122,6 @@ final class ComputerConnectAccount extends ChangeNotifier {
       final record = await store.read();
       if (_disposed) return;
       if (record != null) saved.restore(record);
-      if (setupUncertain) {
-        error = 'Setup was interrupted. Try again to finish connecting.';
-      }
       for (final computer in computers) {
         engine.rememberComputer(computer.id);
       }
@@ -101,30 +135,25 @@ final class ComputerConnectAccount extends ChangeNotifier {
       busy = false;
       _notify();
     }
-    if (!_disposed && ready && hasCredential && !setupUncertain) {
+    // A person who connected before reconnects on open; a first run waits
+    // for an explicit tap.
+    if (!_disposed && ready && (computers.isNotEmpty || _hadLegacySetup)) {
       await findComputers();
     }
   }
 
-  DesktopRelayCredentials get _credentials => DesktopRelayCredentials(
-    apiUrl: Uri.parse(saved.origin),
-    apiKey: saved.credential!.token,
-    peerDeviceId: 'AAAAAAAAAAAAAAAAAAAAAA',
-  );
+  bool get _hadLegacySetup =>
+      saved.credential != null || saved.creatingCredential;
+
   Future<DesktopRelayToken> _token(String id) async {
     if (_disposed || !_foreground) {
       throw const DeviceLinkException('Connection cancelled.');
     }
     if (accessDenied) throw DesktopRelayAccessException(accessStatus ?? 401);
-    final credential = saved.credential;
     try {
-      return await fetchToken(_credentials, id);
+      return await fetchToken(id);
     } on DesktopRelayAccessException catch (cause) {
-      if (!_disposed &&
-          _foreground &&
-          identical(saved.credential, credential)) {
-        _denyAccess(cause);
-      }
+      if (!_disposed && _foreground) _denyAccess(cause);
       rethrow;
     }
   }
@@ -132,10 +161,13 @@ final class ComputerConnectAccount extends ChangeNotifier {
   void _denyAccess(DesktopRelayAccessException cause) {
     accessDenied = true;
     accessStatus = cause.statusCode;
+    planRequired = cause.entitlementDenied;
     _retry?.cancel();
     _retry = null;
-    error = cause.statusCode == 401
-        ? 'Your connection access expired. Try again to renew it.'
+    error = planRequired
+        ? null
+        : cause.statusCode == 401
+        ? 'Your sign-in expired. Sign in again to connect your computers.'
         : 'Computer connection is unavailable for this account. Check your account access and try again.';
     _notify();
   }
@@ -153,16 +185,12 @@ final class ComputerConnectAccount extends ChangeNotifier {
       await restore();
       return;
     }
-    if (setupUncertain) {
-      error = 'Setup was interrupted. Try again to finish connecting.';
-      _notify();
-      return;
-    }
     // Automatic discovery stops at accessDenied. A tap or foreground resume
-    // may recheck account availability with the existing key; 401 needs renewal.
-    if (accessDenied && accessStatus != 401) {
+    // rechecks once, picking up a renewed sign-in or plan.
+    if (accessDenied) {
       accessDenied = false;
       accessStatus = null;
+      planRequired = false;
       _resetRecovery();
     }
     _retry?.cancel();
@@ -170,35 +198,8 @@ final class ComputerConnectAccount extends ChangeNotifier {
     finding = true;
     error = null;
     _notify();
+    unawaited(_legacyKeyCleanup.run());
     try {
-      if (!hasCredential) {
-        // This marker survives an uncertain create response. Never silently
-        // repeat a non-idempotent account mutation on restart or retry.
-        saved.creatingCredential = true;
-        try {
-          await _save();
-        } catch (_) {
-          saved.creatingCredential = false;
-          rethrow;
-        }
-        if (_disposed || !_foreground) {
-          saved.creatingCredential = false;
-          await _save();
-          return;
-        }
-        final credential = await createCredential();
-        saved.credential = credential;
-        saved.creatingCredential = false;
-        _credentialNeedsSave = true;
-        // Persist a returned secret even if the screen/account was disposed
-        // while the request was in flight. Its storage is account-scoped.
-        await _save();
-        _credentialNeedsSave = false;
-      } else if (_credentialNeedsSave) {
-        await _save(); // Retry a previous storage failure without minting again.
-        _credentialNeedsSave = false;
-      }
-      if (_disposed || !_foreground) return;
       final relay = await engine.hub.relay(_token);
       if (_disposed || !_foreground) return;
       _watch(relay);
@@ -223,20 +224,10 @@ final class ComputerConnectAccount extends ChangeNotifier {
       )) {
         _attempt = 0;
       }
-    } on ComputerConnectSetupRejected catch (cause) {
-      saved.creatingCredential = false;
-      try {
-        await _save();
-        error = cause.message;
-      } catch (_) {
-        error = 'Could not save connection settings. Try again.';
-      }
     } on DesktopRelayAccessException catch (cause) {
       _denyAccess(cause);
     } catch (cause) {
-      error = setupUncertain
-          ? 'Setup was interrupted. Try again to finish connecting.'
-          : cause is DeviceLinkException
+      error = cause is DeviceLinkException
           ? cause.message
           : 'Could not connect. Your saved settings were kept. Try again.';
     } finally {
@@ -313,9 +304,7 @@ final class ComputerConnectAccount extends ChangeNotifier {
         !_foreground ||
         busy ||
         accessDenied ||
-        !hasCredential ||
         _unreadable ||
-        setupUncertain ||
         _retry?.isActive == true) {
       return;
     }
@@ -342,7 +331,7 @@ final class ComputerConnectAccount extends ChangeNotifier {
   }
 
   Future<void> connect(String id) async {
-    if (busy || _disposed || !_foreground || !hasCredential) return;
+    if (busy || _disposed || !_foreground) return;
     final peer = peers[id];
     if (peer == null || !peer.acceptsControl) {
       error = 'This computer is offline or Remote access is off.';
@@ -420,36 +409,6 @@ final class ComputerConnectAccount extends ChangeNotifier {
     _notify();
   }
 
-  /// Explicit recovery only: a tap on Try again, never an automatic retry.
-  Future<void> setUpAgain() async {
-    if (busy || _disposed) return;
-    busy = true;
-    _notify();
-    try {
-      // Invalidate attempts using the old credential before clearing retry blocks.
-      await Future.wait(
-        engine.sessions.values.map(
-          (session) => session.chats.connection.disconnect(),
-        ),
-      );
-      if (_disposed) return;
-      _resetRecovery();
-      saved.credential = null;
-      saved.creatingCredential = false;
-      accessDenied = false;
-      accessStatus = null;
-      await _save();
-      await engine.hub.disconnect();
-    } catch (_) {
-      error = 'Could not save connection settings. Try again.';
-      return;
-    } finally {
-      busy = false;
-      _notify();
-    }
-    await findComputers();
-  }
-
   /// Leaving the app briefly keeps its sessions; they close after
   /// [backgroundGrace].
   Future<void> suspend() async {
@@ -471,6 +430,9 @@ final class ComputerConnectAccount extends ChangeNotifier {
   }
 
   Future<void> resume() async {
+    if (_disposed) return;
+    _reconnectStatus.reset();
+    _notify();
     _hidden = false;
     final closing = _closing;
     final hiddenAt = _hiddenAt;
@@ -503,6 +465,7 @@ final class ComputerConnectAccount extends ChangeNotifier {
     _disposed = true;
     _retry?.cancel();
     _closing?.cancel();
+    _reconnectStatus.dispose();
     engine.removeListener(_engineChanged);
     unawaited(_opened?.cancel());
     unawaited(_peerChanges?.cancel());

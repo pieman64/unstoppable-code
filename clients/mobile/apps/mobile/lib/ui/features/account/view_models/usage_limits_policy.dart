@@ -113,7 +113,7 @@ final class UsageSummaryLine {
 /// [kUsageProviderOrder]. A provider whose usage fetch failed is still signed
 /// in: its line reads unavailable, so the detail screen's error and refresh
 /// stay reachable. Null hides the row: the desktop is unavailable or no
-/// provider is signed in.
+/// provider is signed in and no OpenCode account metadata is projected.
 List<UsageSummaryLine>? usageSummaryLines({
   required bool desktopAvailable,
   required PortalProviderUsageProjection? projection,
@@ -126,7 +126,9 @@ List<UsageSummaryLine>? usageSummaryLines({
               entry.authState == PortalProviderUsageAuthState.error)
         _lineFor(entry),
   ];
-  return lines.isEmpty ? null : List.unmodifiable(lines);
+  return lines.isEmpty && projection.openCodeAccounts == null
+      ? null
+      : List.unmodifiable(lines);
 }
 
 UsageSummaryLine _lineFor(PortalProviderUsageEntry entry) {

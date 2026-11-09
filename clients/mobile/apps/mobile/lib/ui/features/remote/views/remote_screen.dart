@@ -10,7 +10,7 @@ import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile/data/models/remote_connection.dart';
 import 'package:mobile/data/models/remote_portal_event.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
@@ -91,17 +91,9 @@ class _RemoteScreenState extends State<RemoteScreen>
     );
     final connected = viewModel.status == RemoteConnectionStatus.connected;
 
-    final navigation = HomeNavigationScope.maybeOf(context);
     return CanopyScaffold(
       appBar: CanopyAppBar(
-        leading: navigation == null
-            ? null
-            : CanopyIconButton(
-                key: const ValueKey('home-menu-button'),
-                glyph: CanopyGlyph.barsThree,
-                tooltip: 'Open navigation menu',
-                onPressed: navigation.openDrawer,
-              ),
+        leading: HomeMenuButton.maybeOf(context, designSystem: true),
         content: connected
             ? _RemoteTitle(
                 connection: viewModel.connection,
@@ -110,7 +102,7 @@ class _RemoteScreenState extends State<RemoteScreen>
               )
             : viewModel.isRestoreRetrying
             ? const _RetryingTitle()
-            : const Text('Remote Control'),
+            : const Text('Remote control'),
         trailing: connected
             ? MenuAnchor(
                 builder: (context, controller, child) => CanopyIconButton(
@@ -213,7 +205,7 @@ class _RetryingTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const _StackedTitle(
-    title: 'Remote Control',
+    title: 'Remote control',
     label: RemoteConnectionStatusLabel(
       text: "Can't reach the server · Retrying…",
       tone: RemoteConnectionTone.warning,

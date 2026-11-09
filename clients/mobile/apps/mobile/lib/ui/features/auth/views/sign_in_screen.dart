@@ -72,13 +72,6 @@ class _SignInScreenState extends State<SignInScreen> {
   bool _lastLogoPressWasQuick = false;
 
   @override
-  void initState() {
-    super.initState();
-    // Offers "Continue as guest" only once the server says guests are on.
-    unawaited(context.read<AuthViewModel>().loadGuestEntry());
-  }
-
-  @override
   void dispose() {
     _quickTapWindow?.cancel();
     _emailController.dispose();
@@ -92,10 +85,6 @@ class _SignInScreenState extends State<SignInScreen> {
 
   void _signInWithApple() {
     unawaited(context.read<AuthViewModel>().signInWithApple());
-  }
-
-  void _continueAsGuest() {
-    unawaited(context.read<AuthViewModel>().continueAsGuest());
   }
 
   /// Counts logo taps; the Nth tap activates the reviewer login (and demo mode).
@@ -383,7 +372,7 @@ class _SignInScreenState extends State<SignInScreen> {
         ),
         const SizedBox(height: 8),
         Text(
-          "Your agents run in the cloud, so you don't need a computer.",
+          "Connect your computer to work with your projects and chats.",
           style: theme.textTheme.bodyMedium?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
           ),
@@ -414,15 +403,6 @@ class _SignInScreenState extends State<SignInScreen> {
           onApple: _signInWithApple,
         ),
         EmailSignInEntry(enabled: !isBusy),
-        if (viewModel.guestEntryAvailable) ...[
-          const SizedBox(height: 12),
-          TextButton(
-            key: const Key('continueAsGuest'),
-            onPressed: isBusy ? null : _continueAsGuest,
-            style: TextButton.styleFrom(minimumSize: const Size.fromHeight(48)),
-            child: const Text('Continue as guest'),
-          ),
-        ],
         if (isBusy) ...[
           const SizedBox(height: 24),
           const Center(

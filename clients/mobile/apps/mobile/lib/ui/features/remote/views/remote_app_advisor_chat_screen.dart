@@ -5,7 +5,7 @@ import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/composer/canopy_effort_control.dart';
 import 'package:mobile/core/design-system/overlay-action/canopy_overlay_action.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/data/models/remote_chat.dart';
 import 'package:mobile/data/repositories/remote_control_repository.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_body.dart';

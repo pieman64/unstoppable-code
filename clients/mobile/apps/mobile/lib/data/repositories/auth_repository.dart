@@ -70,17 +70,6 @@ abstract interface class AuthRepository {
   });
 }
 
-/// Guest sessions (CAN-2872): a session with no sign-in method. Signing in
-/// while one is stored merges the guest into the real account server-side,
-/// because the code exchange carries the guest's bearer token.
-abstract interface class GuestSessionRepository {
-  /// Whether the server lets the app start a guest session now.
-  Future<bool> guestSessionAvailable();
-
-  /// Starts and persists a guest session. Throws [AuthException] on failure.
-  Future<AuthSession> continueAsGuest();
-}
-
 /// In-memory [AuthRepository] used until the real backend is wired.
 ///
 /// Accepts any non-empty email whose password equals [validPassword]; every
@@ -208,8 +197,7 @@ final class MockAuthRepository implements AuthRepository {
 
 /// Live [AuthRepository] backed by Better Auth via [AuthApiService], persisting
 /// the bearer token in [SessionStore].
-final class HttpAuthRepository
-    implements AuthRepository, GuestSessionRepository, EmailAuthRepository {
+final class HttpAuthRepository implements AuthRepository, EmailAuthRepository {
   HttpAuthRepository({
     required this.service,
     required this.sessionStore,
@@ -352,45 +340,6 @@ final class HttpAuthRepository
       // Best-effort server sign-out; always clear the local token below.
     }
     await sessionStore.clear();
-  }
-
-  @override
-  Future<bool> guestSessionAvailable() async {
-    try {
-      return await service.guestSessionAvailable();
-    } catch (_) {
-      // An older server without the route, or no network: offer sign-in only.
-      return false;
-    }
-  }
-
-  @override
-  Future<AuthSession> continueAsGuest() async {
-    final generation = ++_generation;
-    final String token;
-    try {
-      // A fresh id per mint rather than a stored one: the server uses it only
-      // to key its rate limit, and a persistent identifier would be a device
-      // id the app does not otherwise collect.
-      token = await service.mintGuestSession(
-        clientDeviceId: Pkce.generateCodeVerifier(),
-      );
-    } on ApiException catch (e) {
-      throw AuthException(
-        e.statusCode == 429
-            ? 'Too many attempts. Please wait a moment and try again.'
-            : 'Could not start a guest session. Try again in a moment, or sign in.',
-      );
-    }
-    if (generation != _generation) throw const SessionValidationException();
-    await sessionStore.save(token);
-    final session = await _validate(token, generation);
-    if (session == null) {
-      throw const AuthException(
-        'Could not start a guest session. Try again in a moment, or sign in.',
-      );
-    }
-    return session;
   }
 
   @override

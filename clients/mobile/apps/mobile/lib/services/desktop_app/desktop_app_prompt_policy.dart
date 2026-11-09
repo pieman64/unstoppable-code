@@ -12,7 +12,7 @@ enum DesktopPairing {
   /// desktop that is offline still counts.
   paired;
 
-  /// The rule `CloudFirstProjectBinding` also applies: only `disconnected`
+  /// Only `disconnected`
   /// means "no desktop", and only once the probe has answered.
   static DesktopPairing of(
     RemoteConnectionStatus status, {

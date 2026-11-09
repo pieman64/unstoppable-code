@@ -6,7 +6,7 @@ import 'package:mobile/ui/core/typography.dart';
 
 /// One choice in a new chat's option sheet, such as a project or the
 /// worktree to start from. [subtitle] tells apart choices that share a
-/// name, such as a cloud project and a computer's project.
+/// name.
 typedef DraftOption = ({String id, String name, Widget icon, String? subtitle});
 
 const double _edgeInset = 16;

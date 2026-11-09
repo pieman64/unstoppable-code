@@ -39,7 +39,6 @@ enum AuthStatus {
 final class AuthViewModel extends ChangeNotifier {
   AuthViewModel({
     required this.repository,
-    this.guestSessions,
     this.loadOrganizations,
     this.workspaceContextStore,
     this.beforeSignOut,
@@ -49,8 +48,6 @@ final class AuthViewModel extends ChangeNotifier {
 
   final AuthRepository repository;
 
-  /// Guest sessions (CAN-2872); null where the backend has none (mock mode).
-  final GuestSessionRepository? guestSessions;
   final Duration sessionValidationTimeout;
   int _authGeneration = 0;
   bool _restoring = false;
@@ -114,11 +111,9 @@ final class AuthViewModel extends ChangeNotifier {
   String? _errorMessage;
   String? _pendingChallenge;
   String? _pendingVerifier;
-  bool _guestEntryAvailable = false;
   bool _emailEntryAvailable = false;
   int _emailEntryGeneration = 0;
   bool _upgradingGuest = false;
-  String? _signedInFromGuestId;
 
   /// Current lifecycle state.  Starts at [AuthStatus.unknown] until [restore].
   AuthStatus get status => _status;
@@ -131,19 +126,11 @@ final class AuthViewModel extends ChangeNotifier {
   /// method; signing in from here keeps their chats.
   bool get isGuest => _user?.isAnonymous ?? false;
 
-  /// The guest this session signed in from (CAN-2872), so the app can carry
-  /// the guest's local state, such as unsent chat drafts, into the account.
-  /// Null for any other session.
-  String? get signedInFromGuestId => _signedInFromGuestId;
-
   /// True for a signed-in account, false for a guest or while signed out.
   /// Account-only services, such as push registration and notification
   /// preferences, follow this rather than [status].
   bool get hasAccount => _status == AuthStatus.authenticated && !isGuest;
 
-  /// Whether the sign-in screen may offer "Continue as guest". False until
-  /// [loadGuestEntry] hears from the server.
-  bool get guestEntryAvailable => _guestEntryAvailable;
   bool get emailEntryAvailable => _emailEntryAvailable;
 
   EmailAuthRepository? get emailAuthRepository => switch (repository) {
@@ -252,45 +239,7 @@ final class AuthViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Asks the server whether guests are allowed, for [guestEntryAvailable].
-  Future<void> loadGuestEntry() async {
-    final guests = guestSessions;
-    if (guests == null || _disposed) return;
-    final available = await guests.guestSessionAvailable();
-    if (_disposed || available == _guestEntryAvailable) return;
-    _guestEntryAvailable = available;
-    notifyListeners();
-  }
-
-  /// Starts a guest session from the sign-in screen.
-  Future<void> continueAsGuest() async {
-    final guests = guestSessions;
-    if (guests == null) return;
-    final generation = ++_authGeneration;
-    _status = AuthStatus.authenticating;
-    _errorMessage = null;
-    notifyListeners();
-    try {
-      final session = await guests.continueAsGuest();
-      if (!_isCurrent(generation)) return;
-      await _applyAuthenticated(session);
-    } on SessionValidationException {
-      if (!_isCurrent(generation)) return;
-      _status = AuthStatus.validationFailed;
-    } on AuthException catch (e) {
-      if (!_isCurrent(generation)) return;
-      _errorMessage = e.message;
-      _status = AuthStatus.unauthenticated;
-    } catch (_) {
-      if (!_isCurrent(generation)) return;
-      _errorMessage = 'Something went wrong. Please try again.';
-      _status = AuthStatus.unauthenticated;
-    } finally {
-      notifyListeners();
-    }
-  }
-
-  /// Authenticates with email + password, updating [status] and [user].
+  /// Authenticates with email and password.
   Future<void> signIn({required String email, required String password}) async {
     final generation = ++_authGeneration;
     _status = AuthStatus.authenticating;
@@ -299,12 +248,6 @@ final class AuthViewModel extends ChangeNotifier {
     try {
       final session = await repository.signIn(email: email, password: password);
       if (!_isCurrent(generation)) return;
-      if (_user case final previous?
-          when previous.isAnonymous && !session.user.isAnonymous) {
-        _signedInFromGuestId = previous.id;
-      } else if (_user?.id != session.user.id) {
-        _signedInFromGuestId = null;
-      }
       _user = session.user;
       await _loadOrgs();
       if (!_isCurrent(generation)) return;
@@ -579,11 +522,6 @@ final class AuthViewModel extends ChangeNotifier {
 
   Future<void> _applyAuthenticated(AuthSession session) async {
     final generation = _authGeneration;
-    final previous = _user;
-    _signedInFromGuestId =
-        previous != null && previous.isAnonymous && !session.user.isAnonymous
-        ? previous.id
-        : null;
     _user = session.user;
     await _loadOrgs();
     if (!_isCurrent(generation)) return;
@@ -605,7 +543,6 @@ final class AuthViewModel extends ChangeNotifier {
     }
     await repository.signOut();
     _user = null;
-    _signedInFromGuestId = null;
     _organizations = const [];
     _personalOrganizationId = null;
     _activeOrgId = null;
@@ -620,18 +557,11 @@ final class AuthViewModel extends ChangeNotifier {
   Future<void> _applySession(AuthSession? session) async {
     final generation = _authGeneration;
     if (session != null) {
-      if (_user case final previous?
-          when previous.isAnonymous && !session.user.isAnonymous) {
-        _signedInFromGuestId = previous.id;
-      } else if (_user?.id != session.user.id) {
-        _signedInFromGuestId = null;
-      }
       _user = session.user;
       await _loadOrgs();
       if (!_isCurrent(generation)) return;
       _status = AuthStatus.authenticated;
     } else {
-      _signedInFromGuestId = null;
       _user = null;
       _organizations = const [];
       _personalOrganizationId = null;

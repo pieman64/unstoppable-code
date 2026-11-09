@@ -10,8 +10,10 @@ import 'package:mobile/data/repositories/org_settings_repository.dart';
 import 'package:mobile/data/repositories/sub_teams_repository.dart';
 import 'package:mobile/data/repositories/member_detail_repository.dart';
 import 'package:mobile/data/services/theme_preference_store.dart';
+import 'package:mobile/data/services/usage_data_preference_store.dart';
 import 'package:mobile/ui/core/theme.dart';
 import 'package:mobile/ui/core/theme_controller.dart';
+import 'package:mobile/ui/core/usage_data_controller.dart';
 import 'package:mobile/ui/features/auth/view_models/auth_view_model.dart';
 import 'package:mobile/ui/features/settings/view_models/notifications_view_model.dart';
 import 'package:mobile/ui/features/organizations/view_models/org_settings_view_model.dart';
@@ -91,6 +93,10 @@ Widget appBarRouteHost({
     ),
     ChangeNotifierProvider(
       create: (_) => ThemeController(store: InMemoryThemePreferenceStore()),
+    ),
+    ChangeNotifierProvider(
+      create: (_) =>
+          UsageDataController(store: InMemoryUsageDataPreferenceStore()),
     ),
     Provider<FeedbackReportRepository>(
       create: (_) => MockFeedbackReportRepository(latency: Duration.zero),

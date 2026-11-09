@@ -1,5 +1,5 @@
 /// Chat attachment limits and the ready upload a message carries as
-/// `cloudAttachments[]`. Remote Control and cloud chats share them: both
+/// `cloudAttachments[]`. Computer chat transports share them: both
 /// upload to the same attachment store and send the same reference.
 library;
 

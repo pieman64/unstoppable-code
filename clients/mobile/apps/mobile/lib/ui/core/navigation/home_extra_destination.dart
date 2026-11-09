@@ -7,10 +7,14 @@ class HomeExtraDestination extends InheritedWidget {
     required this.label,
     required this.subtitle,
     required this.pageBuilder,
+    this.takeInitialSelection,
     required super.child,
   });
   final String label, subtitle;
   final WidgetBuilder pageBuilder;
+
+  /// Claims an optional startup selection once, before the shell's first frame.
+  final bool Function()? takeInitialSelection;
   static HomeExtraDestination? maybeOf(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<HomeExtraDestination>();
   @override

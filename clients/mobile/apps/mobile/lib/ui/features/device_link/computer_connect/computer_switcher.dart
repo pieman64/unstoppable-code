@@ -6,11 +6,12 @@ import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/device_link/desktop/saved_connection.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/dimens.dart';
+import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/widgets/computer_connection_title.dart';
 import 'account.dart';
 
-/// The app bar title for Computer connect. A tap lists the connected
-/// computers, so a person can switch between them, with Manage computers
+/// The app bar title for Computer connect. A tap lists saved computers,
+/// including ones reconnecting in the background, with Manage computers
 /// last.
 class ComputerSwitcher extends StatelessWidget {
   const ComputerSwitcher({
@@ -84,7 +85,7 @@ class ComputerSwitcher extends StatelessWidget {
       ),
       popUpAnimationStyle: AnimationStyle.noAnimation,
       items: [
-        for (final computer in account.connectedComputers)
+        for (final computer in account.selectableComputers)
           PopupMenuItem<_Choice>(
             key: ValueKey('computer-switcher-${computer.id}'),
             value: _Select(computer.id),
@@ -121,15 +122,10 @@ class ComputerSwitcher extends StatelessWidget {
                           style: labelStyle,
                         ),
                         Text(
-                          account
-                                      .engine
-                                      .sessions[computer.id]
-                                      ?.chats
-                                      .connection
-                                      .reconnecting ==
+                          account.engine.sessions[computer.id]?.chats.online ==
                                   true
-                              ? 'Reconnecting…'
-                              : 'Connected',
+                              ? 'Connected'
+                              : 'Reconnecting…',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: theme.textTheme.bodySmall?.copyWith(
@@ -189,7 +185,16 @@ class ComputerSwitcher extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: AppDimens.padding8),
           child: ComputerConnectionTitle(
             title: title,
-            label: label,
+            // Brief reconnects stay quiet. The explicit menu still shows each
+            // computer's current status and offers Manage computers.
+            label: account.offline
+                ? label.isEmpty
+                      ? 'Computer offline'
+                      : '$label · Computer offline'
+                : label,
+            statusColor: account.offline
+                ? StatusColors.of(context).destructive
+                : null,
             titleKey: const ValueKey('computer-connect-device-name'),
             labelKey: const ValueKey('computer-connect-device-status'),
             titleTrailing: ExcludeSemantics(

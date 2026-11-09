@@ -7,6 +7,7 @@ import 'session.dart';
 import 'ipc.dart';
 import 'hub.dart';
 import 'relay_channel.dart';
+import 'surface.dart';
 
 /// Connection I/O used by the mobile connection model.
 abstract interface class DesktopLinkConnection implements DesktopIpc {
@@ -26,7 +27,8 @@ abstract interface class DesktopLinkConnection implements DesktopIpc {
 
 /// Identity, pins and session lifetime for the existing desktop protocol.
 /// API credentials remain in the caller's memory; only identity/pins persist.
-final class DesktopLinkRepository implements DesktopLinkConnection {
+final class DesktopLinkRepository
+    implements DesktopLinkConnection, DesktopOrchestratorConnection {
   DesktopLinkRepository({
     required DeviceLinkStore store,
     required String deviceName,
@@ -47,10 +49,32 @@ final class DesktopLinkRepository implements DesktopLinkConnection {
   String? _peerId;
   StreamSubscription<Map<String, dynamic>>? _subscription;
   final _events = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> _surfaceEvents(String surface) =>
+      _events.stream.where((event) {
+        final payload = event['payload'];
+        return event['name'] != 'ipc.push' ||
+            payload is! Map ||
+            payload['surface'] == null ||
+            payload['surface'] == surface;
+      });
   @override
-  Stream<Map<String, dynamic>> get events => _events.stream;
+  Stream<Map<String, dynamic>> get events => _surfaceEvents('main');
   int _generation = 0;
   bool _disposed = false;
+  bool _orchestratorVisible = false;
+  @override
+  late final DesktopIpc orchestrator = DesktopSurfaceIpc(
+    events: _surfaceEvents('app-advisor'),
+    call: (channel, args, timeout) =>
+        _invokeSurface('app-advisor', channel, args, timeout),
+  );
+
+  @override
+  Future<void> setOrchestratorVisible(bool visible) async {
+    _orchestratorVisible = visible;
+    await _session?.setOrchestratorVisible(visible);
+  }
+
   @override
   Future<DeviceLinkIdentity> identity() => hub.identity();
 
@@ -92,6 +116,7 @@ final class DesktopLinkRepository implements DesktopLinkConnection {
         channel,
         ownIdentity,
         peer,
+        controllerKind: relay.kind,
         createPeriodicTimer: createPeriodicTimer,
       );
       _session = session;
@@ -110,7 +135,9 @@ final class DesktopLinkRepository implements DesktopLinkConnection {
           throw const DeviceLinkException('Connection cancelled.');
         }
       }
-      return await session.openControl();
+      final hello = await session.openControl();
+      await session.setOrchestratorVisible(_orchestratorVisible);
+      return hello;
     } catch (_) {
       if (generation == _generation) await disconnect();
       rethrow;
@@ -132,12 +159,19 @@ final class DesktopLinkRepository implements DesktopLinkConnection {
     String channel, [
     List<Object?> args = const [],
     Duration? timeout,
-  ]) async {
+  ]) => _invokeSurface('main', channel, args, timeout);
+
+  Future<Object?> _invokeSurface(
+    String surface,
+    String channel,
+    List<Object?> args,
+    Duration? timeout,
+  ) async {
     final session = _session;
     if (session == null) {
       throw const DeviceLinkException('Connect to a computer first.');
     }
-    final params = {'channel': channel, 'args': args, 'surface': 'main'};
+    final params = {'channel': channel, 'args': args, 'surface': surface};
     return timeout == null
         ? session.request('ipc.invoke', params)
         : session.request('ipc.invoke', params, timeout: timeout);

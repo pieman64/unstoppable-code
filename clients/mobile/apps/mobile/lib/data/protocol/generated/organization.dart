@@ -320,7 +320,7 @@ class ModelGatewayModel {
 
 /// Org configuration surfaced to the settings UI.
 class OrganizationConfigDetail {
-  const OrganizationConfigDetail({required this.allowExternalContainerSharing, this.applicable, required this.blockedModelIds, required this.enforceMemberDataSharing, required this.enforceMemberModelGateway, required this.enforceMemberModelPolicy, required this.enforcedSync, this.externalAgentAccess, this.modelGatewayBaseUrl, this.modelGatewayDisplayName, required this.modelGatewayEnforced, required this.modelGatewayModels, required this.modelGatewayPromptCachePassthrough, this.modelGatewayRevision, required this.reviewedModelIds, required this.usageStatsMinRole});
+  const OrganizationConfigDetail({required this.allowExternalContainerSharing, this.applicable, required this.blockedModelIds, required this.enforceMemberDataSharing, required this.enforceMemberModelGateway, required this.enforceMemberModelPolicy, required this.enforcedSync, this.externalAgentAccess, this.modelGatewayBaseUrl, this.modelGatewayDisplayName, required this.modelGatewayEnforced, required this.modelGatewayModels, required this.modelGatewayPromptCachePassthrough, this.modelGatewayRevision, this.prohibitMemberActiveUseSignal, this.prohibitMemberErrorReports, this.prohibitMemberFeatureFlagIdentity, this.prohibitMemberProductAnalytics, this.prohibitMemberSessionReplay, required this.reviewedModelIds, required this.usageStatsMinRole});
 
   final bool allowExternalContainerSharing;
   /// Whether this organization-level control applies to the target.
@@ -340,6 +340,12 @@ class OrganizationConfigDetail {
   final List<ModelGatewayModel> modelGatewayModels;
   final bool modelGatewayPromptCachePassthrough;
   final String? modelGatewayRevision;
+  final bool? prohibitMemberActiveUseSignal;
+  final bool? prohibitMemberErrorReports;
+  final bool? prohibitMemberFeatureFlagIdentity;
+  /// Member usage data: flows the organization turns off for members' desktop app while they work in this organization. Narrowing only, no plan gate, independent of `enforceMemberDataSharing`. Absent from older servers ⇒ `false`.
+  final bool? prohibitMemberProductAnalytics;
+  final bool? prohibitMemberSessionReplay;
   final List<String> reviewedModelIds;
   final OrganizationRole usageStatsMinRole;
 
@@ -358,6 +364,11 @@ class OrganizationConfigDetail {
         modelGatewayModels: _parseList(json['modelGatewayModels'], (e) => ModelGatewayModel.fromJson(e as Map<String, dynamic>)),
         modelGatewayPromptCachePassthrough: json['modelGatewayPromptCachePassthrough'] as bool,
         modelGatewayRevision: json['modelGatewayRevision'] as String?,
+        prohibitMemberActiveUseSignal: json['prohibitMemberActiveUseSignal'] as bool?,
+        prohibitMemberErrorReports: json['prohibitMemberErrorReports'] as bool?,
+        prohibitMemberFeatureFlagIdentity: json['prohibitMemberFeatureFlagIdentity'] as bool?,
+        prohibitMemberProductAnalytics: json['prohibitMemberProductAnalytics'] as bool?,
+        prohibitMemberSessionReplay: json['prohibitMemberSessionReplay'] as bool?,
         reviewedModelIds: (json['reviewedModelIds'] as List<dynamic>).cast<String>(),
         usageStatsMinRole: OrganizationRole.fromWire(json['usageStatsMinRole'] as String),
       );

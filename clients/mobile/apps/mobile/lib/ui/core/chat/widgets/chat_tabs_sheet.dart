@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/button/canopy_button.dart';
 import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
+import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/core/design-system/overlay-action/canopy_overlay_action.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/data/models/chat_tab_item.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/status_colors.dart';
+import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/core/chat/widgets/pending_question_indicator.dart';
 
 /// Floating entry point to a worktree's chats. Replaces the horizontal
@@ -90,7 +92,9 @@ class ChatTabsLiveState {
 }
 
 /// Opens the chat list for a worktree: one row per chat tab plus a pinned
-/// "New chat" action.
+/// "New chat" action. When [files] is not empty, the files the computer has
+/// open in the worktree follow under their own heading and open through
+/// [onOpenFile].
 ///
 /// Row *state* is live. [chatState] is the owning screen's change source (its
 /// view model) and [resolveLiveState] re-derives [ChatTabsLiveState] on every
@@ -117,6 +121,8 @@ Future<void> showChatTabsSheet(
   required Listenable chatState,
   required ChatTabsLiveState Function() resolveLiveState,
   ValueChanged<String>? onClose,
+  List<ChatFileTabItem> files = const [],
+  ValueChanged<String>? onOpenFile,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -131,6 +137,8 @@ Future<void> showChatTabsSheet(
       onSelect: onSelect,
       onNewChat: onNewChat,
       onClose: onClose,
+      files: onOpenFile == null ? const [] : files,
+      onOpenFile: onOpenFile,
     ),
   );
 }
@@ -144,6 +152,8 @@ class _ChatTabsSheetBody extends StatelessWidget {
     required this.onSelect,
     required this.onNewChat,
     required this.onClose,
+    required this.files,
+    required this.onOpenFile,
   });
 
   /// Width of every row's trailing slot, which carries whichever of the two
@@ -171,6 +181,8 @@ class _ChatTabsSheetBody extends StatelessWidget {
   final ValueChanged<String> onSelect;
   final VoidCallback? onNewChat;
   final ValueChanged<String>? onClose;
+  final List<ChatFileTabItem> files;
+  final ValueChanged<String>? onOpenFile;
 
   /// The attention signal shown beside this chat's name, or null when it has
   /// none. Progress is not one of them — it lives in the trailing slot, where
@@ -205,6 +217,59 @@ class _ChatTabsSheetBody extends StatelessWidget {
     return null;
   }
 
+  Widget _filesHeading(BuildContext context) => Padding(
+    key: const ValueKey('chat-tabs-files-heading'),
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+    child: Text(
+      'Files',
+      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+        color: AppColors.of(context).foregroundSecondary,
+        fontWeight: AppTypography.emphasisWeight,
+        fontVariations: AppTypography.emphasisVariations,
+      ),
+    ),
+  );
+
+  /// Files have no live state: no progress, unread or close control. The
+  /// trailing slot is still reserved so titles end on the chats' edge.
+  Widget _fileRow(BuildContext context, ChatFileTabItem file) {
+    final colors = AppColors.of(context);
+    final theme = Theme.of(context);
+    final folder = file.displayFolder;
+    return ListTile(
+      key: ValueKey('chat-file-tab-${file.fileTabId}'),
+      titleTextStyle: theme.textTheme.bodyMedium,
+      contentPadding: const EdgeInsets.fromLTRB(16, 4, 0, 4),
+      minLeadingWidth: 0,
+      horizontalTitleGap: 12,
+      leading: CanopyIcon(
+        glyph: CanopyGlyph.fileText,
+        size: 16,
+        tint: colors.foregroundSecondary,
+      ),
+      title: Text(
+        file.displayTitle,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: folder == null
+          ? null
+          : Text(
+              folder,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.foregroundSecondary,
+              ),
+            ),
+      onTap: () {
+        Navigator.of(context).pop();
+        onOpenFile?.call(file.fileTabId);
+      },
+      trailing: const SizedBox(width: _trailingSlotWidth),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
@@ -233,8 +298,15 @@ class _ChatTabsSheetBody extends StatelessWidget {
               return ListView.builder(
                 shrinkWrap: true,
                 padding: EdgeInsets.zero,
-                itemCount: summaries.length,
+                itemCount:
+                    summaries.length + (files.isEmpty ? 0 : files.length + 1),
                 itemBuilder: (context, index) {
+                  if (index >= summaries.length) {
+                    final fileIndex = index - summaries.length - 1;
+                    return fileIndex < 0
+                        ? _filesHeading(context)
+                        : _fileRow(context, files[fileIndex]);
+                  }
                   final summary = summaries[index];
                   final chatId = summary.chatId;
                   // A running chat cannot be closed — the desktop rejects it and

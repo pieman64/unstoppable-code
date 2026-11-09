@@ -55,9 +55,14 @@ bool _secure(Uri uri, String secureScheme) =>
         ['127.0.0.1', 'localhost', '::1'].contains(uri.host));
 
 final class DesktopRelayToken {
-  DesktopRelayToken({required this.token, required this.relayUrl});
+  DesktopRelayToken({required this.token, required this.relayUrl, this.kind});
   final String token;
   final Uri relayUrl;
+
+  /// The relay device kind the token is bound to. Null is the legacy desktop
+  /// profile used by developer API credentials; the relay rejects a hello
+  /// whose kind does not match the token.
+  final String? kind;
   @override
   String toString() => 'DesktopRelayToken(redacted)';
 }
@@ -66,56 +71,111 @@ typedef DesktopTokenProvider =
     Future<DesktopRelayToken> Function(String deviceId);
 
 final class DesktopRelayAccessException extends DeviceLinkException {
-  const DesktopRelayAccessException(this.statusCode)
+  const DesktopRelayAccessException(this.statusCode, {this.code})
     : super(
         'Connection access is unavailable. Try again or check your account.',
       );
   final int statusCode;
+
+  /// The token route's machine-readable reason, when it sent one.
+  final String? code;
+
+  /// Only this code means the plan lacks Remote Control. Expired sign-in,
+  /// disabled features and origin or configuration errors are not upgrades.
+  bool get entitlementDenied => code == 'entitlement_denied';
 }
+
+/// Account-scoped token for this phone, authorized by the app's sign-in
+/// session. The relay binds it to the `mobile` kind.
+Future<DesktopRelayToken> fetchMobileRelayToken({
+  required Uri origin,
+  required String sessionToken,
+  required String? twoFactorProof,
+  required String deviceId,
+}) => _fetchRelayToken(
+  origin,
+  {
+    'Authorization': 'Bearer $sessionToken',
+    if (twoFactorProof != null && twoFactorProof.isNotEmpty)
+      'x-two-factor-verified': twoFactorProof,
+  },
+  deviceId,
+  kind: 'mobile',
+);
 
 Future<DesktopRelayToken> fetchDesktopRelayToken(
   DesktopRelayCredentials credentials,
   String deviceId,
-) async {
-  if (!credentials.apiUrl.hasAuthority ||
-      credentials.apiUrl.userInfo.isNotEmpty ||
-      credentials.apiUrl.hasQuery ||
-      credentials.apiUrl.hasFragment ||
-      !_secure(credentials.apiUrl, 'https')) {
+) => _fetchRelayToken(credentials.apiUrl, {
+  'Authorization': 'Bearer ${credentials.apiKey}',
+}, deviceId);
+
+Future<List<int>> _readBounded(http.StreamedResponse response) async {
+  final data = BytesBuilder();
+  await for (final chunk in response.stream.timeout(
+    const Duration(seconds: 15),
+  )) {
+    if (data.length + chunk.length > 16384) throw const FormatException();
+    data.add(chunk);
+  }
+  return data.takeBytes();
+}
+
+/// The route's `code`, or null when the error body is missing or malformed.
+Future<String?> _errorCode(http.StreamedResponse response) async {
+  try {
+    final json = jsonDecode(utf8.decode(await _readBounded(response)));
+    final code = json is Map ? json['code'] : null;
+    return code is String && RegExp(r'^[a-z_]{1,64}$').hasMatch(code)
+        ? code
+        : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<DesktopRelayToken> _fetchRelayToken(
+  Uri apiUrl,
+  Map<String, String> authorization,
+  String deviceId, {
+  String? kind,
+}) async {
+  if (!apiUrl.hasAuthority ||
+      apiUrl.userInfo.isNotEmpty ||
+      apiUrl.hasQuery ||
+      apiUrl.hasFragment ||
+      !_secure(apiUrl, 'https')) {
     throw const DeviceLinkException('Invalid API URL.');
   }
   final client = http.Client();
   try {
     final request =
-        http.Request(
-            'POST',
-            credentials.apiUrl.resolve('/api/v1/device-relay/token'),
-          )
+        http.Request('POST', apiUrl.resolve('/api/v1/device-relay/token'))
           ..followRedirects = false
           ..headers.addAll({
-            'Authorization': 'Bearer ${credentials.apiKey}',
+            ...authorization,
             'Content-Type': 'application/json',
           })
-          ..body = jsonEncode({'deviceId': deviceId});
+          ..body = jsonEncode({'deviceId': deviceId, 'kind': ?kind});
     final response = await client
         .send(request)
         .timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       if ([401, 403, 404].contains(response.statusCode)) {
-        throw DesktopRelayAccessException(response.statusCode);
+        throw DesktopRelayAccessException(
+          response.statusCode,
+          code: await _errorCode(response),
+        );
       }
       throw DeviceLinkException(
-        'Relay authentication failed (${response.statusCode}). Use a personal desktop API credential with remote access enabled.',
+        kind == null
+            ? 'Relay authentication failed (${response.statusCode}). Use a personal desktop API credential with remote access enabled.'
+            : 'Computer connection is temporarily unavailable (${response.statusCode}). Try again.',
       );
     }
-    final data = BytesBuilder();
-    await for (final chunk in response.stream.timeout(
-      const Duration(seconds: 15),
-    )) {
-      if (data.length + chunk.length > 16384) throw const FormatException();
-      data.add(chunk);
-    }
-    final json = deviceLinkObject(jsonDecode(utf8.decode(data.takeBytes())));
+    final json = deviceLinkObject(
+      jsonDecode(utf8.decode(await _readBounded(response))),
+    );
     final uri = Uri.parse(deviceLinkString(json, 'relayUrl'));
     if (!uri.hasAuthority ||
         uri.userInfo.isNotEmpty ||
@@ -127,6 +187,7 @@ Future<DesktopRelayToken> fetchDesktopRelayToken(
     return DesktopRelayToken(
       token: deviceLinkString(json, 'token'),
       relayUrl: uri,
+      kind: kind,
     );
   } on DeviceLinkException {
     rethrow;
@@ -141,6 +202,14 @@ Future<DesktopRelayToken> fetchDesktopRelayToken(
 
 final class DesktopRelayPeer {
   DesktopRelayPeer._(this.id, this.publicKey, this.name, this.acceptsControl);
+
+  /// Phones, browsers and hosted agents share the account's relay. Only
+  /// desktops (an absent kind is a legacy desktop) can be controlled.
+  static bool isComputer(Object? value) {
+    final kind = value is Map ? value['kind'] : null;
+    return kind == null || kind == 'desktop';
+  }
+
   static Future<DesktopRelayPeer> parse(Object? value) async {
     final json = deviceLinkObject(value);
     final id = deviceLinkString(json, 'deviceId');
@@ -169,6 +238,7 @@ final class DesktopRelay implements DesktopRelayTransport {
     this._socket,
     this.identity,
     this.targetId, {
+    required this.kind,
     required this.now,
     required this.createPeriodicTimer,
   }) {
@@ -227,6 +297,7 @@ final class DesktopRelay implements DesktopRelayTransport {
       socket,
       identity,
       targetId,
+      kind: token.kind,
       now: now,
       createPeriodicTimer: createPeriodicTimer,
     );
@@ -239,6 +310,7 @@ final class DesktopRelay implements DesktopRelayTransport {
           'publicKey': identity.publicKey,
           'name': deviceName,
           'platform': Platform.isIOS || Platform.isMacOS ? 'darwin' : 'linux',
+          'kind': ?token.kind,
           'appVersion': 'mobile-prototype',
           'acceptsRemoteControl': false,
         },
@@ -253,6 +325,10 @@ final class DesktopRelay implements DesktopRelayTransport {
     }
   }
 
+  /// Static message: the relay does not authenticate device kinds yet.
+  static const outdatedRelay =
+      'The connection service is out of date. Try again later.';
+  final String? kind;
   final DateTime Function() now;
   final Timer Function(Duration, void Function(Timer)) createPeriodicTimer;
   final WebSocket _socket;
@@ -329,7 +405,17 @@ final class DesktopRelay implements DesktopRelayTransport {
               json['peers'] is! List) {
             throw const FormatException();
           }
+          final features = json['features'];
+          // A relay that does not authenticate kinds would ignore ours, so a
+          // kind-bound token never connects through it.
+          if (kind != null &&
+              !(features is List && features.contains('device-kind'))) {
+            _ready.completeError(const DeviceLinkException(outdatedRelay));
+            await close(outdatedRelay);
+            return;
+          }
           for (final peer in json['peers'] as List) {
+            if (!DesktopRelayPeer.isComputer(peer)) continue;
             final parsed = await DesktopRelayPeer.parse(peer);
             peers[parsed.id] = parsed;
           }
@@ -347,6 +433,7 @@ final class DesktopRelay implements DesktopRelayTransport {
             }
           });
         case 'peer.online':
+          if (!DesktopRelayPeer.isComputer(json['peer'])) return;
           final peer = await DesktopRelayPeer.parse(json['peer']);
           peers[peer.id] = peer;
           _peerChanges.add(null);

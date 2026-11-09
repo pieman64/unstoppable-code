@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
 import 'package:mobile/ui/core/navigation/home_back_handlers.dart';
-import 'package:mobile/ui/core/design_tokens.dart';
+import 'package:mobile/ui/core/chat/widgets/composer_drawer.dart';
 import 'package:mobile/ui/features/remote/view_models/background_tray/summary.dart';
 import 'package:mobile/ui/features/remote/view_models/background_tray/items.dart';
 import 'background_tray_header.dart';
@@ -97,16 +97,8 @@ class _BackgroundTrayState extends State<BackgroundTray> {
       },
       child: Focus(
         autofocus: false,
-        child: Container(
+        child: ComposerDrawerSurface(
           key: const ValueKey('background-tray'),
-          decoration: BoxDecoration(
-            color: AppColors.of(context)['bg-depth'],
-            border: Border.all(color: AppColors.of(context).border),
-            borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(AppRadii.md),
-            ),
-          ),
-          clipBehavior: Clip.antiAlias,
           child: LayoutBuilder(
             builder: (context, constraints) => Column(
               mainAxisSize: MainAxisSize.min,

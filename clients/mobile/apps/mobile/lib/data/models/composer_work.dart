@@ -90,19 +90,15 @@ final class WorkItem {
 }
 
 final class WorkDrawerState {
-  const WorkDrawerState({
-    this.items = const [],
-    this.errors = const [],
-    this.loading = false,
-  });
+  const WorkDrawerState({this.items = const [], this.errors = const []});
   final List<WorkItem> items;
   final List<String> errors;
-  final bool loading;
   int count(WorkGroup group) => items
       .where((i) => i.group == group && !i.finished)
       .fold(0, (n, i) => n + i.count);
-  bool get visible =>
-      loading || errors.isNotEmpty || items.any((i) => !i.finished);
+  // Like the shared desktop and web drawer, errors only annotate work; alone
+  // they never show the drawer.
+  bool get visible => items.any((i) => !i.finished);
   String get summary => [
     for (final group in [
       WorkGroup.queued,

@@ -22,7 +22,7 @@ Future<DesktopAppPromptChoice> showDesktopAppPromptSheet(
   return choice ?? _dismissed;
 }
 
-/// Suggests the desktop app to someone using only cloud chats (CAN-4424).
+/// Shares a link to the desktop app (CAN-4424).
 /// Actions are stacked in reading order so screen-reader focus follows
 /// heading → explanation → Share link → Copy link → Not now.
 class DesktopAppPromptSheet extends StatelessWidget {

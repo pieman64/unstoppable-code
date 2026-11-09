@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:mobile/core/design-system/composer/canopy_composer_action.dart';
 import 'package:mobile/core/design-system/composer/canopy_composer_action_sheet.dart';
 import 'package:mobile/core/design-system/composer/canopy_composer_actions_button.dart';
@@ -86,6 +87,11 @@ class ChatInput extends StatelessWidget {
   static const double _cornerRadius =
       CanopyComposerAction.diameter / 2 + _inset + _borderWidth;
 
+  /// How far an [attachedHeader] runs behind the composer's top edge, so the
+  /// composer's rounded corners sit on top of it. A drawer pads its content
+  /// by this much to keep it clear of the composer.
+  static const double attachedHeaderOverlap = _cornerRadius;
+
   final TextEditingController controller;
   final bool sending;
   final VoidCallback onSend;
@@ -145,8 +151,10 @@ class ChatInput extends StatelessWidget {
   /// (CAN-2932); null renders nothing there.
   final Widget? header;
 
-  /// An alternative header joined to the input, inset on both sides. Use for
-  /// work drawers; [header] keeps the separated destination-control layout.
+  /// An alternative header joined to the input: as wide as the composer and
+  /// running [attachedHeaderOverlap] behind its top edge. Use for a
+  /// `ComposerDrawerSurface`, such as the work drawer or Home's context
+  /// pickers; [header] keeps the separated destination-control layout.
   final Widget? attachedHeader;
 
   /// The chat's watchers control, after the model and effort controls like
@@ -500,6 +508,7 @@ class ChatInput extends StatelessWidget {
         actions: commands == null ? const [] : _actions(context, live),
         enabled: enabled,
         dollar: controls?.supportsDollarCommands ?? false,
+        headerOverlap: attachedHeader != null ? _cornerRadius : 0,
         child: composer,
       ),
     );
@@ -528,25 +537,28 @@ class ChatInput extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Padding(
-                // Meet the flat top edge, inside the composer's corner arcs.
                 padding: attached
-                    ? const EdgeInsets.fromLTRB(
-                        8 + _cornerRadius,
-                        8,
-                        8 + _cornerRadius,
-                        0,
-                      )
+                    ? const EdgeInsets.fromLTRB(8, 8, 8, 0)
                     : const EdgeInsets.symmetric(horizontal: 8),
-                // Reserve a draft line, toolbar and transcript touch target.
-                // A tall header scrolls internally before it can displace Send.
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxHeight: (constraints.maxHeight - minimumHeight).clamp(
-                      48.0,
-                      double.infinity,
+                // Run behind the composer, which paints over the drawer's
+                // lower edge so its rounded corners sit on top. An open
+                // command list leaves that edge clear instead.
+                child: _OverlapBelow(
+                  overlap: attached ? _cornerRadius : 0,
+                  // Reserve a draft line, toolbar and transcript touch
+                  // target. A tall header scrolls internally before it can
+                  // displace Send.
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight:
+                          (constraints.maxHeight - minimumHeight).clamp(
+                            48.0,
+                            double.infinity,
+                          ) +
+                          (attached ? _cornerRadius : 0),
                     ),
+                    child: header ?? const SizedBox.shrink(),
                   ),
-                  child: header ?? const SizedBox.shrink(),
                 ),
               ),
               Flexible(child: menu),
@@ -555,6 +567,76 @@ class ChatInput extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Lays its child out at full height but takes [overlap] less space below,
+/// so the next sibling in a column paints over the child's lower edge. That
+/// hidden strip is covered by the sibling, so hit testing ignores it.
+class _OverlapBelow extends SingleChildRenderObjectWidget {
+  const _OverlapBelow({required this.overlap, super.child});
+
+  final double overlap;
+
+  @override
+  _RenderOverlapBelow createRenderObject(BuildContext context) =>
+      _RenderOverlapBelow(overlap);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderOverlapBelow renderObject,
+  ) => renderObject.overlap = overlap;
+}
+
+class _RenderOverlapBelow extends RenderProxyBox {
+  _RenderOverlapBelow(this._overlap);
+
+  double _overlap;
+  set overlap(double value) {
+    if (value == _overlap) return;
+    _overlap = value;
+    markNeedsLayout();
+  }
+
+  @override
+  void performLayout() {
+    final child = this.child;
+    if (child == null) {
+      size = constraints.smallest;
+      return;
+    }
+    child.layout(constraints, parentUsesSize: true);
+    final height = child.size.height;
+    // An empty header, like a hidden work drawer, takes no space at all.
+    size = constraints.constrain(
+      Size(child.size.width, height > _overlap ? height - _overlap : 0),
+    );
+  }
+
+  @override
+  Size computeDryLayout(BoxConstraints constraints) {
+    final size = child?.getDryLayout(constraints) ?? constraints.smallest;
+    return constraints.constrain(
+      Size(size.width, size.height > _overlap ? size.height - _overlap : 0),
+    );
+  }
+
+  @override
+  double computeMinIntrinsicHeight(double width) {
+    final height = super.computeMinIntrinsicHeight(width);
+    return height > _overlap ? height - _overlap : 0;
+  }
+
+  @override
+  double computeMaxIntrinsicHeight(double width) {
+    final height = super.computeMaxIntrinsicHeight(width);
+    return height > _overlap ? height - _overlap : 0;
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    if (size.height > 0) super.paint(context, offset);
   }
 }
 

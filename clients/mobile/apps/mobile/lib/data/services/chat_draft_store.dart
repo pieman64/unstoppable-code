@@ -91,29 +91,6 @@ final class FileChatDraftStore extends ChatDraftStateStore {
   }
 
   @override
-  Future<void> adoptGuestDrafts(ChatDraftStateStore guest) async {
-    await super.adoptGuestDrafts(guest);
-    final drafts = Map.of(guest.state.drafts);
-    final unsent = Map.of(guest.state.unsent);
-    await flush();
-    if (lastWriteError != null) return;
-    for (final MapEntry(:key, :value) in drafts.entries) {
-      if (!key.startsWith('cloud:') || state.drafts[key] != value) continue;
-      if (guest.state.drafts[key] != value) continue;
-      guest.state.drafts.remove(key);
-      guest.state.draftSelections.remove(key);
-      guest.state.selectionsBeforeText.remove(key);
-    }
-    for (final MapEntry(:key, :value) in unsent.entries) {
-      if (value.surface != 'cloud' || state.unsent[key] != value) continue;
-      if (guest.state.unsent[key] == value) guest.state.unsent.remove(key);
-    }
-    guest.onDraftsChanged();
-    guest.onUnsentChanged();
-    await guest.flush();
-  }
-
-  @override
   void onDraftsChanged() {
     _dirty = true;
     _pending?.cancel();

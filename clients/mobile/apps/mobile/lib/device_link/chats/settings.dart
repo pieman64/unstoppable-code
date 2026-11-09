@@ -6,6 +6,11 @@ import 'models.dart';
 import 'model_registry.dart';
 import 'default_model.dart';
 
+/// A local refusal or canonical receipt confirms that no settings were applied.
+final class DeviceChatSettingsRejected extends DeviceLinkException {
+  const DeviceChatSettingsRejected(super.message);
+}
+
 final class DeviceChatSettings {
   DeviceChatSettings(this.ipc);
   final DesktopIpc ipc;
@@ -122,7 +127,7 @@ final class DeviceChatSettings {
     loaded = true;
   }
 
-  Future<void> command(DeviceChatRef ref, Map<String, dynamic> command) async {
+  Future<int> command(DeviceChatRef ref, Map<String, dynamic> command) async {
     final response = deviceLinkObject(
       deviceChatDto(
         await ipc.invoke('chat:command', [
@@ -135,21 +140,28 @@ final class DeviceChatSettings {
         ]),
       ),
     );
-    if (!['applied', 'already_applied'].contains(response['outcome'])) {
-      throw const DeviceLinkException(
+    final outcome = response['outcome'];
+    if (['conflict', 'not_found', 'rejected'].contains(outcome)) {
+      throw const DeviceChatSettingsRejected(
         'The computer could not complete this action. Refresh and try again.',
       );
     }
+    if (!['applied', 'already_applied'].contains(outcome)) {
+      throw const FormatException('Missing chat outcome');
+    }
+    final revision = response['revision'];
+    if (revision is! int) throw const FormatException('Missing chat revision');
+    return revision;
   }
 
-  Future<void> selectModel(DeviceChatRef ref, ModelOption choice) async {
+  Future<int> selectModel(DeviceChatRef ref, ModelOption choice) async {
     if (scopeKey != ref.key ||
         !models.any((row) => row.id == choice.id && row.available)) {
-      throw const DeviceLinkException(
+      throw const DeviceChatSettingsRejected(
         'Refresh model choices before selecting a model.',
       );
     }
-    await command(ref, {
+    return command(ref, {
       'type': 'chat.set_model',
       'tabId': ref.id,
       'model': choice.id,
@@ -158,14 +170,16 @@ final class DeviceChatSettings {
     });
   }
 
-  Future<void> selectAuto(DeviceChatRef ref) {
+  Future<int> selectAuto(DeviceChatRef ref) {
     if (scopeKey != ref.key || !modelRoutingSupported) {
-      throw const DeviceLinkException('Auto is not available for this chat.');
+      throw const DeviceChatSettingsRejected(
+        'Auto is not available for this chat.',
+      );
     }
     return patch(ref, {'modelSelectionMode': 'auto'});
   }
 
-  Future<void> patch(DeviceChatRef ref, Map<String, dynamic> patch) => command(
+  Future<int> patch(DeviceChatRef ref, Map<String, dynamic> patch) => command(
     ref,
     {'type': 'chat.patch_tab_settings', 'tabId': ref.id, 'patch': patch},
   );

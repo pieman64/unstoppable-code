@@ -5,6 +5,7 @@ import 'models.dart';
 import 'state.dart';
 import 'dto.dart';
 import 'cache.dart';
+import 'catalog.dart';
 
 enum DeviceChatSendOutcome { accepted, uncertain }
 
@@ -35,6 +36,7 @@ final class DeviceChatsRepository {
   DeviceChatsRepository(
     this.ipc, {
     this.createTimer = Timer.new,
+    this.readCatalog = readDeviceChatCatalog,
     DeviceChatCache? cache,
   }) : cache = cache ?? DeviceChatCache() {
     _subscription = ipc.events.listen(_receive);
@@ -43,6 +45,7 @@ final class DeviceChatsRepository {
     });
   }
   final DesktopIpc ipc;
+  final DeviceChatCatalogReader readCatalog;
   final DeviceChatCache cache;
   late final StreamSubscription<String> _cacheSubscription;
   String? _selectedKey;
@@ -122,28 +125,10 @@ final class DeviceChatsRepository {
   Future<void> refreshCatalog() async {
     if (!connected) return;
     final generation = _generation;
-    final result = deviceLinkObject(await _invoke('chat-search:catalog'));
-    final projects = deviceLinkObject(await _invoke('chat-project:list'));
+    final result = await readCatalog(ipc);
     if (_disposed || generation != _generation || !connected) return;
-    catalog = (result['entries'] as List)
-        .map(deviceLinkObject)
-        .where(
-          (e) =>
-              e['source'] == 'live' &&
-              (e['documentKind'] == null || e['documentKind'] == 'chat') &&
-              e['archivedAt'] == null,
-        )
-        .map(DeviceChatRef.fromCatalog)
-        .toList();
-    workspaces = (projects['projects'] as List)
-        .map(deviceLinkObject)
-        .map(
-          (p) => DeviceChatWorkspace(
-            deviceLinkString(p, 'id'),
-            deviceLinkString(p, 'name'),
-          ),
-        )
-        .toList();
+    catalog = result.chats;
+    workspaces = result.workspaces;
     _notify();
   }
 
@@ -335,7 +320,11 @@ final class DeviceChatsRepository {
     }
   }
 
-  Future<DeviceChatRef> createChat(String workspaceId, {String? title}) async {
+  Future<DeviceChatRef> createChat(
+    String workspaceId, {
+    String? title,
+    void Function(DeviceChatRef)? onCreated,
+  }) async {
     final requestedTitle = title?.trim();
     if (!connected || !workspaces.any((w) => w.id == workspaceId)) {
       throw const DeviceLinkException('Choose an available workspace first.');
@@ -392,12 +381,17 @@ final class DeviceChatsRepository {
       id: result['entityId'] is String ? result['entityId'] as String : id,
       title: requestedTitle?.isNotEmpty == true ? requestedTitle! : 'New chat',
     );
+    onCreated?.call(ref);
     catalog = [ref, ...catalog.where((c) => c.key != ref.key)];
     await open(ref);
     return ref;
   }
 
-  Future<void> createTab(String projectId, String worktreeId) async {
+  Future<void> createTab(
+    String projectId,
+    String worktreeId, {
+    void Function(DeviceChatRef)? onCreated,
+  }) async {
     if (!connected) {
       throw const DeviceLinkException('Reconnect to your computer first.');
     }
@@ -423,14 +417,14 @@ final class DeviceChatsRepository {
       );
     }
     if (_disposed || !connected || generation != _generation) return;
-    await open(
-      DeviceChatRef(
-        projectId: projectId,
-        worktreeId: worktreeId,
-        id: result['entityId'] as String? ?? id,
-        title: 'New chat',
-      ),
+    final ref = DeviceChatRef(
+      projectId: projectId,
+      worktreeId: worktreeId,
+      id: result['entityId'] as String? ?? id,
+      title: 'New chat',
     );
+    onCreated?.call(ref);
+    await open(ref);
   }
 
   Future<DeviceChatSendOutcome> send(

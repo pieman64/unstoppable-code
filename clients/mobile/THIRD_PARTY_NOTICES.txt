@@ -441,6 +441,42 @@ flutter_driver
 Version: 0.0.0
 Source: Flutter SDK
 
+flutter_inappwebview
+Version: 6.2.0-beta.3
+Source: https://pub.dev
+
+flutter_inappwebview_android
+Version: 1.2.0-beta.3
+Source: https://pub.dev
+
+flutter_inappwebview_internal_annotations
+Version: 1.3.0
+Source: https://pub.dev
+
+flutter_inappwebview_ios
+Version: 1.2.0-beta.3
+Source: https://pub.dev
+
+flutter_inappwebview_linux
+Version: 0.1.0-beta.1
+Source: https://pub.dev
+
+flutter_inappwebview_macos
+Version: 1.2.0-beta.3
+Source: https://pub.dev
+
+flutter_inappwebview_platform_interface
+Version: 1.4.0-beta.3
+Source: https://pub.dev
+
+flutter_inappwebview_web
+Version: 1.2.0-beta.3
+Source: https://pub.dev
+
+flutter_inappwebview_windows
+Version: 0.7.0-beta.3
+Source: https://pub.dev
+
 flutter_launcher_icons
 Version: 0.14.4
 Source: https://pub.dev

@@ -1,6 +1,4 @@
-/// Account-level Auto (model routing) availability from
-/// `GET /api/cloud/model-routing-availability`: the rollout and AI Credits
-/// gates. Server routing stays authoritative for each turn.
+/// Host-projected Auto model routing state. The computer owns admission.
 enum ModelRoutingAvailability {
   /// Not loaded yet.
   loading,
@@ -10,12 +8,5 @@ enum ModelRoutingAvailability {
   noCredits,
 
   /// Routing is not offered to this account, or availability is unknown.
-  hidden;
-
-  /// Maps the wire `state`; anything unexpected hides Auto, as on web.
-  static ModelRoutingAvailability fromWire(Object? state) => switch (state) {
-    'available' => available,
-    'no-credits' => noCredits,
-    _ => hidden,
-  };
+  hidden,
 }

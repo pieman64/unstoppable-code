@@ -8,6 +8,9 @@ import 'package:mobile/device_link/desktop/repository.dart';
 import '../chats_view_model.dart';
 import '../desktop_link_model.dart';
 import 'controller.dart';
+import 'home_launcher.dart';
+import 'orchestrator/controller.dart';
+import 'package:mobile/device_link/desktop/surface.dart';
 
 /// One account/environment's registry. Selection is navigation, not ownership:
 /// changing it never swaps a repository underneath a mounted chat or closes a
@@ -15,14 +18,61 @@ import 'controller.dart';
 final class ComputerConnectEngine extends ChangeNotifier {
   ComputerConnectEngine(
     this.hub, {
-    this.drafts,
+    ChatDraftStore? drafts,
     this.createConnection = DesktopLinkRepository.shared,
     this.createRecoveryTimer = Timer.new,
-  }) {
+  }) : _drafts = drafts ?? InMemoryChatDraftStore() {
     _selected = _create()..setActive(true);
   }
   final DesktopLinkHub hub;
-  final ChatDraftStore? drafts;
+  ChatDraftStore _drafts;
+  ChatDraftStore get drafts => _drafts;
+  final _homeLaunchers = <String, ComputerHomeLauncher>{};
+  final _orchestrators = <String, ComputerOrchestratorController>{};
+  ComputerOrchestratorController? get orchestrator {
+    final id = selectedId;
+    final repository = _selected.chats.connection.repository;
+    if (id == null) return null;
+    final DesktopOrchestratorConnection transport;
+    if (repository case DesktopOrchestratorConnection value) {
+      transport = value;
+    } else {
+      return null;
+    }
+    return _orchestrators.putIfAbsent(
+      id,
+      () => ComputerOrchestratorController(
+        connection: _selected.chats.connection,
+        transport: transport,
+        computerId: id,
+        drafts: _drafts,
+      ),
+    );
+  }
+
+  ComputerHomeLauncher get homeLauncher {
+    final id = selectedId;
+    if (id == null) throw StateError('Choose a computer first.');
+    return _homeLaunchers.putIfAbsent(
+      id,
+      () => ComputerHomeLauncher(_selected, id, _drafts),
+    );
+  }
+
+  void bindDraftStore(ChatDraftStore store) {
+    if (identical(store, _drafts)) return;
+    _drafts = store;
+    for (final launcher in _homeLaunchers.values) {
+      launcher.bindDraftStore(store);
+    }
+    for (final entry in _orchestrators.entries) {
+      entry.value.chats.bindDrafts(entry.key, store);
+    }
+    for (final entry in _sessions.entries) {
+      entry.value.chats.bindDrafts(entry.key, store);
+    }
+  }
+
   final DesktopLinkConnection Function(DesktopLinkHub) createConnection;
   final Timer Function(Duration, void Function()) createRecoveryTimer;
   final _sessions = <String, ComputerConnectController>{};
@@ -73,7 +123,7 @@ final class ComputerConnectEngine extends ChangeNotifier {
     if (_disposed || !_foreground) return;
     rememberComputer(peerId);
     final target = _sessions[peerId]!;
-    if (drafts case final store?) target.chats.bindDrafts(peerId, store);
+    target.chats.bindDrafts(peerId, drafts);
     if (selectComputer) _select(target);
     _changed();
     if (!target.chats.online && !target.chats.connection.busy) {
@@ -132,6 +182,14 @@ final class ComputerConnectEngine extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    for (final launcher in _homeLaunchers.values) {
+      launcher.dispose();
+    }
+    _homeLaunchers.clear();
+    for (final controller in _orchestrators.values) {
+      controller.dispose();
+    }
+    _orchestrators.clear();
     for (final controller in _all) {
       controller.removeListener(_changed);
       controller.setActive(false);

@@ -3,10 +3,11 @@ import 'package:mobile/ui/core/chat/widgets/pending_question_indicator.dart';
 import 'package:mobile/data/models/remote_pr_merge_queue.dart';
 import 'package:mobile/data/models/remote_session.dart';
 import 'package:mobile/ui/core/activity/pr_merge_queue_display.dart';
+import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/ui/core/workspaces/workspace_navigation_row.dart';
 
 /// Desktop's classic two-line sidebar row (`WorktreeRow.tsx`, see
@@ -304,10 +305,12 @@ class _TitleSignals extends StatelessWidget {
       _ => null,
     };
     final background = worktree.backgroundTasks ?? 0;
+    // Activity spins in the primary ink, as desktop's comet draws it.
+    final activity = AppColors.of(context).foreground;
     final spinner = setup != null
-        ? (setup, colors.accent)
+        ? (setup, activity)
         : worktree.isWorking
-        ? ('Agent working', colors.accent)
+        ? ('Agent working', activity)
         : background > 0
         ? (
             background == 1

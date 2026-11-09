@@ -3,9 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:mobile/data/models/remote_session.dart';
-import 'package:mobile/ui/core/status_colors.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
-import 'package:mobile/ui/core/dimens.dart';
+import 'package:mobile/ui/core/chat/widgets/chat_overview_row.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
 import 'package:mobile/ui/features/remote/view_models/space_notifications_view_model.dart';
 import 'package:mobile/ui/features/remote/views/widgets/space_notifications_sheet.dart';
@@ -25,8 +23,6 @@ class StandaloneChatRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final statusColors = StatusColors.of(context);
     final notifications = context.read<SpaceNotificationsViewModel?>();
     final notificationsEnabled = context.select<RemoteControlViewModel?, bool>(
       (vm) => vm?.canChooseSpaceNotifications ?? false,
@@ -44,63 +40,11 @@ class StandaloneChatRow extends StatelessWidget {
             ),
           );
 
-    final tile = ListTile(
-      contentPadding: const EdgeInsets.only(
-        left: AppDimens.navRowTitleInset,
-        right: 16,
-      ),
-      visualDensity: VisualDensity.compact,
-      minTileHeight: 48,
-      title: Text(
-        chat.displayTitle,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodyMedium?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-      ),
-      trailing:
-          chat.hasActiveChat != true &&
-              chat.hasUnread != true &&
-              chat.archived != true
-          ? null
-          : Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (chat.hasActiveChat == true) ...[
-                  const Tooltip(
-                    message: 'Working',
-                    child: ThinkingSpinner(
-                      key: ValueKey('standalone-chat-working'),
-                      size: 12,
-                    ),
-                  ),
-                  if (chat.hasUnread == true || chat.archived == true)
-                    const SizedBox(width: 8),
-                ],
-                if (chat.hasUnread == true)
-                  Tooltip(
-                    message: 'Unread',
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: statusColors.unread,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-                if (chat.archived == true) ...[
-                  if (chat.hasUnread == true) const SizedBox(width: 8),
-                  Text(
-                    'Archived',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ],
-            ),
+    final tile = ChatOverviewRow(
+      title: chat.displayTitle,
+      unread: chat.hasUnread == true,
+      working: chat.hasActiveChat == true,
+      archived: chat.archived == true,
       onTap: onTap,
       onLongPress: openNotifications,
     );

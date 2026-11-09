@@ -51,7 +51,7 @@ class GuestAccountScreen extends StatelessWidget {
                   key: const ValueKey('guest-sign-in-row'),
                   glyph: CanopyGlyph.user,
                   title: 'Sign in',
-                  subtitle: 'Keep your chats and use them on other devices.',
+                  subtitle: 'Connect a computer to work with your projects.',
                   trailing: const CanopySettingsChevron(),
                   onTap: () => onSignIn(context),
                 ),
@@ -92,7 +92,7 @@ class GuestAccountScreen extends StatelessWidget {
     final confirmed = await confirmDestructive(
       context,
       title: 'Leave guest mode?',
-      message: 'Your guest chats stay behind. To keep them, sign in first.',
+      message: 'You will return to the sign-in screen.',
       confirmLabel: 'Leave',
       confirmKey: const ValueKey('guest-leave-confirm'),
     );

@@ -249,18 +249,23 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
       final controller = widget.controller;
       final connection = controller.chats.connection;
       final online = controller.chats.online;
-      final retainingComputer = online || connection.reconnecting;
       final navigation = HomeNavigationScope.maybeOf(context);
       final account = widget.account;
+      final retainingComputer =
+          online ||
+          connection.reconnecting ||
+          account?.hasSelectedComputer == true;
       final hostName = retainingComputer
           ? (connection.host?['name'] as String?)
           : null;
       final title = hostName ?? account?.selectedName ?? 'Computer connect';
-      final status = !retainingComputer
-          ? 'Not connected'
+      final status = online
+          ? 'Connected'
+          : account != null
+          ? ''
           : connection.reconnecting
           ? 'Reconnecting…'
-          : 'Connected';
+          : 'Not connected';
       return CanopyScaffold(
         appBar: CanopyAppBar(
           // Hosted in the home shell, the drawer is the way out, as on
@@ -276,7 +281,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
           automaticallyImplyLeading: navigation == null,
           content:
               account != null &&
-                  (retainingComputer || account.connectedComputers.isNotEmpty)
+                  (retainingComputer || account.selectableComputers.isNotEmpty)
               ? ComputerSwitcher(
                   account: account,
                   title: title,

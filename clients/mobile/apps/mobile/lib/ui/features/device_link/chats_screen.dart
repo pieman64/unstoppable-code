@@ -12,6 +12,8 @@ import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/overlay-action/canopy_overlay_action.dart';
 import 'package:mobile/device_link/chats/presentation.dart';
+import 'package:mobile/device_link/files/reader.dart';
+import 'package:mobile/device_link/files/tabs.dart';
 import 'package:mobile/device_link/protocol.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_body.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_feed.dart';
@@ -29,6 +31,8 @@ import 'package:mobile/ui/core/chat/widgets/chat_attachment_input.dart';
 import 'chats_view_model.dart';
 import 'computer_connect/chat_controls.dart';
 import 'computer_connect/composer_sources.dart';
+import 'computer_connect/file_screen.dart';
+import 'computer_connect/reconnect_notice_delay.dart';
 import 'device_chat_attachment_uploader.dart';
 
 /// Shown on the attach control while the computer is unreachable.
@@ -61,7 +65,16 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
     with WidgetsBindingObserver {
   late final _composer = TextEditingController(text: widget.model.draft);
   late final _composerSources = DeviceComposerSources(widget.model);
-  late final _changes = Listenable.merge([widget.model, _composerSources]);
+  late final _reconnectNotice = DeviceReconnectNoticeDelay(
+    widget.model.connection,
+    WidgetsBinding.instance.lifecycleState == null ||
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
+  );
+  late final _changes = Listenable.merge([
+    widget.model,
+    _composerSources,
+    _reconnectNotice,
+  ]);
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   late final _locationTarget = widget.model.state?.ref;
   final _expanded = <String>{};
@@ -157,11 +170,14 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
     _syncVisibility();
   }
 
-  void _syncVisibility() => widget.model.setTranscriptVisible(
-    _routeVisible &&
-        !_drawerOpen &&
-        (_lifecycle == null || _lifecycle == AppLifecycleState.resumed),
-  );
+  void _syncVisibility() {
+    final foreground =
+        _lifecycle == null || _lifecycle == AppLifecycleState.resumed;
+    _reconnectNotice.setForeground(foreground);
+    widget.model.setTranscriptVisible(
+      _routeVisible && !_drawerOpen && foreground,
+    );
+  }
 
   void _draftChanged() => widget.model.setDraft(_composer.text);
   @override
@@ -174,6 +190,7 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
     _attachments = null;
     _composer.removeListener(_draftChanged);
     _composerSources.dispose();
+    _reconnectNotice.dispose();
     _composer.dispose();
     super.dispose();
   }
@@ -207,7 +224,9 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
           },
           needsAnswer: {
             for (final tab in model.tabs)
-              if (model.state!.scope.needsInput(tab.id)) tab.id,
+              if (model.state!.scope.needsInput(tab.id) ||
+                  model.pendingQuestionsFor(tab.id).isNotEmpty)
+                tab.id,
           },
         ),
         onSelect: (id) {
@@ -220,8 +239,44 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
             ? () => unawaited(model.newTab())
             : null,
         onClose: model.online ? (id) => unawaited(model.closeTab(id)) : null,
+        files: model.fileTabs,
+        onOpenFile: (id) {
+          final tab = model.fileTabs.where((t) => t.id == id).firstOrNull;
+          if (tab != null) unawaited(_openFile(tab));
+        },
       ),
     );
+  }
+
+  /// Finds the file's worktree root first, so the viewer can resolve the
+  /// files it links to.
+  Future<void> _openFile(DeviceFileTab tab) async {
+    final model = widget.model;
+    final messenger = ScaffoldMessenger.of(context);
+    void tell(String message) => messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+    if (!model.online) {
+      tell('Reconnect to your computer to open this file.');
+      return;
+    }
+    try {
+      final location = await model.files.locate(tab);
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => DeviceFileScreen(
+            model: model,
+            reader: model.files.reader(tab),
+            location: location,
+          ),
+        ),
+      );
+    } on DeviceFileReadException {
+      tell("This file is outside the worktree, so it can't open here.");
+    } on DeviceLinkException {
+      tell("Couldn't open this file. Try again.");
+    }
   }
 
   @override
@@ -247,14 +302,17 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
             )
           : null;
       _syncDraft();
-      final questions = state?.scope.pendingQuestions(state.ref.id) ?? [];
+      final questions = state == null
+          ? const []
+          : model.pendingQuestionsFor(state.ref.id);
       // Like Remote Control, only a chat with nothing to show yet presents
       // loading; refreshes behind an existing transcript stay silent.
       final transcriptLoading =
           model.chats.loading &&
           (state == null || (state.messages.isEmpty && questions.isEmpty));
       final notices = <Widget>[
-        if (!model.online)
+        if (!model.online &&
+            (!model.connection.reconnecting || _reconnectNotice.visible))
           _notice(
             model.connection.reconnecting
                 ? 'Reconnecting… Your draft is kept.'

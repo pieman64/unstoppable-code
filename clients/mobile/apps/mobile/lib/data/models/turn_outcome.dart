@@ -1,5 +1,5 @@
 /// Pure helpers for deciding whether a chat turn ended cleanly. Shared by the
-/// Remote Control client engine and the cloud chat view model; like the rest
+/// computer chat clients; like the rest
 /// of the shared chat stack it imports no feature or data-access code (see
 /// `test/architecture/chat_boundary_test.dart`), and it stays Flutter-free
 /// because the engine's import closure must (see

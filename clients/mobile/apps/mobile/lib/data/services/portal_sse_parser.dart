@@ -1,6 +1,5 @@
 /// Server-sent event framing for the Portal event channel: the stateless
-/// [parsePortalSseFrames] (a port of the web client's parser, still used by
-/// the cloud chat stream) and the incremental [PortalSseParser] each Portal
+/// [parsePortalSseFrames] and the incremental [PortalSseParser] each Portal
 /// SSE connection feeds its decoded chunks into.
 library;
 

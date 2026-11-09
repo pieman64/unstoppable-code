@@ -1,17 +1,31 @@
 import 'dart:async';
+import 'package:mobile/data/services/computer_chat_selection_store.dart';
+import 'package:mobile/data/models/start_screen.dart';
+import 'package:mobile/ui/core/start_screen_controller.dart';
+import 'package:mobile/ui/core/navigation/home_chat_destination.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/home.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:mobile/config/app_config.dart';
 import 'package:mobile/device_link/desktop/hub.dart';
 import 'package:mobile/ui/core/chat/chat_draft_store_provider.dart';
 import 'package:mobile/ui/core/navigation/home_extra_destination.dart';
 import 'package:mobile/ui/features/device_link/computer_connect/account.dart';
 import 'package:mobile/ui/features/device_link/computer_connect/engine.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/provider_usage_source.dart';
+import 'package:mobile/ui/core/provider_usage_source.dart';
+import 'package:mobile/ui/core/widgets/computer_picker_builder.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/details_picker.dart';
 import 'package:mobile/ui/features/device_link/computer_connect/screen.dart';
-import 'computer_connect_keys.dart';
+import 'package:mobile/ui/core/navigation/home_orchestrator_destination.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/orchestrator/screen.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/recent_chats.dart';
+import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
+import 'computer_connect_access.dart';
 import 'device_link_device_name.dart';
 import 'device_link_secure_store.dart';
 
-/// Account-scoped composition, offered against staging in every build mode.
+/// Account-scoped composition for the Computer Connect home and overview.
 /// The installation identity keeps old desktop pairings; credentials
 /// and remembered computers are account/server scoped.
 class ComputerConnectScope extends StatefulWidget {
@@ -34,30 +48,37 @@ class _ComputerConnectScopeState extends State<ComputerConnectScope>
     with WidgetsBindingObserver {
   ComputerConnectEngine? _engine;
   ComputerConnectAccount? _account;
+  ComputerRecentChats? _recentChats;
+  final _usage = ComputerProviderUsageSource();
   bool get _enabled =>
-      AppConfig.usesStagingServer &&
-      widget.enabled &&
-      widget.accountId != null &&
-      widget.sessionToken != null;
+      widget.enabled && widget.accountId != null && widget.sessionToken != null;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (!_enabled || _engine != null) return;
+    final draftStore = context.watch<ChatDraftStoreHolder?>()?.store;
+    if (!_enabled) return;
+    if (_engine case final engine?) {
+      if (draftStore != null) engine.bindDraftStore(draftStore);
+      return;
+    }
     final origin = AppConfig.apiBaseUrl;
     final engine = ComputerConnectEngine(
       DesktopLinkHub(
         store: DeviceLinkSecureStore.desktop(),
         deviceName: deviceLinkDeviceName,
       ),
-      drafts: maybeChatDraftStore(context),
+      drafts: draftStore,
     );
-    final keys = ComputerConnectKeys(
+    // Read per request: the scope is keyed by account, so a rebuilt widget
+    // only ever carries this account's refreshed session.
+    final access = ComputerConnectAccess(
       origin: origin,
-      sessionToken: widget.sessionToken!,
-      twoFactorProof: widget.twoFactorProof,
+      sessionToken: () => widget.sessionToken,
+      twoFactorProof: () => widget.twoFactorProof,
     );
     _engine = engine;
+    _usage.bind(engine);
     _account = ComputerConnectAccount(
       engine: engine,
       store: DeviceLinkSecureStore.connection(
@@ -66,8 +87,10 @@ class _ComputerConnectScopeState extends State<ComputerConnectScope>
       ),
       accountId: widget.accountId!,
       origin: origin,
-      createCredential: keys.create,
+      fetchToken: access.token,
+      revokeLegacyKey: access.revokeLegacyKey,
     );
+    _recentChats = ComputerRecentChats(_account!);
     WidgetsBinding.instance.addObserver(this);
     unawaited(_account!.restore());
   }
@@ -87,31 +110,74 @@ class _ComputerConnectScopeState extends State<ComputerConnectScope>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _account?.dispose();
+    _usage.dispose();
     _engine?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    return ListenableProvider<ProviderUsageSource>.value(
+      value: _usage,
+      child: _buildDestinations(context),
+    );
+  }
+
+  Widget _buildDestinations(BuildContext context) {
     final engine = _engine;
     final account = _account;
-    if (!_enabled || engine == null || account == null) return widget.child;
-    return ListenableBuilder(
-      listenable: account,
-      child: widget.child,
-      builder: (context, child) => HomeExtraDestination(
-        label: 'Computer connect',
-        subtitle: account.selectedName ?? 'Connect a computer',
-        pageBuilder: (_) => ListenableBuilder(
-          listenable: account,
-          builder: (_, _) => ComputerConnectScreen(
-            key: ObjectKey(engine.selected),
-            controller: engine.selected,
-            apiOrigin: AppConfig.apiBaseUrl,
+    final recentChats = _recentChats;
+    if (!_enabled || engine == null || account == null || recentChats == null) {
+      return widget.child;
+    }
+    return MultiProvider(
+      providers: [
+        Provider<ComputerPickerBuilder>.value(
+          value: (title) =>
+              ComputerDetailsPicker(account: account, title: title),
+        ),
+        ListenableProvider<HomeRecentChatsSource>.value(value: recentChats),
+      ],
+      child: ListenableBuilder(
+        listenable: account,
+        child: widget.child,
+        builder: (context, child) => HomeChatDestination(
+          builder: (_) => ComputerChatHome(
             account: account,
+            selectionStore: (computerId, workspaceContext) =>
+                ComputerChatSelectionStore(
+                  accountId: widget.accountId!,
+                  origin: AppConfig.apiBaseUrl,
+                  computerId: computerId,
+                  contextId: workspaceContext.organizationId == null
+                      ? 'personal'
+                      : 'organization:${workspaceContext.organizationId}',
+                ),
+          ),
+          child: HomeOrchestratorDestination(
+            builder: (_, isActive) => ComputerOrchestratorScreen(
+              account: account,
+              isActive: isActive,
+            ),
+            child: HomeExtraDestination(
+              takeInitialSelection: () =>
+                  context.read<StartScreenController?>()?.takeInitialScreen() ==
+                  StartScreen.projects,
+              label: 'Computer connect',
+              subtitle: account.selectedName ?? 'Connect a computer',
+              pageBuilder: (_) => ListenableBuilder(
+                listenable: account,
+                builder: (_, _) => ComputerConnectScreen(
+                  key: ObjectKey(engine.selected),
+                  controller: engine.selected,
+                  apiOrigin: AppConfig.apiBaseUrl,
+                  account: account,
+                ),
+              ),
+              child: child!,
+            ),
           ),
         ),
-        child: child!,
       ),
     );
   }

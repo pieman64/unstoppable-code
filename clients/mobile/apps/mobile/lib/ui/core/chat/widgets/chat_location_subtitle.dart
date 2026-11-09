@@ -3,8 +3,8 @@ import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 
-/// A chat header's subtitle led by where the chat runs (CAN-2932): the cloud
-/// or computer icon the drawer's Recents rows use, announced as [location].
+/// A chat header's subtitle led by the computer icon used in Recents,
+/// announced as [location].
 class ChatLocationSubtitle extends StatelessWidget {
   const ChatLocationSubtitle({
     super.key,
@@ -16,7 +16,7 @@ class ChatLocationSubtitle extends StatelessWidget {
 
   final CanopyGlyph glyph;
 
-  /// The icon's accessible label, such as "Cloud chat".
+  /// The icon's accessible label, such as "Computer chat".
   final String location;
 
   final String? text;

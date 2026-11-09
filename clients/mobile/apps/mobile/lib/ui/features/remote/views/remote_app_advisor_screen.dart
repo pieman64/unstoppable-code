@@ -5,7 +5,7 @@ import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/data/models/remote_connection.dart';
 import 'package:mobile/data/repositories/remote_app_advisor_commands.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';

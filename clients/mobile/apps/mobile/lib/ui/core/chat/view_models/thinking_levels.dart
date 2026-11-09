@@ -2,8 +2,7 @@
 ///
 /// A Dart port of the shared model-catalog helpers in
 /// `packages/protocol/src/models/index.ts` and
-/// `packages/protocol/src/thinking/index.ts`. Remote Control, cloud chats and
-/// cloud drafts resolve their levels here, so the level a composer shows is
+/// `packages/protocol/src/thinking/index.ts`. Remote Control and Computer Connect resolve their levels here, so the level a composer shows is
 /// the level it sends.
 library;
 

@@ -11,7 +11,12 @@ final class DeviceCreatedWorktree {
 /// One UI attempt owns its receipt. Existing create IPC is not idempotent:
 /// a missing reply must never cause a second create.
 final class DeviceWorktreeCreateAttempt {
-  DeviceWorktreeCreateAttempt(this.projectId, {this.onChanged});
+  DeviceWorktreeCreateAttempt(
+    this.projectId, {
+    this.onChanged,
+    this.baseBranch,
+  });
+  final String? baseBranch;
   final void Function()? onChanged;
   final String projectId;
   String? worktreeId, name;
@@ -142,6 +147,7 @@ final class DeviceWorktreeCreator {
           'projectId': attempt.projectId,
         if (!multi) 'repoPath': deviceLinkString(project, 'repoPath'),
         'existingWorktreeIds': ids,
+        if (attempt.baseBranch != null) 'baseBranch': attempt.baseBranch,
       };
       attempt.mutationSent = true;
       Map<String, dynamic> result;

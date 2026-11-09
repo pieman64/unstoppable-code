@@ -300,7 +300,7 @@ final class RemoteSessionController {
   /// Records that this session cannot pair a desktop, such as a guest's
   /// (CAN-2872). The Portal refuses it, so a restore probe could only come
   /// back inconclusive and retry for good, leaving everything that waits on
-  /// [hasProbedSession] (the first cloud project, a remembered computer
+  /// [hasProbedSession] (a remembered computer
   /// destination) waiting with it. The pairing counts as answered with no
   /// desktop, an in-flight probe is dropped, and restore stops probing.
   ///

@@ -9,7 +9,9 @@ import 'message_codec.dart';
 import 'relay.dart';
 import 'relay_channel.dart';
 import 'ipc.dart';
+import 'request_queue.dart';
 import 'version.dart';
+import 'orchestrator_window.dart';
 
 /// Initiator-only desktop session and RPC. No new host methods or adapter.
 final class DesktopSession {
@@ -17,6 +19,7 @@ final class DesktopSession {
     this._relay,
     this._identity,
     DesktopRelayPeer peer, {
+    this.controllerKind,
     this.createPeriodicTimer = Timer.periodic,
   }) : peerId = peer.id,
        peerPublicKey = peer.publicKey,
@@ -42,15 +45,20 @@ final class DesktopSession {
   final String peerId;
   final String peerPublicKey;
   final String peerName;
+
+  /// Display metadata only. The host must authorize the relay-bound kind.
+  final String? controllerKind;
   final _events = StreamController<Map<String, dynamic>>.broadcast();
   StreamSubscription<void>? _subscription;
   StreamSubscription<void>? _relaySubscription;
   DesktopMessageAssembler _assembler = DesktopMessageAssembler();
   final _requests = <int, Completer<Object?>>{};
+  final _requestQueue = DesktopRequestQueue();
   DeviceLinkHandshake? _handshake;
   Completer<DeviceLinkKeys>? _handshakeResult;
   DeviceLinkSecureChannel? _channel;
   Future<void> _writes = Future.value();
+  final orchestratorWindow = DesktopOrchestratorWindow();
   int _nextId = 1;
   bool _ended = false;
   int? _protocolVersion;
@@ -179,15 +187,20 @@ final class DesktopSession {
           }
           if (message['name'] != 'rpc.keepalive') _events.add(message);
         } else if (message['kind'] == 'request') {
+          final value = orchestratorWindow.handle(
+            message['method'] is String ? message['method'] as String : '',
+            message['params'],
+          );
           await _send({
             'kind': 'response',
             'id': message['id'],
-            'ok': false,
-            'error': {
-              'message':
-                  'This mobile prototype does not serve desktop UI requests.',
-              'code': 'remote_unknown_method',
-            },
+            'ok': value != null,
+            'value': ?value,
+            if (value == null)
+              'error': {
+                'message': 'This request is unavailable on mobile.',
+                'code': 'remote_unknown_method',
+              },
           });
         } else if (message['kind'] == 'close') {
           _end('The computer closed the session.');
@@ -222,10 +235,13 @@ final class DesktopSession {
     String method,
     Map<String, dynamic> params, {
     Duration timeout = const Duration(seconds: 15),
-  }) async {
-    if (_requests.length >= 8) {
-      throw const DesktopIpcNotSent('Too many requests are waiting.');
-    }
+  }) => _requestQueue.run(() => _request(method, params, timeout));
+
+  Future<Object?> _request(
+    String method,
+    Map<String, dynamic> params,
+    Duration timeout,
+  ) async {
     final id = _nextId++;
     final result = Completer<Object?>();
     _requests[id] = result;
@@ -257,6 +273,16 @@ final class DesktopSession {
     }
   }
 
+  Future<void> setOrchestratorVisible(bool visible) async {
+    orchestratorWindow.visible = visible;
+    if (_ended || _protocolVersion == null) return;
+    await _send({
+      'kind': 'event',
+      'name': 'appAdvisor.windowState',
+      'payload': orchestratorWindow.state,
+    });
+  }
+
   Future<void> pair(String name, void Function(String code) onCode) async {
     final keys = await _establish('pair');
     onCode(keys.code);
@@ -264,6 +290,7 @@ final class DesktopSession {
       await request('pair.request', {
         'name': name,
         'platform': 'darwin',
+        'kind': ?controllerKind,
       }, timeout: const Duration(seconds: 125)),
     );
     if (result['approved'] != true) {
@@ -330,6 +357,9 @@ final class DesktopSession {
     _protocolVersion = null;
     _keepalive?.cancel();
     const error = DeviceLinkException('The connection to the computer ended.');
+    _requestQueue.close(
+      const DesktopIpcNotSent('The connection to the computer ended.'),
+    );
     final handshake = _handshakeResult;
     _handshakeResult = null;
     if (handshake != null && !handshake.isCompleted) {

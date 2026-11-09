@@ -9,7 +9,7 @@ import 'package:mobile/ui/core/typography.dart';
 /// whose text field only appears once it is picked, and Submit/Dismiss below.
 ///
 /// Transport-neutral: the host decides what an answer means (Remote Control
-/// sends `portal.chat.answer_question`; cloud sends a user turn).
+/// sends `portal.chat.answer_question`).
 class PendingQuestionCard extends StatefulWidget {
   const PendingQuestionCard({
     super.key,

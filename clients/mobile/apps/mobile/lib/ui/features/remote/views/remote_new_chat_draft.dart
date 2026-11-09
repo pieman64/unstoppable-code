@@ -510,7 +510,7 @@ class _RemoteNewChatDraftState extends State<RemoteNewChatDraft>
                           tint: colors.foregroundSecondary,
                         ),
                         // Open while this computer's projects load: the
-                        // list also holds Cloud's.
+                        // list may span computers.
                         enabled: true,
                         select: _selectWorkspace,
                       ),

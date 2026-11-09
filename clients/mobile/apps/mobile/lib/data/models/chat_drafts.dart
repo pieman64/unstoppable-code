@@ -1,5 +1,4 @@
-/// Durable composer drafts and unsent-message records shared by cloud and
-/// Remote Control chats (CAN-3556).
+/// Durable composer drafts and unsent-message records for computer chats (CAN-3556).
 ///
 /// Pure Dart on purpose: the Remote Control engine imports this file, and its
 /// import closure may only reach `dart:*`, `http`, and `crypto`
@@ -26,25 +25,6 @@ sealed class DraftTarget {
 
   @override
   String toString() => 'DraftTarget($key)';
-}
-
-final class CloudChatDraftTarget extends DraftTarget {
-  const CloudChatDraftTarget(this.chatId);
-
-  final String chatId;
-
-  @override
-  String get key => 'cloud:chat:$chatId';
-}
-
-/// The cloud new-chat composer for one project.
-final class CloudNewChatDraftTarget extends DraftTarget {
-  const CloudNewChatDraftTarget(this.workspaceId);
-
-  final String workspaceId;
-
-  @override
-  String get key => 'cloud:new:$workspaceId';
 }
 
 /// A Remote Control worktree chat. A null [chatId] is the worktree's composer
@@ -97,6 +77,19 @@ final class ComputerChatDraftTarget extends DraftTarget {
   String get key => 'computer:chat:$computerId/$projectId/$worktreeId/$chatId';
 }
 
+/// A computer's Home composer in one navigation context. The account and
+/// environment already scope the containing store.
+final class ComputerHomeDraftTarget extends DraftTarget {
+  const ComputerHomeDraftTarget({
+    required this.computerId,
+    required this.contextId,
+  });
+  final String computerId, contextId;
+  @override
+  String get key =>
+      'computer:home:${Uri.encodeComponent(computerId)}/${Uri.encodeComponent(contextId)}';
+}
+
 enum UnsentStatus {
   sending('sending'),
   notSent('notSent'),
@@ -115,7 +108,7 @@ enum UnsentStatus {
 }
 
 /// One message the user tried to send that is not yet confirmed by its host.
-/// [surface] (`rc` or `cloud`) owns [extra]; nothing else reads it.
+/// [surface]  owns [extra]; nothing else reads it.
 final class UnsentRecord {
   const UnsentRecord({
     required this.id,
@@ -213,16 +206,6 @@ abstract interface class ChatDraftPort {
   /// Re-keys the draft at [from] to [to]. Does nothing when [from] is empty.
   void moveDraft(DraftTarget from, DraftTarget to);
 
-  /// The capability selection a cloud new-chat draft chose for [target], or
-  /// null for the project defaults.
-  Map<String, Object?>? draftSelectionsFor(DraftTarget target);
-
-  /// Saves [selections] with [target]'s draft. They are discarded when the
-  /// draft is sent or pruned, and when the text they were chosen with is
-  /// cleared. A selection chosen while the draft has no text outlives
-  /// cleared text, such as a `/plugins` token the composer consumes.
-  void setDraftSelections(DraftTarget target, Map<String, Object?> selections);
-
   /// Attempts to write pending changes. Returns false when persistence fails;
   /// the changes remain available for a later retry.
   Future<bool> flush();
@@ -250,29 +233,13 @@ final class ChatDraftState {
   final Map<String, ChatDraftEntry> drafts = {};
   final Map<String, UnsentRecord> unsent = {};
 
-  /// Capability selections by draft key; see
-  /// [ChatDraftPort.setDraftSelections].
-  final Map<String, Map<String, Object?>> draftSelections = {};
-
-  /// Keys of [draftSelections] chosen while the draft had no text. Kept in
-  /// memory only.
-  final Set<String> selectionsBeforeText = {};
-
-  /// Drops entries older than [chatDraftMaxAge], then keeps the newest
-  /// [chatDraftMaxDrafts] drafts and [chatDraftMaxUnsent] records. The
-  /// selections of dropped drafts go with them; a selection chosen before
-  /// its draft has text stays in memory (see [toJson]).
+  /// Drops expired entries, then keeps the newest drafts and unsent records.
   void prune(DateTime now) {
-    final before = drafts.keys.toSet();
     final cutoff = now.subtract(chatDraftMaxAge);
     drafts.removeWhere((_, entry) => entry.updatedAt.isBefore(cutoff));
     unsent.removeWhere((_, record) => record.createdAt.isBefore(cutoff));
     _keepNewest(drafts, chatDraftMaxDrafts, (entry) => entry.updatedAt);
     _keepNewest(unsent, chatDraftMaxUnsent, (record) => record.createdAt);
-    draftSelections.removeWhere(
-      (key, _) => before.contains(key) && !drafts.containsKey(key),
-    );
-    selectionsBeforeText.retainWhere(draftSelections.containsKey);
   }
 
   static void _keepNewest<V>(
@@ -300,13 +267,6 @@ final class ChatDraftState {
     'unsent': {
       for (final MapEntry(:key, :value) in unsent.entries) key: value.toJson(),
     },
-    // Only drafts with text are kept across launches, so a selection is
-    // written with its draft and never alone.
-    if (draftSelections.keys.any(drafts.containsKey))
-      'draftSelections': {
-        for (final MapEntry(:key, :value) in draftSelections.entries)
-          if (drafts.containsKey(key)) key: value,
-      },
   };
 
   /// Null for an unknown version or a non-map; bad rows are skipped.
@@ -332,18 +292,6 @@ final class ChatDraftState {
       for (final entry in unsent.values) {
         final record = UnsentRecord.fromJson(entry);
         if (record != null) state.unsent[record.id] = record;
-      }
-    }
-    // Absent from files written before drafts kept a selection.
-    final selections = value['draftSelections'];
-    if (selections is Map) {
-      for (final MapEntry(:key, :value) in selections.entries) {
-        if (key is! String || value is! Map) continue;
-        if (!state.drafts.containsKey(key)) continue;
-        state.draftSelections[key] = {
-          for (final MapEntry(:key, :value) in value.entries)
-            if (key is String) key: value,
-        };
       }
     }
     return state;
@@ -373,9 +321,6 @@ base class ChatDraftStateStore implements ChatDraftStore {
     if (current == text) return;
     if (text.isEmpty) {
       state.drafts.remove(target.key);
-      if (!state.selectionsBeforeText.contains(target.key)) {
-        state.draftSelections.remove(target.key);
-      }
     } else {
       state.drafts[target.key] = (text: text, updatedAt: now());
     }
@@ -388,29 +333,6 @@ base class ChatDraftStateStore implements ChatDraftStore {
     final entry = state.drafts.remove(from.key);
     if (entry == null) return;
     state.drafts[to.key] = (text: entry.text, updatedAt: now());
-    if (state.draftSelections.remove(from.key) case final selections?) {
-      state.draftSelections[to.key] = selections;
-      if (state.selectionsBeforeText.remove(from.key)) {
-        state.selectionsBeforeText.add(to.key);
-      } else {
-        state.selectionsBeforeText.remove(to.key);
-      }
-    }
-    onDraftsChanged();
-  }
-
-  @override
-  Map<String, Object?>? draftSelectionsFor(DraftTarget target) =>
-      state.draftSelections[target.key];
-
-  @override
-  void setDraftSelections(DraftTarget target, Map<String, Object?> selections) {
-    state.draftSelections[target.key] = selections;
-    if (draftFor(target).isEmpty) {
-      state.selectionsBeforeText.add(target.key);
-    } else {
-      state.selectionsBeforeText.remove(target.key);
-    }
     onDraftsChanged();
   }
 
@@ -427,8 +349,6 @@ base class ChatDraftStateStore implements ChatDraftStore {
     state.unsent[record.id] = record;
     if (clearDraft != null) {
       state.drafts.remove(clearDraft.key);
-      state.draftSelections.remove(clearDraft.key);
-      state.selectionsBeforeText.remove(clearDraft.key);
     }
     onUnsentChanged();
   }
@@ -440,27 +360,6 @@ base class ChatDraftStateStore implements ChatDraftStore {
 
   @override
   Future<bool> flush() async => true;
-
-  /// Copies cloud drafts and recovery records, keeping this account's entries.
-  /// The source stays intact until a durable destination confirms its write.
-  Future<void> adoptGuestDrafts(ChatDraftStateStore guest) async {
-    for (final MapEntry(:key, :value) in guest.state.drafts.entries) {
-      if (!key.startsWith(_cloudDraftKeyPrefix)) continue;
-      if (state.drafts.containsKey(key)) continue;
-      state.drafts[key] = value;
-      if (guest.state.draftSelections[key] case final selections?) {
-        state.draftSelections[key] = selections;
-      }
-    }
-    for (final MapEntry(:key, :value) in guest.state.unsent.entries) {
-      if (value.surface == 'cloud') state.unsent.putIfAbsent(key, () => value);
-    }
-    onDraftsChanged();
-    onUnsentChanged();
-  }
-
-  /// [CloudChatDraftTarget] and [CloudNewChatDraftTarget] keys.
-  static const _cloudDraftKeyPrefix = 'cloud:';
 }
 
 /// Session-only store: tests, and the fallback when the file cannot open.

@@ -1,11 +1,11 @@
 /// Provider-neutral chat transcript models shared by every mobile chat
-/// surface (Remote Control today, cloud chats next).
+/// computer chat surface.
 ///
 /// These mirror the Portal chat wire contract in
 /// `packages/protocol/src/portal/index.ts` (`PortalChatPart`,
 /// `PortalAskUserQuestion*`, `ModelCatalogOption`), but carry nothing that is
 /// specific to one transport. Remote Control adds its own fields by
-/// subclassing (`RemoteChatMessage`); cloud chats map their frames onto these
+/// subclassing (`RemoteChatMessage`); Computer Connect maps desktop rows onto these
 /// types directly. Parsing is null-tolerant: unknown kinds degrade, never drop.
 ///
 /// This file must stay free of feature and data-access imports — see

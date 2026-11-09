@@ -93,6 +93,11 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Crashlytics starts off; main.dart applies the member's Crash
+             reports choice before any previous-session report uploads. -->
+        <meta-data
+            android:name="firebase_crashlytics_collection_enabled"
+            android:value="false" />
         <!-- Default notification channel used by firebase_messaging when a
              push payload doesn't specify one. See res/values/strings.xml. -->
         <meta-data

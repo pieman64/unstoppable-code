@@ -8,24 +8,40 @@ import '../protocol.dart';
 import 'package:mobile/data/models/composer_work.dart';
 import 'projection.dart';
 
+/// Reads fail transiently while chat hydration fills the session's request
+/// slots or the computer is slow to answer. Retry quietly before reporting.
+const _retryDelays = [
+  Duration(seconds: 1),
+  Duration(seconds: 2),
+  Duration(seconds: 4),
+];
+const _failedMessage =
+    "Couldn't load some background work. The rest is listed.";
+const _unavailableMessage = 'Update your computer to show all background work.';
+
 /// One mounted chat on one peer. Events invalidate reads; generations prevent
 /// disconnected or superseded responses from replacing a newer observation.
 final class DeviceWorkDrawerRepository {
-  DeviceWorkDrawerRepository(this.ipc, this.pipelines) {
+  DeviceWorkDrawerRepository(
+    this.ipc,
+    this.pipelines, {
+    this.createTimer = Timer.new,
+  }) {
     _events = ipc.events.listen(_event);
     _pipelineEvents = pipelines.updates.listen((_) => _notify());
   }
   final DesktopIpc ipc;
   final DevicePipelineRepository pipelines;
+  final Timer Function(Duration, void Function()) createTimer;
   final _updates = StreamController<void>.broadcast();
   Stream<void> get updates => _updates.stream;
   late final StreamSubscription<Map<String, dynamic>> _events;
   late final StreamSubscription<void> _pipelineEvents;
   void Function()? _releasePipelines;
   DeviceChatState? _chat;
-  bool _online = false, _ready = false, _disposed = false, _loading = false;
-  bool _loaded = false;
-  int _generation = 0;
+  bool _online = false, _ready = false, _disposed = false;
+  int _generation = 0, _attempt = 0;
+  Timer? _retry;
   Future<void>? _read;
   bool _dirty = false;
   List<Map<String, dynamic>> _tasks = [], _watchers = [], _delegations = [];
@@ -49,9 +65,8 @@ final class DeviceWorkDrawerRepository {
       _generation++;
       _read = null;
       _dirty = false;
-      _loaded = false;
       _busy.clear();
-      _loading = online && !ready;
+      _cancelRetry();
     }
     if (changed) {
       _tasks = [];
@@ -112,8 +127,13 @@ final class DeviceWorkDrawerRepository {
         if (!_online && projected.isNotEmpty)
           'Reconnect to update background work.',
       ],
-      loading: _loading && !_loaded,
     );
+  }
+
+  void _cancelRetry() {
+    _retry?.cancel();
+    _retry = null;
+    _attempt = 0;
   }
 
   void _notify() {
@@ -123,6 +143,7 @@ final class DeviceWorkDrawerRepository {
   Future<void> retry() {
     if (_disposed || !_online || !_ready) return Future.value();
     _actionErrors.clear();
+    _cancelRetry();
     return refresh();
   }
 
@@ -131,13 +152,14 @@ final class DeviceWorkDrawerRepository {
       return Future.value();
     }
     if (_read case final pending?) return pending;
+    // A fresh read supersedes a scheduled retry; its own failure reschedules.
+    _retry?.cancel();
+    _retry = null;
     final generation = _generation, chat = _chat!;
-    _loading = true;
-    _notify();
-    final errors = <String>[];
+    var failed = false, unavailable = false;
+    Duration? retryAfter;
     Future<Object?> read(
-      String channel,
-      String label, [
+      String channel, [
       List<Object?> args = const [],
     ]) async {
       if (_disposed || generation != _generation || !_online || !_ready) {
@@ -155,12 +177,12 @@ final class DeviceWorkDrawerRepository {
         if (!valid) throw const FormatException('Invalid work observation');
         return value;
       } catch (error) {
-        errors.add(
-          error is DesktopIpcRefusal &&
-                  error.code == 'remote_channel_unavailable'
-              ? 'Update your computer to show $label.'
-              : 'Could not load $label. Try again.',
-        );
+        if (error is DesktopIpcRefusal &&
+            error.code == 'remote_channel_unavailable') {
+          unavailable = true;
+        } else {
+          failed = true;
+        }
         return null;
       }
     }
@@ -169,18 +191,14 @@ final class DeviceWorkDrawerRepository {
     // Keep one drawer read in flight so chat hydration, streaming controls and
     // model discovery retain capacity on the same connection.
     Future<List<Object?>> readSnapshot() async => [
-      await read('activity:list-live-bg-tasks', 'background tasks', [
-        chat.ref.scope,
-      ]),
-      await read('app-advisor:watchers-list', 'watchers', [
+      await read('activity:list-live-bg-tasks', [chat.ref.scope]),
+      await read('app-advisor:watchers-list', [
         {'destination': chat.ref.target},
       ]),
-      await read('app-advisor:watchers-completed-list', 'completed watchers'),
-      await read('managed-delegation:activity-list', 'delegates'),
-      await read('managed-delegation:tree', 'agent details', [chat.ref.target]),
-      await read('chat:queue-get-snapshot', 'queued messages', [
-        chat.ref.scope,
-      ]),
+      await read('app-advisor:watchers-completed-list'),
+      await read('managed-delegation:activity-list'),
+      await read('managed-delegation:tree', [chat.ref.target]),
+      await read('chat:queue-get-snapshot', [chat.ref.scope]),
     ];
     late final Future<void> pending;
     pending = readSnapshot()
@@ -220,8 +238,17 @@ final class DeviceWorkDrawerRepository {
                   .firstOrNull?['queue'],
             );
           }
-          _errors = errors;
-          _loaded = true;
+          // Unavailable channels need a desktop update, so retrying can't
+          // help. Other failures report once their retries run out, and a
+          // failure already shown stays until a read settles it.
+          final retrying = failed && _attempt < _retryDelays.length;
+          final shown = _errors.contains(_failedMessage);
+          if (retrying) retryAfter = _retryDelays[_attempt++];
+          if (!failed) _attempt = 0;
+          _errors = [
+            if (failed && (!retrying || shown)) _failedMessage,
+            if (unavailable) _unavailableMessage,
+          ];
           // The drawer combines pipeline errors with its own observations.
           // Retry a failed pipeline read too, after releasing the drawer RPC.
           if (pipelines.error(chat.ref) != null) {
@@ -230,12 +257,16 @@ final class DeviceWorkDrawerRepository {
         })
         .whenComplete(() {
           if (_disposed || generation != _generation) return;
-          _loading = false;
           if (identical(_read, pending)) _read = null;
           _notify();
           if (_dirty) {
             _dirty = false;
             unawaited(refresh());
+          } else if (retryAfter case final delay?) {
+            _retry = createTimer(delay, () {
+              _retry = null;
+              if (!_disposed && generation == _generation) unawaited(refresh());
+            });
           }
         });
     _read = pending;
@@ -375,6 +406,7 @@ final class DeviceWorkDrawerRepository {
   Future<void> dispose() async {
     _disposed = true;
     _generation++;
+    _cancelRetry();
     _releasePipelines?.call();
     await _events.cancel();
     await _pipelineEvents.cancel();

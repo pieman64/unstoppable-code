@@ -93,7 +93,6 @@ class RemoteChatScreen extends StatefulWidget {
     this.speechRecognizer,
     this.attachmentPicker,
     this.isActive = true,
-    this.onSelectedChatChanged,
   }) : standaloneChat = null,
        workspace = null,
        firstSend = null,
@@ -111,7 +110,6 @@ class RemoteChatScreen extends StatefulWidget {
   }) : worktree = null,
        workspace = null,
        initialChatId = null,
-       onSelectedChatChanged = null,
        firstSend = null,
        baseWorktreeId = null;
 
@@ -135,8 +133,7 @@ class RemoteChatScreen extends StatefulWidget {
     this.baseWorktreeId,
   }) : worktree = null,
        standaloneChat = null,
-       initialChatId = null,
-       onSelectedChatChanged = null;
+       initialChatId = null;
 
   final RemoteWorktree? worktree;
   final RemoteStandaloneChat? standaloneChat;
@@ -152,9 +149,6 @@ class RemoteChatScreen extends StatefulWidget {
   /// settable via [RemoteChatScreen.worktree] — [RemoteChatScreen.standalone]
   /// always binds to `standaloneChat.localId`.
   final String? initialChatId;
-
-  /// Reports the worktree chat currently shown by a hosted screen.
-  final ValueChanged<String?>? onSelectedChatChanged;
 
   /// Coordinates a draft's first send and retains its selections for retry.
   final RemoteDraftFirstSend? firstSend;
@@ -231,8 +225,6 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
   /// default so an agent turn reads as prompt → steps row → answer instead of
   /// a wall of tool/thinking bubbles.
   final Set<String> _expandedTurns = {};
-  String? _reportedChatId;
-  bool _hasReportedChatId = false;
   bool _sending = false;
 
   /// True while a send carrying attachments awaits its response; retained
@@ -523,16 +515,6 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
     _bindChatChanges(viewModel, target);
     _activity = _agentActivity.controllerFor(viewModel, _worktree);
     if (chatId != null) _activity?.bind(chatId);
-    if (widget.onSelectedChatChanged != null &&
-        (!_hasReportedChatId || _reportedChatId != chatId)) {
-      _hasReportedChatId = true;
-      _reportedChatId = chatId;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _reportedChatId == chatId) {
-          widget.onSelectedChatChanged?.call(chatId);
-        }
-      });
-    }
     final isCurrent = widget.isActive && (_observedRoute?.isCurrent ?? true);
     _reopener.show(
       // Restoration can connect without changing the pairing generation.

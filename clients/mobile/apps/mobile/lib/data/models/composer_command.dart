@@ -1,5 +1,5 @@
 /// One host-supplied composer suggestion: a Remote Control slash command or a
-/// Cloud invocable row. Transport-neutral, so the shared composer can rank
+/// Computer invocable row. Transport-neutral, so the shared composer can rank
 /// and insert it without knowing which host produced it.
 final class ComposerCommand {
   const ComposerCommand({

@@ -1,10 +1,12 @@
 import 'package:mobile/device_link/chats/attachments.dart';
 import 'package:mobile/device_link/chats/title.dart';
+import 'package:mobile/device_link/files/tabs.dart';
 import 'package:mobile/ui/core/chat/view_models/attachment_thumbnail_cache.dart';
 import 'package:mobile/ui/core/chat/view_models/chat_attachment_draft.dart';
 import 'package:mobile/data/models/chat_drafts.dart';
 import 'package:mobile/device_link/activity/repository.dart';
 import 'package:mobile/device_link/chats/read_receipts.dart';
+import 'package:mobile/device_link/chats/questions.dart';
 import 'dart:async';
 import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/device_link/chats/decisions.dart';
@@ -16,12 +18,22 @@ import 'package:mobile/device_link/chats/state.dart';
 import 'package:mobile/device_link/protocol.dart';
 import 'desktop_link_model.dart';
 import 'package:mobile/device_link/chats/settings.dart';
+import 'computer_connect/settings_controller.dart';
 
 final class DeviceChatsViewModel extends ChangeNotifier {
-  DeviceChatsViewModel({required this.connection, required this.chats}) {
+  DeviceChatsViewModel({
+    required this.connection,
+    required this.chats,
+    this.ownsConnection = true,
+    this.questionSource,
+  }) {
+    _questionSubscription = questionSource?.updates.listen((_) {
+      if (!_disposed) notifyListeners();
+    });
     _subscription = chats.updates.listen((_) {
       if (!_disposed) {
         _reconcileDraft();
+        composerSettings.sync();
         _syncSettings();
         if (state case final current?) {
           activity.updateChats(current.ref, current.scope.tabs);
@@ -45,14 +57,30 @@ final class DeviceChatsViewModel extends ChangeNotifier {
     enabled: _transcriptVisible && online && !_restoring && chats.ready,
   );
 
+  final bool ownsConnection;
+  final DeviceChatQuestions? questionSource;
+  StreamSubscription<void>? _questionSubscription;
+  List<AskUserQuestionState> pendingQuestionsFor(String id) => [
+    ...?state?.scope.pendingQuestions(id),
+    ...?questionSource?.pendingFor(id),
+  ];
   final DesktopLinkModel connection;
   final DeviceChatsRepository chats;
   late final activity = DeviceActivityRepository(chats.ipc);
   late final settings = DeviceChatSettings(chats.ipc);
+  late final composerSettings = DeviceComposerSettingsController(
+    current: () => state,
+    sessionGeneration: () => _connectionRevision,
+    refresh: chats.refresh,
+    onChanged: () {
+      if (!_disposed) notifyListeners();
+    },
+  );
   late final decisions = DeviceChatDecisions(chats.ipc);
   late final navigation = DeviceChatNavigation(chats.ipc);
   late final readReceipts = DeviceChatReadReceipts(navigation);
   late final attachments = DeviceChatAttachments(chats.ipc);
+  late final files = DeviceFileLocator(chats.ipc);
 
   /// Previews of images this phone sent, keyed by their computer paths.
   final attachmentThumbnails = AttachmentThumbnailCache();
@@ -70,10 +98,28 @@ final class DeviceChatsViewModel extends ChangeNotifier {
           ),
   ];
 
+  /// Files the computer has open in this worktree, such as agent reports.
+  List<DeviceFileTab> get fileTabs => [
+    if (state case final current?)
+      ...deviceFileTabs(current.ref, current.scope.tabs),
+  ];
+
   Future<void> answer(String id, List<AskUserQuestionAnswer> answers) =>
-      _decide(id, (ref) => decisions.answer(ref, id, answers));
-  Future<void> dismissQuestion(String id) =>
-      _decide(id, (ref) => decisions.dismiss(ref, id));
+      _decide(
+        id,
+        (ref) =>
+            questionSource?.pendingFor(ref.id).any((q) => q.requestId == id) ==
+                true
+            ? questionSource!.answer(ref.id, id, answers)
+            : decisions.answer(ref, id, answers),
+      );
+  Future<void> dismissQuestion(String id) => _decide(
+    id,
+    (ref) =>
+        questionSource?.pendingFor(ref.id).any((q) => q.requestId == id) == true
+        ? questionSource!.dismiss(ref.id, id)
+        : decisions.dismiss(ref, id),
+  );
   Future<void> _decide(
     String id,
     Future<void> Function(DeviceChatRef) action,
@@ -83,9 +129,7 @@ final class DeviceChatsViewModel extends ChangeNotifier {
         !chats.ready ||
         current == null ||
         _answering.contains(id) ||
-        !current.scope
-            .pendingQuestions(current.ref.id)
-            .any((q) => q.requestId == id)) {
+        !pendingQuestionsFor(current.ref.id).any((q) => q.requestId == id)) {
       return;
     }
     _answering.add(id);
@@ -118,6 +162,7 @@ final class DeviceChatsViewModel extends ChangeNotifier {
       return;
     }
     final selection = chats.selectionGeneration;
+    if (id == current.ref.id) composerSettings.invalidate();
     try {
       await navigation.archive(ref);
       if (_disposed ||
@@ -145,6 +190,7 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   Future<void> newTab() async {
     final ref = state?.ref;
     if (!online || ref == null || creating) return;
+    composerSettings.invalidate();
     creating = true;
     notifyListeners();
     try {
@@ -172,8 +218,9 @@ final class DeviceChatsViewModel extends ChangeNotifier {
     unawaited(loadSettings());
   }
 
-  bool settingsSaving = false;
-  String? settingsError;
+  bool get settingsSaving => composerSettings.saving;
+  String? _settingsError;
+  String? get settingsError => composerSettings.error ?? _settingsError;
   StreamSubscription<void>? _subscription;
   bool _connected = false, _disposed = false, _restoring = false;
   int _connectionRevision = 0;
@@ -226,14 +273,14 @@ final class DeviceChatsViewModel extends ChangeNotifier {
 
   DeviceChatState? get state => chats.state;
   bool get online => connection.phase == DesktopLinkPhase.connected;
-  bool get canSend =>
+  bool get canSend => canChangeSettings && !settingsSaving && chats.ready;
+  bool get canChangeSettings =>
       online &&
       !_restoring &&
-      !settingsSaving &&
       !deciding &&
       state != null &&
       !state!.closed &&
-      chats.ready &&
+      (chats.ready || composerSettings.refreshing) &&
       !chats.sending &&
       chats.pendingSend == null;
   String get draft => state == null ? '' : _draftFor(state!.ref);
@@ -250,6 +297,7 @@ final class DeviceChatsViewModel extends ChangeNotifier {
     if (current != _connected) {
       _connected = current;
       final revision = ++_connectionRevision;
+      composerSettings.sync();
       _restoring = current;
       catalogLoading = current;
       if (!current) {
@@ -257,6 +305,7 @@ final class DeviceChatsViewModel extends ChangeNotifier {
         settings.invalidate();
         _settingsInput = null;
         readReceipts.invalidate();
+        files.clear();
         unawaited(chats.setConnected(false));
         _restoration = null;
       } else {
@@ -332,6 +381,7 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   }
 
   Future<bool> open(DeviceChatRef ref) async {
+    composerSettings.invalidate();
     readReceipts.invalidate();
     error = null;
     final pending = chats.open(ref);
@@ -352,6 +402,7 @@ final class DeviceChatsViewModel extends ChangeNotifier {
 
   Future<bool> create(DeviceChatWorkspace workspace, {String? title}) async {
     if (creating || !online) return false;
+    composerSettings.invalidate();
     creating = true;
     error = null;
     notifyListeners();
@@ -438,14 +489,18 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   Future<void> _loadSettings() async {
     final ref = state?.ref;
     if (_disposed || !online || ref == null) return;
-    if (settings.scopeKey != ref.key) settingsError = null;
+    if (settings.scopeKey != ref.key) _settingsError = null;
+    final errorRevision = composerSettings.errorRevision;
     final loading = settings.load(ref);
     try {
       await loading;
-      if (!_disposed && state?.ref.key == ref.key) settingsError = null;
+      if (!_disposed && state?.ref.key == ref.key) {
+        _settingsError = null;
+        composerSettings.clearError(expectedRevision: errorRevision);
+      }
     } catch (cause) {
       if (!_disposed && state?.ref.key == ref.key) {
-        settingsError = cause is DeviceLinkException
+        _settingsError = cause is DeviceLinkException
             ? cause.message
             : 'Could not load models from your computer. Retry models.';
       }
@@ -453,21 +508,13 @@ final class DeviceChatsViewModel extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  Future<void> changeSetting(Future<void> Function() save) async {
-    if (!canSend || settingsSaving) return;
-    settingsSaving = true;
-    settingsError = null;
-    notifyListeners();
-    try {
-      await save();
-      await chats.refresh();
-    } catch (cause) {
-      settingsError = _describe(cause);
-    } finally {
-      settingsSaving = false;
-      if (!_disposed) notifyListeners();
-    }
-  }
+  Future<bool> changeSetting(
+    DeviceChatRef ref,
+    Map<String, dynamic> patch,
+    Future<int> Function(Map<String, dynamic> tab) save,
+  ) => canChangeSettings
+      ? composerSettings.change(ref, patch, save)
+      : Future.value(false);
 
   Future<void> stop() async {
     try {
@@ -487,6 +534,7 @@ final class DeviceChatsViewModel extends ChangeNotifier {
     }
     readReceipts.invalidate();
     try {
+      composerSettings.invalidate();
       await chats.clearSelection(expectedGeneration: expectedGeneration);
     } catch (_) {}
   }
@@ -494,6 +542,7 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    composerSettings.dispose();
     attachmentThumbnails.dispose();
     settings.invalidate();
     readReceipts.dispose();
@@ -501,7 +550,8 @@ final class DeviceChatsViewModel extends ChangeNotifier {
     connection.removeListener(_connectionChanged);
     unawaited(_subscription?.cancel());
     unawaited(chats.dispose());
-    connection.dispose();
+    unawaited(_questionSubscription?.cancel());
+    if (ownsConnection) connection.dispose();
     super.dispose();
   }
 }

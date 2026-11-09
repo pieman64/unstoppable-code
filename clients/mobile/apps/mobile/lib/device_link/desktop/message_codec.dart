@@ -14,7 +14,11 @@ final class _Undefined {
 }
 
 const desktopMaxFragmentBytes = 65470;
-const desktopMaxMessageBytes = 8 * 1024 * 1024;
+
+/// The largest reply mobile requests is `file:read-content`: 5 MiB of UTF-8
+/// text, which V8 sends as up to 10 MiB of UTF-16 when it has one character
+/// past U+00FF. An oversized message ends the session, so this leaves room.
+const desktopMaxMessageBytes = 12 * 1024 * 1024;
 
 /// Outgoing messages may be larger than incoming ones: one attachment import
 /// carries a whole file. The desktop accepts far more.

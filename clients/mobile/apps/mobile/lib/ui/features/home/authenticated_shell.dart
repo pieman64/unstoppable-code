@@ -25,7 +25,7 @@ enum AuthenticatedShellMode {
   /// The organization list could not be loaded, so membership is unknown.
   organizationsUnavailable,
 
-  /// A guest session (CAN-2872): cloud chats and Settings only. A guest has no
+  /// A guest session (CAN-2872): Settings only. A guest has no
   /// organizations, sign-in methods or paired desktop.
   guest,
 }
@@ -80,46 +80,9 @@ List<HomeTab> homeTabsForShellMode(
   AuthenticatedShellMode.guest => guestHomeTabs,
 };
 
-/// [tabs] minus the cloud-backed destinations (the interim Cloud entry and the
-/// Chat landing screen) when the server has said cloud agents are unavailable
-/// for this account.
-///
-/// `null` means the workspaces probe has not answered yet; the tabs stay
-/// visible so a slow or failed probe never hides a working feature. Only an
-/// explicit `false` (a 404 from `/api/cloud/workspaces`) removes them.
-List<HomeTab> visibleHomeTabs(
-  List<HomeTab> tabs, {
-  required bool? cloudAvailable,
-}) => cloudAvailable == false
-    ? [
-        for (final tab in tabs)
-          if (tab != HomeTab.cloud && tab != HomeTab.chat) tab,
-      ]
-    : tabs;
-
-/// Where the shell for [mode] opens.
-///
-/// Every mode opens on a new chat (CAN-2930) unless the server has said cloud
-/// agents are unavailable, which hides Chat (see [visibleHomeTabs]). Each mode
-/// then keeps its earlier destination: solo accounts open on Remote, and an
-/// organization-load failure opens on Account because that state must not
-/// offer organization creation.
-///
-/// Kept separate from [homeTabsForShellMode] because menu order and landing
-/// destination are different questions.
-HomeTab landingTabForShellMode(
-  AuthenticatedShellMode mode, {
-  required bool? cloudAvailable,
-}) => cloudAvailable == false
-    ? switch (mode) {
-        AuthenticatedShellMode.organization ||
-        AuthenticatedShellMode.personal => organizationLandingTab,
-        AuthenticatedShellMode.noOrganization => noOrganizationLandingTab,
-        AuthenticatedShellMode.organizationsUnavailable =>
-          organizationsUnavailableLandingTab,
-        AuthenticatedShellMode.guest => guestLandingTab,
-      }
-    : HomeTab.chat;
+/// Computer Connect is the signed-in landing page in every account context.
+HomeTab landingTabForShellMode(AuthenticatedShellMode mode) =>
+    mode == AuthenticatedShellMode.guest ? HomeTab.account : HomeTab.chat;
 
 /// The Members-tab content for [mode]. [hasTeams] says whether the account
 /// belongs to any team organization.

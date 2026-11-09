@@ -1,11 +1,20 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
+import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/device_link/chats/models.dart';
+import 'package:mobile/ui/core/chat/widgets/chat_overview_row.dart';
+import 'package:mobile/device_link/projects/clone_repository.dart';
 import 'package:mobile/device_link/worktrees/repository.dart';
+import 'package:mobile/ui/core/action_dialogs.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/dimens.dart';
 import 'package:mobile/ui/core/typography.dart';
+import 'package:mobile/ui/core/workspaces/add_project_sheet.dart';
+import 'package:mobile/ui/core/workspaces/project_clone_row.dart';
 import 'package:mobile/ui/core/workspaces/workspace_section_header.dart';
 import 'controller.dart';
 import 'package:provider/provider.dart';
@@ -38,7 +47,14 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
-    final scope = controller.scopeFor(context.watch<WorkspaceContext?>());
+    final workspaceContext = context.watch<WorkspaceContext?>();
+    final scope = controller.overviewScopeFor(workspaceContext);
+    // A clone is added as Personal, so adding one and its pending rows stay
+    // out of organization contexts.
+    final addsProjects = workspaceContext?.isPersonal ?? true;
+    final clones = addsProjects && controller.active
+        ? controller.clones.clones
+        : const <DeviceProjectClone>[];
     final worktrees = scope.worktrees;
     final projects = scope.projects;
     final colors = AppColors.of(context);
@@ -85,9 +101,36 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
                   style: Theme.of(context).textTheme.labelSmall,
                 ),
               ),
+            const Spacer(),
+            if (addsProjects)
+              CanopyIconButton(
+                key: const ValueKey('add-project-header'),
+                glyph: CanopyGlyph.plusMedium,
+                tooltip: 'Add project',
+                size: CanopyIconButtonSize.small,
+                onPressed: controller.chats.online
+                    ? () => unawaited(_addProject())
+                    : null,
+              ),
           ],
         ),
       ),
+      for (final clone in clones)
+        ProjectCloneRow(
+          key: ValueKey('device-project-clone-${clone.jobId}'),
+          name: clone.name,
+          status: switch (clone.phase) {
+            DeviceProjectClonePhase.cloning => ProjectCloneStatus.cloning,
+            DeviceProjectClonePhase.awaitingProject =>
+              ProjectCloneStatus.awaitingProject,
+            DeviceProjectClonePhase.failed => ProjectCloneStatus.failed,
+            DeviceProjectClonePhase.unknown => ProjectCloneStatus.unknown,
+          },
+          failure: clone.failure,
+          onDismiss: clone.dismissible
+              ? () => controller.clones.dismiss(clone.jobId)
+              : null,
+        ),
     ];
     for (final project in projects) {
       final branches = worktrees
@@ -113,7 +156,10 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
           onCreateTask: widget.onCreateTask == null
               ? null
               : () => widget.onCreateTask!(project),
-          createTaskEnabled: !widget.opening && controller.chats.online,
+          createTaskEnabled:
+              !widget.opening &&
+              controller.chats.online &&
+              !controller.scopePending,
           onToggle: () => setState(() {
             if (!_expanded.remove(project.id)) _expanded.add(project.id);
           }),
@@ -146,8 +192,14 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
     }
     final nothingLoaded =
         worktrees.isEmpty && standalone.isEmpty && projects.isEmpty;
-    final pending = controller.loading || controller.scopePending;
-    if (pending && nothingLoaded && controller.error == null) {
+    final pending =
+        !controller.chats.online ||
+        controller.loading ||
+        controller.scopePending;
+    if (pending &&
+        !controller.worktrees.hasInventory &&
+        nothingLoaded &&
+        controller.error == null) {
       // Initial loads and invalidated ownership are pending, never known empty.
       // Refreshes behind loaded rows stay silent.
       rows.add(
@@ -159,7 +211,8 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
       );
     } else if (worktrees.isEmpty &&
         standalone.isEmpty &&
-        !pending &&
+        clones.isEmpty &&
+        (!pending || controller.worktrees.hasInventory) &&
         controller.error == null &&
         !scope.hasUnknownOwners) {
       rows.add(
@@ -188,24 +241,56 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
     );
   }
 
-  Widget _chat(DeviceChatRef chat) => ListTile(
-    key: ValueKey('device-overview-chat-${chat.id}'),
-    contentPadding: const EdgeInsets.only(
-      left: AppDimens.navRowTitleInset,
-      right: 16,
-    ),
-    visualDensity: VisualDensity.compact,
-    minTileHeight: 48,
-    title: Text(
-      chat.title,
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-        color: Theme.of(context).colorScheme.onSurfaceVariant,
-      ),
-    ),
-    onTap: () => widget.onOpenChat(chat),
-  );
+  Future<void> _addProject() async {
+    final controller = widget.controller;
+    // An unknown result blocks another clone, even when its row is hidden,
+    // until the user checks Projects on the computer and accepts a possible
+    // duplicate. Dismiss only hides the row.
+    if (controller.clones.unconfirmed case final unknown?) {
+      final confirmed = await confirmDestructive(
+        context,
+        title: 'Add another project?',
+        message:
+            "Your computer didn't confirm whether it added “${unknown.name}”. "
+            'Check Projects on your computer first. Adding it again could '
+            'create a duplicate.',
+        confirmLabel: 'Add project',
+        confirmKey: const ValueKey('add-project-unknown-confirm'),
+      );
+      if (!confirmed ||
+          !_canAdd(controller) ||
+          !controller.clones.acknowledgeUnknown(unknown.jobId)) {
+        return;
+      }
+    }
+    if (!mounted || !_canAdd(controller)) return;
+    await showAddProjectSheet(
+      context,
+      description:
+          'Your computer clones the repository and adds it to Personal.',
+      // The context or selected computer can change while the computer looks
+      // up its clone folder.
+      onSubmit: (url) =>
+          controller.clones.add(url, stillAllowed: () => _canAdd(controller)),
+    );
+  }
+
+  bool _canAdd(ComputerConnectController controller) =>
+      mounted &&
+      identical(widget.controller, controller) &&
+      controller.active &&
+      (context.read<WorkspaceContext?>()?.isPersonal ?? true);
+
+  Widget _chat(DeviceChatRef chat) {
+    return ChatOverviewRow(
+      key: ValueKey('device-overview-chat-${chat.id}'),
+      title: chat.title,
+      unread: widget.controller.overviewChats.unread(chat),
+      working: widget.controller.overviewChats.working(chat),
+      onTap: () => widget.onOpenChat(chat),
+    );
+  }
+
   Widget _worktree(DeviceWorktree worktree) => DeviceWorktreeArchiveRow(
     key: ValueKey('device-worktree-${worktree.key}'),
     controller: widget.controller,

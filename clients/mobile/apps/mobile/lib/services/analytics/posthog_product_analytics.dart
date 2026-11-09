@@ -69,6 +69,20 @@ final class PostHogProductAnalytics implements ProductAnalytics {
     unawaited(_send(event, properties));
   }
 
+  /// Turns the SDK on or off for the Usage analytics choice in Settings.
+  /// Events the SDK queued before [enabled] went false may still flush.
+  Future<void> setEnabled(bool enabled) async {
+    try {
+      if (enabled) {
+        await Posthog().enable();
+      } else {
+        await Posthog().disable();
+      }
+    } catch (error) {
+      debugPrint('PostHog enable/disable failed: $error');
+    }
+  }
+
   Future<void> _send(String event, Map<String, Object> properties) async {
     try {
       final info = await _buildInfo;

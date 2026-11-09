@@ -1,3 +1,4 @@
+import 'package:mobile/ui/core/workspaces/add_project_sheet.dart';
 import 'package:mobile/ui/core/workspaces/workspace_section_header.dart';
 import 'dart:async';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
@@ -12,13 +13,12 @@ import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/data/models/remote_session.dart';
 import 'package:mobile/data/models/remote_context_scope.dart';
 import 'package:mobile/data/models/workspace_context.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/ui/features/remote/view_models/project_clone_coordinator.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_overview_sections.dart';
 import 'package:mobile/ui/features/remote/views/remote_chat_route.dart';
 import 'package:mobile/ui/features/remote/views/remote_chat_screen.dart';
-import 'package:mobile/ui/features/remote/views/widgets/add_project_sheet.dart';
 import 'package:mobile/ui/features/remote/views/widgets/attention_sections.dart';
 import 'package:mobile/ui/features/remote/views/widgets/command_failure_banner.dart';
 import 'package:mobile/ui/features/remote/views/widgets/pending_project_row.dart';
@@ -95,7 +95,14 @@ class _WorkspacesListViewState extends State<WorkspacesListView> {
     final clones = addsProjects
         ? viewModel.projectClones
         : const <RemoteProjectClone>[];
-    void addProject() => unawaited(showAddProjectSheet(context));
+    void addProject() => unawaited(
+      showAddProjectSheet(
+        context,
+        description:
+            'Your desktop clones the repository and adds it to Personal.',
+        onSubmit: viewModel.addProject,
+      ),
+    );
     // A clone in progress is not an empty project list.
     final hasContent =
         workspaces.isNotEmpty || unmatchedChats.isNotEmpty || clones.isNotEmpty;

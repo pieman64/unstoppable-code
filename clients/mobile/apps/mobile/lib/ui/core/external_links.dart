@@ -30,9 +30,18 @@ String orgBillingUrl(String orgId) {
   return '$base/organization/${Uri.encodeComponent(orgId)}/settings?tab=billing';
 }
 
+/// The personal billing page, where a person compares and changes plans.
+///
+/// Mirrors `accountBillingPath` in `packages/protocol/src/billing/index.ts`.
+String accountBillingUrl() => '${AppConfig.apiBaseUrl}/account/billing';
+
 /// The web desktop app download page on the current environment's origin.
 ///
 /// Mirrors `DOWNLOAD_URL` in `apps/web/src/lib/marketing-links.ts`; pinned by
 /// a unit test. On production the app origin redirects marketing pages such
 /// as this one to the marketing origin, which is fine for a shared link.
 String desktopDownloadUrl() => '${AppConfig.apiBaseUrl}/download';
+
+/// The app's public source repository.
+const sourceRepositoryUrl =
+    'https://github.com/unstoppableweb/unstoppable-code/tree/main';

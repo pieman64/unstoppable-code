@@ -11,7 +11,7 @@ import 'package:provider/provider.dart';
 ///
 /// The guest stays signed in as a guest while this is open, so backing out or
 /// a failed sign-in leaves them where they were. Signing in merges the guest's
-/// chats into the account, and this screen removes itself as soon as the
+/// session into the account, and this screen removes itself as soon as the
 /// session is no longer a guest's: the app behind it has become the account's,
 /// or the root gate has moved on to two-factor entry.
 class GuestSignInScreen extends StatefulWidget {

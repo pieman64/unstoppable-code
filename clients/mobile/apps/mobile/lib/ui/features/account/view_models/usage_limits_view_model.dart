@@ -11,10 +11,8 @@ import 'usage_limits_policy.dart';
 ///
 /// Mirrors the paired desktop's usage while it is available. When the
 /// desktop goes away the last values stay on screen, marked disconnected,
-/// and refresh is disabled; a later available desktop replaces them. While
-/// this phone cannot reach the server, nothing new can arrive: the values
-/// shown are the last received and refresh is disabled too, without saying
-/// the desktop disconnected. The
+/// and refresh is disabled. Selecting another computer clears those retained
+/// values immediately; reconnecting the same computer replaces them. The
 /// [clock] and [timer] drive the passed-reset overlay, which flips when a
 /// reset time arrives even without a usage update.
 final class UsageLimitsViewModel extends ChangeNotifier
@@ -34,6 +32,7 @@ final class UsageLimitsViewModel extends ChangeNotifier
   final Timer Function(Duration, void Function()) _timer;
 
   PortalProviderUsageProjection? _projection;
+  Object? _scopeKey;
   bool _available = false;
   ProviderUsageDelivery _delivery = ProviderUsageDelivery.live;
   Timer? _resetTimer;
@@ -66,6 +65,10 @@ final class UsageLimitsViewModel extends ChangeNotifier
   }
 
   void _onSourceChanged() {
+    if (_scopeKey != _source.scopeKey) {
+      _scopeKey = _source.scopeKey;
+      _projection = null;
+    }
     _available = _source.isAvailable;
     _delivery = _source.delivery;
     if (_available) _projection = _source.projection;

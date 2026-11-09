@@ -1,25 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile/brand/brand.g.dart';
-import 'package:mobile/data/services/desktop_app_prompt_store.dart';
 import 'package:mobile/services/desktop_app/desktop_app_prompt_policy.dart';
 import 'package:mobile/services/link_sharer.dart';
 import 'package:mobile/ui/core/dispose_safe_notifier.dart';
 import 'package:mobile/ui/features/desktop_app/view_models/desktop_app_prompt_presentation.dart';
 
-/// Owns the "Get the desktop app" prompt (CAN-4424): who may see it, when
-/// a successful cloud turn raises it once per account on this device, and
-/// what Share link and Copy link do.
-///
-/// App-lifetime singleton provided from `buildRootProviders()`, like the
-/// satisfaction prompt, because cloud chats are pushed on the root navigator.
-/// The shell publishes the account and pairing state through
-/// [updateContext]; `DesktopAppPromptHost` decides when to [presentPending],
-/// and the drawer calls [open].
+/// Opens the desktop download/share sheet from the navigation drawer.
 class DesktopAppPromptController extends ChangeNotifier
     with DisposeSafeNotifier {
   DesktopAppPromptController({
-    required this._store,
     required this._isActive,
     required this._downloadUrl,
     required this._sharer,
@@ -27,7 +17,6 @@ class DesktopAppPromptController extends ChangeNotifier
     required this._showPrompt,
   }) : _copy = copy ?? _copyToClipboard;
 
-  final DesktopAppPromptStore _store;
   final bool Function() _isActive;
   final String Function() _downloadUrl;
   final LinkSharer _sharer;
@@ -36,12 +25,7 @@ class DesktopAppPromptController extends ChangeNotifier
 
   String? _accountScope;
   DesktopPairing _pairing = DesktopPairing.unknown;
-  int _accountGeneration = 0;
 
-  /// Accounts that closed the prompt this launch, kept in memory so a failed
-  /// write still never re-prompts before the next launch.
-  final Set<String> _dismissed = {};
-  bool _pending = false;
   bool _presenting = false;
 
   /// Whether the signed-in account has no paired desktop, so the drawer
@@ -50,9 +34,6 @@ class DesktopAppPromptController extends ChangeNotifier
       _isActive() &&
       canOfferDesktopApp(accountScope: _accountScope, pairing: _pairing);
 
-  /// True when a successful turn raised the prompt and it has not opened yet.
-  bool get pendingPrompt => _pending && !_presenting && canOffer;
-
   /// Publishes the signed-in account (`null` while signed out) and what is
   /// known about its paired desktop.
   void updateContext({
@@ -60,41 +41,9 @@ class DesktopAppPromptController extends ChangeNotifier
     required DesktopPairing pairing,
   }) {
     if (accountScope == _accountScope && pairing == _pairing) return;
-    if (accountScope != _accountScope) {
-      _accountGeneration++;
-      _pending = false;
-    }
     _accountScope = accountScope;
     _pairing = pairing;
-    if (!canOffer) _pending = false;
     notifyListenersSafe();
-  }
-
-  /// Reports one successful cloud chat turn. Returns true when the prompt is
-  /// raised by it, or already due or open, so other prompts leave this turn
-  /// alone.
-  Future<bool> claimSuccessfulTurn() async {
-    if (_pending || _presenting) return true;
-    final scope = _accountScope;
-    if (scope == null || !canOffer || _dismissed.contains(scope)) return false;
-    final generation = _accountGeneration;
-    final dismissed = await _store.isDismissed(scope);
-    if (generation != _accountGeneration) return false;
-    if (dismissed) {
-      _dismissed.add(scope);
-      return false;
-    }
-    if (_pending || _presenting) return true;
-    if (!canOffer) return false;
-    _pending = true;
-    notifyListenersSafe();
-    return true;
-  }
-
-  /// Opens the prompt a turn raised. A no-op unless [pendingPrompt].
-  Future<void> presentPending(BuildContext context) async {
-    if (!pendingPrompt) return;
-    await _run(context);
   }
 
   /// Opens the prompt on request, even after the account closed it before.
@@ -106,7 +55,6 @@ class DesktopAppPromptController extends ChangeNotifier
   Future<void> _run(BuildContext context) async {
     final scope = _accountScope;
     if (scope == null) return;
-    _pending = false;
     _presenting = true;
     notifyListenersSafe();
     try {
@@ -117,8 +65,6 @@ class DesktopAppPromptController extends ChangeNotifier
         debugPrint('Desktop app prompt failed to show: $error');
         choice = (action: DesktopAppPromptAction.dismissed, shareOrigin: null);
       }
-      // Any close counts, so persist before acting on the choice.
-      await _markDismissed(scope);
       final url = _downloadUrl();
       switch (choice.action) {
         case DesktopAppPromptAction.share:
@@ -155,15 +101,6 @@ class DesktopAppPromptController extends ChangeNotifier
     } finally {
       _presenting = false;
       notifyListenersSafe();
-    }
-  }
-
-  Future<void> _markDismissed(String scope) async {
-    _dismissed.add(scope);
-    try {
-      await _store.markDismissed(scope);
-    } catch (error) {
-      debugPrint('Desktop app prompt dismissal not saved: $error');
     }
   }
 

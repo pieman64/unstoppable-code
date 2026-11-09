@@ -4,7 +4,7 @@
 /// set varies: a user with no organization sees a shorter bar, so a raw index
 /// no longer names a fixed destination.
 ///
-/// [chat] is the new-chat destination the app opens on (CAN-2930). It has no
+/// [chat] is the default new-chat destination (CAN-2930). It has no
 /// row in the menu list; the drawer's pinned Chat button selects it. It sits
 /// last in every tab list so list order keeps describing the menu rows.
 ///
@@ -15,11 +15,13 @@
 /// [account] is the Settings page (CAN-4449). It has no row either; the
 /// drawer's pinned Settings cog selects it. [activity], [usage], and
 /// [members] are opened from Settings instead of from a row (see
-/// [settingsHomeTabs]).
-enum HomeTab { activity, usage, members, cloud, advisor, remote, account, chat }
+/// [settingsHomeTabs]). [remote] is also in Settings and gets a drawer row
+/// only while a Remote Control session is paired.
+enum HomeTab { activity, usage, members, advisor, remote, account, chat }
 
-/// Destinations opened from Settings, which the drawer's Settings cog opens,
-/// instead of from a drawer row (CAN-3558), in the order Settings lists them.
+/// Destinations opened from Settings, in the order Settings lists them.
+/// Remote Control also has a drawer row while paired; the others are opened
+/// only from Settings (CAN-3558).
 ///
 /// They stay shell destinations, so their org-scoped providers, kept state,
 /// and deep links work unchanged; each shows a back button to Settings.
@@ -27,6 +29,7 @@ const List<HomeTab> settingsHomeTabs = [
   HomeTab.activity,
   HomeTab.usage,
   HomeTab.members,
+  HomeTab.remote,
 ];
 
 /// Tabs shown when an organization is resolved: the full app.
@@ -34,7 +37,6 @@ const List<HomeTab> settingsHomeTabs = [
 /// Drawer rows lead, then Account and the [settingsHomeTabs] it lists, the
 /// same shape as [noOrganizationHomeTabs].
 const List<HomeTab> organizationHomeTabs = [
-  HomeTab.cloud,
   HomeTab.advisor,
   HomeTab.remote,
   HomeTab.account,
@@ -51,7 +53,6 @@ const List<HomeTab> organizationHomeTabs = [
 /// feed. Usage is left out until mobile has Personal statistics, and Members
 /// leads to invitations and team creation.
 const List<HomeTab> personalHomeTabs = [
-  HomeTab.cloud,
   HomeTab.advisor,
   HomeTab.remote,
   HomeTab.account,
@@ -65,16 +66,10 @@ const List<HomeTab> personalHomeTabs = [
 /// Activity and Usage are dropped because their APIs are org-scoped
 /// (`/api/account/organizations/{orgId}/...`) and have no personal equivalent —
 /// there is nothing honest to render. Remote Control is device/user-scoped and
-/// Account is account-scoped, so both work as-is; Remote leads because it is
-/// what the app is for. Members is kept last as the home for pending
-/// invitations and the create-an-organization CTA.
+/// Account is account-scoped, so both work as-is. Members remains the home
+/// for pending invitations and the create-an-organization CTA.
 ///
-/// Cloud chats (CAN-3143) are account-scoped too and sit directly before
-/// Remote in every shell. This interim entry point is filtered out by
-/// `visibleHomeTabs` once the server reports cloud agents unavailable, and is
-/// superseded by CAN-2930/CAN-2931.
 const List<HomeTab> noOrganizationHomeTabs = [
-  HomeTab.cloud,
   HomeTab.advisor,
   HomeTab.remote,
   HomeTab.account,
@@ -82,38 +77,5 @@ const List<HomeTab> noOrganizationHomeTabs = [
   HomeTab.chat,
 ];
 
-/// Tabs shown to a guest (CAN-2872): cloud chats and Settings, where the
-/// guest signs in to keep their chats.
-///
-/// Remote Control and App Advisor need a paired desktop, which needs an
-/// account, and the organization destinations have nothing to show a guest.
-const List<HomeTab> guestHomeTabs = [
-  HomeTab.cloud,
-  HomeTab.account,
-  HomeTab.chat,
-];
-
-/// Where the guest shell opens when cloud chats are unavailable: Settings,
-/// which offers sign-in, rather than an empty app.
-const HomeTab guestLandingTab = HomeTab.account;
-
-/// Where the no-organization shell opens when cloud chats are unavailable;
-/// otherwise every shell opens on [HomeTab.chat].
-///
-/// Solo accounts start with their desktop connection: pairing instructions
-/// when disconnected, or their workspaces when a session is restored.
-/// Organization creation and invitations remain optional under Members.
-const HomeTab noOrganizationLandingTab = HomeTab.remote;
-
-/// Where the shell opens when organization membership could not be loaded
-/// and cloud chats are unavailable.
-///
-/// Unlike a confirmed no-organization account, this state must not offer a
-/// create-organization CTA because the user may already belong to one.
-const HomeTab organizationsUnavailableLandingTab = HomeTab.account;
-
-/// Where the full shell opens when cloud chats are unavailable.
-///
-/// Remote, like a solo account: Activity is opened from Account now
-/// (CAN-3558), and opening the app on a Settings page would be backwards.
-const HomeTab organizationLandingTab = HomeTab.remote;
+/// Existing guest sessions can sign in from Settings.
+const List<HomeTab> guestHomeTabs = [HomeTab.account];

@@ -3,8 +3,7 @@ import 'package:flutter/foundation.dart';
 /// Chat surface a satisfaction prompt was shown from. [wire] is the
 /// `trigger_surface` analytics value, so it must never change.
 enum SatisfactionSurface {
-  remoteChat('remote_chat'),
-  cloudChat('cloud_chat');
+  remoteChat('remote_chat');
 
   const SatisfactionSurface(this.wire);
 

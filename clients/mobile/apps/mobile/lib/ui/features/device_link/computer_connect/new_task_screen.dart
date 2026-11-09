@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'package:mobile/data/models/chat_message.dart';
+import 'package:mobile/device_link/chats/delivery.dart';
+import 'package:mobile/data/models/workspace_context.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/device_link/worktrees/repository.dart';
 import 'package:mobile/ui/core/activity/worktree_activity_context.dart';
+import 'package:mobile/ui/core/chat/view_models/chat_attachment_draft.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_body.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_input.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_location_subtitle.dart';
@@ -20,9 +24,32 @@ class DeviceNewTaskScreen extends StatefulWidget {
     super.key,
     required this.controller,
     required this.project,
+    this.worktree,
+    this.baseBranch,
+    this.initialDraft = '',
+    this.initialModel,
+    this.thinkingLevel,
+    this.sendOnOpen = false,
+    this.onSent,
+    this.delivery,
+    this.workspaceContext,
+    this.attachments = const [],
+    this.onAttachmentsSent,
   });
   final ComputerConnectController controller;
   final DeviceProject project;
+  final DeviceWorktree? worktree;
+  final String? baseBranch, thinkingLevel;
+  final String initialDraft;
+  final ModelOption? initialModel;
+  final bool sendOnOpen;
+  final VoidCallback? onSent;
+  final DeviceChatDelivery? delivery;
+  final WorkspaceContext? workspaceContext;
+
+  /// See [DeviceNewTaskModel.attachments].
+  final List<ChatAttachmentDraft> attachments;
+  final ValueChanged<List<ChatAttachmentDraft>>? onAttachmentsSent;
   @override
   State<DeviceNewTaskScreen> createState() => _DeviceNewTaskScreenState();
 }
@@ -33,9 +60,27 @@ class _DeviceNewTaskScreenState extends State<DeviceNewTaskScreen> {
   @override
   void initState() {
     super.initState();
-    _model = DeviceNewTaskModel(widget.controller, widget.project);
+    _model = DeviceNewTaskModel(
+      widget.controller,
+      widget.project,
+      worktree: widget.worktree,
+      baseBranch: widget.baseBranch,
+      initialModel: widget.initialModel,
+      thinkingLevel: widget.thinkingLevel,
+      onSent: widget.onSent,
+      delivery: widget.delivery,
+      workspaceContext: widget.workspaceContext,
+      attachments: widget.attachments,
+      onAttachmentsSent: widget.onAttachmentsSent,
+    );
+    _draft.text = widget.initialDraft;
+    _model.draft = widget.initialDraft;
     _draft.addListener(() => _model.draft = _draft.text);
-    if (!_model.flat) unawaited(_model.prepare());
+    if (widget.sendOnOpen) {
+      unawaited(_model.send());
+    } else if (!_model.flat) {
+      unawaited(_model.prepare());
+    }
   }
 
   @override
@@ -56,8 +101,16 @@ class _DeviceNewTaskScreenState extends State<DeviceNewTaskScreen> {
     if (_model.ready) {
       return DeviceChatScreen(
         model: model,
-        locationLabel: _model.created?.name ?? widget.project.name,
-        worktree: _model.created == null
+        locationLabel:
+            _model.created?.name ??
+            widget.worktree?.name ??
+            widget.project.name,
+        worktree: widget.worktree != null
+            ? WorktreeActivityContext(
+                workspaceLocalId: widget.project.id,
+                localId: widget.worktree!.id,
+              )
+            : _model.created == null
             ? null
             : WorktreeActivityContext(
                 workspaceLocalId: _model.created!.projectId,

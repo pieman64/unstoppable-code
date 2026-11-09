@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 
 /// Mounts a shell whose session cannot pair a desktop, such as a guest's
 /// (CAN-2872). It settles the nearest [RemoteControlViewModel] as having no
-/// desktop before anything below reads it, so the first cloud project and the
+/// desktop before anything below reads it, so account prompts and the
 /// new chat's destination decide without waiting on a pairing probe the
 /// Portal would refuse. Leaving undoes the settle, so it cannot outlive the
 /// guest even if the same view model serves the next session.

@@ -1,7 +1,11 @@
 import 'dart:async';
 import 'package:mobile/device_link/chats/models.dart';
+import 'package:mobile/device_link/chats/overview_repository.dart';
+import 'package:mobile/device_link/chats/recents.dart';
+import 'package:mobile/device_link/chats/home_options.dart';
 import 'package:mobile/ui/core/activity/worktree_activity_context.dart';
 import 'package:mobile/device_link/worktrees/archive.dart';
+import 'package:mobile/device_link/projects/clone_repository.dart';
 import 'package:mobile/device_link/worktrees/creation.dart';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
@@ -22,7 +26,7 @@ class ComputerConnectController extends ChangeNotifier {
     this.chats, {
     this.connectComputer,
     this.createTimer = Timer.new,
-  }) : worktrees = DeviceWorktreesRepository(chats.chats.ipc) {
+  }) {
     chats.connection.addListener(_connectionChanged);
     _events = chats.chats.ipc.events.listen(_event);
     _connectionChanged();
@@ -31,10 +35,40 @@ class ComputerConnectController extends ChangeNotifier {
   final Timer Function(Duration, void Function()) createTimer;
   final Future<void> Function(DesktopRelayPeer, DesktopTokenProvider)?
   connectComputer;
-  final DeviceWorktreesRepository worktrees;
+  late final DeviceWorktreesRepository worktrees = DeviceWorktreesRepository(
+    chats.chats.ipc,
+    onChanged: () {
+      // The repository publishes only after re-reading inventory and owners.
+      // Slow chat summaries must not keep the roster in its loading state.
+      _scopePending = false;
+      clones.retireListed({
+        for (final project in worktrees.projects) project.id,
+      });
+      _notify();
+    },
+  );
+  late final homeOptions = DeviceChatHomeOptionsService(chats.chats.ipc);
+  late final overviewChats = DeviceChatOverviewRepository(
+    chats.chats.ipc,
+    onChanged: _notify,
+  );
+
+  /// The drawer's Recents for this computer, read beside the overview.
+  late final recents = DeviceRecentChatsRepository(
+    chats.chats.ipc,
+    onChanged: _notify,
+  );
   late final worktreeCreator = DeviceWorktreeCreator(chats.chats.ipc)
     ..setConnected(chats.online);
   late final _archiver = DeviceWorktreeArchiver(chats.chats.ipc);
+  late final clones = DeviceProjectCloneRepository(
+    chats.chats.ipc,
+    onChanged: _notify,
+    onCreated: _cloneCreated,
+  )..setConnected(chats.online);
+
+  /// A clone created a project while an inventory read was in flight.
+  bool _refreshAgain = false;
   final _archiving = <String>{};
   List<DesktopRelayPeer> computers = [];
   bool discovering = false, loading = false;
@@ -53,11 +87,21 @@ class ComputerConnectController extends ChangeNotifier {
     _notify();
   }
 
-  DeviceContextScope scopeFor(WorkspaceContext? context) => DeviceContextScope(
-    context ?? const WorkspaceContext.personal(),
-    active ? worktrees.projects : const [],
-    active ? worktrees.worktrees : const [],
-  );
+  /// Actions need current ownership even while the overview shows cached rows.
+  DeviceContextScope scopeFor(WorkspaceContext? context) => _scopePending
+      ? DeviceContextScope(
+          context ?? const WorkspaceContext.personal(),
+          const [],
+          const [],
+        )
+      : overviewScopeFor(context);
+
+  DeviceContextScope overviewScopeFor(WorkspaceContext? context) =>
+      DeviceContextScope(
+        context ?? const WorkspaceContext.personal(),
+        active ? worktrees.projects : const [],
+        active ? worktrees.worktrees : const [],
+      );
 
   int _refreshGeneration = 0;
   int _generation = 0;
@@ -136,7 +180,14 @@ class ComputerConnectController extends ChangeNotifier {
 
   void _connectionChanged() {
     final online = chats.online;
+    // An explicit disconnect can follow suspension without changing `online`.
+    if (!online && !chats.connection.reconnecting) {
+      worktrees.invalidate();
+      overviewChats.invalidate();
+      recents.invalidate();
+    }
     worktreeCreator.setConnected(online);
+    clones.setConnected(online);
     if (_online != online) {
       _online = online;
       _refreshGeneration++;
@@ -145,7 +196,15 @@ class ComputerConnectController extends ChangeNotifier {
       if (online && _overview) {
         unawaited(watchOverview());
       } else {
-        worktrees.invalidate();
+        if (online || chats.connection.reconnecting) {
+          worktrees.pause();
+          overviewChats.pause();
+          recents.pause();
+        } else {
+          worktrees.invalidate();
+          overviewChats.invalidate();
+          recents.invalidate();
+        }
         _pendingScopes.clear();
         loading = false;
         _refresh?.cancel();
@@ -173,6 +232,9 @@ class ComputerConnectController extends ChangeNotifier {
       loading = false;
       _scopePending = true;
       worktrees.invalidateInventory();
+      overviewChats.invalidate();
+      // A failed re-read must not keep filtering Recents by the old owner.
+      recents.invalidate();
       _pendingScopes.clear();
       _refresh?.cancel();
       _notify();
@@ -186,7 +248,16 @@ class ComputerConnectController extends ChangeNotifier {
       final event = (push['args'] as List).first;
       if (event is Map &&
           (event['changes'] as List? ?? []).whereType<Map>().any(
-            (change) => change['type'] == 'runtime.patched',
+            (change) =>
+                const {
+                  'runtime.patched',
+                  'tab.created',
+                  'tab.upserted',
+                  'tab.removed',
+                }.contains(change['type']) ||
+                (change['type'] == 'tab.metadata_patched' &&
+                    change['patch'] is Map &&
+                    (change['patch'] as Map).containsKey('unread')),
           )) {
         _pendingScopes.add('${event['projectId']}/${event['worktreeId']}');
         unawaited(_readScopes());
@@ -209,7 +280,8 @@ class ComputerConnectController extends ChangeNotifier {
       'pipelines:execution-event',
       'pipelines:queue-event',
     ].contains(push['channel'])) {
-      // Re-read authoritative summaries after changes, once the burst settles.
+      // Bulk inventory waits for a quiet period; tab/read changes refresh
+      // their own scope immediately instead of waiting behind this debounce.
       // No polling remains active while the app is suspended/disconnected.
       _refresh?.cancel();
       _refresh = createTimer(
@@ -232,9 +304,24 @@ class ComputerConnectController extends ChangeNotifier {
         final worktree = worktrees.worktrees
             .where((w) => w.key == key)
             .firstOrNull;
-        if (worktree != null) {
-          await worktrees.load(worktree);
+        final chat = overviewChats.target(key);
+        if (worktree != null || chat != null) {
+          final generation = _refreshGeneration;
+          if (worktree != null) {
+            await worktrees.load(worktree);
+          } else if (chat != null) {
+            await overviewChats.load(chat);
+          }
           _notify();
+          // A full refresh can replace this row while its scope read is in
+          // flight. Replay against the replacement so an older snapshot
+          // cannot restore an unread flag after a newer read notification.
+          if (loading ||
+              generation != _refreshGeneration ||
+              (worktree != null && !worktrees.worktrees.contains(worktree))) {
+            _pendingScopes.add(key);
+            if (loading) break;
+          }
         }
       }
     } finally {
@@ -255,21 +342,63 @@ class ComputerConnectController extends ChangeNotifier {
     loading = true;
     error = null;
     _notify();
+    unawaited(clones.readBack());
+    unawaited(recents.refresh());
     try {
       await Future.wait([worktrees.refresh(), chats.chats.refreshCatalog()]);
-      if (generation == _refreshGeneration) _scopePending = false;
+      if (generation == _refreshGeneration) {
+        final coworkProjects = {
+          for (final project in worktrees.projects)
+            if (project.type == 'cowork') project.id,
+        };
+        await overviewChats.refresh(
+          chats.chats.catalog.where(
+            (chat) => coworkProjects.contains(chat.projectId),
+          ),
+        );
+      }
+      if (generation == _refreshGeneration) {
+        _scopePending = false;
+      }
     } catch (cause) {
       if (generation == _refreshGeneration) error = _describe(cause);
     } finally {
       if (generation == _refreshGeneration) {
         loading = false;
         _notify();
+        if (_refreshAgain) {
+          _refreshAgain = false;
+          unawaited(refresh());
+        } else {
+          unawaited(_readScopes());
+        }
       }
     }
   }
 
+  /// Re-reads ownership too: the new project's owner comes from the session
+  /// snapshot, which the computer may still have cached.
+  void _cloneCreated() {
+    if (!chats.online) return;
+    unawaited(() async {
+      try {
+        await chats.chats.ipc.invoke('desktop:session-snapshot-invalidate');
+      } on DeviceLinkException {
+        // Older hosts may refuse it; their snapshot pushes refresh instead.
+      }
+      // A read already in flight may predate the project; read once more.
+      if (loading) {
+        _refreshAgain = true;
+      } else {
+        await refresh();
+      }
+    }());
+  }
+
   bool canArchiveWorktree(DeviceWorktree worktree) =>
-      chats.online && worktrees.codeProjectIds.contains(worktree.projectId);
+      chats.online &&
+      !_scopePending &&
+      worktrees.codeProjectIds.contains(worktree.projectId);
   bool isArchivingWorktree(DeviceWorktree worktree) =>
       _archiving.contains(worktree.key);
 
@@ -358,7 +487,10 @@ class ComputerConnectController extends ChangeNotifier {
     _refreshGeneration++;
     _refresh?.cancel();
     worktrees.invalidate();
+    overviewChats.invalidate();
+    recents.invalidate();
     unawaited(worktreeCreator.dispose());
+    clones.dispose();
     chats.connection.removeListener(_connectionChanged);
     unawaited(_events?.cancel());
     super.dispose();

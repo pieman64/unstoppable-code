@@ -13,6 +13,7 @@ import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/features/account/view_models/usage_limits_policy.dart';
 import 'package:mobile/ui/features/account/view_models/usage_limits_view_model.dart';
 import 'package:mobile/ui/features/account/views/widgets/usage_limit_window_card.dart';
+import 'package:mobile/ui/features/account/views/widgets/opencode_accounts_section.dart';
 import 'package:provider/provider.dart';
 
 /// Provider plan usage from the paired desktop (CAN-3636), mirroring
@@ -20,7 +21,15 @@ import 'package:provider/provider.dart';
 /// limit window, and a refresh. Reads [ProviderUsageSource], which the
 /// pushing route re-provides.
 class UsageLimitsScreen extends StatefulWidget {
-  const UsageLimitsScreen({super.key, this.clock, this.timer});
+  const UsageLimitsScreen({
+    super.key,
+    this.clock,
+    this.timer,
+    this.computerPicker,
+  });
+
+  /// Borrowed app-bar content supplied by the account's computer connection.
+  final Widget? computerPicker;
 
   /// Injected by tests; the real clock and timers otherwise.
   final DateTime Function()? clock;
@@ -46,7 +55,7 @@ class _UsageLimitsScreenState extends State<UsageLimitsScreen> {
   @override
   Widget build(BuildContext context) {
     return CanopyScaffold(
-      appBar: _appBar(context),
+      appBar: _appBar(context, widget.computerPicker),
       body: ListenableBuilder(
         listenable: _viewModel,
         builder: (context, _) {
@@ -87,6 +96,9 @@ class _UsageLimitsScreenState extends State<UsageLimitsScreen> {
                       ),
                       const SizedBox(height: 24),
                     ],
+                    if (_viewModel.projection?.openCodeAccounts
+                        case final accounts?)
+                      OpenCodeAccountsSection(snapshot: accounts),
                   ],
                 ),
               ),
@@ -117,7 +129,13 @@ Widget? _staleNote(UsageLimitsViewModel viewModel) {
 
 /// At large text scales the title wraps instead of truncating, and the bar
 /// grows to fit it, moving the body down with it.
-CanopyAppBar _appBar(BuildContext context) {
+CanopyAppBar _appBar(BuildContext context, Widget? computerPicker) {
+  if (computerPicker != null) {
+    return CanopyAppBar(
+      automaticallyImplyLeading: true,
+      content: computerPicker,
+    );
+  }
   const title = 'Usage limits';
   const sizing = CanopyAppBar(
     automaticallyImplyLeading: true,

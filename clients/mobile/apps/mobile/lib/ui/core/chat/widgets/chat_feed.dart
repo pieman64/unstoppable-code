@@ -11,7 +11,7 @@ import 'package:mobile/core/design-system/shimmer/shimmer_text.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/ui/core/widgets/message_markdown.dart';
 import 'package:mobile/ui/core/chat/view_models/attachment_thumbnail_cache.dart';
 import 'package:mobile/ui/core/chat/view_models/transcript_projection.dart';

@@ -16,7 +16,7 @@ import 'package:mobile/ui/core/chat/widgets/model_picker_sheet.dart';
 import 'package:provider/provider.dart';
 
 /// The plan-mode toggle, when the host supports it (Remote Control worktree
-/// chats persist it through `portal.chat.set_plan_mode`; standalone and cloud
+/// chats persist it through `portal.chat.set_plan_mode`; standalone
 /// chats have no plan mode and pass null, which hides the chip).
 class PlanModeControl {
   const PlanModeControl({required this.enabled, required this.onToggle});
@@ -115,8 +115,7 @@ class ComposerControlsData {
   final CanopyEffortSpeed speed;
 
   /// Whether Fast mode is offered at all. Hosts decide: Remote Control
-  /// passes `providerType == 'codex'` (mirrors the web composer); cloud passes
-  /// the selected model's catalog flag.
+  /// passes `providerType == 'codex'`, mirroring the web composer.
   final bool supportsFastMode;
   final bool isRunning;
 

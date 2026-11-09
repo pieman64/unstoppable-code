@@ -1,6 +1,6 @@
 /// The composer's plugin catalog and the capability selections it toggles
 /// (CAN-3922). Both hosts answer the same shapes: the Remote Control
-/// `portal.chat.list_plugin_catalog` result and the cloud capability catalog
+/// `portal.chat.list_plugin_catalog` result and the computer capability catalog
 /// mirror `PortalPluginCatalog`, and both chats store a
 /// `PortalChatTabPluginSelections` object.
 library;

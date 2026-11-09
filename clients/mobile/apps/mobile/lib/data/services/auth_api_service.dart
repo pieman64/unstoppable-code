@@ -48,30 +48,6 @@ final class AuthApiService {
     await apiClient.postJson('/api/auth/sign-out');
   }
 
-  /// Whether the server currently lets the app start a guest session. See web
-  /// `GET /api/mobile/guest-session`.
-  Future<bool> guestSessionAvailable() async {
-    final json = await apiClient.getJson('/api/mobile/guest-session');
-    return json['enabled'] == true;
-  }
-
-  /// Starts a guest session and returns its bearer token. [clientDeviceId]
-  /// only keys the server's rate limit. See web `POST /api/mobile/guest-session`.
-  Future<String> mintGuestSession({required String clientDeviceId}) async {
-    final json = await apiClient.postJson(
-      '/api/mobile/guest-session',
-      body: {'clientDeviceId': clientDeviceId},
-    );
-    final token = json['token'];
-    if (token is! String || token.isEmpty) {
-      throw const ApiException(
-        statusCode: 500,
-        body: 'Malformed guest-session response: missing token',
-      );
-    }
-    return token;
-  }
-
   /// Exchanges the one-time OAuth [code] (plus the PKCE [codeVerifier]) for the
   /// Better Auth bearer token. See web `POST /api/mobile/oauth-token`.
   Future<MobileOAuthTokenResult> exchangeOAuthCode({

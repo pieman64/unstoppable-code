@@ -17,11 +17,9 @@ import 'package:mobile/data/models/model_routing_availability.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/core/chat/view_models/model_picker_catalog.dart';
-import 'package:mobile/ui/core/chat/view_models/model_routing_availability_controller.dart';
 import 'package:mobile/ui/core/chat/widgets/composer_controls.dart';
-import 'package:provider/provider.dart';
 
-/// Tall model picker sheet shared by Remote, Cloud and draft composers.
+/// Tall model picker sheet shared by computer chat and draft composers.
 ///
 /// The search field, Auto row and harness tabs stay fixed while the list
 /// scrolls.
@@ -52,18 +50,6 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
   final _openLegacy = <String>{};
   ModelPickerTab? _tab;
   String? _explainedId;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.data.value.auto != null) {
-      final routing = Provider.of<ModelRoutingAvailabilityController?>(
-        context,
-        listen: false,
-      );
-      unawaited(routing?.refresh());
-    }
-  }
 
   @override
   void dispose() {
@@ -199,9 +185,6 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
   @override
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
-    final routing =
-        context.watch<ModelRoutingAvailabilityController?>()?.state ??
-        ModelRoutingAvailability.hidden;
     // A fixed height keeps the sheet top still while the keyboard moves; the
     // keyboard only shortens the list. When a landscape keyboard leaves no room
     // for the fixed header and a few rows, the whole content scrolls instead.
@@ -220,7 +203,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
               ),
               child: ValueListenableBuilder<ComposerControlsData>(
                 valueListenable: widget.data,
-                builder: (context, data, _) => _content(data, routing),
+                builder: (context, data, _) => _content(data),
               ),
             ),
           ),
@@ -229,7 +212,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
     );
   }
 
-  Widget _content(ComposerControlsData data, ModelRoutingAvailability routing) {
+  Widget _content(ComposerControlsData data) {
     final rows = data.availableModels;
     final tabs = modelPickerTabs(rows, data.providerAvailability);
     final tab = _currentTab(data, tabs);
@@ -239,7 +222,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
         ? null
         : modelAutoRow(
             selected: auto.selected,
-            availability: routing,
+            availability: ModelRoutingAvailability.available,
             rows: rows,
             providerAvailability: data.providerAvailability,
             lockedHarness: data.lockedHarness,

@@ -51,6 +51,30 @@ final class FirebaseCrashReporter implements CrashReporter {
   }
 }
 
+/// [CrashReporter] that forwards to [inner] only while [isEnabled] returns
+/// true, so turning Crash reports off in Settings stops Dart errors reaching
+/// Crashlytics at once. Checked on every report; [installCrashHandlers] is
+/// unchanged.
+final class GatedCrashReporter implements CrashReporter {
+  /// Creates a reporter that forwards to [inner] while [isEnabled] is true.
+  GatedCrashReporter(this._inner, {required this._isEnabled});
+
+  final CrashReporter _inner;
+  final bool Function() _isEnabled;
+
+  @override
+  void recordFlutterError(FlutterErrorDetails details) {
+    if (!_isEnabled()) return;
+    _inner.recordFlutterError(details);
+  }
+
+  @override
+  void recordError(Object error, StackTrace? stack, {required bool fatal}) {
+    if (!_isEnabled()) return;
+    _inner.recordError(error, stack, fatal: fatal);
+  }
+}
+
 /// Routes uncaught Dart errors to [reporter].
 ///
 /// Installs two global handlers:

@@ -7,7 +7,7 @@ import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/brand/brand.g.dart';
 import 'package:mobile/ui/features/home/home_tab.dart';
-import 'package:mobile/ui/features/home/view_models/recent_chats.dart';
+import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
 
 /// Chat-style side navigation panel for the authenticated mobile app.
 ///
@@ -25,12 +25,13 @@ import 'package:mobile/ui/features/home/view_models/recent_chats.dart';
 /// are pinned along the bottom edge above the list and stay put while the rows
 /// scroll underneath: the Chat button on the left (CAN-2930) and the Settings
 /// button, which opens Settings, on the right. The [settingsHomeTabs] get no
-/// row either; Settings lists them (CAN-3558).
+/// row either; Settings lists them (CAN-3558). Remote Control is the exception:
+/// the shell includes its drawer row only while a session is paired.
 ///
 /// Below the destination rows, and in the same scrolling list, a Recents
-/// section lists [recentChats] (CAN-2931): cloud and Remote Control chats
-/// interwoven by activity, one line each, with a dot for chats that are
-/// unread or waiting for an answer.
+/// section lists [recentChats] (CAN-2931): chats from every connected
+/// computer interwoven by activity, one line each, with a dot for chats that
+/// are unread or waiting for an answer.
 class HomeNavigationDrawer extends StatelessWidget {
   const HomeNavigationDrawer({
     required this.tabs,
@@ -39,7 +40,6 @@ class HomeNavigationDrawer extends StatelessWidget {
     required this.selectedTab,
     required this.onSelected,
     this.recentChats = const [],
-    this.computerName,
     this.recentChatsNotice,
     this.onOpenChat,
     this.onNewChat,
@@ -63,17 +63,13 @@ class HomeNavigationDrawer extends StatelessWidget {
   final ValueChanged<HomeTab> onSelected;
 
   /// Recent chat history, newest first.
-  final List<RecentChatEntry> recentChats;
-
-  /// The paired computer's name, which Recents rows on it are announced with
-  /// (CAN-2932); null says "your computer".
-  final String? computerName;
+  final List<HomeRecentChat> recentChats;
 
   /// Inventory loading, failure, or context-specific empty feedback.
   final Widget? recentChatsNotice;
 
   /// Resumes the tapped chat.
-  final ValueChanged<RecentChatEntry>? onOpenChat;
+  final ValueChanged<HomeRecentChat>? onOpenChat;
 
   /// Opens a new chat from the pinned Chat button; null hides the button.
   final VoidCallback? onNewChat;
@@ -100,7 +96,7 @@ class HomeNavigationDrawer extends StatelessWidget {
   static bool _hasNoRow(HomeTab tab) =>
       tab == HomeTab.chat ||
       tab == HomeTab.account ||
-      settingsHomeTabs.contains(tab);
+      (settingsHomeTabs.contains(tab) && tab != HomeTab.remote);
 
   /// Shared with the shell behind the rounded content card, so its exposed
   /// corners blend into the menu even beyond the panel's bounds.
@@ -300,7 +296,6 @@ class HomeNavigationDrawer extends StatelessWidget {
             _RecentChatRow(
               key: ValueKey('home-recent-${entry.key}'),
               entry: entry,
-              computerName: computerName,
               onTap: onOpenChat == null ? null : () => onOpenChat!(entry),
             ),
         ],
@@ -314,7 +309,6 @@ class HomeNavigationDrawer extends StatelessWidget {
     HomeTab.activity => 'Timeline',
     HomeTab.usage => 'Usage',
     HomeTab.members => 'Members',
-    HomeTab.cloud => 'Cloud chats',
     HomeTab.advisor => 'Orchestrator',
     HomeTab.remote => 'Remote control',
     HomeTab.account => 'Settings',
@@ -327,7 +321,6 @@ class HomeNavigationDrawer extends StatelessWidget {
     HomeTab.activity => CanopyGlyph.electrocardiogram,
     HomeTab.usage => CanopyGlyph.stackedBarChart,
     HomeTab.members => CanopyGlyph.userGroup,
-    HomeTab.cloud => CanopyGlyph.cloud,
     HomeTab.advisor => CanopyGlyph.orbit,
     HomeTab.remote => CanopyGlyph.globe2,
     HomeTab.account => CanopyGlyph.settingsGear2,
@@ -476,31 +469,17 @@ class _SettingsButton extends StatelessWidget {
 
 /// One line of chat history: where it runs, its title, and an attention dot.
 class _RecentChatRow extends StatelessWidget {
-  const _RecentChatRow({
-    required this.entry,
-    this.computerName,
-    this.onTap,
-    super.key,
-  });
+  const _RecentChatRow({required this.entry, this.onTap, super.key});
 
-  final RecentChatEntry entry;
-  final String? computerName;
+  final HomeRecentChat entry;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final status = StatusColors.of(context);
-    final (glyph, location) = switch (entry.location) {
-      RecentChatLocation.cloud => (CanopyGlyph.cloud, 'Cloud chat'),
-      RecentChatLocation.computer => (
-        CanopyGlyph.macbook,
-        switch (computerName) {
-          final name? when name.isNotEmpty => 'Chat on $name',
-          _ => 'Chat on your computer',
-        },
-      ),
-    };
+    const glyph = CanopyGlyph.macbook;
+    final location = 'Chat on ${entry.computerName}';
     final (dotColor, dotLabel) = switch (entry.attention) {
       RecentChatAttention.none => (null, null),
       RecentChatAttention.unread => (status.unread, 'Unread'),

@@ -12,6 +12,19 @@ Future<({String modelId, String? thinkingLevel})?> readDeviceDefaultModel(
   Map<String, dynamic> registry,
 ) async {
   try {
+    if (ref.projectId == 'app-advisor') {
+      final preferences = deviceLinkObject(
+        deviceChatDto(await ipc.invoke('preferences:load')),
+      );
+      final model = preferences['appAdvisorModel'];
+      if (model is! String || model.isEmpty) return null;
+      final aliases = registry['aliases'];
+      final canonical = aliases is Map ? aliases[model] : null;
+      return (
+        modelId: canonical is String ? canonical : model,
+        thinkingLevel: preferences['appAdvisorThinkingLevel'] as String?,
+      );
+    }
     final values = await Future.wait<Object?>([
       ipc.invoke('preferences:load'),
       ipc.invoke('projects:load'),

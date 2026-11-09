@@ -5,7 +5,7 @@ import 'package:mobile/core/design-system/button/canopy_button.dart';
 import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/data/models/composer_work.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/status_colors.dart';
@@ -13,6 +13,7 @@ import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/core/format.dart';
 import 'package:mobile/ui/core/navigation/home_back_handlers.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
+import 'package:mobile/ui/core/chat/widgets/composer_drawer.dart';
 
 /// Mobile rendering of ComposerWorkDrawer. Hosts supply facts and actions;
 /// rows never decide which machine or transport owns the work.
@@ -82,8 +83,6 @@ class _ComposerWorkDrawerState extends State<ComposerWorkDrawer> {
     if (!state.visible) return const SizedBox.shrink();
     final summary = state.summary.isNotEmpty
         ? state.summary
-        : state.loading
-        ? 'Loading work…'
         : 'Background work unavailable';
     final finished = state.items.where((i) => i.finished).toList();
     return PopScope(
@@ -93,14 +92,8 @@ class _ComposerWorkDrawerState extends State<ComposerWorkDrawer> {
       },
       child: CallbackShortcuts(
         bindings: {const SingleActivator(LogicalKeyboardKey.escape): _collapse},
-        child: Container(
+        child: ComposerDrawerSurface(
           key: const ValueKey('composer-work-drawer'),
-          decoration: BoxDecoration(
-            color: colors['bg-depth'],
-            border: Border.all(color: colors.border),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
-          ),
-          clipBehavior: Clip.antiAlias,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -158,16 +151,6 @@ class _ComposerWorkDrawerState extends State<ComposerWorkDrawer> {
                             ))
                               _row(item),
                           ],
-                        if (state.loading && state.items.isEmpty)
-                          Padding(
-                            padding: const EdgeInsets.all(8),
-                            child: Text(
-                              'Loading work…',
-                              style: AppTypography.bodySmall.copyWith(
-                                color: colors.foregroundMuted,
-                              ),
-                            ),
-                          ),
                         for (final error in state.errors)
                           Padding(
                             padding: const EdgeInsets.all(6),

@@ -3,6 +3,7 @@ import 'package:mobile/core/design-system/settings-list/canopy_settings_row.dart
 import 'package:mobile/core/design-system/settings-list/canopy_settings_section.dart';
 import 'package:mobile/ui/core/dimens.dart';
 import 'package:mobile/ui/core/provider_usage_source.dart';
+import 'package:mobile/ui/core/widgets/computer_picker_builder.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/features/account/view_models/usage_limits_policy.dart';
 import 'package:mobile/ui/features/account/views/usage_limits_screen.dart';
@@ -11,8 +12,9 @@ import 'package:provider/provider.dart';
 
 /// Settings' Usage limits card (CAN-3636): one line per provider signed in on
 /// the paired desktop, each showing its most-used window. Renders nothing,
-/// including its bottom gap, unless a live desktop announces provider usage
-/// and a provider is signed in. Opens [UsageLimitsScreen].
+/// including its bottom gap, unless the selected computer supplies usage
+/// and a provider is signed in or OpenCode account metadata is present.
+/// Opens [UsageLimitsScreen].
 class UsageLimitsRow extends StatelessWidget {
   const UsageLimitsRow({super.key});
 
@@ -25,6 +27,9 @@ class UsageLimitsRow extends StatelessWidget {
       ),
     );
     if (lines == null) return const SizedBox.shrink();
+    final hasOpenCode = context.select<ProviderUsageSource, bool>(
+      (source) => source.projection?.openCodeAccounts != null,
+    );
     final theme = Theme.of(context);
     // Large text stacks each line so the bar keeps a usable width.
     final stacked = MediaQuery.textScalerOf(context).scale(14) > 14 * 1.3;
@@ -54,6 +59,13 @@ class UsageLimitsRow extends StatelessWidget {
                           const SizedBox(height: AppDimens.padding8),
                           _SummaryLine(line: line, stacked: stacked),
                         ],
+                        if (hasOpenCode) ...[
+                          const SizedBox(height: AppDimens.padding8),
+                          Text(
+                            'OpenCode provider accounts',
+                            style: theme.textTheme.bodyMedium,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -70,13 +82,16 @@ class UsageLimitsRow extends StatelessWidget {
 
   void _open(BuildContext context) {
     final source = context.read<ProviderUsageSource>();
+    final computerPicker = context.read<ComputerPickerBuilder?>();
     // The root navigator does not see shell-local providers; re-provide the
     // borrowed source without taking ownership of it.
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ListenableProvider<ProviderUsageSource>.value(
           value: source,
-          child: const UsageLimitsScreen(),
+          child: UsageLimitsScreen(
+            computerPicker: computerPicker?.call('Usage limits'),
+          ),
         ),
       ),
     );

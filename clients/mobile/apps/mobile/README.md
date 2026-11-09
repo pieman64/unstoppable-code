@@ -18,7 +18,7 @@ samples, guidance on mobile development, and a full API reference.
 
 ## Computer connect
 
-The staging-only **Computer connect** destination is available in every build
+The **Computer connect** home page is available in every configured build
 mode, including TestFlight release builds. It uses the signed-in personal
 account to discover computers with Remote access enabled. **Connect a computer**
 creates an account API key through the existing API and keeps its ID/secret in
@@ -56,6 +56,34 @@ The native recovery target is
 captures are described in the
 [recovery notes](../../docs/planning/2026-11-01-computer-connect-recovery/README.md).
 
+### File tabs
+
+Files the computer has open in a worktree, such as agent reports opened with
+ShowFiles, appear under Files in the worktree's chat list. They open in the
+shared viewer in `lib/ui/core/file_viewer/`: Markdown formatted with its
+relative images, image files zoomable, and HTML rendered in a webview.
+Reads use the scoped `file:read-content` channel through
+`lib/device_link/files/reader.dart`. That channel caps each file at 5 MiB,
+which V8 can send as up to 10 MiB of UTF-16, so `desktopMaxMessageBytes` is
+12 MiB; the 25 MiB byte channel is avoided because a reply over that limit
+ends the session. At most two reads run at once, so a page with many assets
+leaves room in the session's request budget.
+
+The rendered page loads from a private origin the viewer answers itself,
+with a random host per viewer: a `worktree-file://` scheme on iOS, and an
+intercepted `https://<id>.worktree-file.invalid` host on Android, where
+WebView cannot resolve relative links against a custom scheme. Scripts do not
+run: a script on that origin could read other files under the root, and no
+webview setting closes every channel it could send them through. The webview
+also refuses every request off the page's origin (Android answers them in
+`shouldInterceptRequest`; iOS uses WebKit content rules), each HTML document
+starts with a Content-Security-Policy, dotfiles and `.git` are never served,
+and only a link the person taps opens in the browser. Pages that depend on
+scripts, or load assets from a CDN, render without them. `flutter_inappwebview` is
+pinned to `6.2.0-beta.3`: the stable 6.1.5 Android plugin does not build with
+AGP 9, and the beta adds `javaScriptBridgeEnabled`. Move to a stable release
+once one includes both.
+
 ## Android keyboard inset regression
 
 `ImeInsetsRecovery` requests fresh Android insets after an IME animation ends,
@@ -75,16 +103,11 @@ integration test.
 transport-neutral chat UI: the transcript feed (`ChatFeed`), composer
 (`ChatInput`, `ComposerToolbar`), tool-call rows, the ask-user
 `PendingQuestionCard`, and the pure turn-grouping, turn-timer, tool-display,
-thinking-level, and voice-dictation logic. Remote Control
-(`lib/ui/features/remote/`) and cloud chats (`lib/ui/features/cloud/`) both
-build on it. The two surfaces never depend on each other; `RemoteChatMessage`
-extends the neutral `ChatMessage` to carry its desktop scope.
-The import rules are enforced by review; the architecture boundary test was
-removed in the [golden-only test cut](../../docs/golden-tests.md). Design notes:
-`docs/planning/2026-09-20-mobile-cloud-chats/design.md`. The authoritative
-maintainer reference for the cloud surface (routes, SSE stripping rule,
-sourceKey join, outbox and cursor-epoch invariants, availability gate, and
-what is out of scope) is `docs/mobile-cloud-chats.md`.
+thinking-level, and voice-dictation logic. Remote Control (`lib/ui/features/remote/`) and Computer Connect
+(`lib/ui/features/device_link/`) both build on it. `RemoteChatMessage` extends
+`ChatMessage` to carry its desktop scope. Flutter has no cloud chat client.
+See [Computer Connect](../../docs/mobile-computer-connect.md) for the home
+launcher, protocol choices and selection persistence.
 
 Drafts and unsent sends: `lib/data/models/chat_drafts.dart` (`DraftTarget`,
 `UnsentRecord`, `ChatDraftStore`), `lib/data/services/chat_draft_store.dart`
@@ -214,6 +237,12 @@ projection bookkeeping and the bound chat's side effects.
 golden for this screen.
 
 ## Remote Control compatibility
+
+Remote Control is deprecated in favor of Computer connect. It stays in the
+sidebar only while this account has a paired Remote Control session, including
+while the desktop is offline or reconnecting. Settings keeps a Remote control
+entry in its Organization section (Personal in a Personal context), with a back
+button to Settings. Timeline no longer promotes Remote Control setup.
 
 Mobile keeps the existing desktop and web-server support range. Optional
 capabilities continue to select the available hydration behavior; missing
@@ -386,95 +415,3 @@ The layout and bridge contract tests were removed in the [golden-only test cut](
 The native verification record and remaining
 physical-device checks are in
 [iPhone Duo readiness](../../docs/planning/2026-10-23-iphone-duo/README.md).
-
-## Cloud transcript mapping
-
-CAN-3141 adds the protocol-v1 boundary in
-`lib/data/models/cloud_wire_frame.dart` and the pure
-`CloudTranscriptMapper` in `lib/ui/features/cloud/view_models/`.
-Pass decoded SSE JSON to `parseCloudWireFrame(event, data)`, then call
-`mapper.apply(frame, eventId: frameId)` with the block's own SSE id.
-The parser always returns a classified frame, including `ignored` and
-`unparseable`. Keep one mapper per chat; `messages` exposes shared
-`ChatMessage` rows, while `apply` returns replacement rows keyed by message id.
-`terminalDisposition` reports whether a finish was accepted or stale.
-
-`hydrate(bootstrap)` atomically replaces the transcript using the same tool
-fold as live frames. Live assistant ids use `cloud:`; hydrated ids use Core's
-canonical id (plus a step suffix for split rows). Never reconcile assistant
-rows across these namespaces by text or source key. Ordered content blocks
-preserve text/tool ordering. Legacy flattened rows fall back to tools followed
-by text; Core does not persist artifact timing across content kinds, so reload
-attaches artifacts to the final step.
-
-`CloudTranscriptMessage` adds cloud identity and model/usage/cost metadata
-without changing shared chat models. Turn accounting is present only on the
-terminal sub-message. Missing cost remains pending, and decimal strings stay
-strings. `pendingQuestions` exposes shared `AskUserQuestionState` values;
-results and later user rows clear them. The session layer can call
-`clearPendingQuestions()` after an answer is accepted. Answer delivery and
-secret redaction belong to the structured API/session work, not this mapper.
-
-The wire and mapper tests were removed in the [golden-only test cut](../../docs/golden-tests.md).
-
-## Cloud chat session (CAN-3142)
-
-`CloudChatViewModel` owns the selected protocol-v1 session, an in-memory FIFO
-outbox, stream subscription, and retry timers. `cloud_chat_session.dart` holds
-immutable state, pure bootstrap/acceptance/frame reducers, ordered effects,
-cursor comparison and replay filtering, and runtime invariant checks. The
-existing repository and transcript mapper remain the wire boundaries.
-
-The application supplies the model through `CloudChatScope` above the root
-navigator using `ChangeNotifierProvider.value`, so pushed routes can read it.
-The scope clears the model on account/organization changes and disposes it on
-API-environment changes. Open with the chat's external id and its
-`coreAgentSessionId` as `cursorEpoch`; never invent an epoch from a local clock.
-`open` selects one chat; `close` discards its local state without cancelling
-Core. This slice does not persist the outbox across process termination.
-
-Send with a stable `clientRequestId` and `CloudSendPayload`. Retryable failures
-reuse the same key and payload with `replayHint`; definitive failures remain
-available through `failedSends` and `retrySend`. Terminal-session failures call
-the repository's `fork` / `mode: continue` operation before bootstrapping the
-new epoch and replaying the queue. `continueChat` also supports an explicit
-Continue action without a queued send. A failed continuation requires manual
-retry, preventing a repeated fork loop.
-
-The model observes app lifecycle itself: background detaches, foreground
-resumes from the last cursor or bootstraps stale/unknown state. Tests can inject
-the clock, retry/staleness/request durations and `openStream`, and disable the
-lifecycle observer. Transcript completion is never a substitute for a keyed
-Core terminal event. An unbound or unkeyed terminal forces bootstrap.
-
-The cloud chat tests were removed in the [golden-only test cut](../../docs/golden-tests.md).
-
-## Cloud chat screens (CAN-3143)
-
-`CloudChatsScreen` (the interim `HomeTab.cloud` root) lists cloud workspaces
-and their chats from `CloudChatsViewModel`, which owns the workspaces probe,
-create/rename/archive, and the model catalog projected onto the shared
-`ModelOption` shape. Availability is inferred from that probe: `null` until it
-answers, `false` on a 404, and `visibleHomeTabs` in `authenticated_shell.dart`
-drops the tab only on `false`, so a transient failure never hides a working
-feature. Both models live in `CloudChatScope` above the root navigator, share
-one repository (`buildCloudChatModels` in `main.dart`), and reset together on
-account or organization changes.
-
-`CloudChatScreen` composes `ChatFeed`, `ChatInput`, `ComposerToolbar`, and
-`PendingQuestionCard` from the shared stack over the ambient
-`CloudChatViewModel`. It binds the session post-frame on mount and does not
-close it on pop, so a turn left running keeps streaming and the list shows it
-as working. Composer facts: the model is persisted through `setChatModel`;
-thinking level and Fast mode are screen-local and ride each send payload;
-`planMode` is null. Ask-user answers go out as the next user turn
-(`formatAskUserAnswers`) because cloud has no structured answer route; a
-question flagged `secret` is never sent from mobile and shows a notice
-pointing at the web app instead. A terminal session keeps the composer; the
-next message continues the session in place before sending. Definitive send
-failures (402 credits, 403 model policy) show the server's sentence in a pinned
-banner with Retry. Every client-minted id
-(`clientRequestId`, created chat `externalId`) comes from `randomUuidV4`, as
-the routes reject non-UUIDs.
-
-The cloud chat tests were removed in the [golden-only test cut](../../docs/golden-tests.md).

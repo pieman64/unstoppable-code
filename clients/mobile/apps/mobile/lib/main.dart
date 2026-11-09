@@ -4,15 +4,13 @@ import 'dart:io';
 import 'package:mobile/app/computer_connect_scope.dart';
 
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:provider/single_child_widget.dart';
-import 'package:mobile/app/cloud_chat_prompts.dart';
-import 'package:mobile/app/cloud_turn_prompts.dart';
 import 'package:mobile/app/desktop_app_prompt_binding.dart';
-import 'package:mobile/ui/core/chat/chat_prompt_host.dart';
 import 'package:mobile/ui/features/desktop_app/views/desktop_app_prompt_sheet.dart';
 import 'package:mobile/brand/brand.g.dart';
 import 'package:mobile/config/api_environment.dart';
@@ -21,25 +19,16 @@ import 'package:mobile/config/demo_mode.dart';
 import 'package:mobile/ui/core/layout/fold_safe_area.dart';
 import 'package:mobile/ui/core/layout/ios_fold_region_scope.dart';
 import 'package:mobile/data/models/account_organizations.dart';
-import 'package:mobile/data/models/chat_destination_store.dart';
 import 'package:mobile/data/models/model_picker_tab_store.dart';
-import 'package:mobile/data/models/model_routing_availability.dart';
 import 'package:mobile/data/models/workspace_context.dart';
-import 'package:mobile/data/services/chat_destination_preference_store.dart';
 import 'package:mobile/data/services/model_picker_tab_preference_store.dart';
 import 'package:mobile/data/models/chat_drafts.dart';
-import 'package:mobile/ui/features/auth/guest_draft_hand_off.dart';
+
 import 'package:mobile/data/models/device_registration.dart';
-import 'package:mobile/data/repositories/cloud_chat_repository.dart';
 import 'package:mobile/data/services/chat_draft_store.dart';
-import 'package:mobile/data/services/cloud_api_service.dart';
-import 'package:mobile/data/services/cloud_event_stream.dart';
 import 'package:mobile/data/services/remote_transcript_storage.dart';
 import 'package:mobile/ui/core/chat/chat_draft_store_provider.dart';
 import 'package:mobile/ui/features/remote/views/remote_transcript_cache_scope.dart';
-import 'package:mobile/ui/features/cloud/view_models/cloud_chat_view_model.dart';
-import 'package:mobile/ui/features/cloud/view_models/cloud_chats_view_model.dart';
-import 'package:mobile/ui/features/cloud/views/cloud_chat_scope.dart';
 import 'package:mobile/data/repositories/api_keys_repository.dart';
 import 'package:mobile/data/repositories/auth_repository.dart';
 import 'package:mobile/data/repositories/auth_sources_repository.dart';
@@ -81,7 +70,6 @@ import 'package:mobile/data/services/org_settings_api_service.dart';
 import 'package:mobile/data/services/profile_api_service.dart';
 import 'package:mobile/data/services/remote_transcript_file_storage.dart';
 import 'package:mobile/data/services/push_messaging.dart';
-import 'package:mobile/data/services/desktop_app_prompt_store.dart';
 import 'package:mobile/services/link_sharer.dart';
 import 'package:mobile/ui/core/external_links.dart';
 import 'package:mobile/ui/features/desktop_app/view_models/desktop_app_prompt_controller.dart';
@@ -92,6 +80,8 @@ import 'package:mobile/data/services/sub_teams_api_service.dart';
 import 'package:mobile/data/services/turn_feedback_api_service.dart';
 import 'package:mobile/data/services/two_factor_api_service.dart';
 import 'package:mobile/data/services/theme_preference_store.dart';
+import 'package:mobile/data/services/start_screen_preference_store.dart';
+import 'package:mobile/data/services/usage_data_preference_store.dart';
 import 'package:mobile/data/services/workspace_context_store.dart';
 import 'package:mobile/services/active_chat_tracker.dart';
 import 'package:mobile/services/analytics/posthog_product_analytics.dart';
@@ -106,9 +96,10 @@ import 'package:mobile/services/store_review_launcher.dart';
 import 'package:mobile/ui/core/font_licenses.dart';
 import 'package:mobile/ui/core/launch_view.dart';
 import 'package:mobile/ui/core/app_route_observer.dart';
-import 'package:mobile/ui/core/provider_usage_source.dart';
 import 'package:mobile/ui/core/theme.dart';
 import 'package:mobile/ui/core/theme_controller.dart';
+import 'package:mobile/ui/core/start_screen_controller.dart';
+import 'package:mobile/ui/core/usage_data_controller.dart';
 import 'package:mobile/ui/features/account/view_models/api_keys_view_model.dart';
 import 'package:mobile/ui/features/account/view_models/auth_sources_view_model.dart';
 import 'package:mobile/ui/features/account/view_models/profile_view_model.dart';
@@ -125,7 +116,6 @@ import 'package:mobile/ui/features/home/authenticated_shell.dart';
 import 'package:mobile/ui/features/home/home_tab.dart';
 import 'package:mobile/ui/features/home/home_tab_controller.dart';
 import 'package:mobile/ui/features/chat/views/chat_draft_store_scope.dart';
-import 'package:mobile/ui/core/chat/view_models/model_routing_availability_controller.dart';
 import 'package:mobile/ui/features/home/views/home_shell.dart';
 import 'package:mobile/ui/features/remote/views/no_desktop_session_binding.dart';
 import 'package:mobile/ui/features/members/view_models/incoming_invitations_view_model.dart';
@@ -135,7 +125,6 @@ import 'package:mobile/ui/features/organizations/view_models/org_view_model.dart
 import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
 import 'package:mobile/ui/features/remote/view_models/space_notifications_view_model.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_file_diff_cache.dart';
-import 'package:mobile/ui/features/remote/view_models/remote_provider_usage_source.dart';
 import 'package:mobile/ui/features/remote/view_models/turn_feedback_controller.dart';
 import 'package:mobile/ui/features/remote/views/push_tap_binding.dart';
 import 'package:mobile/ui/features/satisfaction/view_models/satisfaction_prompt_controller.dart';
@@ -320,34 +309,6 @@ OrgRepository _buildOrgRepository() {
   return MockOrgRepository();
 }
 
-/// Builds the [CloudChatRepository] behind the interim Cloud tab and the
-/// selected cloud session. Real API config talks to `/api/cloud/*` with the
-/// signed-in bearer; otherwise the in-memory mock serves demo mode.
-CloudChatRepository _buildCloudChatRepository() => AppConfig.hasAuthApiConfig
-    ? HttpCloudChatRepository(service: CloudApiService(apiClient: _apiClient))
-    : MockCloudChatRepository();
-
-/// The selected cloud session and the workspace list share one repository so
-/// they agree on availability; built once per `CloudChatScope` lifetime.
-///
-/// Public so tests that compose the authenticated shell can wrap it in the
-/// same `CloudChatScope` production uses instead of a hand-copied pair.
-CloudChatModels buildCloudChatModels({
-  void Function(String) onSuccessfulTurn = _recordSuccessfulTurn,
-}) {
-  final repository = _buildCloudChatRepository();
-  return (
-    session: CloudChatViewModel(
-      repository: repository,
-      openStream: AppConfig.hasAuthApiConfig
-          ? CloudEventStream(apiClient: _apiClient).open
-          : (_, {after}) => const Stream.empty(),
-      onSuccessfulTurn: onSuccessfulTurn,
-    ),
-    list: CloudChatsViewModel(repository: repository),
-  );
-}
-
 /// Builds the [RemoteControlRepository] backing the Remote tab.
 ///
 /// Remote Control is device/user-scoped (not org-scoped), so unlike the
@@ -400,7 +361,7 @@ String? get _signedInFeedbackScope {
 /// transcript cache.
 String? _accountScopeOf(AuthViewModel auth) {
   final userId = auth.status == AuthStatus.authenticated ? auth.user?.id : null;
-  return userId == null ? null : accountScopeFor(userId);
+  return userId == null ? null : '${AppConfig.environment.name}:$userId';
 }
 
 Future<ChatDraftStore> _openChatDraftStore(String accountScope) async =>
@@ -579,11 +540,20 @@ final TurnFeedbackController _turnFeedbackController = TurnFeedbackController(
   repository: _buildTurnFeedbackRepository(),
 );
 
+/// The member's Crash reports and Usage analytics choices. `main()` loads
+/// them before Firebase and PostHog start; provided above [MaterialApp]
+/// beside [ThemeController].
+final UsageDataController _usageDataController = UsageDataController(
+  store: SharedPrefsUsageDataPreferenceStore(),
+);
+
 /// App-lifetime product analytics. A no-op until `main()` starts PostHog;
 /// every capture is re-gated on [AppConfig.hasAuthApiConfig] so reviewer
-/// demo mode (entered after launch) captures nothing.
+/// demo mode (entered after launch) captures nothing, and on the member's
+/// Usage analytics choice.
 final AppProductAnalytics _productAnalytics = AppProductAnalytics(
-  isAllowed: () => AppConfig.hasAuthApiConfig,
+  isAllowed: () =>
+      AppConfig.hasAuthApiConfig && _usageDataController.analyticsEnabled,
 );
 
 /// Single [SatisfactionPromptController] for the app's lifetime. Root-provided
@@ -611,6 +581,11 @@ Future<void> main() async {
   // Decoded alongside the rest of startup so the first frame can paint it.
   final launchMarkReady = LaunchView.precacheMark();
   await AppConfig.initialize();
+  // Before Firebase and PostHog start. Crashlytics collection is off natively
+  // until the choice is applied below, so it uploads nothing first. PostHog
+  // captures check the choice from the start; its SDK is set up first and
+  // then disabled while the choice is off.
+  await _usageDataController.load();
 
   // Guarded: a missing native config file (google-services.json /
   // GoogleService-Info.plist) makes this throw. Push notifications and crash
@@ -622,7 +597,47 @@ Future<void> main() async {
     // Crashlytics without an initialized app throws, which would turn a
     // missing config file into a boot failure. Native crashes need no wiring
     // here — the SDK captures them once the platform config is present.
-    installCrashHandlers(reporter: FirebaseCrashReporter());
+    //
+    // Collection is off natively (`firebase_crashlytics_collection_enabled`
+    // in the manifest and Info.plist) so reports from the previous session
+    // upload only once the member's choice is applied here. Crashlytics
+    // persists the value, so later launches start from the last choice.
+    final crashlytics = FirebaseCrashlytics.instance;
+    // Applied one at a time, so a quick on/off can't land out of order.
+    // Reports stored while the member has it off are deleted, so turning it
+    // back on never uploads crashes from that period; a fail-closed
+    // placeholder keeps them.
+    var crashReportsApplied = Future<void>.value();
+    Future<void> applyCrashReports(bool enabled) {
+      final choiceKnown = _usageDataController.crashReportsChoiceKnown;
+      final applied = crashReportsApplied.then((_) async {
+        await crashlytics.setCrashlyticsCollectionEnabled(enabled);
+        if (!enabled && choiceKnown) {
+          await crashlytics.deleteUnsentReports();
+        }
+      });
+      crashReportsApplied = applied.catchError((Object _) {});
+      return applied;
+    }
+
+    // Its own try, so a failure here still installs the Dart handlers below.
+    try {
+      await applyCrashReports(_usageDataController.crashReportsEnabled);
+    } catch (error) {
+      debugPrint('Crashlytics collection setting failed: $error');
+    }
+    _usageDataController.onCrashReportsChanged = (enabled) => unawaited(
+      applyCrashReports(enabled).catchError(
+        (Object error) =>
+            debugPrint('Crashlytics collection setting failed: $error'),
+      ),
+    );
+    installCrashHandlers(
+      reporter: GatedCrashReporter(
+        FirebaseCrashReporter(crashlytics: crashlytics),
+        isEnabled: () => _usageDataController.crashReportsEnabled,
+      ),
+    );
   } catch (error) {
     debugPrint('Firebase.initializeApp failed, continuing without it: $error');
   }
@@ -658,7 +673,18 @@ Future<void> main() async {
         analyticsConfig,
         isStaging: () => AppConfig.isStaging,
       ).then(
-        (analytics) => _productAnalytics.delegate = analytics,
+        (analytics) {
+          _productAnalytics.delegate = analytics;
+          _usageDataController.onAnalyticsChanged = (enabled) =>
+              unawaited(analytics.setEnabled(enabled));
+          // Captures are already gated on the choice; also stop the SDK
+          // itself while it is off. Apply the current choice either way:
+          // the SDK persists an opt-out natively, so a choice turned back on
+          // before setup finished must re-enable it.
+          unawaited(
+            analytics.setEnabled(_usageDataController.analyticsEnabled),
+          );
+        },
         onError: (Object error) =>
             debugPrint('PostHog setup failed, continuing without it: $error'),
       ),
@@ -671,9 +697,13 @@ Future<void> main() async {
   } catch (_) {
     initialThemeMode = ThemeMode.system;
   }
+  final startScreenController = await StartScreenController.restore(
+    SharedPrefsStartScreenPreferenceStore(),
+  );
   await launchMarkReady;
   runApp(
     App(
+      startScreenController: startScreenController,
       themeController: ThemeController(
         store: themeStore,
         initialMode: initialThemeMode,
@@ -717,19 +747,6 @@ List<SingleChildWidget> buildRootProviders() => [
   Provider<ModelPickerTabStore>(
     create: (_) => SharedPrefsModelPickerTabStore(),
   ),
-  Provider<ChatDestinationStore>(
-    create: (_) => SharedPrefsChatDestinationStore(),
-  ),
-  ChangeNotifierProvider<ModelRoutingAvailabilityController>(
-    create: (_) => ModelRoutingAvailabilityController(
-      load: AppConfig.hasAuthApiConfig
-          ? CloudApiService(apiClient: _apiClient).getModelRoutingAvailability
-          : () async => ModelRoutingAvailability.hidden,
-      // The live environment and signed-in user, published by
-      // [PushLifecycleBinding] on every auth notification.
-      accountScope: () => _signedInFeedbackScope,
-    ),
-  ),
   ChangeNotifierProvider<NotificationsViewModel>.value(
     value: _notificationsViewModel,
   ),
@@ -739,10 +756,8 @@ List<SingleChildWidget> buildRootProviders() => [
   ChangeNotifierProvider<SatisfactionPromptController>.value(
     value: _satisfactionPromptController,
   ),
-  Provider<ChatPromptBuilder>.value(value: buildCloudChatPrompts),
   ChangeNotifierProvider<DesktopAppPromptController>(
     create: (_) => DesktopAppPromptController(
-      store: SharedPrefsDesktopAppPromptStore(),
       isActive: () => AppConfig.hasAuthApiConfig,
       downloadUrl: desktopDownloadUrl,
       sharer: SharePlusLinkSharer(),
@@ -759,10 +774,12 @@ class App extends StatelessWidget {
   const App({
     super.key,
     required this.themeController,
+    required this.startScreenController,
     required this.transcriptStorage,
   });
 
   final ThemeController themeController;
+  final StartScreenController startScreenController;
 
   /// Persisted Remote Control chat tails (CAN-3373). One per app run, so a
   /// single ordered queue serves every account: a sign-out's deletion lands
@@ -782,6 +799,12 @@ class App extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<ThemeController>.value(value: themeController),
+        ChangeNotifierProvider<StartScreenController>.value(
+          value: startScreenController,
+        ),
+        ChangeNotifierProvider<UsageDataController>.value(
+          value: _usageDataController,
+        ),
         ...buildRootProviders(),
       ],
       child: ValueListenableBuilder<ApiEnvironment>(
@@ -795,9 +818,6 @@ class App extends StatelessWidget {
                   final live = _buildHttpAuthRepository();
                   return AuthViewModel(
                     repository: live ?? MockAuthRepository(),
-                    // The live repository also serves guest sessions
-                    // (CAN-2872); the mock has none.
-                    guestSessions: live,
                     loadOrganizations: _loadOrganizations,
                     workspaceContextStore: SharedPrefsWorkspaceContextStore(
                       namespace: apiEnvironment.name,
@@ -807,86 +827,61 @@ class App extends StatelessWidget {
                 },
                 child: MultiProvider(
                   providers: [workspaceContextProvider()],
-                  child: CloudChatScope(
-                    create: () => buildCloudChatModels(
-                      onSuccessfulTurn: (key) => unawaited(
-                        recordCloudChatTurn(
-                          key,
-                          desktopApp: context
-                              .read<DesktopAppPromptController>(),
-                          satisfaction: context
-                              .read<SatisfactionPromptController>(),
-                        ),
+                  // Above MaterialApp so routes pushed on the root navigator
+                  // read the same account draft store as the shell.
+                  child: Builder(
+                    builder: (context) => RemoteTranscriptCacheScope(
+                      account: context.read<AuthViewModel>(),
+                      accountScope: () =>
+                          _accountScopeOf(context.read<AuthViewModel>()),
+                      signedOut: () =>
+                          context.read<AuthViewModel>().status ==
+                          AuthStatus.unauthenticated,
+                      create: (accountScope) => RemoteTranscriptCache(
+                        storage: transcriptStorage,
+                        accountScope: accountScope,
                       ),
-                    ),
-                    // Above MaterialApp so routes pushed on the root navigator
-                    // read the same account draft store as the shell.
-                    child: Builder(
-                      builder: (context) => RemoteTranscriptCacheScope(
+                      purge: transcriptStorage.clear,
+                      child: ChatDraftStoreScope(
                         account: context.read<AuthViewModel>(),
                         accountScope: () =>
                             _accountScopeOf(context.read<AuthViewModel>()),
-                        signedOut: () =>
-                            context.read<AuthViewModel>().status ==
-                            AuthStatus.unauthenticated,
-                        create: (accountScope) => RemoteTranscriptCache(
-                          storage: transcriptStorage,
-                          accountScope: accountScope,
-                        ),
-                        purge: transcriptStorage.clear,
-                        child: ChatDraftStoreScope(
-                          account: context.read<AuthViewModel>(),
-                          accountScope: () =>
-                              _accountScopeOf(context.read<AuthViewModel>()),
-                          open: _openChatDraftStore,
-                          onAttach: context
-                              .read<CloudChatViewModel>()
-                              .attachDraftStore,
-                          onDetach: context
-                              .read<CloudChatViewModel>()
-                              .detachDraftStore,
-                          onHandOff: (previous, next) =>
-                              adoptGuestDraftsOnSignIn(
-                                context.read<AuthViewModel>(),
-                                previous,
-                                next,
-                              ),
-                          child: PushLifecycleBinding(
-                            child: Consumer<ThemeController>(
-                              builder: (context, theme, _) => MaterialApp(
-                                title: Brand.displayName,
-                                debugShowCheckedModeBanner: false,
-                                navigatorObservers: [appRouteObserver],
-                                theme: AppTheme.light,
-                                darkTheme: AppTheme.dark,
-                                themeMode: theme.mode,
-                                builder: (context, child) =>
-                                    AnnotatedRegion<SystemUiOverlayStyle>(
-                                      value: SystemUiOverlayStyle(
-                                        systemNavigationBarColor: Theme.of(
+                        open: _openChatDraftStore,
+                        child: PushLifecycleBinding(
+                          child: Consumer<ThemeController>(
+                            builder: (context, theme, _) => MaterialApp(
+                              title: Brand.displayName,
+                              debugShowCheckedModeBanner: false,
+                              navigatorObservers: [appRouteObserver],
+                              theme: AppTheme.light,
+                              darkTheme: AppTheme.dark,
+                              themeMode: theme.mode,
+                              builder: (context, child) =>
+                                  AnnotatedRegion<SystemUiOverlayStyle>(
+                                    value: SystemUiOverlayStyle(
+                                      systemNavigationBarColor: Theme.of(
+                                        context,
+                                      ).scaffoldBackgroundColor,
+                                      systemNavigationBarDividerColor:
+                                          Colors.transparent,
+                                      systemNavigationBarIconBrightness:
+                                          Theme.of(context).brightness ==
+                                              Brightness.dark
+                                          ? Brightness.light
+                                          : Brightness.dark,
+                                      systemNavigationBarContrastEnforced:
+                                          false,
+                                    ),
+                                    child: IosFoldRegionScope(
+                                      child: ColoredBox(
+                                        color: Theme.of(
                                           context,
                                         ).scaffoldBackgroundColor,
-                                        systemNavigationBarDividerColor:
-                                            Colors.transparent,
-                                        systemNavigationBarIconBrightness:
-                                            Theme.of(context).brightness ==
-                                                Brightness.dark
-                                            ? Brightness.light
-                                            : Brightness.dark,
-                                        systemNavigationBarContrastEnforced:
-                                            false,
-                                      ),
-                                      child: IosFoldRegionScope(
-                                        child: ColoredBox(
-                                          color: Theme.of(
-                                            context,
-                                          ).scaffoldBackgroundColor,
-                                          child: FoldSafeArea(child: child!),
-                                        ),
+                                        child: FoldSafeArea(child: child!),
                                       ),
                                     ),
-                                home: const AuthGate(),
-                              ),
+                                  ),
+                              home: const AuthGate(),
                             ),
                           ),
                         ),
@@ -1078,20 +1073,9 @@ class AuthGate extends StatelessWidget {
     // `membersTabForShellMode` rather than being written out per branch here:
     // which of the two org-less screens a mode gets decides whether a
     // create-organization CTA is offered, and that mapping is worth a test.
-    // The interim Cloud entry hides only once the server has answered that
-    // cloud agents are unavailable for this account (CAN-3143). The list model
-    // lives in `CloudChatScope` above this gate, so the probe survives shell
-    // rebuilds and organization switches.
-    final cloudAvailable = context.watch<CloudChatsViewModel>().cloudAvailable;
     final hasTeams = auth.organizations.isNotEmpty;
-    final tabs = visibleHomeTabs(
-      homeTabsForShellMode(mode, hasTeams: hasTeams),
-      cloudAvailable: cloudAvailable,
-    );
-    final landingTab = landingTabForShellMode(
-      mode,
-      cloudAvailable: cloudAvailable,
-    );
+    final tabs = homeTabsForShellMode(mode, hasTeams: hasTeams);
+    final landingTab = landingTabForShellMode(mode);
     final membersTab = membersTabForShellMode(mode, hasTeams: hasTeams);
     final shell = switch (mode) {
       // Membership is unknown, not empty. Offering "create an organization"
@@ -1155,7 +1139,7 @@ class AuthGate extends StatelessWidget {
           ),
         ),
       ),
-      // A guest (CAN-2872) gets cloud chats and a guest Settings page. No
+      // Existing guest sessions get sign-in and a guest Settings page. No
       // org-scoped provider is mounted, Settings swaps the account-security
       // sections, which a guest's session cannot read, for sign-in, and the
       // session is settled as having no desktop, which a guest cannot pair.
@@ -1278,7 +1262,6 @@ List<SingleChildWidget> buildSharedShellProviders() => [
       );
     },
   ),
-  buildProviderUsageSourceProvider(),
   ChangeNotifierProvider<ApiKeysViewModel>(
     create: (_) =>
         ApiKeysViewModel(repository: _buildApiKeysRepository())..load(),
@@ -1297,16 +1280,6 @@ List<SingleChildWidget> buildSharedShellProviders() => [
     )..load(),
   ),
 ];
-
-/// Account's plan usage (CAN-3636), backed by the nearest
-/// [RemoteControlViewModel]. The source borrows that view model and owns
-/// nothing. Public so a test that replaces the view model derives the source
-/// from its replacement the same way.
-SingleChildWidget buildProviderUsageSourceProvider() =>
-    ListenableProvider<ProviderUsageSource>(
-      create: (context) =>
-          RemoteProviderUsageSource(context.read<RemoteControlViewModel>()),
-    );
 
 /// The extra provider the no-organization shell needs. Pending invitations are
 /// user-scoped, so they resolve without an organization.

@@ -4,7 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/data/models/composer_command.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/typography.dart';
@@ -21,6 +21,7 @@ class ComposerCommandMenu extends StatefulWidget {
     required this.actions,
     required this.enabled,
     required this.dollar,
+    this.headerOverlap = 0,
     required this.child,
   });
 
@@ -35,6 +36,10 @@ class ComposerCommandMenu extends StatefulWidget {
 
   /// Whether `$` is a trigger (Codex chats only).
   final bool dollar;
+
+  /// How far a header above runs behind [child]. An open list starts below
+  /// it so the header keeps its full lower edge.
+  final double headerOverlap;
   final Widget child;
 
   @override
@@ -97,7 +102,10 @@ class _ComposerCommandMenuState extends State<ComposerCommandMenu>
                           ? math.max(0, constraints.maxHeight - 112)
                           : double.infinity,
                     ),
-                    child: ComposerCommandList(menu: _menu),
+                    child: Padding(
+                      padding: EdgeInsets.only(top: widget.headerOverlap),
+                      child: ComposerCommandList(menu: _menu),
+                    ),
                   )
                 : const SizedBox.shrink(),
           ),

@@ -7,17 +7,18 @@ import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/ui/core/action_dialogs.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
+import 'package:mobile/ui/core/external_links.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/core/widgets/inline_notice.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/device_link/desktop/saved_connection.dart';
 import '../desktop_link_model.dart';
 import 'account.dart';
 
 /// Saved and available computers share one list in setup and the switcher.
-/// Access keys are created and renewed by [ComputerConnectAccount]; this view
-/// never asks for one.
+/// Relay access comes from the sign-in session through
+/// [ComputerConnectAccount]; this view never asks for a credential.
 class ComputerConnectionView extends StatelessWidget {
   const ComputerConnectionView({super.key, required this.account});
   final ComputerConnectAccount account;
@@ -38,6 +39,9 @@ class ComputerConnectionView extends StatelessWidget {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: account,
     builder: (context, _) {
+      // Local restore decides whether setup is needed. Do not flash setup
+      // before a returning person's saved computer has been read.
+      if (!account.ready && account.busy) return const SizedBox.shrink();
       final theme = Theme.of(context);
       final colors = AppColors.of(context);
       final connection = account.engine.selected.chats.connection;
@@ -52,9 +56,8 @@ class ComputerConnectionView extends StatelessWidget {
               .toList()
             ..sort((a, b) => a.name.compareTo(b.name));
       final error = account.error ?? connection.error;
-      final recover = account.setupUncertain || account.accessStatus == 401;
       final hasRows = saved.isNotEmpty || available.isNotEmpty;
-      final searched = account.ready && account.hasCredential && !account.busy;
+      final searched = account.ready && account.discovered && !account.busy;
       return SingleChildScrollView(
         padding:
             CanopyScaffold.contentPaddingOf(context) +
@@ -103,7 +106,26 @@ class ComputerConnectionView extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 24),
-                if (error != null) ...[
+                if (account.planRequired) ...[
+                  // F1 (CAN-5985): shown only for the token route's
+                  // entitlement denial, which billing-off never returns.
+                  InlineNotice(
+                    key: const ValueKey('computer-connect-plan-required'),
+                    glyph: CanopyGlyph.circleInfo,
+                    state: 'Remote Control needs a Pro plan.',
+                    explanation:
+                        'Upgrade to control your computers from your phone.',
+                    actions: [
+                      (
+                        label: 'See plans',
+                        glyph: CanopyGlyph.arrowUpRight,
+                        onPressed: () =>
+                            openExternalUrl(accountBillingUrl()).ignore(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                ] else if (error != null) ...[
                   InlineNotice(glyph: CanopyGlyph.circleInfo, state: error),
                   const SizedBox(height: 16),
                 ],
@@ -194,12 +216,8 @@ class ComputerConnectionView extends StatelessWidget {
                   const SizedBox(height: 24),
                 ] else ...[
                   if (searched && error == null) ...[
-                    Text(
-                      'No computers found yet.',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.titleSmall,
-                    ),
-                    const SizedBox(height: 12),
+                    const _NoComputersFound(),
+                    const SizedBox(height: 16),
                   ],
                   const _SetupSteps(),
                   const SizedBox(height: 24),
@@ -208,17 +226,13 @@ class ComputerConnectionView extends StatelessWidget {
                   expand: true,
                   label: account.finding
                       ? 'Finding computers…'
-                      : recover || error != null
+                      : error != null || account.accessDenied
                       ? 'Try again'
-                      : !account.hasCredential
+                      : !account.discovered
                       ? 'Connect a computer'
                       : 'Find computers',
                   loading: account.finding,
-                  onPressed: account.busy
-                      ? null
-                      : () => recover
-                            ? account.setUpAgain()
-                            : account.findComputers(),
+                  onPressed: account.busy ? null : account.findComputers,
                 ),
               ],
             ),
@@ -266,13 +280,68 @@ enum _Tone { success, active, warning, neutral }
 
 typedef _Status = ({String label, _Tone tone});
 
+/// A search came back empty: point at Remote Control for people who already
+/// run the desktop app, and at the download for people who don't.
+class _NoComputersFound extends StatelessWidget {
+  const _NoComputersFound();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      key: const ValueKey('computer-connect-none-found'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'No computers found',
+          textAlign: TextAlign.center,
+          style: theme.textTheme.titleSmall,
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'If you already have the desktop app, open Remote Control from its '
+          'account menu and choose Enable. Otherwise, download it or build it '
+          'from source.',
+          textAlign: TextAlign.center,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: AppColors.of(context).foregroundSecondary,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 8,
+          children: [
+            CanopyButton(
+              key: const ValueKey('computer-connect-download'),
+              label: 'Download the desktop app',
+              glyph: CanopyGlyph.squareArrowTopRight,
+              variant: CanopyButtonVariant.inline,
+              onPressed: () => unawaited(openExternalUrl(desktopDownloadUrl())),
+            ),
+            CanopyButton(
+              key: const ValueKey('computer-connect-github'),
+              label: 'View on GitHub',
+              glyph: CanopyGlyph.github,
+              variant: CanopyButtonVariant.inline,
+              onPressed: () => unawaited(openExternalUrl(sourceRepositoryUrl)),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 /// The three things a person does on the desktop before a computer appears.
 class _SetupSteps extends StatelessWidget {
   const _SetupSteps();
 
   static const _steps = [
     'Open ${Brand.productDisplayName} on your computer',
-    'In Settings, turn on Remote access',
+    // Matches the desktop's single opt-in and the web's connect list
+    // (CAN-5985): the account menu's Remote Control dialog turns it on.
+    'In the account menu, choose Remote Control, then Enable',
     'Sign in with this account on both devices',
   ];
 

@@ -1,0 +1,48 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
+import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
+import 'account.dart';
+import 'computer_switcher.dart';
+import 'connection_view.dart';
+
+/// Keeps a detail page's title and selected computer together in its app bar.
+class ComputerDetailsPicker extends StatelessWidget {
+  const ComputerDetailsPicker({
+    super.key,
+    required this.account,
+    required this.title,
+  });
+  final ComputerConnectAccount account;
+  final String title;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: account,
+    builder: (context, _) => ComputerSwitcher(
+      account: account,
+      title: title,
+      label:
+          account.engine.selected.chats.connection.host?['name'] as String? ??
+          account.selectedName ??
+          'Choose a computer',
+      onManage: () => unawaited(showComputerConnections(context, account)),
+    ),
+  );
+}
+
+/// Home and detail pickers open the same management page on their navigator.
+Future<void> showComputerConnections(
+  BuildContext context,
+  ComputerConnectAccount account,
+) => Navigator.of(context).push<void>(
+  MaterialPageRoute(
+    builder: (_) => CanopyScaffold(
+      appBar: const CanopyAppBar(
+        content: Text('Computers'),
+        automaticallyImplyLeading: true,
+      ),
+      body: ComputerConnectionView(account: account),
+    ),
+  ),
+);

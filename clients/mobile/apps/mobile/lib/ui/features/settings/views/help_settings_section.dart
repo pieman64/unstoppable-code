@@ -39,10 +39,6 @@ class OpenSourceRepositoryRow extends StatelessWidget {
     key: const ValueKey('open-source-repository'),
     glyph: CanopyGlyph.github,
     title: 'We are open source! Check our repository',
-    onTap: () => unawaited(
-      openExternalUrl(
-        'https://github.com/unstoppable-si/unstoppable-code/tree/main',
-      ),
-    ),
+    onTap: () => unawaited(openExternalUrl(sourceRepositoryUrl)),
   );
 }

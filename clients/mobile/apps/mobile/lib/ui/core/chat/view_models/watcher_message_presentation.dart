@@ -29,7 +29,7 @@ import 'visible_message_parts.dart';
 }
 
 /// A fired watcher's message whose event block the host stored apart from its
-/// visible [notice], as cloud chats deliver it. The host's [marker] names the
+/// visible [notice], when the host supplies it. The host's [marker] names the
 /// watcher when it sent one; otherwise the stored [event] block does. A block
 /// inline in the text alone could have been typed by anyone, so it is only
 /// hidden and earns no watcher title.

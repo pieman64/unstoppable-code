@@ -7,7 +7,7 @@ import '../chats_view_model.dart';
 
 /// The same model picker, effort panel, Plan action and Stop as Remote Control.
 ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
-  final tab = model.state?.tab ?? {};
+  final tab = model.composerSettings.tab;
   final ref = model.state?.ref;
   final settings = model.settings;
   final catalog = settings.scopeKey == ref?.key
@@ -42,16 +42,20 @@ ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
     fastMode:
         config?['fastMode'] as bool? ?? tab['codexFastModeEnabled'] as bool?,
   );
-  final enabled = model.canSend;
+  final enabled = model.canChangeSettings;
   Future<bool> changeEffort(String value) async {
     if (ref == null || !enabled) return false;
-    await model.changeSetting(
-      () => model.settings.patch(ref, {
+    return model.changeSetting(
+      ref,
+      {
         'thinkingLevel': value,
-        'modelConfig': {...?config, 'thinkingLevel': value},
+        'modelConfig': {'thinkingLevel': value},
+      },
+      (tab) => model.settings.patch(ref, {
+        'thinkingLevel': value,
+        'modelConfig': tab['modelConfig'],
       }),
     );
-    return model.settingsError == null;
   }
 
   return ComposerControlsData(
@@ -73,19 +77,29 @@ ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
             selected: tab['modelSelectionMode'] == 'auto',
             onSelect: () {
               if (enabled) {
-                unawaited(model.changeSetting(() => settings.selectAuto(ref)));
+                unawaited(
+                  model.changeSetting(ref, {
+                    'modelSelectionMode': 'auto',
+                  }, (_) => settings.selectAuto(ref)),
+                );
               }
             },
           )
         : null,
-    planMode: (harness == 'claude' || harness == 'codex') && ref != null
+    // Orchestrator execution forces normal mode on the host.
+    planMode:
+        ref != null &&
+            ref.projectId != 'app-advisor' &&
+            (harness == 'claude' || harness == 'codex')
         ? PlanModeControl(
             enabled: tab['planMode'] == true,
             onToggle: () {
               if (enabled) {
                 unawaited(
                   model.changeSetting(
-                    () => model.settings.patch(ref, {
+                    ref,
+                    {'planMode': tab['planMode'] != true},
+                    (_) => model.settings.patch(ref, {
                       'planMode': tab['planMode'] != true,
                     }),
                   ),
@@ -111,9 +125,13 @@ ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
             final choice = catalog.where((m) => m.id == id).firstOrNull;
             if (choice != null) {
               unawaited(
-                model.changeSetting(
-                  () => model.settings.selectModel(ref, choice),
-                ),
+                model.changeSetting(ref, {
+                  'model': choice.id,
+                  'providerType': choice.provider,
+                  if (choice.harness != null)
+                    'executionHarness': choice.harness,
+                  'modelSelectionMode': 'manual',
+                }, (_) => model.settings.selectModel(ref, choice)),
               );
             }
           },
@@ -124,13 +142,17 @@ ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
         final fast = effort.speed != CanopyEffortSpeed.fast;
         unawaited(
           model.changeSetting(
-            () => model.settings.patch(ref, {
+            ref,
+            {
               'codexFastModeEnabled': fast,
               'modelConfig': {
-                ...?config,
                 'speed': fast ? 'fast' : 'standard',
                 'fastMode': fast,
               },
+            },
+            (tab) => model.settings.patch(ref, {
+              'codexFastModeEnabled': fast,
+              'modelConfig': tab['modelConfig'],
             }),
           ),
         );

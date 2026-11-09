@@ -341,8 +341,7 @@ class _PushTapBindingState extends State<PushTapBinding> {
     // Remote is named explicitly rather than taken as the shell's first tab or
     // its `HomeTabController.initialTab`: this is a Remote Control
     // notification that could not resolve to a chat, so it should lead to
-    // Remote independently of menu order (the interim Cloud entry now sits
-    // first, CAN-3143) and of the configured landing destination.
+    // Remote independently of menu order and the configured landing destination.
     //
     // In Personal, Activity shows the Personal organization's feed
     // (CAN-3715). Without one it asks the user to choose an organization

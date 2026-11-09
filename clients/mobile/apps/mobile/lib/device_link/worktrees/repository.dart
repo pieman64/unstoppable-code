@@ -11,16 +11,28 @@ export 'models.dart';
 
 /// Reads the existing desktop workspace and chat authorities. No local writer.
 final class DeviceWorktreesRepository {
-  DeviceWorktreesRepository(this.ipc);
+  DeviceWorktreesRepository(this.ipc, {this.onChanged});
   final DesktopIpc ipc;
+  final void Function()? onChanged;
   List<DeviceWorktree> worktrees = [];
   List<DeviceProject> projects = [];
   Set<String> codeProjectIds = {};
+  bool hasInventory = false;
+  // Keep only the latest roster's chat summaries, local to this computer.
+  // Invalidated ownership still hides all public rows until a fresh read.
+  Map<String, DeviceWorktree> _cachedWorktrees = {};
 
   /// Worktree keys with a code-graph build in flight. Desktop also learns
   /// this only from `code-graph:build-status-changed` pushes.
   final codeGraphBuilding = <String>{};
   int _generation = 0;
+
+  /// Keeps the last roster for display while reconnecting. It is not fresh
+  /// ownership evidence, and replies from the old connection cannot change it.
+  void pause() {
+    _generation++;
+    codeGraphBuilding.clear();
+  }
 
   /// Drops in-flight reads and push-only state. Builds that finish while
   /// disconnected would otherwise stay marked as building.
@@ -32,6 +44,7 @@ final class DeviceWorktreesRepository {
   /// Retires ownership evidence without losing live build transitions.
   void invalidateInventory() {
     _generation++;
+    hasInventory = false;
     projects = [];
     worktrees = [];
     codeProjectIds = {};
@@ -54,6 +67,7 @@ final class DeviceWorktreesRepository {
       _optional('desktop:session-snapshot'),
       _optional('pipelines:list-executions'),
     ]);
+    if (generation != _generation) return;
     final result = deviceLinkObject(deviceChatDto(reads[0]));
     final snapshot = _map(deviceChatDto(reads[1]));
     final workspaceOwners = {
@@ -115,36 +129,52 @@ final class DeviceWorktreesRepository {
         final key =
             '${deviceLinkString(project, 'id')}/${deviceLinkString(row, 'id')}';
         final projection = projections[key];
-        next.add(
-          DeviceWorktree(
-            projectId: deviceLinkString(project, 'id'),
-            projectName: deviceLinkString(project, 'name'),
-            id: deviceLinkString(row, 'id'),
-            // The projection applies desktop's title rules ("New worktree",
-            // branch display mappings).
-            name:
-                (projection?['label'] ??
-                        projection?['branch'] ??
-                        row['label'] ??
-                        row['branchName'] ??
-                        'Worktree')
-                    as String,
-            savedStatus: row['status'] as String?,
-            projection: projection,
-            pipelineStatus: pipelines[key],
-          ),
+        final worktree = DeviceWorktree(
+          projectId: deviceLinkString(project, 'id'),
+          projectName: deviceLinkString(project, 'name'),
+          id: deviceLinkString(row, 'id'),
+          // The projection applies desktop's title rules ("New worktree",
+          // branch display mappings).
+          name:
+              (projection?['label'] ??
+                      projection?['branch'] ??
+                      row['label'] ??
+                      row['branchName'] ??
+                      'Worktree')
+                  as String,
+          savedStatus: row['status'] as String?,
+          projection: projection,
+          pipelineStatus: pipelines[key],
         );
+        final cached = _cachedWorktrees[key];
+        if (cached != null) {
+          worktree
+            ..chats = List.of(cached.chats)
+            ..activeChatId = cached.activeChatId
+            ..status = cached.status
+            ..unread = cached.unread
+            ..pendingQuestion = cached.pendingQuestion
+            ..pendingApproval = cached.pendingApproval
+            ..isStreaming = cached.isStreaming;
+          worktree.workingChats.addAll(cached.workingChats);
+        }
+        next.add(worktree);
       }
     }
+    // Fresh inventory and owner evidence are enough to display the roster.
+    // Chat details can take many round trips on computers with many worktrees.
+    worktrees = next;
+    projects = nextProjects;
+    codeProjectIds = codeProjects;
+    hasInventory = true;
+    _cachedWorktrees = {for (final worktree in next) worktree.key: worktree};
+    onChanged?.call();
     // Respect the session's eight-request limit and avoid unbounded fan-out.
     for (var offset = 0; offset < next.length; offset += 3) {
       if (generation != _generation) return;
       await Future.wait(next.skip(offset).take(3).map(load));
-    }
-    if (generation == _generation) {
-      worktrees = next;
-      projects = nextProjects;
-      codeProjectIds = codeProjects;
+      if (generation != _generation) return;
+      onChanged?.call();
     }
   }
 
@@ -162,14 +192,18 @@ final class DeviceWorktreesRepository {
       value is Map<String, dynamic> ? value : const {};
 
   Future<void> load(DeviceWorktree worktree) async {
+    final generation = _generation;
     try {
       final snapshot = deviceLinkObject(
         deviceChatDto(await ipc.invoke('chat:get-state', [worktree.scope])),
       );
+      if (generation != _generation) return;
       final tabs = deviceLinkObject(snapshot['tabsFile']);
-      worktree.chats = (tabs['tabs'] as List)
+      final openTabs = (tabs['tabs'] as List)
           .map(deviceLinkObject)
           .where((t) => t['kind'] != 'file' && t['archivedAt'] == null)
+          .toList();
+      worktree.chats = openTabs
           .map(
             (t) => DeviceChatRef(
               projectId: worktree.projectId,
@@ -180,9 +214,7 @@ final class DeviceWorktreesRepository {
           )
           .toList();
       worktree.activeChatId = tabs['activeTabId'] as String?;
-      worktree.unread = (tabs['tabs'] as List).whereType<Map>().any(
-        (t) => t['kind'] != 'file' && t['unread'] == true,
-      );
+      worktree.unread = openTabs.any((tab) => tab['unread'] == true);
       worktree.workingChats
         ..clear()
         ..addAll([
@@ -232,7 +264,7 @@ final class DeviceWorktreesRepository {
           ? 'Done'
           : 'Idle';
     } catch (_) {
-      worktree.status = 'Unavailable';
+      if (generation == _generation) worktree.status = 'Unavailable';
     }
   }
 }
