@@ -180,6 +180,5 @@ describe('the worker-owned Claude runtime', () => {
     await expect(workerProviderRuntimeFor('claude')).resolves.toBe(fake);
     setWorkerProviderRuntimeForTests('claude', undefined);
     await expect(workerProviderRuntimeFor('claude')).resolves.toBe(real);
-    await expect(workerProviderRuntimeFor('cursor')).resolves.toBeUndefined();
   });
 });

@@ -6,7 +6,7 @@ import type {
   BrowserInputSnapshotResponse,
   BrowserLocatorCandidate,
   BrowserRectangle,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import {
   accessibleName,
   attributeForNode,

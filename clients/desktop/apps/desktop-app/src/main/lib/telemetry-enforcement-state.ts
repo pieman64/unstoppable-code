@@ -21,7 +21,9 @@
 
 import {
   resolveTelemetryEnforcementByOrganization,
+  resolveUsageDataProhibitionByOrganization,
   type OrgTelemetryEnforcement,
+  type OrgUsageDataProhibition,
 } from '@canopy/desktop-shared/lib/telemetry-enforcement';
 import { getObservabilityService } from '../observability';
 import {
@@ -32,6 +34,11 @@ import {
 export type StoredTelemetryEnforcementByOrganization = ReadonlyMap<
   string,
   OrgTelemetryEnforcement
+>;
+
+export type StoredUsageDataProhibitionByOrganization = ReadonlyMap<
+  string,
+  OrgUsageDataProhibition
 >;
 
 export function emptyTelemetryEnforcementByOrganization(): StoredTelemetryEnforcementByOrganization {
@@ -85,4 +92,25 @@ export async function loadStoredTelemetryEnforcementByOrganization(): Promise<St
   }
   const account = toPublicCanopyCloudAccountState(result.entry);
   return resolveTelemetryEnforcementByOrganization(account);
+}
+
+/**
+ * Read the persisted cloud account and resolve each organization's
+ * `usage-data` prohibitions. Signed-out resolves to an empty map; an
+ * unavailable or failed read throws so the usage-data policy can fail closed.
+ */
+export async function loadStoredUsageDataProhibitionByOrganization(): Promise<StoredUsageDataProhibitionByOrganization> {
+  const result = await readCanopyCloudAccountWithStatus();
+  if (result.status === 'unavailable') {
+    throw new Error('Secure account storage is unavailable.');
+  }
+  if (result.status === 'error') {
+    throw result.error;
+  }
+  if (result.entry?.telemetryEnforcementUnavailable === true) {
+    throw new Error('Organization usage-data policy is unavailable.');
+  }
+  return resolveUsageDataProhibitionByOrganization(
+    toPublicCanopyCloudAccountState(result.entry),
+  );
 }

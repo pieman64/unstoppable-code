@@ -1,4 +1,5 @@
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import { useFeatureFlagsStore } from './featureFlagsStore';
 import { useWorkspaceContextStore } from './workspaceContextStore';
 // Renderer-side mirror of the persisted automations (triggered activities)
@@ -59,8 +60,15 @@ export interface AutomationsStore {
   updateActivity: (
     request: AutomationUpdateRequest,
   ) => Promise<AutomationMutationResponse>;
-  /** Forward a delete request to the main process. */
-  deleteActivity: (id: string) => Promise<AutomationMutationResponse>;
+  /**
+   * Forward a delete request to the main process. `keepPipeline` keeps a
+   * workflow page whose last schedule this is; `workflow` deletes the whole
+   * workflow page this record schedules (CAN-5782).
+   */
+  deleteActivity: (
+    id: string,
+    options?: { keepPipeline?: boolean; workflow?: boolean },
+  ) => Promise<AutomationMutationResponse>;
   /** Forward a run-now request to the main process. */
   runNow: (id: string) => Promise<AutomationMutationResponse>;
   /** Cancel a run that has not dispatched its action yet. */
@@ -221,8 +229,12 @@ export const useAutomationsStore = create<AutomationsStore>((set, get) => ({
   updateActivity: async (request): Promise<AutomationMutationResponse> => {
     return await runMutation(set, (api) => api.update(request));
   },
-  deleteActivity: async (id): Promise<AutomationMutationResponse> => {
-    const payload: AutomationDeleteRequest = { id };
+  deleteActivity: async (id, options): Promise<AutomationMutationResponse> => {
+    const payload: AutomationDeleteRequest = {
+      id,
+      ...(options?.keepPipeline ? { keepPipeline: true } : {}),
+      ...(options?.workflow ? { workflow: true } : {}),
+    };
     return await runMutation(set, (api) => api.delete(payload));
   },
   runNow: async (id): Promise<AutomationMutationResponse> => {
@@ -287,7 +299,12 @@ async function runMutation(
   } catch (error: unknown) {
     const message =
       error instanceof Error ? error.message : 'Failed to update automations.';
-    const result: AutomationMutationResponse = { ok: false, error: message };
+    const coworkFolderMissing = readCoworkFolderMissing(error);
+    const result: AutomationMutationResponse = {
+      ok: false,
+      error: message,
+      ...(coworkFolderMissing ? { coworkFolderMissing } : {}),
+    };
     set({ mutationError: message });
     return result;
   }

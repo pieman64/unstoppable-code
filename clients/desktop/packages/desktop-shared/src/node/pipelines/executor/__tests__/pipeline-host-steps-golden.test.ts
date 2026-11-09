@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import {
   executePipeline,
   rerunPipelineExecution,

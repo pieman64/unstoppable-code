@@ -19,7 +19,7 @@ import {
 import type {
   BrowserTransferError,
   BrowserTransferErrorCode,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import { sanitizeDownloadName } from './download-name';
 import { bindFolder, type CommitOutcome } from './folder-commit';
 

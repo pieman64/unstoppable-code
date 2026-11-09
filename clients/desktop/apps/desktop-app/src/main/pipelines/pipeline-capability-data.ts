@@ -12,7 +12,7 @@ import type {
   PipelineData,
   PipelineIndexEntry,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { parseShareRemoteMetadata } from '@canopy/protocol/sharing';
 
 interface ParsedPipelineCacheEntry {

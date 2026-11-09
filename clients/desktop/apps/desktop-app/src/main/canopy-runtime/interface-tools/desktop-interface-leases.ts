@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import {
+  interfaceToolDescriptor,
+  type CanopyCallerDescriptor,
+  type InterfaceToolName,
+} from '@canopy/protocol/canopy-core';
 import { canopyPermissionDeniedError } from '@canopy/core-runtime';
 import type {
   InterfaceToolCall,
@@ -9,8 +13,10 @@ import type {
 } from '@canopy/core-runtime/node/client';
 import {
   getAppAdvisorRendererToolRequestOriginChatId,
+  isPipelineEditorRendererToolRequest,
   type AppAdvisorRendererToolCancellation,
   type AppAdvisorRendererToolRequest,
+  type PipelineEditorRendererToolRequest,
   type ShowFilesRendererRequest,
 } from '@canopy/desktop-shared/types';
 import type { InterimInMemoryBindingOptions } from '../renderer-relay/interim-in-memory-binding';
@@ -41,6 +47,22 @@ export interface DesktopInterfaceLeases {
     senderWebContentsId: number,
     response: unknown,
   ): InterfaceToolReplyDisposition;
+  /** CAN-4126: the live lease id of this WebContents, or null. */
+  leaseOf(webContentsId: number): string | null;
+  /**
+   * CAN-5823: a lease the host opens for a remote-control bridge window, on
+   * behalf of the controller whose window it replays. The tools register
+   * through the registry under the same rules as a renderer's own. Returns
+   * the lease id.
+   */
+  openRemote(input: {
+    webContentsId: number;
+    surface: 'main' | 'app-advisor';
+    controllerDeviceId: string;
+    tools: readonly InterfaceToolName[];
+  }): string;
+  /** Ends the lease of this WebContents, if it holds one. */
+  end(webContentsId: number): void;
   /** Ends every desktop lease. */
   dispose(): void;
 }
@@ -55,6 +77,11 @@ export interface DesktopInterfaceLeasesOptions {
     target: InterfaceLeaseWebContents,
     cancellation: AppAdvisorRendererToolCancellation,
   ) => boolean;
+  /** CAN-5822: Pipeline Editor calls ride `pipeline-editor:tool-request`, which has no cancellation. */
+  sendPipelineEditor: (
+    target: InterfaceLeaseWebContents,
+    request: PipelineEditorRendererToolRequest,
+  ) => boolean;
   newLeaseId?: (
     surface: 'main' | 'app-advisor',
     webContentsId: number,
@@ -64,6 +91,8 @@ export interface DesktopInterfaceLeasesOptions {
 interface DesktopLease {
   readonly leaseId: string;
   readonly surface: 'main' | 'app-advisor';
+  /** The controller a remote-control bridge lease serves; absent for this computer's windows. */
+  readonly audience?: string;
   readonly listeners: Map<LeaseEvent, () => void>;
   /** callId -> origin chat id of a delivered call. */
   readonly origins: Map<string, string | undefined>;
@@ -89,6 +118,19 @@ function isShowFilesRendererRequest(
     typeof origin.worktreeId === 'string' &&
     typeof origin.chatTabId === 'string'
   );
+}
+
+const PIPELINE_EDITOR_TOOL_PREFIX = 'ui.pipeline_editor.';
+
+function pipelineEditorRequestFor(
+  call: InterfaceToolCall,
+): PipelineEditorRendererToolRequest | null {
+  const candidate: unknown = {
+    ...call.input,
+    kind: call.toolName.slice(PIPELINE_EDITOR_TOOL_PREFIX.length),
+    requestId: call.callId,
+  };
+  return isPipelineEditorRendererToolRequest(candidate) ? candidate : null;
 }
 
 function rendererRequestFor(
@@ -167,7 +209,13 @@ function trustedSurface(
 export function createDesktopInterfaceLeases(
   options: DesktopInterfaceLeasesOptions,
 ): DesktopInterfaceLeases {
-  const { registry, webContentsFromId, send, sendCancellation } = options;
+  const {
+    registry,
+    webContentsFromId,
+    send,
+    sendCancellation,
+    sendPipelineEditor,
+  } = options;
   const newLeaseId =
     options.newLeaseId ??
     ((surface, id): string =>
@@ -189,10 +237,22 @@ export function createDesktopInterfaceLeases(
   const portFor = (
     webContentsId: number,
     origins: DesktopLease['origins'],
+    pipelineEditorCalls = new Set<string>(),
   ): InterfaceToolCallPort => ({
     deliver: (call) => {
       const target = webContentsFromId(webContentsId);
       if (!target || target.isDestroyed()) return false;
+      if (call.toolName.startsWith(PIPELINE_EDITOR_TOOL_PREFIX)) {
+        const request = pipelineEditorRequestFor(call);
+        if (!request) return false;
+        pipelineEditorCalls.add(call.callId);
+        while (pipelineEditorCalls.size > MAX_TRACKED_ORIGINS) {
+          const oldest = pipelineEditorCalls.values().next().value;
+          if (oldest === undefined) break;
+          pipelineEditorCalls.delete(oldest);
+        }
+        return sendPipelineEditor(target, request);
+      }
       const request = rendererRequestFor(call);
       if (!request) return false;
       origins.set(
@@ -207,6 +267,8 @@ export function createDesktopInterfaceLeases(
       return send(target, request);
     },
     cancel: (callId) => {
+      // The Pipeline Editor channel has no cancellation.
+      if (pipelineEditorCalls.delete(callId)) return;
       const originChatId = origins.get(callId);
       origins.delete(callId);
       const target = webContentsFromId(webContentsId);
@@ -221,21 +283,31 @@ export function createDesktopInterfaceLeases(
   const openLease = (
     surface: 'main' | 'app-advisor',
     webContentsId: number,
+    audience?: string,
   ): DesktopLease => {
     const target = webContentsFromId(webContentsId);
     if (!target || target.isDestroyed())
       throw canopyPermissionDeniedError(
         'Untrusted interface tool registration.',
       );
-    const leaseId = newLeaseId(surface, webContentsId);
+    const leaseId =
+      audience === undefined
+        ? newLeaseId(surface, webContentsId)
+        : `remote-control:${audience}:${surface}:${webContentsId}:${randomUUID()}`;
     const origins: DesktopLease['origins'] = new Map();
     registry.openLease(
-      { leaseId, surface, interfaceKind: 'desktop' },
+      {
+        leaseId,
+        surface,
+        interfaceKind: 'desktop',
+        ...(audience === undefined ? {} : { audience }),
+      },
       portFor(webContentsId, origins),
     );
     const lease: DesktopLease = {
       leaseId,
       surface,
+      ...(audience === undefined ? {} : { audience }),
       listeners: new Map(),
       origins,
     };
@@ -254,6 +326,11 @@ export function createDesktopInterfaceLeases(
     register: (caller, params, webContentsId) => {
       const surface = trustedSurface(caller, webContentsId);
       let lease = leases.get(webContentsId);
+      // A bridge's tools are the host's to register, never its page's.
+      if (lease?.audience !== undefined)
+        throw canopyPermissionDeniedError(
+          'Untrusted interface tool registration.',
+        );
       if (lease && lease.surface !== surface) {
         endLease(webContentsId);
         lease = undefined;
@@ -264,6 +341,10 @@ export function createDesktopInterfaceLeases(
     unregister: (caller, params, webContentsId) => {
       trustedSurface(caller, webContentsId);
       const lease = leases.get(webContentsId);
+      if (lease?.audience !== undefined)
+        throw canopyPermissionDeniedError(
+          'Untrusted interface tool registration.',
+        );
       return registry.unregister(lease?.leaseId ?? '', params);
     },
     reply: (senderWebContentsId, response) => {
@@ -279,6 +360,22 @@ export function createDesktopInterfaceLeases(
         lease?.origins.delete(response.requestId);
       return disposition;
     },
+    leaseOf: (webContentsId) => leases.get(webContentsId)?.leaseId ?? null,
+    openRemote: ({ webContentsId, surface, controllerDeviceId, tools }) => {
+      endLease(webContentsId);
+      const lease = openLease(surface, webContentsId, controllerDeviceId);
+      try {
+        registry.register(lease.leaseId, {
+          tools: tools.map(interfaceToolDescriptor),
+          _meta: { idempotencyKey: `remote-control:${randomUUID()}` },
+        });
+      } catch (error) {
+        endLease(webContentsId);
+        throw error;
+      }
+      return lease.leaseId;
+    },
+    end: (webContentsId) => endLease(webContentsId),
     dispose: () => {
       for (const webContentsId of [...leases.keys()]) endLease(webContentsId);
     },

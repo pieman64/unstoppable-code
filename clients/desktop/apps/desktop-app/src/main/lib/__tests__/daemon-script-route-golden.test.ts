@@ -1,7 +1,7 @@
 /**
- * CAN-5087 flag-forced-on golden: the real `script:run` and `script:stop`
- * IPC handlers, desktop dispatcher, CoreScriptRuns, worker.script adapter and
- * route, with the `daemon-scripts` experiment on, over a daemon double: a
+ * CAN-5087 golden: the real `script:run` and `script:stop` IPC handlers,
+ * desktop dispatcher, CoreScriptRuns, worker.script adapter and route, which
+ * reads no Labs experiment (CAN-5960), over a daemon double: a
  * second script worker behind the real handlers and output stream. The real
  * daemon is covered by script-conformance.
  */
@@ -31,13 +31,12 @@ jest.mock('@canopy/core-platform', () => ({
   ...jest.requireActual<typeof CorePlatform>('@canopy/core-platform'),
   hostPlatformOperatingSystem: (): string => mockPlatform,
 }));
-let mockExperiment = true;
+// CAN-5960: the route never reads Labs, so a snapshot that is never ready
+// changes nothing.
+const mockLabsSnapshot = jest.fn(() => ({ ready: false, experiments: [] }));
 jest.mock('../../services/labs-experiments-runtime', () => ({
   getLabsExperimentsService: (): unknown => ({
-    getSnapshot: (): unknown => ({
-      ready: true,
-      experiments: [{ id: 'daemon-scripts', enabled: mockExperiment }],
-    }),
+    getSnapshot: (): unknown => mockLabsSnapshot(),
   }),
 }));
 let mockBridge = false;
@@ -505,7 +504,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   mockPlatform = 'darwin';
-  mockExperiment = true;
+  mockLabsSnapshot.mockClear();
   mockBridge = false;
   mockNoteFallback.mockReset();
   mkdirSync(join(root, 'ledger'));
@@ -607,8 +606,8 @@ function executes(): DaemonCall[] {
 }
 
 describePosix('daemon script route (CAN-5087)', () => {
-  it.each(['darwin', 'linux'])(
-    "routes a local window's run on macOS and Linux (%s)",
+  it.each(['darwin', 'linux', 'win32'])(
+    "routes a local window's run on macOS, Linux and Windows (%s)",
     async (platform) => {
       mockPlatform = platform;
       const local = jest.spyOn(desktopScriptWorker, 'execute');
@@ -640,6 +639,7 @@ describePosix('daemon script route (CAN-5087)', () => {
       expect(result.success).toBe(true);
       expect(double.spawns).toBe(1);
       expect(local).not.toHaveBeenCalled();
+      expect(mockLabsSnapshot).not.toHaveBeenCalled();
       const output = send.mock.calls.filter(
         ([channel]) => channel === IPC_CHANNELS.scriptOutput,
       );
@@ -661,8 +661,8 @@ describePosix('daemon script route (CAN-5087)', () => {
 
   it.each([
     [
-      'keeps Windows runs in process',
-      (): void => void (mockPlatform = 'win32'),
+      'keeps runs on an unsupported host in process',
+      (): void => void (mockPlatform = 'freebsd'),
     ],
     [
       'keeps remote-bridge runs in process',
@@ -759,14 +759,16 @@ describePosix('daemon script route (CAN-5087)', () => {
     );
   });
 
-  it('turning the experiment off runs the next run in process with nothing repaired', async () => {
+  it('a Portal run after a daemon run runs in process with nothing repaired', async () => {
     await invoke(IPC_CHANNELS.scriptRun, runRequest('echo'));
     expect(executes()).toHaveLength(1);
-    mockExperiment = false;
-    const result = (await invoke(
-      IPC_CHANNELS.scriptRun,
-      runRequest('echo'),
-    )) as ScriptRunResponse;
+    const { runScript } = await import('../../services/scripts-service');
+    const result = await runScript({
+      target: 'project',
+      projectId: 'project',
+      worktreeId: 'task',
+      scriptName: 'echo',
+    });
     expect(result.success).toBe(true);
     expect(executes()).toHaveLength(1);
     const files = runDirFiles();
@@ -862,6 +864,29 @@ describePosix('daemon script route (CAN-5087)', () => {
       ({ name }) => name === 'worker.script.execution.cancel',
     );
     expect(cancel?.params).toMatchObject({ executionId: run.runId });
+  });
+
+  it("worktree removal drains a routed daemon run's whole tree", async () => {
+    const response = invoke(IPC_CHANNELS.scriptRun, runRequest('long'));
+    let tracked = listTrackedShellScripts();
+    for (let attempt = 0; attempt < 100 && tracked.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      tracked = listTrackedShellScripts();
+    }
+    const [run] = tracked;
+    if (!run) throw new Error('The run never started.');
+    await drainWorktreeShellScripts('project', 'task');
+    const result = (await response) as ScriptRunResponse;
+    expect(result.success).toBe(false);
+    const cancels = double.calls.filter(
+      ({ name }) => name === 'worker.script.execution.cancel',
+    );
+    // The routed run's own abort only stops it; the drain reaches its tree.
+    expect(cancels[0]?.params).toEqual({
+      scope: { workspaceId: 'project', worktreeId: 'task' },
+      scriptKey: run.scriptKey,
+      drain: true,
+    });
   });
 
   it('worktree removal leaves the daemon alone without a live daemon run', async () => {
@@ -966,11 +991,12 @@ describePosix('daemon script route (CAN-5087)', () => {
         ({ name }) => name === 'worker.script.execution.cancel',
       );
       // By script key: older daemon runs of the key that its run log no
-      // longer lists stop too.
+      // longer lists stop too. A drain waits for each run's process tree.
       expect(cancels.map(({ params }) => params)).toEqual([
         {
           scope: { workspaceId: 'project', worktreeId: 'task' },
           scriptKey: 'foreign',
+          drain: true,
         },
       ]);
     } finally {

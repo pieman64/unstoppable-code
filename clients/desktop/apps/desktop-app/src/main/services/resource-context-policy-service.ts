@@ -4,8 +4,8 @@ import {
   normalizeResourceContextSubjectName,
   type ResourceContextInput,
   type ResourceContextDecision,
-} from '@canopy/desktop-shared/lib/resource-context-policy';
-import { classifyResourceOwner } from '@canopy/desktop-shared/lib/resource-context';
+} from '@canopy/execution-engine/lib/resource-context-policy';
+import { classifyResourceOwner } from '@canopy/execution-engine/lib/resource-context';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import { readCanopyCloudAccountWithStatus } from '../lib/canopy-cloud-account-store';
 import { getObservabilityService } from '../observability';

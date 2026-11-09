@@ -21,6 +21,7 @@
 // equivalent — a dollar sign next to it would invite someone to add it in.
 // ---------------------------------------------------------------------------
 
+import { Stack } from './Stack';
 import type { JSX, ReactNode } from 'react';
 import { formatUsd } from '../lib/money-format';
 import { formatCardLabel } from '../lib/card-display';
@@ -228,13 +229,14 @@ function CreditsSection({
 
   return (
     <section
-      className="mt-6 rounded-lg bg-muted p-4"
+      className="flex flex-col gap-3 rounded-lg bg-muted p-4"
       data-testid="invoice-credits"
     >
-      <Heading level={2} variant="title">
-        AI credit activity
-      </Heading>
-      {/*
+      <div>
+        <Heading level={2} variant="title">
+          AI credit activity
+        </Heading>
+        {/*
         Says WHY the credits are not in the total, not just THAT they aren't.
         A reader looking at `Credit purchases · 12 credits` here while
         `Credit purchase · $5.00` and `· $7.00` sit in the line items above will
@@ -249,24 +251,22 @@ function CreditsSection({
         closing clause has to point OUT of the total, not into it, so someone
         adding up the page knows these figures are not part of the arithmetic.
       */}
-      <p className="mt-0.5 text-xs fg-tertiary">
-        How your AI credit balance moved during this period. Credits you bought
-        are already billed above, so nothing here adds to the invoice total.
-      </p>
-
+        <p className="mt-0.5 text-xs fg-tertiary">
+          How your AI credit balance moved during this period. Credits you
+          bought are already billed above, so nothing here adds to the invoice
+          total.
+        </p>
+      </div>
       {!hasActivity ? (
-        <p
-          className="mt-3 text-s fg-secondary"
-          data-testid="invoice-credits-empty"
-        >
+        <p className="text-s fg-secondary" data-testid="invoice-credits-empty">
           No AI credit activity in this period.
         </p>
       ) : (
-        <div className="mt-3 flex flex-col gap-4">
+        <div className="flex flex-col gap-4">
           {credits.usageGroups.length > 0 && (
-            <div>
+            <Stack gap="tight">
               <p className="text-xs font-medium fg-secondary">Credits used</p>
-              <ul className="mt-1 flex flex-col divide-y">
+              <ul className="flex flex-col divide-y">
                 {credits.usageGroups.map((group) => (
                   <li
                     key={group.key}
@@ -287,7 +287,7 @@ function CreditsSection({
                   </li>
                 ))}
               </ul>
-              <div className="mt-1 flex items-baseline justify-between gap-4 border-t pt-2">
+              <div className="flex items-baseline justify-between gap-4 border-t pt-2">
                 <span className="text-s font-medium fg-primary">
                   Total used
                 </span>
@@ -298,13 +298,13 @@ function CreditsSection({
                   {`${formatCredits(credits.totalUsedCredits)} credits`}
                 </span>
               </div>
-            </div>
+            </Stack>
           )}
 
           {credits.addedGroups.length > 0 && (
-            <div>
+            <Stack gap="tight">
               <p className="text-xs font-medium fg-secondary">Credits added</p>
-              <ul className="mt-1 flex flex-col divide-y">
+              <ul className="flex flex-col divide-y">
                 {credits.addedGroups.map((group) => (
                   <li
                     key={group.transactionType}
@@ -325,7 +325,7 @@ function CreditsSection({
                   </li>
                 ))}
               </ul>
-              <div className="mt-1 flex items-baseline justify-between gap-4 border-t pt-2">
+              <div className="flex items-baseline justify-between gap-4 border-t pt-2">
                 <span className="text-s font-medium fg-primary">
                   Total added
                 </span>
@@ -336,7 +336,7 @@ function CreditsSection({
                   {`${formatCredits(credits.totalAddedCredits)} credits`}
                 </span>
               </div>
-            </div>
+            </Stack>
           )}
         </div>
       )}
@@ -357,116 +357,123 @@ export function InvoiceDetailView({
 }: InvoiceDetailViewProps): JSX.Element {
   const numberLevel = headingLevel === 'h1' ? 1 : 2;
   return (
-    <div className="flex flex-col" data-testid="invoice-detail">
-      {backLink ? <div className="mb-4">{backLink}</div> : null}
+    <Stack gap="group" data-testid="invoice-detail">
+      {backLink ? <div>{backLink}</div> : null}
 
-      <div className="rounded-lg border bg-card p-4 sm:p-6">
-        <header className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <Heading
-              level={numberLevel}
-              variant="page"
-              data-testid="invoice-detail-number"
-            >
-              {invoice.number}
+      <div className="flex flex-col gap-6 rounded-lg border bg-card p-4 sm:p-6">
+        <Stack gap="group">
+          <Stack gap="item">
+            <header className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <Heading
+                  level={numberLevel}
+                  variant="page"
+                  data-testid="invoice-detail-number"
+                >
+                  {invoice.number}
+                </Heading>
+                <p className="mt-0.5 text-s fg-secondary">
+                  {formatUtcDateRange(invoice.periodStart, invoice.periodEnd)}
+                </p>
+                <p className="mt-0.5 text-xs fg-tertiary">
+                  {`Issued ${formatUtcDate(invoice.issuedAt)}`}
+                </p>
+              </div>
+              {isUnpaidCurrentInvoice(invoice) ? (
+                <span className="flex flex-wrap gap-1">
+                  <span
+                    className={`${BADGE_BASE} ${BADGE_TONE_CLASS.info}`}
+                    data-testid="invoice-detail-status"
+                  >
+                    {CURRENT_INVOICE_LABEL}
+                  </span>
+                  <span
+                    className={`${BADGE_BASE} ${BILLING_STATUS_TONE_CLASSES[invoiceStatusTone(invoice.status)]}`}
+                    data-testid="invoice-detail-due-status"
+                  >
+                    {humanizeInvoiceStatus(invoice.status)}
+                  </span>
+                </span>
+              ) : invoice.isCurrent ? (
+                <span
+                  className={`${BADGE_BASE} ${BADGE_TONE_CLASS.info}`}
+                  data-testid="invoice-detail-status"
+                >
+                  {CURRENT_INVOICE_LABEL}
+                </span>
+              ) : (
+                <span
+                  className={`${BADGE_BASE} bg-muted fg-secondary`}
+                  data-testid="invoice-detail-status"
+                >
+                  {humanizeInvoiceStatus(invoice.status)}
+                </span>
+              )}
+            </header>
+
+            {invoice.isCurrent && (
+              <Stack gap="tight">
+                <p
+                  className="text-xs fg-tertiary"
+                  data-testid="invoice-detail-current-note"
+                >
+                  This billing period is still in progress. Totals shown are to
+                  date and will keep updating until the period closes.
+                </p>
+                {isUnpaidCurrentInvoice(invoice) && (
+                  <p
+                    className="text-xs fg-tertiary"
+                    data-testid="invoice-detail-due-note"
+                  >
+                    Payment for this period hasn&apos;t been collected yet.
+                  </p>
+                )}
+              </Stack>
+            )}
+          </Stack>
+
+          <Stack as="section" gap="tight">
+            <Heading level={2} variant="label">
+              Billed to
             </Heading>
-            <p className="mt-0.5 text-s fg-secondary">
-              {formatUtcDateRange(invoice.periodStart, invoice.periodEnd)}
-            </p>
-            <p className="mt-0.5 text-xs fg-tertiary">
-              {`Issued ${formatUtcDate(invoice.issuedAt)}`}
-            </p>
-          </div>
-          {isUnpaidCurrentInvoice(invoice) ? (
-            <span className="flex flex-wrap gap-1">
-              <span
-                className={`${BADGE_BASE} ${BADGE_TONE_CLASS.info}`}
-                data-testid="invoice-detail-status"
+            <div>
+              <p
+                className={
+                  blockBillToFromReplay
+                    ? `text-s fg-primary ${REPLAY_BLOCK_CLASS}`
+                    : 'text-s fg-primary'
+                }
               >
-                {CURRENT_INVOICE_LABEL}
-              </span>
-              <span
-                className={`${BADGE_BASE} ${BILLING_STATUS_TONE_CLASSES[invoiceStatusTone(invoice.status)]}`}
-                data-testid="invoice-detail-due-status"
-              >
-                {humanizeInvoiceStatus(invoice.status)}
-              </span>
-            </span>
-          ) : invoice.isCurrent ? (
-            <span
-              className={`${BADGE_BASE} ${BADGE_TONE_CLASS.info}`}
-              data-testid="invoice-detail-status"
-            >
-              {CURRENT_INVOICE_LABEL}
-            </span>
-          ) : (
-            <span
-              className={`${BADGE_BASE} bg-muted fg-secondary`}
-              data-testid="invoice-detail-status"
-            >
-              {humanizeInvoiceStatus(invoice.status)}
-            </span>
-          )}
-        </header>
+                {invoice.billTo.name}
+              </p>
+              {invoice.billTo.email ? (
+                <p
+                  className={
+                    blockBillToFromReplay
+                      ? `text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`
+                      : 'text-xs fg-tertiary'
+                  }
+                >
+                  {invoice.billTo.email}
+                </p>
+              ) : null}
+            </div>
+          </Stack>
+        </Stack>
 
-        {invoice.isCurrent && (
-          <p
-            className="mt-3 text-xs fg-tertiary"
-            data-testid="invoice-detail-current-note"
-          >
-            This billing period is still in progress. Totals shown are to date
-            and will keep updating until the period closes.
-          </p>
-        )}
-
-        {isUnpaidCurrentInvoice(invoice) && (
-          <p
-            className="mt-1 text-xs fg-tertiary"
-            data-testid="invoice-detail-due-note"
-          >
-            Payment for this period hasn&apos;t been collected yet.
-          </p>
-        )}
-
-        <section className="mt-4">
-          <Heading level={2} variant="label">
-            Billed to
-          </Heading>
-          <p
-            className={
-              blockBillToFromReplay
-                ? `mt-1 text-s fg-primary ${REPLAY_BLOCK_CLASS}`
-                : 'mt-1 text-s fg-primary'
-            }
-          >
-            {invoice.billTo.name}
-          </p>
-          {invoice.billTo.email ? (
-            <p
-              className={
-                blockBillToFromReplay
-                  ? `text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`
-                  : 'text-xs fg-tertiary'
-              }
-            >
-              {invoice.billTo.email}
-            </p>
-          ) : null}
-        </section>
-
-        <section className="mt-6">
+        <Stack as="section" gap="inline">
           <Heading level={2} variant="title">
             Line items
           </Heading>
           {invoice.lineItems.length === 0 ? (
             <p
-              className="mt-2 text-s fg-secondary"
+              className="text-s fg-secondary"
               data-testid="invoice-line-items-empty"
             >
               No charges in this period.
             </p>
           ) : (
-            <ul className="mt-2 flex flex-col divide-y">
+            <ul className="flex flex-col divide-y">
               {invoice.lineItems.map((item) => {
                 const card = cardLabelFor(item);
                 const servicePeriod = servicePeriodFor(item);
@@ -512,30 +519,38 @@ export function InvoiceDetailView({
               })}
             </ul>
           )}
-        </section>
+        </Stack>
 
-        <section className="mt-6 border-t pt-3" data-testid="invoice-totals">
-          <TotalsRow label="Subtotal" value={formatUsd(invoice.subtotalUsd)} />
-          {/* Literal 0 from the service — Canopy collects no tax today. */}
-          <TotalsRow label="Tax" value={formatUsd(invoice.taxUsd)} />
-          <div className="mt-1 border-t pt-2">
+        <section
+          className="flex flex-col gap-1 border-t pt-3"
+          data-testid="invoice-totals"
+        >
+          <div>
+            <TotalsRow
+              label="Subtotal"
+              value={formatUsd(invoice.subtotalUsd)}
+            />
+            {/* Literal 0 from the service — Canopy collects no tax today. */}
+            <TotalsRow label="Tax" value={formatUsd(invoice.taxUsd)} />
+          </div>
+          <div className="border-t pt-2">
             <TotalsRow
               label="Total"
               value={formatUsd(invoice.totalUsd)}
               emphasis
             />
+            <TotalsRow label="Paid" value={formatUsd(invoice.amountPaidUsd)} />
+            {invoice.amountRefundedUsd > 0 ? (
+              <TotalsRow
+                label="Refunded"
+                value={formatUsd(invoice.amountRefundedUsd)}
+              />
+            ) : null}
           </div>
-          <TotalsRow label="Paid" value={formatUsd(invoice.amountPaidUsd)} />
-          {invoice.amountRefundedUsd > 0 ? (
-            <TotalsRow
-              label="Refunded"
-              value={formatUsd(invoice.amountRefundedUsd)}
-            />
-          ) : null}
         </section>
 
         <CreditsSection credits={invoice.credits} />
       </div>
-    </div>
+    </Stack>
   );
 }

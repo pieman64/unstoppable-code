@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { Step } from '@canopy/desktop-shared/types/pipeline';
+import type { Step } from '@canopy/execution-engine/types/pipeline';
 import { DragHandleIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { Button } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';

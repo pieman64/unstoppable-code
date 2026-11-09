@@ -56,10 +56,11 @@ export function ImportedCursorRulesOffer({
   return (
     <Surface
       variant="outline"
+      gap="inline"
       size="small"
       data-testid="import-projects-cursor-rules"
     >
-      <div className="px-3 py-2">
+      <div className="flex flex-col gap-2 px-3 py-2">
         <p className="text-s fg-primary">
           {withRules.length === 1
             ? 'This project has Cursor rules.'
@@ -68,7 +69,7 @@ export function ImportedCursorRulesOffer({
         <p className="mt-0.5 text-xs fg-secondary">
           Review them to use them in new chats. The repository stays unchanged.
         </p>
-        <ul className="mt-2 space-y-1">
+        <ul className="flex flex-col gap-1">
           {withRules.map((workspace) => (
             <li
               key={workspace.workspaceId}

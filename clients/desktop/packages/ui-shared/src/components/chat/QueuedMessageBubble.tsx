@@ -1,3 +1,4 @@
+import { Stack } from '../Stack';
 import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
 import {
   AgentSentTitle,
@@ -13,10 +14,7 @@ import type {
   SettingsHeldChange,
 } from '@canopy/protocol/portal';
 import { QueuedMessageActions } from './QueuedMessageActions';
-import {
-  QUEUED_MESSAGE_LABEL_CLASS,
-  QueuedMessageReason,
-} from './QueuedMessageReason';
+import { QueuedMessageContent } from './QueuedMessageReason';
 import { hostMessagePresentation } from './SteeringRequestTitle';
 import {
   MessageEditSurface,
@@ -106,52 +104,53 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
         constrained.
       */}
       <div className="group relative min-w-0 max-w-full">
-        {attachment ? (
-          <div className="mb-1 flex justify-end" data-no-double-click-edit>
-            {attachment}
-          </div>
-        ) : null}
-        <MessageEditSurface
-          onEdit={message.editLockAdvisory ? undefined : editHandler}
-          variant="draft"
-          tone={steeringRequest?.variant === 'info' ? 'info' : 'default'}
-        >
-          <QueuedMessageActions
-            placement="corner"
-            variant="badge"
-            onEdit={onEdit}
-            onCancel={onCancel}
-            editLocked={message.editLocked}
-            editLabel="Edit queued message"
-          />
-          <div className={QUEUED_MESSAGE_LABEL_CLASS}>Queued</div>
-          {message.agentSent && (
-            <AgentSentTitle
-              agentSent={message.agentSent}
-              receivingContext={receivingContext}
-            />
-          )}
-          {steeringRequest?.title}
-          {message.reason ? (
-            <QueuedMessageReason reason={message.reason} />
-          ) : message.waitingReason !== undefined ? (
-            <QueuedMessageReason waitingReason={message.waitingReason} />
+        <Stack gap="tight" className="min-w-0">
+          {attachment ? (
+            <div className="flex justify-end" data-no-double-click-edit>
+              {attachment}
+            </div>
           ) : null}
-          <div className="break-words">
-            {paragraphs.map((paragraph, index) => (
-              <p
-                key={`${message.id}-${index}`}
-                className={
-                  index === 0
-                    ? 'whitespace-pre-wrap'
-                    : 'mt-2 whitespace-pre-wrap'
-                }
-              >
-                {paragraph}
-              </p>
-            ))}
-          </div>
-        </MessageEditSurface>
+          <MessageEditSurface
+            onEdit={message.editLockAdvisory ? undefined : editHandler}
+            variant="draft"
+            tone={steeringRequest?.variant === 'info' ? 'info' : 'default'}
+          >
+            <QueuedMessageActions
+              placement="corner"
+              variant="badge"
+              onEdit={onEdit}
+              onCancel={onCancel}
+              editLocked={message.editLocked}
+              editLabel="Edit queued message"
+            />
+            <QueuedMessageContent
+              reason={message.reason}
+              waitingReason={message.waitingReason}
+              heading={
+                <>
+                  {message.agentSent && (
+                    <AgentSentTitle
+                      agentSent={message.agentSent}
+                      receivingContext={receivingContext}
+                    />
+                  )}
+                  {steeringRequest?.title}
+                </>
+              }
+            >
+              <div className="flex flex-col gap-2 break-words">
+                {paragraphs.map((paragraph, index) => (
+                  <p
+                    key={`${message.id}-${index}`}
+                    className="whitespace-pre-wrap"
+                  >
+                    {paragraph}
+                  </p>
+                ))}
+              </div>
+            </QueuedMessageContent>
+          </MessageEditSurface>
+        </Stack>
         <QueuedMessageActions
           placement="footer"
           turnPhase={turnPhase}

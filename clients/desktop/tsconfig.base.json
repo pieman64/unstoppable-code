@@ -45,6 +45,9 @@
       "@canopy/agent-actions/*": [
         "./packages/agent-actions/src/*"
       ],
+      "@canopy/remote-session": [
+        "./packages/remote-session/src/index.ts"
+      ],
       "@canopy/agent-transcript": [
         "./packages/agent-transcript/src/index.ts"
       ],
@@ -56,6 +59,12 @@
       ],
       "@canopy/app-core/*": [
         "./packages/app-core/src/*"
+      ],
+      "@canopy/ipc-canopy-client": [
+        "./packages/ipc-canopy-client/src/index.ts"
+      ],
+      "@canopy/ipc-canopy-client/*": [
+        "./packages/ipc-canopy-client/src/*"
       ],
       "@canopy/app-state": [
         "./packages/app-state/src/index.ts"
@@ -101,6 +110,9 @@
       ],
       "@canopy/code-graph/*": [
         "./packages/code-graph/src/*"
+      ],
+      "@canopy/execution-engine/*": [
+        "./packages/execution-engine/src/*"
       ],
       "@canopy/desktop-shared": [
         "./packages/desktop-shared/src/index.ts"

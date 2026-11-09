@@ -1284,12 +1284,19 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
           'selections',
           'ChatTabPluginSelections',
           true,
-          'Complete replacement selections object.',
+          'Complete replacement selections object. Only installed, available items.',
+        ),
+        field(
+          'expectedRevision',
+          'number',
+          true,
+          'The revision preferences.get_global_plugin_selections returned; a newer change refuses the write.',
         ),
       ],
       example: {
         type: 'preferences.set_global_plugin_selections',
         selections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
+        expectedRevision: 3,
       },
       keywords: [
         'preferences',
@@ -1690,6 +1697,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         "Use navigation.open_settings with section privacy to review enrollment; with hosted account settings on, use settings.open with { scope: 'account', page: 'profile' } instead. Read settings.personalCatalog for current state.",
         'Enable only when the user asks to enroll. Disabling stops updates and discards queued metadata; remove the saved list in web Public profile settings. After removal, explicitly turning enrollment off and on restores the list.',
         "While enrolled, a single-repository Personal project joins its cloud project on its own, so the user's other computers know it as the same project. A multi-repository or remote-less one joins only when the user picks Link to cloud… in its project header menu and chooses the cloud project; the choice is theirs, so point them to it rather than acting.",
+        'A project the user has on another computer is set up here from Add project, From another computer: they pick which repositories to clone and where, with their own Git credentials. Repositories added on another computer later are listed as not added and are never cloned on their own.',
       ],
     },
     {
@@ -1709,7 +1717,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'machine picker',
       ],
       notes: [
-        'Pairing codes are never returned. Pairing and approving requests stay with the user in Settings → Remote access.',
+        `Pairing codes and links are never returned. Pairing, approving requests and removing devices stay with the user in the ${REMOTE_CONTROL_LABEL} dialog and Settings → ${REMOTE_CONTROL_LABEL}.`,
       ],
     },
     {
@@ -10270,7 +10278,8 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       fields: [],
       example: { type: 'canopy_portal.open' },
       keywords: ['portal', 'open', 'modal'],
-      requiredFeatureFlag: 'canopy-portal-enabled',
+      // The dialog follows device Remote Control, not Portal (CAN-5985).
+      requiredFeatureFlag: CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key,
     },
     {
       type: 'canopy_portal.close',

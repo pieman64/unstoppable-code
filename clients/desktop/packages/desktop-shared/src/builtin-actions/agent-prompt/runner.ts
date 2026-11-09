@@ -1,7 +1,7 @@
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
 import { parseAgentTranscriptLines } from '@canopy/agent-transcript';
-import { redactStructuredValue } from '@canopy/desktop-shared/lib/redaction';
+import { redactStructuredValue } from '@canopy/execution-engine/lib/redaction';
 import {
   getExecutionHarnessForModel,
   normalizeThinkingForProvider,
@@ -15,16 +15,16 @@ import {
   writeOutputFile,
 } from '../_lib/output';
 import { runWithActionEnvironment } from '../_lib/action-env';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import {
   classifyAgentFailure,
   type AgentActionFailureMetadata,
-} from '@canopy/desktop-shared/agent-failures';
-import { transcriptHasAgentActivity } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+} from '@canopy/execution-engine/agent-failures';
+import { transcriptHasAgentActivity } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import {
   appendUserOverallPreferencesBlock,
   buildPipelineGlobalInstructionsBlock,
-} from '@canopy/desktop-shared/lib/global-instructions';
+} from '@canopy/execution-engine/lib/global-instructions';
 import {
   buildPipelinePromptRecord,
   buildPipelineSystemPromptRecord,

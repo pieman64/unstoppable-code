@@ -4,7 +4,7 @@ import type {
   McpOAuthConfigData,
   McpServerConfigData,
   McpServerDefinitionData,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 
 const SYNTHETIC_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 

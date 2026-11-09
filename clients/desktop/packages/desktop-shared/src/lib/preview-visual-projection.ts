@@ -1,4 +1,4 @@
-import { CANOPY_INJECTED_TOOL_REGISTRY } from './canopy-injected-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

@@ -1,20 +1,16 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type JSX,
-} from 'react';
+import { useEffect, useMemo, useState, type JSX } from 'react';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import {
   EMPTY_WORKFLOW_RUN_FILTERS,
   type WorkflowRunFilters,
 } from '@canopy/ui-app/workflows';
 import { Notice } from '@canopy/ui-shared/components';
-import { automationRunKey, runsForAutomation } from '@/lib/workflows/run-feed';
-import { useNavigationStore } from '@/stores/navigationStore';
+import { runsForAutomation } from '@/lib/workflows/run-feed';
 import type { AutomationsPageBodyApi } from '../../pages/AutomationsPage';
+import {
+  useAutomationRunHighlight,
+  useRequestedAutomationRun,
+} from '../runs/useAutomationRunFocus';
 import { useWorkflowRunFeed } from '../runs/useWorkflowRunFeed';
 import {
   useWorkflowRunRowActions,
@@ -76,49 +72,17 @@ export function AutomationRunsSection({
     loadMore();
   }, [hasMore, historyRequested, loadMore]);
 
-  // A chat's run tile asks for one run. Select it once it is listed; a run
-  // that aged out of the history leaves Runs open without a selection.
-  const focusRunId = useNavigationStore((state) =>
-    state.pendingAutomationRunFocus?.activityId === activity.id
-      ? state.pendingAutomationRunFocus.runId
-      : undefined,
-  );
-  const feedBusy = feed.loading || feed.loadingMore;
-  const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
-  const sectionRef = useRef<HTMLDivElement | null>(null);
-  const { dialogAnchorRef } = rowActions;
-  const setSectionRef = useCallback(
-    (node: HTMLDivElement | null): void => {
-      sectionRef.current = node;
-      dialogAnchorRef(node);
-    },
-    [dialogAnchorRef],
-  );
-  useEffect(() => {
-    if (focusRunId === undefined) return;
-    const key = automationRunKey(focusRunId);
-    const listed = rows.some((row) => row.key === key);
-    // A completed batch can still leave another page or a retryable failure.
-    const historySettled = !feedBusy && !hasMore;
-    if (!listed && !historySettled) return;
-    if (!listed) {
-      useNavigationStore.getState().consumeAutomationRunFocus();
-      return;
-    }
-    if (highlightedKey !== key) {
-      setHighlightedKey(key);
-      return;
-    }
-    // The highlight reveals a loaded row past the table's render limit.
-    // Retry after that render before consuming the request.
-    const row = Array.from(
-      sectionRef.current?.querySelectorAll<HTMLElement>('[data-run-key]') ?? [],
-    ).find((candidate) => candidate.dataset.runKey === key);
-    if (!row) return;
-    useNavigationStore.getState().consumeAutomationRunFocus();
-    row.scrollIntoView?.({ block: 'nearest' });
-    row.focus({ preventScroll: true });
-  }, [feedBusy, focusRunId, hasMore, highlightedKey, rows]);
+  // A chat's run tile asks for one run; it is selected once listed.
+  const focusRunId = useRequestedAutomationRun(
+    (activityId) => activityId === activity.id,
+  )?.runId;
+  const { highlightedKey, setSectionRef } = useAutomationRunHighlight({
+    runId: focusRunId,
+    rows,
+    feedBusy: feed.loading || feed.loadingMore,
+    hasMore,
+    dialogAnchorRef: rowActions.dialogAnchorRef,
+  });
 
   const runsPipeline =
     activity.action.type === 'worktree_pipeline' ||

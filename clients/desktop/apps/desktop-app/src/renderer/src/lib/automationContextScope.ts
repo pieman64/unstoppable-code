@@ -13,11 +13,11 @@ import {
   type WorkspaceContext,
   type WorkspaceContextOrganization,
 } from '@canopy/protocol/workspace-context';
-import { workspaceOwnerMatchesContext } from '@canopy/desktop-shared/lib/workspace-owner';
+import { workspaceOwnerMatchesContext } from '@canopy/execution-engine/lib/workspace-owner';
 import {
   automationRunsInMessage,
   workspaceContextDisplayLabel,
-} from '@canopy/desktop-shared/lib/automation-context-copy';
+} from '@canopy/execution-engine/lib/automation-context-copy';
 import { isGlobalPipelineAutomationAction } from '@canopy/desktop-shared/lib/automation-pipeline-target';
 import { automationActionWorkspaceId } from '@/components/panels/automations/automations-panel-data';
 

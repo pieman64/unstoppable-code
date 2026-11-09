@@ -44,6 +44,7 @@ import {
   PinIcon,
   PipelineIcon,
   RocketLaunchIcon,
+  StopIcon,
   WorktreeIcon,
   TemporaryMultiRepoIcon,
   TrashIcon,
@@ -62,6 +63,11 @@ export interface WorktreeMenuContext {
   readonly backend?: PortalRowBackend;
   readonly launchAvailable: boolean;
   readonly launchRunning: boolean;
+  /**
+   * Host-owned: one or more of the row's scripts (launch, setup or any other)
+   * is running and the host can stop them. Absent reads as none running.
+   */
+  readonly scriptsRunning?: boolean;
   readonly pipelineAvailable: boolean;
   /** Early access: rows read in sentence case ("Dispatch pipeline"). */
   readonly sentenceCaseLabels?: boolean;
@@ -171,6 +177,8 @@ export interface WorktreeMenuCallbacks {
   readonly onBranchInfoRequested?: () => void;
   readonly onDebugInfoRequested?: () => void;
   readonly onLaunchRequested?: () => void;
+  /** Stops every script running in the row's worktree. */
+  readonly onStopRunningScriptsRequested?: () => void;
   readonly onDispatchPipelineRequested?: () => void;
   readonly onSplitPrRequested?: () => void;
   readonly onCreateBranchRequested?: () => void;
@@ -203,6 +211,7 @@ export type WorktreeMenuTestIdKey =
   | 'branchInfo'
   | 'debugInfo'
   | 'launch'
+  | 'stopScripts'
   | 'dispatchPipeline'
   | 'splitPr'
   | 'grouping'
@@ -225,6 +234,7 @@ export type WorktreeMenuTestIdKey =
    */
   | 'removalDelete'
   | 'bulkPin'
+  | 'bulkStopScripts'
   | 'bulkArchive'
   | 'bulkDelete';
 
@@ -439,6 +449,18 @@ export function deriveWorktreeMenuItems(
         ? 'Launch script is already running'
         : undefined,
       testId: callbacks.testIds?.launch,
+    });
+  }
+  if (
+    context.scriptsRunning === true &&
+    callbacks.onStopRunningScriptsRequested
+  ) {
+    items.push({
+      key: 'stop-scripts',
+      label: 'Stop running scripts',
+      icon: <StopIcon />,
+      onSelect: callbacks.onStopRunningScriptsRequested,
+      testId: callbacks.testIds?.stopScripts,
     });
   }
   if (

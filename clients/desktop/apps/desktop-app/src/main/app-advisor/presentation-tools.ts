@@ -11,14 +11,14 @@ import type {
   AppAdvisorRendererToolRequest,
   AppAdvisorWatcherDestination,
 } from '@canopy/desktop-shared/types';
-import { getSessionInterfaceToolRegistry } from '../agents/interface-tool-binding';
+import {
+  getSessionInterfaceToolRegistry,
+  interfaceToolAudienceOf,
+} from '../agents/interface-tool-binding';
 import {
   interfaceToolOutcomeToRendererResponse,
-  requestAppAdvisorRendererTool,
-  routeRendererToolRequest,
   setLatestAppAdvisorUiState,
   surfaceUnavailableResponse,
-  type AppAdvisorRendererToolSurfaces,
 } from '../ipc/app-advisor';
 
 const PRESENTATION_ONLY_MESSAGE =
@@ -43,29 +43,38 @@ export async function boundAppAdvisorInterfaceTools(
   );
 }
 
-function isPresentation(action: AppAdvisorAction): boolean {
+function isPresentation(action: AppAdvisorAction, guarded: boolean): boolean {
   if (action.type === 'worktree-chat.open_tab') return Boolean(action.chatId);
-  return appAdvisorActionDisposition(action.type)?.kind === 'presentation';
+  const disposition = appAdvisorActionDisposition(action.type);
+  if (disposition?.kind === 'presentation') return true;
+  return (
+    guarded &&
+    disposition?.kind === 'core' &&
+    disposition.access === 'write' &&
+    disposition.presentationWhenGuarded === true
+  );
 }
 
 /**
  * CAN-4133 D8: one presentation action, served by the main window's lease.
- * A chat driven from another computer keeps today's routed path (D15).
- * Unbound or without a registry: today's surface_unavailable response, no delivery.
+ * A chat driven from another computer is served by that computer's window
+ * lease (CAN-5823). Unbound or without a registry: today's
+ * surface_unavailable response, no delivery.
  */
 export async function presentAppAdvisorAction(input: {
   action: AppAdvisorAction;
   requestId?: string;
   expectedUiRevision?: number;
   destination: AppAdvisorWatcherDestination;
-  remoteFallbackSurfaces: AppAdvisorRendererToolSurfaces;
   /** The calling session's or route's bound interface tools; looked up from SDK sessions when absent. */
   boundTools?: readonly InterfaceToolName[];
+  /** A core write whose guard failed (CAN-5999 D3), applied in the window instead. */
+  guarded?: true;
   signal?: AbortSignal;
 }): Promise<AppAdvisorActionResponse> {
   const { action, destination, expectedUiRevision, signal } = input;
   const requestId = input.requestId ?? randomUUID();
-  if (!isPresentation(action))
+  if (!isPresentation(action, input.guarded === true))
     return {
       requestId,
       ok: false,
@@ -80,12 +89,6 @@ export async function presentAppAdvisorAction(input: {
     originChatTabId: destination.chatId,
     ...(expectedUiRevision !== undefined ? { expectedUiRevision } : {}),
   };
-  if (routeRendererToolRequest(request) !== null)
-    return requestAppAdvisorRendererTool(
-      request,
-      input.remoteFallbackSurfaces,
-      signal ? { signal } : undefined,
-    );
   const registry = getSessionInterfaceToolRegistry();
   const bound = (
     input.boundTools ?? (await boundAppAdvisorInterfaceTools(destination))
@@ -103,6 +106,7 @@ export async function presentAppAdvisorAction(input: {
         message: 'The action is too large to send to the window.',
       },
     };
+  const audience = interfaceToolAudienceOf(destination.chatId);
   const outcome = await registry.invoke({
     toolName: 'ui.app_advisor.present',
     input: {
@@ -117,10 +121,13 @@ export async function presentAppAdvisorAction(input: {
       worktreeId: destination.worktreeId,
       chatId: destination.chatId,
     },
+    ...audience,
     ...(signal ? { signal } : {}),
   });
   const response = interfaceToolOutcomeToRendererResponse(outcome, request);
-  if (response.ok && response.uiState)
+  // A controlling computer's window describes that window, not this
+  // computer's screen, so its state never becomes this computer's.
+  if (response.ok && response.uiState && audience.audience === undefined)
     setLatestAppAdvisorUiState(response.uiState);
   return { ...response, requestId };
 }

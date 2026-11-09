@@ -12,8 +12,8 @@ import {
   CURSOR_MODEL_NAMES_METHOD,
   cursorModelNamesFromAcp,
   cursorModelsFromAcp,
-} from '@canopy/desktop-shared/lib/cursor-models';
-import { cursorModelConfigOptionsFromListing } from '@canopy/desktop-shared/lib/cursor-thinking';
+} from '@canopy/execution-engine/lib/cursor-models';
+import { cursorModelConfigOptionsFromListing } from '@canopy/execution-engine/lib/cursor-thinking';
 import { getManagedCursorRuntime } from './connection';
 import { cursorConnectionStatus } from './runtime-status';
 import {

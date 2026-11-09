@@ -53,6 +53,11 @@ export interface PluginHookMember {
   command?: string;
 }
 
+export interface PluginModMember {
+  module: string;
+  hooksFile: string;
+}
+
 export interface PluginMcpServerMember {
   name: string;
   type: 'command' | 'http';
@@ -75,6 +80,8 @@ export interface PluginMemberInventory {
   /** Optional for inventories persisted before compatibility version 5. */
   apps?: PluginMarkdownMember[];
   hooks: PluginHookMember[];
+  /** Optional for inventories persisted before Mod members were inventoried. */
+  mods?: PluginModMember[];
   mcpServers: PluginMcpServerMember[];
   lspServers: PluginLspServerMember[];
   /**

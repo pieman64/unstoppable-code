@@ -1,4 +1,4 @@
-import type { SharedAgentSummary } from '@canopy/desktop-shared/types/agent-models';
+import type { SharedAgentSummary } from '@canopy/execution-engine/types/agent-models';
 import type { SharedPluginSummary } from '@canopy/protocol/plugins';
 import type { SharedSkillSummary } from '@canopy/protocol/skills';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol/workspace-templates';

@@ -139,6 +139,28 @@ function worktreePaths(
   return next;
 }
 
+/** Enumerate exactly the list owner's named path fields, not arbitrary JSON strings. */
+export function relocationWorktreeOwnedPaths(
+  raw: string | null,
+): readonly string[] {
+  if (raw === null) return [];
+  const document: unknown = JSON.parse(raw);
+  if (!isJsonObject(document) || !Array.isArray(document.worktrees))
+    throw new RelocationRefusedError('invalid-worktree-path-records');
+  const paths = new Set<string>();
+  for (const row of document.worktrees) {
+    if (!isWorkspaceWorktreeReadRow(row))
+      throw new RelocationRefusedError('invalid-worktree-path-record');
+    worktreePaths(row, (path) => {
+      if (typeof path !== 'string')
+        throw new RelocationRefusedError('invalid-worktree-path');
+      paths.add(path);
+      return path;
+    });
+  }
+  return [...paths];
+}
+
 function localReplica(
   replica: WorktreeReplicaState,
   transition: RelocationTransition,

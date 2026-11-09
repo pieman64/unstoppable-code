@@ -8,7 +8,7 @@ import {
 } from '@canopy/core-platform';
 import { getCanopyRuntimeMode } from '@canopy/desktop-shared/canopy-paths';
 import { BRAND } from '@canopy/brand/current';
-import { findExecutableOnPath } from '@canopy/desktop-shared/node/lib/path-lookup';
+import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import {
   IPC_CHANNELS,
   type CliInstallResult,

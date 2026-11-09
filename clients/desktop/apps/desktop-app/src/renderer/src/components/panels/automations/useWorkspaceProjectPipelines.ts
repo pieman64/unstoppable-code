@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 
 /** A workspace's own on-demand workflows, as its checkout declares them. */
 export interface WorkspaceProjectPipelines {

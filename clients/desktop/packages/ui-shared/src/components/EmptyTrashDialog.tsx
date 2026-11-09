@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import type { JSX, ReactNode } from 'react';
 import { DialogModal } from './DialogModal';
 import { HeaderActionButton } from './HeaderActionButton';
@@ -44,7 +45,7 @@ export function EmptyTrashDialog({
       headerBorder={false}
       dataTestId="archived-overview-empty-trash-dialog"
     >
-      <div className="space-y-4">
+      <Stack gap="group">
         <p className="text-s fg-secondary">
           This permanently deletes {count} deleted {itemWord} and cannot be
           undone.{' '}
@@ -53,7 +54,7 @@ export function EmptyTrashDialog({
             : 'Archived items are not affected.'}
         </p>
         <div
-          className="max-h-56 space-y-0.5 overflow-y-auto rounded-md p-1 ring-1 ring-inset ring-line-base"
+          className="max-h-56 grid grid-cols-1 content-start gap-0.5 overflow-y-auto rounded-md p-1 ring-1 ring-inset ring-line-base"
           data-testid="archived-overview-empty-trash-list"
         >
           {items.map((item) => (
@@ -90,7 +91,7 @@ export function EmptyTrashDialog({
             {busy ? 'Deleting…' : `Delete ${count} ${itemWord} permanently`}
           </HeaderActionButton>
         </div>
-      </div>
+      </Stack>
     </DialogModal>
   );
 }

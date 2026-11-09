@@ -71,7 +71,10 @@ export function BlueprintPicker({
   );
 
   return (
-    <div data-testid="add-workspace-blueprint-picker">
+    <div
+      className="flex flex-col gap-2"
+      data-testid="add-workspace-blueprint-picker"
+    >
       <FormSectionHeading
         title="Start from"
         subtitle="Sets up instructions and suggestions. You can change any of this later."
@@ -79,104 +82,109 @@ export function BlueprintPicker({
       {loading ? (
         <p className="text-xs fg-secondary">Loading starting points…</p>
       ) : (
-        <>
-          <div className="flex flex-wrap gap-1.5">
-            {visible.map((blueprint) => {
-              const active = selectedExternalId === blueprint.externalId;
-              return (
-                <StartingPointChip
-                  key={blueprint.externalId}
-                  name={blueprint.document.name}
-                  description={blueprint.document.description}
-                  selected={active}
-                  disabled={disabled}
-                  onToggle={() =>
-                    onSelect(active ? null : blueprint.externalId)
-                  }
-                  data-testid={`add-workspace-blueprint-${blueprint.externalId}`}
-                />
-              );
-            })}
-          </div>
-          {sharedTemplates.length > 0 && (
-            <div
-              className="mt-3 space-y-1.5"
-              data-testid="add-workspace-shared-templates"
-            >
-              <p className="text-xs font-medium fg-secondary">
-                Shared with you
-              </p>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-3">
               <div className="flex flex-wrap gap-1.5">
-                {sharedTemplates.map((template) => {
-                  const selectionId = sharedTemplateSelectionId(
-                    template.externalId,
-                  );
-                  const active = selectedExternalId === selectionId;
+                {visible.map((blueprint) => {
+                  const active = selectedExternalId === blueprint.externalId;
                   return (
                     <StartingPointChip
-                      key={template.externalId}
-                      name={template.name}
-                      description={template.description}
+                      key={blueprint.externalId}
+                      name={blueprint.document.name}
+                      description={blueprint.document.description}
                       selected={active}
                       disabled={disabled}
-                      onToggle={() => onSelect(active ? null : selectionId)}
-                      data-testid={`add-workspace-shared-template-${template.externalId}`}
+                      onToggle={() =>
+                        onSelect(active ? null : blueprint.externalId)
+                      }
+                      data-testid={`add-workspace-blueprint-${blueprint.externalId}`}
                     />
                   );
                 })}
               </div>
+              {sharedTemplates.length > 0 && (
+                <div
+                  className="flex flex-col gap-1.5"
+                  data-testid="add-workspace-shared-templates"
+                >
+                  <p className="text-xs font-medium fg-secondary">
+                    Shared with you
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {sharedTemplates.map((template) => {
+                      const selectionId = sharedTemplateSelectionId(
+                        template.externalId,
+                      );
+                      const active = selectedExternalId === selectionId;
+                      return (
+                        <StartingPointChip
+                          key={template.externalId}
+                          name={template.name}
+                          description={template.description}
+                          selected={active}
+                          disabled={disabled}
+                          onToggle={() => onSelect(active ? null : selectionId)}
+                          data-testid={`add-workspace-shared-template-${template.externalId}`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-          {hidden > 0 && !expanded && (
-            <p className="mt-2 text-xs">
-              <Button
-                variant="link"
-                data-testid="add-workspace-blueprint-see-more"
-                onClick={() => setExpanded(true)}
-              >
-                Show {hidden} more
-              </Button>
-            </p>
-          )}
-          {/* The explanation is the heading's subtitle (CAN-3453); only a
+            {hidden > 0 && !expanded && (
+              <p className="text-xs">
+                <Button
+                  variant="link"
+                  data-testid="add-workspace-blueprint-see-more"
+                  onClick={() => setExpanded(true)}
+                >
+                  Show {hidden} more
+                </Button>
+              </p>
+            )}
+            {/* The explanation is the heading's subtitle (CAN-3453); only a
               selected starting point's description or the unavailable notice
               sits under the chips. */}
-          {unavailable ? (
-            <p className="mt-2 text-xs fg-secondary">
-              Starting points are unavailable right now.{' '}
-              <Button
-                variant="link"
-                data-testid="add-workspace-blueprint-retry"
-                onClick={onRetry}
-              >
-                Try again
-              </Button>
-            </p>
-          ) : (
-            selectedExternalId !== null && (
-              <p
-                className="mt-2 text-xs fg-secondary"
-                data-testid="add-workspace-blueprint-description"
-              >
-                {selectedShared?.description ??
-                  blueprints.find(
-                    (blueprint) => blueprint.externalId === selectedExternalId,
-                  )?.document.description ??
-                  'You can change any of this later.'}
+            {unavailable ? (
+              <p className="text-xs fg-secondary">
+                Starting points are unavailable right now.{' '}
+                <Button
+                  variant="link"
+                  data-testid="add-workspace-blueprint-retry"
+                  onClick={onRetry}
+                >
+                  Try again
+                </Button>
               </p>
-            )
-          )}
+            ) : (
+              selectedExternalId !== null && (
+                <p
+                  className="text-xs fg-secondary"
+                  data-testid="add-workspace-blueprint-description"
+                >
+                  {selectedShared?.description ??
+                    blueprints.find(
+                      (blueprint) =>
+                        blueprint.externalId === selectedExternalId,
+                    )?.document.description ??
+                    'You can change any of this later.'}
+                </p>
+              )
+            )}
+          </div>
           {selectedExternalId !== null && selectedRequirements.length > 0 && (
             <Surface
               variant="group"
-              className="mt-3"
+              className=""
               data-testid="add-workspace-blueprint-requirements"
             >
-              <div className="px-3 py-2">
+              <div className="flex flex-col gap-1 px-3 py-2">
                 <p className="text-xs font-medium fg-primary">
                   Set up after creating
                 </p>
-                <ul className="mt-1 space-y-1">
+                <ul className="flex flex-col gap-1">
                   {selectedRequirements.map((requirement) => (
                     <li
                       key={`${requirement.kind}:${requirement.id}`}
@@ -189,13 +197,13 @@ export function BlueprintPicker({
                     </li>
                   ))}
                 </ul>
-                <p className="mt-1.5 text-xs fg-secondary">
+                <p className="text-xs fg-secondary">
                   {`Missing setup won’t stop this ${WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER} from being added.`}
                 </p>
               </div>
             </Surface>
           )}
-        </>
+        </div>
       )}
     </div>
   );

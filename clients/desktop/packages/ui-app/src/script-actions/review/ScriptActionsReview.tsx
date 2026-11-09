@@ -18,6 +18,7 @@ import type {
 } from '@canopy/protocol/script-actions';
 import { useScriptActions } from '@canopy/app-state/script-actions';
 import {
+  Stack,
   Button,
   Checkbox,
   DelayedLoadingPlaceholder,
@@ -383,7 +384,7 @@ function ScriptActionsReviewBody({
 
   const header = (
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0 flex-1 space-y-1">
+      <Stack gap="tight" className="min-w-0 flex-1">
         {layout === 'inline' ? (
           <Heading level={3} variant="title">
             Detected scripts
@@ -394,7 +395,7 @@ function ScriptActionsReviewBody({
           approved scripts can run, and they run in a terminal, never through
           the agent.
         </p>
-      </div>
+      </Stack>
       <Button
         size="compact"
         variant="secondary"
@@ -503,9 +504,7 @@ function ScriptActionsReviewBody({
                 </Button>
               ) : null}
               {rowErrors[action.id] ? (
-                <p role="alert">
-                  <StatusLabel size="xs">{rowErrors[action.id]}</StatusLabel>
-                </p>
+                <ErrorBanner className="" error={rowErrors[action.id]} />
               ) : null}
             </div>
           )}
@@ -532,13 +531,14 @@ function ScriptActionsReviewBody({
         />
         {!snapshot.shellAliasScanEnabled ? (
           <Surface
+            gap="inline"
             as="section"
             variant="outline"
             padding="compact"
             data-testid="script-actions-alias-opt-in"
             aria-labelledby={aliasHeadingId}
           >
-            <div className="space-y-2">
+            <div className="flex flex-col gap-2">
               <Heading level={4} variant="title" id={aliasHeadingId}>
                 Personal shell aliases
               </Heading>
@@ -549,6 +549,7 @@ function ScriptActionsReviewBody({
               </p>
               <ErrorBanner className="" error={aliasState.error} />
               <Button
+                className="self-start"
                 size="compact"
                 variant="secondary"
                 disabled={aliasState.busy}
@@ -600,7 +601,7 @@ function ScriptActionsReviewBody({
         className="flex min-h-0 flex-1 flex-col"
         data-testid="script-actions-review"
       >
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-6">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-6 grid grid-cols-1 content-start gap-4">
           {header}
           {body}
         </div>
@@ -609,11 +610,11 @@ function ScriptActionsReviewBody({
     );
 
   return (
-    <section className="space-y-4" data-testid="script-actions-review">
+    <Stack as="section" gap="group" data-testid="script-actions-review">
       {header}
       {body}
       {footer}
-    </section>
+    </Stack>
   );
 }
 
@@ -666,7 +667,7 @@ function ScanStatusLine({
           : null;
   if (message === null && snapshot.diagnostics.length === 0) return null;
   return (
-    <div className="space-y-1" data-testid="script-actions-scan-status">
+    <Stack gap="tight" data-testid="script-actions-scan-status">
       {message !== null ? (
         <p className="text-xs fg-secondary" role="status">
           {message}
@@ -681,7 +682,7 @@ function ScanStatusLine({
           }
           dataTestId="script-actions-skipped-files"
         >
-          <ul className="space-y-0.5 text-xs fg-tertiary">
+          <ul className="text-xs fg-tertiary flex flex-col gap-0.5">
             {snapshot.diagnostics.map((diagnostic, index) => (
               <li
                 key={`${diagnostic.source}:${index}`}
@@ -696,7 +697,7 @@ function ScanStatusLine({
           </ul>
         </Disclosure>
       ) : null}
-    </div>
+    </Stack>
   );
 }
 
@@ -710,7 +711,7 @@ function ScriptDetails({
   readonly commandId?: string;
 }): JSX.Element {
   return (
-    <div className="min-w-0 flex-1 space-y-1">
+    <Stack gap="tight" className="min-w-0 flex-1">
       <p className="flex flex-wrap items-baseline gap-x-2 text-s">
         <span
           id={nameId}
@@ -734,7 +735,7 @@ function ScriptDetails({
       <p className={`text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`}>
         {scriptSourceLabel(action)}
       </p>
-    </div>
+    </Stack>
   );
 }
 
@@ -755,8 +756,9 @@ function PendingSection({
 }): JSX.Element {
   const headingId = useId();
   return (
-    <section
-      className="space-y-2"
+    <Stack
+      as="section"
+      gap="inline"
       aria-labelledby={headingId}
       data-testid="script-actions-pending"
     >
@@ -798,7 +800,7 @@ function PendingSection({
           />
         ))
       )}
-    </section>
+    </Stack>
   );
 }
 
@@ -817,8 +819,8 @@ function PendingGroup({
 }): JSX.Element {
   const labelId = useId();
   return (
-    <div
-      className="space-y-1"
+    <Stack
+      gap="tight"
       role="group"
       aria-labelledby={labelId}
       data-testid="script-actions-group"
@@ -860,7 +862,7 @@ function PendingGroup({
           ))}
         </ul>
       </Surface>
-    </div>
+    </Stack>
   );
 }
 
@@ -930,8 +932,9 @@ function ApprovedSection({
     0,
   );
   return (
-    <section
-      className="space-y-2"
+    <Stack
+      as="section"
+      gap="inline"
       aria-labelledby={headingId}
       data-testid="script-actions-approved"
     >
@@ -946,7 +949,7 @@ function ApprovedSection({
         />
       ) : (
         groups.map((group, groupIndex) => (
-          <div key={group.key} className="space-y-1">
+          <Stack gap="tight" key={group.key}>
             <p
               className={`pl-3 text-xs font-medium fg-tertiary ${REPLAY_MASK_CLASS}`}
             >
@@ -957,7 +960,7 @@ function ApprovedSection({
                 {group.actions.map((action, index) => (
                   <li
                     key={action.id}
-                    className="space-y-2 p-3"
+                    className="p-3 flex flex-col gap-2"
                     data-testid="script-actions-approved-row"
                     data-script-name={action.name}
                   >
@@ -1017,18 +1020,16 @@ function ApprovedSection({
                       </p>
                     ) : null}
                     {errors[action.id] ? (
-                      <p role="alert">
-                        <StatusLabel size="xs">{errors[action.id]}</StatusLabel>
-                      </p>
+                      <ErrorBanner className="" error={errors[action.id]} />
                     ) : null}
                   </li>
                 ))}
               </ul>
             </Surface>
-          </div>
+          </Stack>
         ))
       )}
-    </section>
+    </Stack>
   );
 }
 
@@ -1049,8 +1050,12 @@ function DismissedSection({
 }): JSX.Element {
   const listId = useId();
   return (
-    <section className="space-y-2" data-testid="script-actions-dismissed">
+    <section
+      className="flex flex-col gap-2"
+      data-testid="script-actions-dismissed"
+    >
       <Button
+        className="self-start"
         size="compact"
         variant="ghost"
         aria-expanded={expanded}
@@ -1066,7 +1071,7 @@ function DismissedSection({
             {actions.map((action) => (
               <li
                 key={action.id}
-                className="space-y-1 p-3"
+                className="p-3 flex flex-col gap-1"
                 data-testid="script-actions-dismissed-row"
                 data-script-name={action.name}
               >
@@ -1084,9 +1089,7 @@ function DismissedSection({
                   </Button>
                 </div>
                 {errors[action.id] ? (
-                  <p role="alert">
-                    <StatusLabel size="xs">{errors[action.id]}</StatusLabel>
-                  </p>
+                  <ErrorBanner className="" error={errors[action.id]} />
                 ) : null}
               </li>
             ))}
@@ -1135,7 +1138,7 @@ function ReviewFooter({
 }): JSX.Element {
   const disabled = selectedCount === 0 || saving !== null;
   return (
-    <div className="space-y-2" data-testid="script-actions-footer">
+    <Stack gap="inline" data-testid="script-actions-footer">
       {feedback !== null ? <FeedbackLine feedback={feedback} /> : null}
       <div className="flex flex-wrap items-center justify-end gap-2">
         <span className="mr-auto text-xs fg-tertiary" aria-live="polite">
@@ -1164,6 +1167,6 @@ function ReviewFooter({
           Approve selected
         </Button>
       </div>
-    </div>
+    </Stack>
   );
 }

@@ -11,7 +11,7 @@ import {
   isInstallReceipt,
   normalizeInstallReceiptDisplayNames,
   type InstallReceipt,
-} from '@canopy/desktop-shared/lib/resource-context-policy';
+} from '@canopy/execution-engine/lib/resource-context-policy';
 import { isSameWorkspaceContext } from '@canopy/protocol/workspace-context';
 import { writeStoreFileDurably } from './durable-store-write';
 import { getDataDir } from './paths';
@@ -375,11 +375,13 @@ export function createResourceInstallReceiptsStore(
             const aliases = (row.localResourceIds ?? []).filter(
               (id) => !added.includes(id),
             );
-            // A failed skill replacement must not advance its installed hash
-            // or attribution. Compare the whole attempted snapshot so rollback
-            // cannot erase a later update; aliases are reconciled separately.
+            // A failed skill or workflow replacement must not advance its
+            // installed hash or attribution: the organization content check
+            // reads a workflow's hash (CAN-5678). Compare the whole attempted
+            // snapshot so rollback cannot erase a later update; aliases are
+            // reconciled separately.
             if (
-              row.family === 'skills' &&
+              (row.family === 'skills' || row.family === 'pipelines') &&
               previous &&
               JSON.stringify(
                 normalizeReceipt({ ...row, localResourceIds: [] }),

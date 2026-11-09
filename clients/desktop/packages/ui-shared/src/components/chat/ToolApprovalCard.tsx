@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge } from '../Badge';
 import {
   memo,
   useCallback,
@@ -24,6 +25,7 @@ import {
   EyeIcon,
   ShieldIcon,
 } from '../../icons/AppIcons';
+import { Stack } from '../Stack';
 import { formatTransferBytes } from '../../lib/format-transfer-bytes';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { isMacPlatform } from '../../lib/shortcut-platform';
@@ -201,19 +203,20 @@ function ApprovalContentPreview({
         </code>
       </pre>
       {preview.truncated && (
-        <button
-          type="button"
-          data-testid="tool-approval-content-view-full"
-          onClick={(): void =>
-            onViewFull({
-              title: copy.title,
-              content: { kind: 'text', text: content },
-            })
-          }
-          className="mt-1 text-2xs fg-accent underline-offset-2 transition-colors hover:underline"
-        >
-          {copy.viewFull}
-        </button>
+        <div className="pt-1 text-2xs">
+          <Button
+            variant="link"
+            data-testid="tool-approval-content-view-full"
+            onClick={(): void =>
+              onViewFull({
+                title: copy.title,
+                content: { kind: 'text', text: content },
+              })
+            }
+          >
+            {copy.viewFull}
+          </Button>
+        </div>
       )}
     </>
   );
@@ -236,11 +239,11 @@ function ApprovalFileTarget({
   const [open, setOpen] = useState(false);
   const fullPathId = useId();
   return (
-    <div className="min-w-0">
+    <Stack gap="tight" className="min-w-0">
       <Tooltip
         label={<span className={REPLAY_BLOCK_CLASS}>{path}</span>}
         contentClassName="max-w-96 break-all"
-        className="max-w-full"
+        className="max-w-full self-start"
         allowShrink
         delay="long"
       >
@@ -270,12 +273,12 @@ function ApprovalFileTarget({
         <div
           id={fullPathId}
           data-testid="tool-approval-file-target-full"
-          className="mt-1 select-text whitespace-pre-wrap break-all font-mono text-2xs fg-secondary"
+          className="select-text whitespace-pre-wrap break-all font-mono text-2xs fg-secondary"
         >
           {path}
         </div>
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -301,22 +304,26 @@ function FileWriteDetailsView({
           });
   return (
     <div
-      className={`${REPLAY_BLOCK_CLASS} mt-1.5 min-w-0 text-xs fg-primary/80`}
+      className={`${REPLAY_BLOCK_CLASS} flex min-w-0 flex-col gap-1 text-xs fg-primary/80`}
     >
-      {path && (
-        <ApprovalFileTarget path={path} displayPath={details.displayPath} />
-      )}
-      {change && (
-        <div className={path ? 'mt-1.5' : undefined}>
-          <ApprovalFileChangePreview
-            change={change}
-            mode="compact"
-            onExpand={viewChange}
-          />
+      {(path || change) && (
+        <div className="flex flex-col gap-1.5">
+          {path && (
+            <ApprovalFileTarget path={path} displayPath={details.displayPath} />
+          )}
+          {change && (
+            <div>
+              <ApprovalFileChangePreview
+                change={change}
+                mode="compact"
+                onExpand={viewChange}
+              />
+            </div>
+          )}
         </div>
       )}
       {details.reason && (
-        <div className="mt-1 text-2xs fg-secondary">{details.reason}</div>
+        <div className="text-2xs fg-secondary">{details.reason}</div>
       )}
     </div>
   );
@@ -337,17 +344,17 @@ function ApprovalDetails({
   switch (details.kind) {
     case 'command':
       return (
-        <div className={`${REPLAY_BLOCK_CLASS} mt-1.5`}>
+        <div className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-1`}>
           <ApprovalContentPreview
             content={details.command}
             copy={APPROVAL_CONTENT_COPY.command}
             onViewFull={onViewFull}
           />
           {details.cwd && (
-            <div className="mt-1 text-2xs fg-secondary">in {details.cwd}</div>
+            <div className="text-2xs fg-secondary">in {details.cwd}</div>
           )}
           {details.reason && (
-            <div className="mt-1 text-2xs fg-secondary">{details.reason}</div>
+            <div className="text-2xs fg-secondary">{details.reason}</div>
           )}
         </div>
       );
@@ -355,12 +362,16 @@ function ApprovalDetails({
       return <FileWriteDetailsView details={details} onViewFull={onViewFull} />;
     case 'mcp':
       return (
-        <div className={`${REPLAY_BLOCK_CLASS} mt-1.5 text-xs fg-primary/80`}>
-          <code className="rounded bg-fg-primary/[0.06] px-1 py-0.5 font-mono text-2xs">
-            {details.server}: {details.tool}
-          </code>
+        <div
+          className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-1 text-xs fg-primary/80`}
+        >
+          <div>
+            <code className="rounded bg-fg-primary/[0.06] px-1 py-0.5 font-mono text-2xs">
+              {details.server}: {details.tool}
+            </code>
+          </div>
           {details.paramsDisplay && (
-            <div className="mt-1">
+            <div>
               <ApprovalContentPreview
                 content={details.paramsDisplay}
                 copy={APPROVAL_CONTENT_COPY.mcp}
@@ -369,29 +380,37 @@ function ApprovalDetails({
             </div>
           )}
           {details.reason && (
-            <div className="mt-1 text-2xs fg-secondary">{details.reason}</div>
+            <div className="text-2xs fg-secondary">{details.reason}</div>
           )}
         </div>
       );
     case 'network':
       return (
-        <div className={`${REPLAY_BLOCK_CLASS} mt-1.5 text-xs fg-primary/80`}>
-          <code className="rounded bg-fg-primary/[0.06] px-1 py-0.5 font-mono text-2xs">
-            {details.host}
-          </code>
+        <div
+          className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-1 text-xs fg-primary/80`}
+        >
+          <div>
+            <code className="rounded bg-fg-primary/[0.06] px-1 py-0.5 font-mono text-2xs">
+              {details.host}
+            </code>
+          </div>
           {details.reason && (
-            <div className="mt-1 text-2xs fg-secondary">{details.reason}</div>
+            <div className="text-2xs fg-secondary">{details.reason}</div>
           )}
         </div>
       );
     case 'tool':
       return (
-        <div className={`${REPLAY_BLOCK_CLASS} mt-1.5 text-xs fg-primary/80`}>
-          <code className="rounded bg-fg-primary/[0.06] px-1 py-0.5 font-mono text-2xs">
-            {details.toolName}
-          </code>
+        <div
+          className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-1 text-xs fg-primary/80`}
+        >
+          <div>
+            <code className="rounded bg-fg-primary/[0.06] px-1 py-0.5 font-mono text-2xs">
+              {details.toolName}
+            </code>
+          </div>
           {details.inputSummary && (
-            <div className="mt-1">
+            <div>
               <ApprovalContentPreview
                 content={details.inputSummary}
                 copy={APPROVAL_CONTENT_COPY.tool}
@@ -400,7 +419,7 @@ function ApprovalDetails({
             </div>
           )}
           {details.reason && (
-            <div className="mt-1 text-2xs fg-secondary">{details.reason}</div>
+            <div className="text-2xs fg-secondary">{details.reason}</div>
           )}
         </div>
       );
@@ -408,9 +427,9 @@ function ApprovalDetails({
       return (
         <div
           data-testid="tool-approval-upload-details"
-          className="mt-1.5 text-xs fg-primary/80"
+          className="text-xs fg-primary/80 flex flex-col gap-1"
         >
-          <ul className="max-h-24 space-y-0.5 overflow-y-auto">
+          <ul className="max-h-24 grid grid-cols-1 content-start gap-0.5 overflow-y-auto">
             {details.files.map((file, index) => (
               <li
                 key={`${index}:${file.displayPath}`}
@@ -425,14 +444,14 @@ function ApprovalDetails({
               </li>
             ))}
           </ul>
-          <div className="mt-1 text-2xs fg-secondary">
+          <div className="text-2xs fg-secondary">
             To {details.origin}
             {details.topOrigin && details.topOrigin !== details.origin
               ? ` on ${details.topOrigin}`
               : ''}
           </div>
           {details.reason && (
-            <div className="mt-1 text-2xs fg-secondary">{details.reason}</div>
+            <div className="text-2xs fg-secondary">{details.reason}</div>
           )}
         </div>
       );
@@ -440,14 +459,14 @@ function ApprovalDetails({
       return (
         <div
           data-testid="tool-approval-file-request-details"
-          className="mt-1.5 text-xs fg-primary/80"
+          className="text-xs fg-primary/80 flex flex-col gap-1"
         >
           {details.purpose && (
             <div className="whitespace-pre-wrap break-words">
               “{details.purpose}”
             </div>
           )}
-          <div className="mt-1 text-2xs fg-secondary">
+          <div className="text-2xs fg-secondary">
             For {details.origin}
             {details.topOrigin && details.topOrigin !== details.origin
               ? ` on ${details.topOrigin}`
@@ -767,235 +786,236 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
       aria-labelledby={titleId}
       aria-describedby={pending.description ? descriptionId : undefined}
       tabIndex={-1}
-      className="rounded-lg border border-line-attention/30 bg-warning/[0.06] px-4 py-3"
+      className="flex flex-col gap-3 rounded-lg border border-line-attention/30 bg-warning/[0.06] px-4 py-3"
     >
-      <div className="flex items-center gap-1.5">
-        <div id={titleId} className="text-s font-medium fg-primary">
-          {pending.title}
-        </div>
-        {pending.subagentId && (
-          <span
-            data-testid="tool-approval-subagent-badge"
-            className="rounded bg-fg-primary/[0.08] px-1.5 py-0.5 text-3xs font-medium fg-secondary"
-          >
-            Subagent request
-          </span>
-        )}
-      </div>
-      {pending.description && (
-        <div
-          id={descriptionId}
-          className={`${REPLAY_BLOCK_CLASS} mt-0.5 text-xs fg-secondary`}
-        >
-          {pending.description}
-        </div>
-      )}
-      <ApprovalDetails details={pending.details} onViewFull={setFullView} />
-
-      {readOnlyHint !== undefined ||
-      pending.details.kind === 'browser-file-request' ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {readOnlyHint !== undefined ? (
-            // A viewer who may not decide sees why instead of the actions.
-            <span
-              data-testid="tool-approval-read-only"
-              className="text-xs fg-secondary"
+      <div className="flex flex-col gap-1.5">
+        <div>
+          <div className="flex items-center gap-1.5">
+            <div id={titleId} className="text-s font-medium fg-primary">
+              {pending.title}
+            </div>
+            {pending.subagentId && (
+              <Badge data-testid="tool-approval-subagent-badge">
+                Subagent request
+              </Badge>
+            )}
+          </div>
+          {pending.description && (
+            <div
+              id={descriptionId}
+              className={`${REPLAY_BLOCK_CLASS} mt-0.5 text-xs fg-secondary`}
             >
-              {readOnlyHint}
-            </span>
-          ) : (
-            // The user picks the files, so there is no rule to remember.
-            <>
-              <Button
-                variant="primary"
-                size="compact"
-                ref={primaryActionRef}
-                onClick={allowOnce}
-                data-testid="tool-approval-choose-files"
-              >
-                {pending.details.kind === 'browser-file-request' &&
-                pending.details.multiple
-                  ? 'Choose files…'
-                  : 'Choose file…'}
-              </Button>
-              <Button
-                size="compact"
-                onClick={denyOnce}
-                data-testid="tool-approval-decline-files"
-              >
-                Decline
-              </Button>
-            </>
+              {pending.description}
+            </div>
           )}
         </div>
-      ) : (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <div ref={actionsRef} className="flex flex-wrap items-center gap-2">
-            <div className="relative flex">
-              <button
-                ref={primaryActionRef}
-                type="button"
-                onClick={allowOnce}
-                data-testid="tool-approval-allow"
-                className={`${ruleScopes ? 'rounded-l' : 'rounded'} bg-accent-subtle px-3 py-1.5 text-xs font-medium fg-accent transition-colors hover:bg-accent-subtle/80`}
+        <ApprovalDetails details={pending.details} onViewFull={setFullView} />
+      </div>
+      <Stack gap="inline">
+        {readOnlyHint !== undefined ||
+        pending.details.kind === 'browser-file-request' ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {readOnlyHint !== undefined ? (
+              // A viewer who may not decide sees why instead of the actions.
+              <span
+                data-testid="tool-approval-read-only"
+                className="text-xs fg-secondary"
               >
-                Allow once
-              </button>
-              {ruleScopes && (
-                <>
-                  <button
-                    ref={allowTriggerRef}
-                    type="button"
-                    aria-haspopup="menu"
-                    aria-expanded={allowMenuOpen}
-                    aria-label="More allow options"
-                    onClick={toggleAllowMenu}
-                    className="rounded-r border-l border-line-accent/20 bg-accent-subtle px-1.5 py-1.5 fg-accent transition-colors hover:bg-accent-subtle/80"
-                  >
-                    <AppCatalogChevronDownMediumIcon size={14} />
-                  </button>
-                  {/* Portaled and collision-clamped: the card sits at the bottom of
+                {readOnlyHint}
+              </span>
+            ) : (
+              // The user picks the files, so there is no rule to remember.
+              <>
+                <Button
+                  variant="primary"
+                  size="compact"
+                  ref={primaryActionRef}
+                  onClick={allowOnce}
+                  data-testid="tool-approval-choose-files"
+                >
+                  {pending.details.kind === 'browser-file-request' &&
+                  pending.details.multiple
+                    ? 'Choose files…'
+                    : 'Choose file…'}
+                </Button>
+                <Button
+                  size="compact"
+                  onClick={denyOnce}
+                  data-testid="tool-approval-decline-files"
+                >
+                  Decline
+                </Button>
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <div ref={actionsRef} className="flex flex-wrap items-center gap-2">
+              <div className="relative flex">
+                <button
+                  ref={primaryActionRef}
+                  type="button"
+                  onClick={allowOnce}
+                  data-testid="tool-approval-allow"
+                  className={`${ruleScopes ? 'rounded-l' : 'rounded'} bg-accent-subtle px-3 py-1.5 text-xs font-medium fg-accent transition-colors hover:bg-accent-subtle/80`}
+                >
+                  Allow once
+                </button>
+                {ruleScopes && (
+                  <>
+                    <button
+                      ref={allowTriggerRef}
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded={allowMenuOpen}
+                      aria-label="More allow options"
+                      onClick={toggleAllowMenu}
+                      className="rounded-r border-l border-line-accent/20 bg-accent-subtle px-1.5 py-1.5 fg-accent transition-colors hover:bg-accent-subtle/80"
+                    >
+                      <AppCatalogChevronDownMediumIcon size={14} />
+                    </button>
+                    {/* Portaled and collision-clamped: the card sits at the bottom of
               the window, so an in-card popover opening downward ran behind
               the composer and off the viewport (CAN-3001). */}
-                  <FloatingMenu
-                    open={allowMenuOpen}
-                    onOpenChange={setAllowMenuOpen}
-                    anchorRef={allowTriggerRef}
-                    outsidePressBoundaryRef={actionsRef}
-                    placement="top-left"
-                    aria-label="Allow options"
-                    data-testid="tool-approval-allow-menu"
-                    className="min-w-55 max-w-80"
-                  >
-                    {target && targetLabel !== undefined ? (
-                      <>
-                        <ApprovalMenuTargetHeader
-                          targetLabel={targetLabel}
-                          testIdPrefix="tool-approval-allow-menu"
-                          onViewFull={viewFullTarget}
-                        />
-                        <ActionMenuRowStyle>
-                          <ActionMenuItems
-                            items={allowMenuItems}
-                            onSelect={(item): void => {
-                              if (item.disabled || !item.onSelect) return;
-                              item.onSelect();
-                              setAllowMenuOpen(false);
-                              allowTriggerRef.current?.focus({
-                                preventScroll: true,
-                              });
-                            }}
+                    <FloatingMenu
+                      open={allowMenuOpen}
+                      onOpenChange={setAllowMenuOpen}
+                      anchorRef={allowTriggerRef}
+                      outsidePressBoundaryRef={actionsRef}
+                      placement="top-left"
+                      aria-label="Allow options"
+                      data-testid="tool-approval-allow-menu"
+                      className="min-w-55 max-w-80"
+                    >
+                      {target && targetLabel !== undefined ? (
+                        <>
+                          <ApprovalMenuTargetHeader
+                            targetLabel={targetLabel}
+                            testIdPrefix="tool-approval-allow-menu"
+                            onViewFull={viewFullTarget}
                           />
-                        </ActionMenuRowStyle>
-                      </>
-                    ) : (
-                      <DropdownMenuLabel>
-                        No additional options
-                      </DropdownMenuLabel>
-                    )}
-                  </FloatingMenu>
-                </>
-              )}
-            </div>
-
-            <div className="relative flex">
-              <button
-                type="button"
-                onClick={denyOnce}
-                data-testid="tool-approval-deny"
-                className={`${denyMenuItems.length > 0 ? 'rounded-l' : 'rounded'} px-3 py-1.5 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary/80`}
-              >
-                Deny
-              </button>
-              {denyMenuItems.length > 0 && (
-                <>
-                  <button
-                    ref={denyTriggerRef}
-                    type="button"
-                    aria-haspopup="menu"
-                    aria-expanded={denyMenuOpen}
-                    aria-label="More deny options"
-                    onClick={toggleDenyMenu}
-                    className="rounded-r px-1.5 py-1.5 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary/80"
-                  >
-                    <AppCatalogChevronDownMediumIcon size={14} />
-                  </button>
-                  <FloatingMenu
-                    open={denyMenuOpen}
-                    onOpenChange={setDenyMenuOpen}
-                    anchorRef={denyTriggerRef}
-                    outsidePressBoundaryRef={actionsRef}
-                    placement="top-left"
-                    aria-label="Deny options"
-                    data-testid="tool-approval-deny-menu"
-                    className="min-w-55 max-w-80"
-                  >
-                    {target && targetLabel !== undefined && (
-                      <>
-                        <ApprovalMenuTargetHeader
-                          targetLabel={targetLabel}
-                          testIdPrefix="tool-approval-deny-menu"
-                          onViewFull={viewFullTarget}
-                        />
-                      </>
-                    )}
-                    <ActionMenuRowStyle>
-                      <ActionMenuItems
-                        items={denyMenuItems}
-                        onSelect={(item): void => {
-                          if (item.disabled || !item.onSelect) return;
-                          item.onSelect();
-                          setDenyMenuOpen(false);
-                          denyTriggerRef.current?.focus({
-                            preventScroll: true,
-                          });
-                        }}
-                      />
-                    </ActionMenuRowStyle>
-                  </FloatingMenu>
-                </>
-              )}
-            </div>
-          </div>
-
-          {denyReason && (
-            <button
-              ref={reasonToggleRef}
-              type="button"
-              data-testid="tool-approval-reason-toggle"
-              aria-expanded={reasonOpen}
-              aria-controls={reasonOpen ? reasonId : undefined}
-              onClick={toggleReason}
-              className="rounded px-1.5 py-1 text-2xs fg-secondary underline-offset-2 transition-colors hover:fg-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-line-accent"
-            >
-              {reasonOpen ? 'Hide reason' : 'Add a reason'}
-            </button>
-          )}
-        </div>
-      )}
-
-      {reasonOpen && readOnlyHint === undefined && (
-        <div className="mt-2">
-          <FormField id={reasonId} label="Reason for denying">
-            {(control) => (
-              <div className={REPLAY_BLOCK_CLASS}>
-                <TextArea
-                  {...control}
-                  ref={reasonFieldRef}
-                  data-testid="tool-approval-reason"
-                  value={reason}
-                  onChange={(e): void => setReason(e.target.value)}
-                  onKeyDown={onReasonKeyDown}
-                  placeholder="Included in the response to the agent…"
-                  rows={2}
-                  maxLength={reasonMaxLength}
-                />
+                          <ActionMenuRowStyle>
+                            <ActionMenuItems
+                              items={allowMenuItems}
+                              onSelect={(item): void => {
+                                if (item.disabled || !item.onSelect) return;
+                                item.onSelect();
+                                setAllowMenuOpen(false);
+                                allowTriggerRef.current?.focus({
+                                  preventScroll: true,
+                                });
+                              }}
+                            />
+                          </ActionMenuRowStyle>
+                        </>
+                      ) : (
+                        <DropdownMenuLabel>
+                          No additional options
+                        </DropdownMenuLabel>
+                      )}
+                    </FloatingMenu>
+                  </>
+                )}
               </div>
-            )}
-          </FormField>
-        </div>
-      )}
 
+              <div className="relative flex">
+                <button
+                  type="button"
+                  onClick={denyOnce}
+                  data-testid="tool-approval-deny"
+                  className={`${denyMenuItems.length > 0 ? 'rounded-l' : 'rounded'} px-3 py-1.5 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary/80`}
+                >
+                  Deny
+                </button>
+                {denyMenuItems.length > 0 && (
+                  <>
+                    <button
+                      ref={denyTriggerRef}
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded={denyMenuOpen}
+                      aria-label="More deny options"
+                      onClick={toggleDenyMenu}
+                      className="rounded-r px-1.5 py-1.5 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary/80"
+                    >
+                      <AppCatalogChevronDownMediumIcon size={14} />
+                    </button>
+                    <FloatingMenu
+                      open={denyMenuOpen}
+                      onOpenChange={setDenyMenuOpen}
+                      anchorRef={denyTriggerRef}
+                      outsidePressBoundaryRef={actionsRef}
+                      placement="top-left"
+                      aria-label="Deny options"
+                      data-testid="tool-approval-deny-menu"
+                      className="min-w-55 max-w-80"
+                    >
+                      {target && targetLabel !== undefined && (
+                        <>
+                          <ApprovalMenuTargetHeader
+                            targetLabel={targetLabel}
+                            testIdPrefix="tool-approval-deny-menu"
+                            onViewFull={viewFullTarget}
+                          />
+                        </>
+                      )}
+                      <ActionMenuRowStyle>
+                        <ActionMenuItems
+                          items={denyMenuItems}
+                          onSelect={(item): void => {
+                            if (item.disabled || !item.onSelect) return;
+                            item.onSelect();
+                            setDenyMenuOpen(false);
+                            denyTriggerRef.current?.focus({
+                              preventScroll: true,
+                            });
+                          }}
+                        />
+                      </ActionMenuRowStyle>
+                    </FloatingMenu>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {denyReason && (
+              <Button
+                variant="ghost-quiet"
+                size="compact"
+                ref={reasonToggleRef}
+                data-testid="tool-approval-reason-toggle"
+                aria-expanded={reasonOpen}
+                aria-controls={reasonOpen ? reasonId : undefined}
+                onClick={toggleReason}
+              >
+                {reasonOpen ? 'Hide reason' : 'Add a reason'}
+              </Button>
+            )}
+          </div>
+        )}
+
+        {reasonOpen && readOnlyHint === undefined && (
+          <div>
+            <FormField id={reasonId} label="Reason for denying">
+              {(control) => (
+                <div className={REPLAY_BLOCK_CLASS}>
+                  <TextArea
+                    {...control}
+                    ref={reasonFieldRef}
+                    data-testid="tool-approval-reason"
+                    value={reason}
+                    onChange={(e): void => setReason(e.target.value)}
+                    onKeyDown={onReasonKeyDown}
+                    placeholder="Included in the response to the agent…"
+                    rows={2}
+                    maxLength={reasonMaxLength}
+                  />
+                </div>
+              )}
+            </FormField>
+          </div>
+        )}
+      </Stack>
       {fullView && (
         <ApprovalContentModal
           title={fullView.title}

@@ -11,7 +11,7 @@ import type {
   HookQueueHost,
   HookQueueSavedEntry,
 } from '@canopy/core-runtime/node/initiated-work';
-import { isModelHarness } from '@canopy/desktop-shared/model-harnesses';
+import { isModelHarness } from '@canopy/execution-engine/model-harnesses';
 import { isApprovalMode } from '@canopy/desktop-shared/lib/approval-engine';
 import { isChatInterfaceMode } from '@canopy/desktop-shared/node/preferences/field-normalizers';
 import {
@@ -45,7 +45,7 @@ import {
   codexSpeedFromFastMode,
   readCodexSpeedRecord,
   type CodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
 import { resolvePipelineModelAlias } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
 import { readPreferencesFile } from '../lib/preferences-store';

@@ -2,7 +2,7 @@ import type {
   ExecutionSummary,
   JobResult,
   PipelineAdvisorHealthStatus,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   runStatusGlyphState,
   statusBadgeTone,

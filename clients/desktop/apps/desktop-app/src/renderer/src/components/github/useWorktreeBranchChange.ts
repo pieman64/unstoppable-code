@@ -1,3 +1,4 @@
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   BranchEntry,
@@ -7,9 +8,10 @@ import {
   createOptionsForBranchTarget,
   type HomeBranchTarget,
 } from '@/stores/homeComposerStore';
-import { useGitHubStore } from '@/stores/githubStore';
+import { gitActionFailureRaiser, useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
-import { extractIpcErrorMessage } from '@/lib/errors';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { inlineFailure } from '@/lib/inline-app-error';
 
 interface WorktreeBranchChangeInput {
   projectId: string;
@@ -65,19 +67,22 @@ export function useWorktreeBranchChange({
   const openPicker = useCallback((): void => {
     setTargets(null);
     setOpen(true);
+    // A git action that starts while the list loads owns the banner; a
+    // late branch-list failure never replaces its failure.
+    const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
     const load = window.api
       .homeListBranchTargets({ workspaceId: projectId })
       .catch((err: unknown): null => {
-        useGitHubStore
-          .getState()
-          .addToast(extractIpcErrorMessage(err), 'error');
+        const appError = toAppError(resolveClientAppError(err));
+        if (appError && loadRef.current === load)
+          raiseFailure(inlineFailure(appError, "Couldn't load the branches."));
         return null;
       });
     loadRef.current = load;
     void load.then((loaded): void => {
       if (loadRef.current === load) setTargets(loaded);
     });
-  }, [projectId]);
+  }, [projectId, worktreeId]);
 
   const changeBranch = useCallback(
     async (target: HomeBranchTarget): Promise<void> => {
@@ -92,8 +97,9 @@ export function useWorktreeBranchChange({
         return;
       }
       changingRef.current.add(changingKey);
+      const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
       try {
-        // Failed loads already showed a toast.
+        // A failed load already showed its failure under the top bar.
         const loaded = await loadRef.current;
         if (!loaded) return;
         const branches = loaded.branches;
@@ -131,9 +137,9 @@ export function useWorktreeBranchChange({
         projects.updateBranchName(projectId, worktreeId, result.branchName);
         void projects.refreshDiffStats();
       } catch (err: unknown) {
-        useGitHubStore
-          .getState()
-          .addToast(extractIpcErrorMessage(err), 'error');
+        const appError = toAppError(resolveClientAppError(err));
+        if (appError)
+          raiseFailure(inlineFailure(appError, "Couldn't change the branch."));
       } finally {
         changingRef.current.delete(changingKey);
       }

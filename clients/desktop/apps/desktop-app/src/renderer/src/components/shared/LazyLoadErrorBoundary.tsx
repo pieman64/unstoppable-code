@@ -1,13 +1,16 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { captureClientInstrumentationError } from '@canopy/desktop-instrumentation/client';
-import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
-import { recordBoundaryError } from '@/lib/surfaced-error-recording';
-import { Button } from '@/components/shared/Button';
+import type { JSX, ReactNode } from 'react';
+import { AppErrorBoundary } from '@canopy/ui-app';
 import { DialogModal } from '@canopy/ui-shared/components';
+import { Button } from '@/components/shared/Button';
+import { lazyLoadErrorBoundaryHost } from '@/lib/desktop-error-boundary-host';
+import { RenderFaultProbe } from '@/lib/e2e-render-fault';
 
 interface LazyLoadErrorBoundaryProps {
   children: ReactNode;
+  /** What failed to load: the dialog's title. */
   label: string;
+  /** One sentence for the dialog's body: `Couldn't load project settings.` */
+  message: string;
   onClose?: () => void;
   onRetry: () => void;
   resetKey: string | number;
@@ -15,87 +18,53 @@ interface LazyLoadErrorBoundaryProps {
 
 function noop(): void {}
 
-interface LazyLoadErrorBoundaryState {
-  error: Error | null;
-}
-
-export class LazyLoadErrorBoundary extends Component<
-  LazyLoadErrorBoundaryProps,
-  LazyLoadErrorBoundaryState
-> {
-  constructor(props: LazyLoadErrorBoundaryProps) {
-    super(props);
-    this.state = { error: null };
-  }
-
-  static getDerivedStateFromError(error: Error): LazyLoadErrorBoundaryState {
-    return { error };
-  }
-
-  override componentDidUpdate(prevProps: LazyLoadErrorBoundaryProps): void {
-    if (this.state.error && prevProps.resetKey !== this.props.resetKey) {
-      this.setState({ error: null });
-    }
-  }
-
-  override componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
-    captureClientInstrumentationError(error, {
-      context: { boundary: 'lazy_load' },
-    });
-    reportRendererConsoleError('Lazy component failed to load', {
-      name: error.name,
-      message: error.message,
-      stack: error.stack,
-      componentStack: errorInfo.componentStack,
-      label: this.props.label,
-    });
-    recordBoundaryError('lazy-load', 'panel', error);
-  }
-
-  handleRetry = (): void => {
-    this.props.onRetry();
-  };
-
-  override render(): ReactNode {
-    const { children, label, onClose } = this.props;
-    const { error } = this.state;
-
-    if (!error) {
-      return children;
-    }
-
-    // A load failure opens without the user asking, so focus lands on the
-    // card rather than on a button the next keypress would press. With no
-    // Close there is no way out but Try again: Escape and the scrim do nothing.
-    return (
-      <DialogModal
-        variant="confirm"
-        title={`${label} could not be loaded`}
-        titleId="lazy-load-error-title"
-        onClose={onClose ?? noop}
-        closeOnBackdrop={false}
-        closeOnEscape={onClose !== undefined}
-        trapFocus
-        initialFocus="dialog"
-        dataTestId="lazy-load-error"
-        ariaDescribedBy="lazy-load-error-message"
-        footer={
-          <>
-            {onClose ? (
+export function LazyLoadErrorBoundary({
+  children,
+  label,
+  message,
+  onClose,
+  onRetry,
+  resetKey,
+}: LazyLoadErrorBoundaryProps): JSX.Element {
+  return (
+    <AppErrorBoundary
+      layout="inline"
+      message={<span id="lazy-load-error-message">{message}</span>}
+      testId="lazy-load-error-fallback"
+      host={lazyLoadErrorBoundaryHost}
+      context={{ label }}
+      resetKey={resetKey}
+      onRecover={onRetry}
+      // A load failure opens without the user asking, so focus lands on the
+      // card rather than on a button the next keypress would press. With no
+      // Close there is no way out but Try again: Escape and the scrim do
+      // nothing.
+      renderFrame={(fallback) => (
+        <DialogModal
+          variant="confirm"
+          title={label}
+          titleId="lazy-load-error-title"
+          onClose={onClose ?? noop}
+          closeOnBackdrop={false}
+          closeOnEscape={onClose !== undefined}
+          trapFocus
+          initialFocus="dialog"
+          dataTestId="lazy-load-error"
+          ariaDescribedBy="lazy-load-error-message"
+          footer={
+            onClose ? (
               <Button variant="secondary" size="compact" onClick={onClose}>
                 Close
               </Button>
-            ) : null}
-            <Button variant="primary" size="compact" onClick={this.handleRetry}>
-              Try again
-            </Button>
-          </>
-        }
-      >
-        <p id="lazy-load-error-message" className="text-s fg-secondary">
-          {error.message || error.name || 'Unknown loading error'}
-        </p>
-      </DialogModal>
-    );
-  }
+            ) : undefined
+          }
+        >
+          {fallback}
+        </DialogModal>
+      )}
+    >
+      {__CANOPY_E2E__ ? <RenderFaultProbe target="lazy-load" /> : null}
+      {children}
+    </AppErrorBoundary>
+  );
 }

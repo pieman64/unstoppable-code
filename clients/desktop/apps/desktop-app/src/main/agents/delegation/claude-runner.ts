@@ -2,7 +2,7 @@ import type { AccountProxyQuotaWait } from '../../account-proxy/quota-wait';
 import {
   classifyAgentFailure,
   AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 import type { DelegationParent } from '@canopy/desktop-shared/node/delegation/parent';
 import { delegationStopSignal } from './stop-signal';
 import type { UUID } from 'node:crypto';
@@ -34,7 +34,7 @@ import {
   type McpServerConfig,
   type SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import { ClaudeInputDelivery } from '../claude-input-delivery';
 import { chatInputRefusal } from '@canopy/protocol/portal/input-delivery';
 import type { AgentDelegationUsage } from '@canopy/protocol/delegation';

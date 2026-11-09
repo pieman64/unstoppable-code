@@ -18,6 +18,11 @@
  * resolution, navigation, placement or reveal, explicit targets) and returns
  * its typed result.
  */
+import {
+  clearRenderFault,
+  failRender,
+  type RenderFaultTarget,
+} from '@/lib/e2e-render-fault';
 import type {
   ISerializedPanelNode,
   PanelCollapseEdge,
@@ -80,6 +85,10 @@ type PanelArrangement = 'even' | 'maximize' | 'expand';
  */
 interface CanopyPanelTestApi {
   getSerializedLayout(): SerializedPanelLayout;
+  /** Throws during render at `panel:<panelId>`, `chart`, `lazy-load` or `window`. */
+  failRender(target: RenderFaultTarget): void;
+  /** Stops the fault at `target`, or every fault when omitted. */
+  clearRenderFault(target?: RenderFaultTarget): void;
   getActiveGroupId(): string | null;
   /** Returns the new group's id. */
   splitPanel(groupId: string, direction: PanelSplitDirection): string;
@@ -327,6 +336,8 @@ export function installPanelTestApi(
   );
 
   const api: CanopyPanelTestApi = {
+    failRender,
+    clearRenderFault,
     getSerializedLayout: (): SerializedPanelLayout => {
       const file = store().serializeLayout(worktreeKey);
       if (!file) {

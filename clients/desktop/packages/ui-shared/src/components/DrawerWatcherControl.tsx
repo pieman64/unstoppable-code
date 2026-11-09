@@ -38,8 +38,8 @@ export function DrawerWatcherControl({
       dataTestId={dataTestId ? `${dataTestId}-tooltip` : undefined}
       surfacePadding="card"
       content={
-        <div className="w-64 max-w-full text-xs">
-          <div className="mb-2 flex items-center gap-1.5 fg-tertiary">
+        <div className="flex w-64 max-w-full flex-col gap-2 text-xs">
+          <div className="flex items-center gap-1.5 fg-tertiary">
             {heading} <span className="fg-quaternary">{count}</span>
           </div>
           <ul className="flex flex-col gap-3">
@@ -61,7 +61,7 @@ export function DrawerWatcherControl({
             ))}
           </ul>
           {count > rows.length && (
-            <div className="mt-2 fg-tertiary">+{count - rows.length} more</div>
+            <div className="fg-tertiary">+{count - rows.length} more</div>
           )}
         </div>
       }

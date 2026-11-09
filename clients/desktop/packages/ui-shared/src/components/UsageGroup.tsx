@@ -12,6 +12,7 @@ import { Tooltip } from './Tooltip';
 import { formatCreditsLeft } from './UsageIndicator';
 import { formatUsagePercent } from './usage-indicator-meter';
 import { Heading } from './Heading';
+import { Stack, type SpaceRole } from './Stack';
 
 /** One displayable plan limit window, as every usage surface receives it. */
 export interface UsageLimitCard {
@@ -543,6 +544,7 @@ export function UsageGroup({
   planTestId,
   testId,
   children,
+  childrenGap,
 }: {
   title: string;
   provider?: string;
@@ -550,6 +552,8 @@ export function UsageGroup({
   planTestId?: string;
   testId?: string;
   children: ReactNode;
+  /** Own the gaps between host rows when those rows have no outer margins. */
+  childrenGap?: SpaceRole;
 }): JSX.Element {
   const headingId = useId();
   return (
@@ -565,7 +569,11 @@ export function UsageGroup({
         planTestId={planTestId}
         headingId={headingId}
       />
-      {children}
+      {childrenGap === undefined ? (
+        children
+      ) : (
+        <Stack gap={childrenGap}>{children}</Stack>
+      )}
     </section>
   );
 }
@@ -584,6 +592,7 @@ export function UsageProviderGroup({
   nowMs,
   rows,
   footer,
+  separateFooter = false,
   testId,
 }: {
   title: string;
@@ -597,9 +606,22 @@ export function UsageProviderGroup({
   rows?: ReactNode;
   /** Content under the box: errors, notes, retained snapshots. */
   footer?: ReactNode;
+  /** Own the existing 6px boundary before a margin-free account snapshot footer. */
+  separateFooter?: boolean;
   testId?: string;
 }): JSX.Element {
   const headingId = useId();
+  const body = (
+    <div className={USAGE_ROW_GROUP_CLASS}>
+      {windows.map((window) => (
+        <UsageWindowRow key={window.key} window={window} nowMs={nowMs} />
+      ))}
+      {rows}
+    </div>
+  );
+  const footerContent = (
+    <NoticeShapeProvider shape="settings">{footer}</NoticeShapeProvider>
+  );
   return (
     <section
       aria-labelledby={headingId}
@@ -613,14 +635,18 @@ export function UsageProviderGroup({
         planTestId={planTestId}
         headingId={headingId}
       />
-      <div className={USAGE_ROW_GROUP_CLASS}>
-        {windows.map((window) => (
-          <UsageWindowRow key={window.key} window={window} nowMs={nowMs} />
-        ))}
-        {rows}
-      </div>
       {/* Notices under the box take its corners. */}
-      <NoticeShapeProvider shape="settings">{footer}</NoticeShapeProvider>
+      {separateFooter ? (
+        <div className="flex flex-col gap-1.5">
+          {body}
+          <div className="empty:hidden">{footerContent}</div>
+        </div>
+      ) : (
+        <>
+          {body}
+          {footerContent}
+        </>
+      )}
     </section>
   );
 }

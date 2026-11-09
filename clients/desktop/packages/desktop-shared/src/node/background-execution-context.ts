@@ -10,7 +10,7 @@ import type { ShareablePluginRef } from '../plugin-refs';
 import type {
   PipelinePreferenceLocator,
   ResolvedPipelinePluginCollectionSnapshot,
-} from '../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 /** References, not owner claims. Only a host with inventory access can resolve these. */
 export interface BackgroundCapabilities {
@@ -57,7 +57,7 @@ import {
   parseWorkspaceContext,
   type WorkspaceContext,
 } from '@canopy/protocol/workspace-context';
-import type { Pipeline } from '../types/pipeline';
+import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import {
   resolveAction,
   resolveActionRuntime,
@@ -66,7 +66,7 @@ import {
   decideResourceContext,
   type ResourceContextInput,
   type ResourceContextDecision,
-} from '../lib/resource-context-policy';
+} from '@canopy/execution-engine/lib/resource-context-policy';
 
 export function parseExecutionContext(value: string): WorkspaceContext {
   const context = parseWorkspaceContext(value);
@@ -298,7 +298,7 @@ export {
   backgroundExecutionRetryMessage,
   type BackgroundContextMismatchDetails,
   type BackgroundExecutionDeniedMessageOptions,
-} from '../lib/automation-context-copy';
+} from '@canopy/execution-engine/lib/automation-context-copy';
 
 /** A verification that could not complete; the activity stays enabled. */
 export function backgroundExecutionUnavailableMessage(): string {

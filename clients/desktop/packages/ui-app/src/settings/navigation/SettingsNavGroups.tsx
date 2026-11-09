@@ -105,9 +105,7 @@ export function SettingsNavGroups({
                 aria-current={selected ? 'page' : undefined}
                 data-testid={testId}
                 data-sidebar-nav-row=""
-                // Links get a hand cursor by default; settings rows keep the
-                // arrow, like the app's other menus and the button rows here.
-                className={`${sidebarNavItemClassName(selected)} ${ROW_CLASSNAME_SUFFIX} cursor-default`}
+                className={`${sidebarNavItemClassName(selected)} ${ROW_CLASSNAME_SUFFIX}`}
                 onClick={(event) => onNavigate?.(row, event)}
               >
                 <RowContent row={row} testIdPrefix={testIdPrefix} />

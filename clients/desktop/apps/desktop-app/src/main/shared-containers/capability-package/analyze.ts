@@ -29,16 +29,16 @@ import {
 } from '@canopy/desktop-shared/node';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
-import type { AgentModelDefinition } from '@canopy/desktop-shared/types/agent-models';
+import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
 import type {
   InvocableInventoryCache,
   InvocableInventoryEntry,
 } from '@canopy/desktop-shared/types/invocable-inventory';
-import type { McpServerRef } from '@canopy/desktop-shared/types/mcp-servers';
+import type { McpServerRef } from '@canopy/execution-engine/types/mcp-servers';
 import type {
   RepoLocalInvocableEntry,
   RepoLocalInvocableIndex,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
   PIPELINE_PACKAGE_MAX_FILES,

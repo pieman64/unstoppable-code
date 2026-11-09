@@ -28,7 +28,7 @@ export function ExportSessionConfirmationModal({
       maxWidth="md"
       dataTestId="export-session-confirmation-modal"
     >
-      <div className="space-y-3 px-6 py-4 text-s fg-secondary">
+      <div className="flex flex-col px-6 py-4 text-s fg-secondary gap-3">
         <p>
           Create a private, account-scoped snapshot that can be imported from
           another device signed in to the same {brandText.appName} Cloud

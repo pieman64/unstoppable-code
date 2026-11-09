@@ -3,6 +3,15 @@
  * publishes a marketplace plugin, which package it is, and which MCP endpoint
  * a bundled server or installed row points at. Pure and deterministic.
  */
+import { marketplaceDisplayName } from '@canopy/ui-shared/lib/official-marketplace-products';
+import {
+  isValidGitHubRepoRef,
+  normalizeGitHubRepoRef,
+  serializeCodexPluginSource,
+  serializeShareableSource,
+  systemCatalogGithubRepo,
+  type ShareablePluginRef,
+} from '@canopy/protocol/plugins';
 import type {
   UnifiedBundledMcpServerInput,
   UnifiedMarketplaceInput,
@@ -58,6 +67,68 @@ export function githubOwner(url: string | undefined): string | undefined {
   return owner;
 }
 
+/**
+ * The normalized `owner/repo` of a GitHub source: a repository URL, an SSH
+ * remote or the `owner/repo` shorthand. Nothing for any other source.
+ */
+export function githubRepoRef(source: string | undefined): string | undefined {
+  const trimmed = source?.trim();
+  if (!trimmed) return undefined;
+  const owner = githubOwner(trimmed);
+  let ref = trimmed;
+  if (owner !== undefined) {
+    const path = GITHUB_SSH_PATTERN.test(trimmed)
+      ? trimmed.slice(trimmed.indexOf(':') + 1)
+      : new URL(trimmed).pathname.slice(1);
+    ref = `${owner}/${path.split('/')[1]?.replace(/\.git$/i, '') ?? ''}`;
+  }
+  return isValidGitHubRepoRef(ref) ? normalizeGitHubRepoRef(ref) : undefined;
+}
+
+function catalogPluginKey(source: string, pluginName: string): string {
+  return `${source}|${pluginName.trim().toLowerCase()}`;
+}
+
+/**
+ * The catalog listing a share points at, whichever ref type it was shared
+ * under. Nothing for a skill, or for a ref too malformed to serialize.
+ */
+export function shareRefCatalogKey(
+  ref: ShareablePluginRef,
+): string | undefined {
+  if (ref.type === 'skill') return undefined;
+  try {
+    return catalogPluginKey(
+      ref.type === 'codex_plugin'
+        ? serializeCodexPluginSource(ref.marketplace)
+        : serializeShareableSource(ref.marketplace),
+      ref.plugin_name,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Every key a share of this plugin can carry: the catalog is named by its
+ * Codex id, as the built-in catalog, or by its GitHub repo.
+ */
+export function marketplacePluginCatalogKeys(
+  marketplace: Pick<UnifiedMarketplaceInput, 'id' | 'builtIn' | 'sourceUrl'>,
+  pluginName: string,
+): string[] {
+  const repo =
+    githubRepoRef(marketplace.sourceUrl) ??
+    githubRepoRef(systemCatalogGithubRepo(marketplace.id));
+  return [
+    serializeCodexPluginSource({ type: 'codex-builtin', id: marketplace.id }),
+    ...(marketplace.builtIn === true
+      ? [serializeShareableSource({ type: 'builtin', id: 'app' })]
+      : []),
+    ...(repo ? [serializeShareableSource({ type: 'github', repo })] : []),
+  ].map((source) => catalogPluginKey(source, pluginName));
+}
+
 /** The plugin package's own source URL, from either host's input shape. */
 function pluginExternalSourceUrl(
   plugin: UnifiedMarketplacePluginInput,
@@ -84,17 +155,18 @@ export function pluginSourceLabel(
   plugin: UnifiedMarketplacePluginInput,
 ): string {
   const provider = nativeProvider(plugin);
-  if (provider === undefined) return marketplace.name;
+  const name = marketplaceDisplayName(marketplace.name);
+  if (provider === undefined) return name;
   const owner =
     githubOwner(pluginExternalSourceUrl(plugin)) ??
     githubOwner(marketplace.sourceUrl);
   if (owner !== undefined) return `${provider} · ${owner}`;
   // A catalog already named for its provider (`Codex official`) reads fine
   // alone; repeating the provider would say it twice.
-  if (marketplace.name.toLowerCase().startsWith(provider.toLowerCase())) {
-    return marketplace.name;
+  if (name.toLowerCase().startsWith(provider.toLowerCase())) {
+    return name;
   }
-  return `${provider} · ${marketplace.name}`;
+  return `${provider} · ${name}`;
 }
 
 /**

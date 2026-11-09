@@ -6,8 +6,8 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { useDroppable } from '@dnd-kit/core';
-import type { Job, Step } from '@canopy/desktop-shared/types/pipeline';
-import { normalizeNeeds } from '@canopy/desktop-shared/types/pipeline';
+import type { Job, Step } from '@canopy/execution-engine/types/pipeline';
+import { normalizeNeeds } from '@canopy/execution-engine/types/pipeline';
 import type { Selection } from '../../../hooks/usePipelineEditor';
 import { Badge, Count } from '@canopy/ui-shared/components';
 import { StepCard } from './StepCard';
@@ -154,7 +154,10 @@ export function JobCard({
 
       {/* Job body (steps) */}
       {!collapsed && (
-        <div ref={setDropRef} className="px-2 py-2 space-y-1.5 min-h-10">
+        <div
+          ref={setDropRef}
+          className="flex flex-col px-2 py-2 min-h-10 gap-1.5"
+        >
           {job.steps.length === 0 ? (
             <EmptyStateRow title="No steps yet" />
           ) : (

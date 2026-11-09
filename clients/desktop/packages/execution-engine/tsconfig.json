@@ -1,0 +1,36 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "out",
+    "rootDir": "../..",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "../../.cache/brand/**/*.ts"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/__tests__/**",
+    "src/**/__scratch__/**"
+  ],
+  "references": [
+    {
+      "path": "../agent-transcript"
+    },
+    {
+      "path": "../core-platform"
+    },
+    {
+      "path": "../core-runtime"
+    },
+    {
+      "path": "../pipeline-interop"
+    },
+    {
+      "path": "../protocol"
+    }
+  ]
+}

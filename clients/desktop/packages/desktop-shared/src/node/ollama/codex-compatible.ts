@@ -1,4 +1,4 @@
-import type { CodexConfig } from '../../lib/codex-model-config';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 
 /**
  * Codex reserves `ollama` for its built-in provider and fails config load when

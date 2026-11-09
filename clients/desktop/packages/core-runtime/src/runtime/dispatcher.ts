@@ -1,6 +1,5 @@
 import {
-  CANOPY_PIPELINE_LAUNCH_OPERATION,
-  CANOPY_PIPELINE_OWNER_VALUES_OPERATION,
+  CANOPY_HOST_EXECUTION_MEMBER_OPERATIONS,
   CanopyCallerDescriptorSchema,
   CanopyHostExecutionSchema,
   CanopyStreamCursorSchema,
@@ -121,23 +120,34 @@ function hostExecutionFor(
   const parsed = CanopyHostExecutionSchema.safeParse(execution);
   if (!parsed.success)
     throw canopyInvalidArgumentError('Invalid host execution.');
-  const { pipelineLaunch, pipelineOwnerValues } = parsed.data;
-  if (pipelineLaunch !== undefined && name !== CANOPY_PIPELINE_LAUNCH_OPERATION)
-    throw canopyInvalidArgumentError(
-      'This operation does not accept a pipeline launch.',
-    );
-  if (
-    pipelineOwnerValues !== undefined &&
-    name !== CANOPY_PIPELINE_OWNER_VALUES_OPERATION
-  )
-    throw canopyInvalidArgumentError(
-      'This operation does not accept pipeline owner values.',
-    );
+  const { childEnvironment, ...members } = parsed.data;
+  const accepted: Record<string, unknown> = {};
+  for (const [member, value] of Object.entries(members)) {
+    if (value === undefined) continue;
+    const rule = hostExecutionMemberRule(member);
+    if (!rule)
+      throw canopyInvalidArgumentError(
+        'This operation does not accept that host execution member.',
+      );
+    if (rule.operation !== name) throw canopyInvalidArgumentError(rule.refusal);
+    accepted[member] = Object.freeze({ ...value });
+  }
   return Object.freeze({
-    childEnvironment: Object.freeze({ ...parsed.data.childEnvironment }),
-    ...(pipelineLaunch !== undefined && { pipelineLaunch }),
-    ...(pipelineOwnerValues !== undefined ? { pipelineOwnerValues } : {}),
+    childEnvironment: Object.freeze({ ...childEnvironment }),
+    ...accepted,
   });
+}
+
+const HOST_EXECUTION_MEMBER_RULES: ReadonlyMap<
+  string,
+  { readonly operation: string; readonly refusal: string }
+> = new Map(Object.entries(CANOPY_HOST_EXECUTION_MEMBER_OPERATIONS));
+
+/** The table row for an `_execution` member; undefined for any member it lacks (CAN-5771). */
+function hostExecutionMemberRule(
+  member: string,
+): { readonly operation: string; readonly refusal: string } | undefined {
+  return HOST_EXECUTION_MEMBER_RULES.get(member);
 }
 function retryForDefinition(
   definition: Definition | undefined,

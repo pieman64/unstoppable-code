@@ -84,7 +84,7 @@ export type {
   ChatTurnStateCommit,
   ChatTurnStateScope,
 } from './chat-turn-state-handoff';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   hasTrustedVisualToolUse,
   type VisualToolTarget,
@@ -272,7 +272,7 @@ import {
   isCodexSpeed,
   readCodexSpeedRecord,
   withCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   defineChatTabMetadataProperty,
   isSafeChatTabMetadataKey,
@@ -618,6 +618,12 @@ export interface ChatHostRuntimeRecovery {
 /** Trusted host-only execution metadata that must never come from renderer input. */
 export interface TrustedChatCommandExecutionOptions extends ChatCommandExecutionOptions {
   agentSent?: AgentSentInfo;
+  /**
+   * Set only by the entry points where a person answers: the window's
+   * question card and a Portal session of the signed-in user. Every other
+   * answer reaches the waiting tool as an agent's.
+   */
+  answeredByPerson?: true;
 }
 
 interface ScopeActivityLease {
@@ -1235,6 +1241,9 @@ function chatRuntimeHostKey(scope: ChatScopeKey, chatId: string): string {
   return `${scope.projectId}\u0000${scope.worktreeId}\u0000${chatId}`;
 }
 
+/** Failed reconcile commits of a chat's turn state before it is reported stalled. */
+const RECONCILE_TURN_COMMIT_STALL_PASSES = 3;
+
 export interface ChatTurnTerminalNotice extends ChatScopeKey {
   chatId: string;
   userMessageId: string;
@@ -1451,6 +1460,99 @@ function recordSnapshotTurnEnds(
       type: 'tab.metadata_patched',
       tabId: chatId,
       patch: { rootTurnInputIds: inputIds },
+    });
+}
+
+/**
+ * The owner a marker write records (CAN-6014): setting the marker takes the
+ * turn running now, or none while the chat is idle, which the next turn then
+ * adopts; clearing it clears its owner.
+ */
+function autoArchiveOwnerPatch(
+  autoArchive: boolean | null | undefined,
+  turn: PersistedChatTurnState | undefined,
+): Pick<ChatTabMetadataPatch, 'autoArchiveTurnId'> {
+  if (autoArchive === undefined) return {};
+  return { autoArchiveTurnId: (autoArchive && turn?.current?.id) || null };
+}
+
+/**
+ * Settles the auto-archive marker's one-turn lifetime as a turn-state commit
+ * lands (CAN-6014). A marker without an owner, set while the chat was idle or
+ * written by a hook chat or before owners existed, is adopted by the first
+ * turn this commit starts, else the turn it runs. Any turn that
+ * starts after the owner drops its marker, even one that also ends in this
+ * commit, and the owner ending without completing drops it too.
+ */
+function settleAutoArchiveOwner(
+  mutations: ChatCoreMutation[],
+  current: CanonicalChatState,
+  chatId: string,
+  snapshot: ChatTurnStateHandoffSnapshot,
+): void {
+  // The tab as this commit leaves it: a tab it restores or creates, then its
+  // own patches, are newer than the stored tab.
+  const tab = current.tabsFile.tabs.find(
+    (candidate) => candidate.id === chatId,
+  );
+  let marked = tab?.autoArchive === true;
+  let owner = tab?.autoArchiveTurnId;
+  for (const mutation of mutations)
+    if (mutation.type === 'tab.created' && mutation.tab.id === chatId) {
+      marked = mutation.tab.autoArchive === true;
+      owner = mutation.tab.autoArchiveTurnId;
+    } else if (
+      mutation.type === 'tab.metadata_patched' &&
+      mutation.tabId === chatId
+    ) {
+      if ('autoArchive' in mutation.patch)
+        marked = mutation.patch.autoArchive === true;
+      if ('autoArchiveTurnId' in mutation.patch)
+        owner = mutation.patch.autoArchiveTurnId ?? undefined;
+    }
+  if (!marked) {
+    if (owner !== undefined)
+      mutations.push({
+        type: 'tab.metadata_patched',
+        tabId: chatId,
+        patch: { autoArchiveTurnId: null },
+      });
+    return;
+  }
+  const ended = new Map<string, string>();
+  for (const effect of snapshot.effects ?? [])
+    if (effect.type === 'turn.ended') ended.set(effect.turnId, effect.outcome);
+  const starts: string[] = [];
+  for (const entry of snapshot.lifecycle ?? [])
+    if (entry.transition === 'start' && !starts.includes(entry.turnId))
+      starts.push(entry.turnId);
+  const running = snapshot.turn.current?.id;
+  // Never the turn that just ended: a marker set while idle is for the next.
+  const adopted = owner ?? starts[0] ?? running;
+  // Starts before the owner's are older turns; an owner from an earlier
+  // commit precedes them all.
+  const newerStart =
+    adopted !== undefined &&
+    starts.slice(starts.indexOf(adopted) + 1).some((id) => id !== adopted);
+  const endedUnfinished =
+    adopted !== undefined &&
+    ended.has(adopted) &&
+    ended.get(adopted) !== 'completed';
+  if (
+    endedUnfinished ||
+    newerStart ||
+    (running !== undefined && adopted !== running)
+  )
+    mutations.push({
+      type: 'tab.metadata_patched',
+      tabId: chatId,
+      patch: { autoArchive: null, autoArchiveTurnId: null },
+    });
+  else if (adopted !== owner)
+    mutations.push({
+      type: 'tab.metadata_patched',
+      tabId: chatId,
+      patch: { autoArchiveTurnId: adopted },
     });
 }
 
@@ -3367,6 +3469,8 @@ export class ChatStateService implements ChatStateCommandPort {
   }
   /** Accepted sends not yet guaranteed visible in the queue/session hosts. */
   private readonly dispatchesInFlight = new Map<string, number>();
+  /** Consecutive reconcile passes whose commit of a chat's turn state failed. */
+  private readonly reconcileTurnCommitFailures = new Map<string, number>();
   private readonly acceptedSendsInFlight = new Map<
     string,
     Promise<ChatCommandResult>
@@ -3934,6 +4038,7 @@ export class ChatStateService implements ChatStateCommandPort {
       return false;
     }
     recordSnapshotTurnEnds(mutations, current, chatId, snapshot, this.now());
+    settleAutoArchiveOwner(mutations, current, chatId, snapshot);
     const ownership = getChatTurnOwnership().getSnapshot(snapshot.scope);
     withTurnSnapshot(mutations, current, chatId, snapshot, (runtime) =>
       projectTurnRuntime(runtime, snapshot.turn, ownership),
@@ -4082,6 +4187,9 @@ export class ChatStateService implements ChatStateCommandPort {
   }
 
   private publishTurnStateCommitted(commit: ChatTurnStateCommit): void {
+    this.reconcileTurnCommitFailures.delete(
+      chatRuntimeHostKey(commit.scope, commit.scope.chatId),
+    );
     for (const listener of Array.from(this.turnStateCommittedListeners)) {
       try {
         listener({
@@ -5535,6 +5643,49 @@ export class ChatStateService implements ChatStateCommandPort {
     return loading;
   }
 
+  /** Whether the handoff holds received turn state this chat has not committed. */
+  private hasUncommittedTurnState(
+    target: ChatTurnStateScope,
+    committed?: PersistedChatTurnState,
+  ): boolean {
+    if (committed) this.turnHandoff.seedFromState(target, committed);
+    const snapshot = this.turnHandoff.snapshotNow(target);
+    return snapshot !== undefined && this.turnHandoff.isCurrent(snapshot);
+  }
+
+  /** Commit a deferred chat's turn state; report a store that keeps refusing it. */
+  private async commitDeferredTurnState(
+    target: ChatTurnStateScope,
+  ): Promise<void> {
+    await this.turnHandoff.flush(target);
+    const key = chatRuntimeHostKey(target, target.chatId);
+    if (!this.hasUncommittedTurnState(target)) {
+      this.reconcileTurnCommitFailures.delete(key);
+      return;
+    }
+    const failures = (this.reconcileTurnCommitFailures.get(key) ?? 0) + 1;
+    this.reconcileTurnCommitFailures.set(key, failures);
+    if (failures !== RECONCILE_TURN_COMMIT_STALL_PASSES) return;
+    logMainProcessWarn(
+      '[chat-state] Turn state keeps failing to commit; host reconciliation is waiting for it:',
+      { chatId: target.chatId },
+    );
+    try {
+      this.recordDiagnostic({
+        version: 1,
+        timestamp: new Date(this.now()).toISOString(),
+        kind: 'turn_state_commit_stalled',
+        sessionKey: `${target.projectId}/${target.worktreeId}/${target.chatId}`,
+        projectId: target.projectId,
+        worktreeId: target.worktreeId,
+        chatId: target.chatId,
+        providerType: 'unknown',
+      });
+    } catch {
+      // Diagnostics are best-effort and must never change reconciliation.
+    }
+  }
+
   private async reconcileRuntimeHosts(
     scope: ChatScopeKey,
     state: CanonicalChatState,
@@ -5793,6 +5944,7 @@ export class ChatStateService implements ChatStateCommandPort {
     // between the read and the lease is reconciled by the next snapshot.
     const selectedChatIds = new Set(Object.keys(state.runtimeByChatId));
     const restartChatIds = new Set<string>();
+    const deferredChatIds = new Set<string>();
     let commit: ChatStateCommit;
     try {
       commit = await this.repository.transactWith(
@@ -5887,6 +6039,21 @@ export class ChatStateService implements ChatStateCommandPort {
             ) {
               continue;
             }
+            // Received turn state outranks this committed runtime: commit it
+            // first, and reconcile the chat from the committed result later.
+            if (this.hasUncommittedTurnState(target, runtime.turn)) {
+              deferredChatIds.add(chatId);
+              continue;
+            }
+            this.reconcileTurnCommitFailures.delete(
+              chatRuntimeHostKey(scope, chatId),
+            );
+            // Fence the handoff before awaiting, so receipts that arrive
+            // meanwhile queue for the restarted state instead of being replaced.
+            if (reducerTurnNeedsRestart) {
+              this.turnHandoff.prepareRestart(target);
+              restartChatIds.add(chatId);
+            }
             const now = this.now();
             // Persist the resume target before closing its durable running marker.
             // A registry failure leaves the original state available for a retry.
@@ -5908,10 +6075,6 @@ export class ChatStateService implements ChatStateCommandPort {
                 },
               ]);
             }
-            if (reducerTurnNeedsRestart) {
-              this.turnHandoff.prepareRestart(target);
-              restartChatIds.add(chatId);
-            }
             if (terminalActive && tab.claudeTerminal)
               mutations.push({
                 type: 'tab.metadata_patched',
@@ -5922,6 +6085,14 @@ export class ChatStateService implements ChatStateCommandPort {
                     turnState: 'exited',
                   },
                 },
+              });
+            // An app restart ends the marked turn without completing it, so
+            // its auto-archive ends here, before any resume (CAN-6014).
+            if (tab.autoArchive === true)
+              mutations.push({
+                type: 'tab.metadata_patched',
+                tabId: chatId,
+                patch: { autoArchive: null, autoArchiveTurnId: null },
               });
             for (const question of current.tabsFile.pendingQuestions ?? []) {
               // Synchronous questions belong to the interrupted provider turn,
@@ -5970,6 +6141,8 @@ export class ChatStateService implements ChatStateCommandPort {
         );
       else this.turnHandoff.cancelRestart(target);
     }
+    for (const chatId of Array.from(deferredChatIds))
+      await this.commitDeferredTurnState({ ...scope, chatId });
     for (const target of Array.from(hydratedTargets.values()))
       queueService.releaseInputOwnership(target);
     return commit.state;
@@ -7343,6 +7516,43 @@ export class ChatStateService implements ChatStateCommandPort {
       effectiveTurnUserMessageId,
     );
     if (turnEnds !== metadataTab.turnEnds) metadataTab.turnEnds = turnEnds;
+    // The auto-archive marker belongs to one turn (CAN-6014): the event's own
+    // turn when its agent sets it, else the one running now.
+    const liveTurn =
+      this.turnHandoff.getState({
+        projectId: input.projectId,
+        worktreeId: input.worktreeId,
+        chatId: tab.id,
+      }) ?? currentRuntime?.turn;
+    const turnOf = (userMessageId: string | undefined): string | undefined =>
+      userMessageId === undefined
+        ? undefined
+        : [liveTurn?.current, liveTurn?.lastEnded].find(
+            (record) => record?.userMessageId === userMessageId,
+          )?.id;
+    if (
+      metadataTab.autoArchive !== tab.autoArchive ||
+      isSetAutoArchiveRequestedEventData(input.data)
+    ) {
+      const owner =
+        metadataTab.autoArchive === true
+          ? (turnOf(effectiveTurnUserMessageId) ?? liveTurn?.current?.id)
+          : undefined;
+      if (owner === undefined) delete metadataTab.autoArchiveTurnId;
+      else metadataTab.autoArchiveTurnId = owner;
+    }
+    // An empty completion fails its turn, so it drops that turn's marker like
+    // any other failed turn.
+    if (
+      nextRuntime.error?.code === 'empty_completion' &&
+      currentRuntime?.error?.code !== 'empty_completion' &&
+      metadataTab.autoArchiveTurnId !== undefined &&
+      metadataTab.autoArchiveTurnId ===
+        turnOf(nextRuntime.emptyCompletionRecovery?.turnUserMessageId)
+    ) {
+      delete metadataTab.autoArchive;
+      delete metadataTab.autoArchiveTurnId;
+    }
     if (isRootTerminalChatEventData(input.data, codexRootThreadId)) {
       const scope = {
         projectId: input.projectId,
@@ -10408,6 +10618,7 @@ export class ChatStateService implements ChatStateCommandPort {
               'rootTurnInputIds',
               'reducedRootTerminalTurnIds',
               'interruptedTurns',
+              'autoArchiveTurnId',
             ] as const) {
               if (canonical.tab[key] === undefined) delete tab[key];
               else Object.assign(tab, { [key]: canonical.tab[key] });
@@ -10668,6 +10879,39 @@ export class ChatStateService implements ChatStateCommandPort {
         return operation();
       });
     });
+  }
+
+  /** Remove only a new tab whose unstarted contents still belong to this send. */
+  public async rollbackUnstartedCoworkTab(
+    scope: ChatScopeKey,
+    chatId: string,
+    messageIds: readonly string[],
+    allowDuringScopeDeletion = false,
+  ): Promise<void> {
+    await this.repository.transactWith(
+      scope,
+      (current) => {
+        const tab = current.tabsFile.tabs.find(
+          (candidate) => candidate.id === chatId,
+        );
+        if (
+          !tab ||
+          current.runtimeByChatId[chatId]?.activeTurn ||
+          tab.messages.some((message) => !messageIds.includes(message.id)) ||
+          (tab.inputDelivery !== undefined &&
+            (!isInputLedger(tab.inputDelivery) ||
+              tab.inputDelivery.rows.length > 0))
+        )
+          return [];
+        return [{ type: 'tab.removed', tabId: chatId }];
+      },
+      {
+        source: 'migration',
+        mutationId: randomUUID(),
+        chatIds: [chatId],
+        allowDuringScopeDeletion,
+      },
+    );
   }
 
   /**
@@ -11057,6 +11301,26 @@ export class ChatStateService implements ChatStateCommandPort {
         },
       );
     }
+    if (
+      Object.prototype.hasOwnProperty.call(command.patch, 'autoArchiveTurnId')
+    )
+      return commandResult(
+        envelope,
+        await this.repository.getRevision(scope),
+        'rejected',
+        { reason: 'Main records the turn that owns the auto-archive marker.' },
+      );
+    // Commit the chat's pending turn state first, so a marker set while idle
+    // can only be adopted by a turn that starts after it (CAN-6014).
+    if (command.patch.autoArchive === true)
+      await this.turnHandoff
+        .flush({ ...scope, chatId: command.tabId })
+        .catch((error: unknown) => {
+          logMainProcessWarn(
+            '[chat-state] Turn state could not commit before an auto-archive marker:',
+            error instanceof Error ? error.message : String(error),
+          );
+        });
     let outcome: ChatCommandResult['outcome'] = 'applied';
     try {
       const commit = await this.repository.transactWith(
@@ -11131,6 +11395,11 @@ export class ChatStateService implements ChatStateCommandPort {
               tabId: command.tabId,
               patch: {
                 ...command.patch,
+                ...autoArchiveOwnerPatch(
+                  command.patch.autoArchive,
+                  this.turnHandoff.getState({ ...scope, chatId: tab.id }) ??
+                    current.runtimeByChatId[tab.id]?.turn,
+                ),
                 ...(command.patch.customTitle?.trim() ||
                 (command.patch.customTitle === null && tab.customTitle?.trim())
                   ? { automaticTitleState: 'closed' as const }
@@ -14195,7 +14464,14 @@ export class ChatStateService implements ChatStateCommandPort {
           });
         if (dismiss) rejectRequest(question.requestId, 'cancelled');
         else if (command.type === 'chat.answer_question') {
-          resolveRequest(question.requestId, command.answers);
+          const answeredBy =
+            options.answeredByPerson === true && !options.agentSent
+              ? 'person'
+              : 'agent';
+          resolveRequest(
+            question.requestId,
+            command.answers.map((answer) => ({ ...answer, answeredBy })),
+          );
         }
       }
       return commandResult(envelope, commit.revision, 'applied', {
@@ -14353,7 +14629,12 @@ export class ChatStateService implements ChatStateCommandPort {
                   ? { lastActiveEditableChatId: rememberedEditableTab.id }
                   : {}),
               });
-              if (successor.kind !== 'file') {
+              // An unread archive (auto-archive) has no evidence anyone saw
+              // the chat, so neither is its successor marked seen (CAN-6014).
+              const archivedUnread =
+                envelope.command.type === 'chat.archive_tab' &&
+                envelope.command.unread === true;
+              if (successor.kind !== 'file' && !archivedUnread) {
                 mutations.push({
                   type: 'tab.metadata_patched',
                   tabId: successor.id,
@@ -14708,8 +14989,13 @@ export class ChatStateService implements ChatStateCommandPort {
             outcome = 'conflict';
             return [];
           }
-          const { autoArchive: _autoArchive, ...restoredTab } = entry.tab;
+          const {
+            autoArchive: _autoArchive,
+            autoArchiveTurnId: _autoArchiveTurnId,
+            ...restoredTab
+          } = entry.tab;
           void _autoArchive;
+          void _autoArchiveTurnId;
           return [
             {
               type: 'archive.removed',
@@ -14937,6 +15223,7 @@ export class ChatStateService implements ChatStateCommandPort {
         delete fork.dismissedLlmProviderUsageLimitBannerKey;
         delete fork.attentionDismissedAt;
         delete fork.autoArchive;
+        delete fork.autoArchiveTurnId;
         delete fork.unread;
         delete fork.unreadMarkedManually;
         delete fork.codexReconstructionSeedId;

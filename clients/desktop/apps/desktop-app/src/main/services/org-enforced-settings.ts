@@ -19,13 +19,17 @@ import {
   IPC_CHANNELS,
   type CanopyCloudAccountPublicState,
 } from '@canopy/desktop-shared/types';
-import { resolveTelemetryEnforcementByOrganization } from '@canopy/desktop-shared/lib/telemetry-enforcement';
+import {
+  resolveTelemetryEnforcementByOrganization,
+  resolveUsageDataProhibitionByOrganization,
+} from '@canopy/desktop-shared/lib/telemetry-enforcement';
 import { sendToWindow } from '../lib/window-send';
 import { getTelemetrySyncService } from './telemetry-sync-service';
 import { migrateOrgPinnedTelemetrySharing } from '../lib/telemetry-pin-migration';
 import { setCurrentModelPolicyAccount } from '../lib/model-policy-state';
 import { setCurrentModelGatewayAccount } from '../lib/model-gateway-state';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
+import { getUsageDataPolicy } from '../lib/usage-data-policy';
 
 interface OrgEnforcedPolicyApplier {
   kind: OrgEnforcedPolicyKind;
@@ -95,10 +99,30 @@ const modelGatewayApplier: OrgEnforcedPolicyApplier = {
   },
 };
 
+// Runtime state only: an organization's usage-data prohibitions narrow the
+// effective policy for its context and never rewrite the member's preference.
+// Every successful probe replaces a fail-closed `'unreadable'` state, and a
+// signed-out account resolves to an empty map. A probe whose policy snapshot
+// is unavailable is not a successful check: it fails closed, as startup does
+// (`loadStoredUsageDataProhibitionByOrganization`).
+const usageDataApplier: OrgEnforcedPolicyApplier = {
+  kind: 'usage-data',
+  apply(account): Promise<boolean> {
+    return Promise.resolve(
+      getUsageDataPolicy().setProhibitionsByOrganization(
+        account?.telemetryEnforcementUnavailable === true
+          ? 'unreadable'
+          : resolveUsageDataProhibitionByOrganization(account),
+      ),
+    );
+  },
+};
+
 const APPLIERS: readonly OrgEnforcedPolicyApplier[] = [
   telemetrySyncApplier,
   modelPolicyApplier,
   modelGatewayApplier,
+  usageDataApplier,
 ];
 
 /**

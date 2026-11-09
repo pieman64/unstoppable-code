@@ -1,6 +1,6 @@
 'use client';
 
-import { Heading } from '@canopy/ui-shared/components';
+import { Heading, ErrorState } from '@canopy/ui-shared/components';
 import {
   memo,
   useCallback,
@@ -18,11 +18,7 @@ import {
   useSidebarActivityModeStore,
   type SidebarActivityEntry,
 } from '@canopy/app-state';
-import {
-  Button,
-  WorkEntryRow,
-  WorktreeRow,
-} from '@canopy/ui-shared/components';
+import { WorkEntryRow, WorktreeRow } from '@canopy/ui-shared/components';
 import {
   deriveWorktreeUiStatus,
   type SnapshotWorktree,
@@ -248,8 +244,14 @@ function SidebarActivitySection({
           {label}
         </Heading>
       </div>
-      <ul className="space-y-px">{children}</ul>
-      {footer}
+      {footer === undefined || footer === null ? (
+        <ul className="flex flex-col gap-px">{children}</ul>
+      ) : (
+        <div className="flex flex-col gap-1">
+          <ul className="flex flex-col gap-px">{children}</ul>
+          {footer}
+        </div>
+      )}
     </section>
   );
 }
@@ -335,21 +337,13 @@ export function SidebarActivityModeView({
   }
   if (status === 'error' || snapshot === null) {
     return (
-      <div
-        role="alert"
-        data-testid="sidebar-activity-error"
-        className="flex flex-col items-start gap-2 px-3 py-2 text-s fg-secondary"
-      >
-        <p>Couldn&apos;t load activity. Try again.</p>
-        <Button
-          variant="ghost"
-          size="compact"
-          onClick={retry}
-          data-testid="sidebar-activity-retry"
-        >
-          Try again
-        </Button>
-      </div>
+      <ErrorState
+        space="panel"
+        message="Couldn't load activity."
+        onRetry={retry}
+        testId="sidebar-activity-error"
+        retryTestId="sidebar-activity-retry"
+      />
     );
   }
 
@@ -442,7 +436,7 @@ export function SidebarActivityModeView({
                   }}
                   aria-label={`Show more unreplied chats (${remaining} remaining)`}
                   data-testid="sidebar-activity-show-more"
-                  className={`focus-ring mt-1 flex w-full items-center rounded-md px-2 text-left text-s fg-secondary hover:bg-subtle hover:fg-primary ${touch ? 'min-h-11' : 'h-8'}`}
+                  className={`focus-ring flex w-full items-center rounded-md px-2 text-left text-s fg-secondary hover:bg-subtle hover:fg-primary ${touch ? 'min-h-11' : 'h-8'}`}
                 >
                   Show more ({remaining})
                 </button>

@@ -1,4 +1,4 @@
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 // Secrets for the account proxy, encrypted with Electron safe storage and
 // keyed by connection id: the management key the user pasted and, once
 // routing exists, the client key this device uses for agent requests.

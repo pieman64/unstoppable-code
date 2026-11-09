@@ -1,3 +1,9 @@
+import {
+  decodeIpcAppError,
+  formatIpcLegacyError,
+  safeErrorProperty,
+} from '@canopy/desktop-shared/ipc/app-error-rejection';
+import { CoworkFolderMissingSchema } from '@canopy/protocol/canopy-core';
 import { ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   REMOTE_BRIDGE_CHANNELS,
@@ -21,8 +27,13 @@ const INVOKE_ERROR_PREFIX =
   /^Error invoking remote method '[^']*': (?:Error: )?/;
 
 function errorMessage(error: unknown): string {
-  const message =
-    error instanceof Error ? error.message : 'Remote call failed.';
+  const raw = safeErrorProperty(error, 'message');
+  const decoded = decodeIpcAppError(raw);
+  const message = decoded
+    ? formatIpcLegacyError(decoded.channel, decoded.legacy)
+    : typeof raw === 'string'
+      ? raw
+      : 'Remote call failed.';
   return message.replace(INVOKE_ERROR_PREFIX, '');
 }
 
@@ -45,8 +56,18 @@ ipcRenderer.on(
     const args: unknown[] = message.args;
     ipcRenderer.invoke(channel, ...args).then(
       (value: unknown) => reply({ id, ok: true, value }),
-      (error: unknown) =>
-        reply({ id, ok: false, message: errorMessage(error) }),
+      (error: unknown) => {
+        const decoded = decodeIpcAppError(safeErrorProperty(error, 'message'));
+        const missing = CoworkFolderMissingSchema.safeParse(
+          decoded?.coworkFolderMissing,
+        );
+        reply({
+          id,
+          ok: false,
+          message: errorMessage(error),
+          ...(missing.success ? { coworkFolderMissing: missing.data } : {}),
+        });
+      },
     );
   },
 );

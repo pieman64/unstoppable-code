@@ -108,19 +108,25 @@ async function revalidateCatalog(
     provider,
     pluginSelections: undefined,
   });
-  const classified = classifyLoadItems(catalog, [
-    ...payload.additions.skillRefs.map((ref) =>
-      encodeDeferredCatalogRef(encodeSkillRef(ref.sourceId, ref.skillName)),
-    ),
-    ...payload.additions.pluginRefs.map((ref) =>
-      encodeDeferredCatalogRef(
-        encodePluginRef(ref.marketplaceId, ref.pluginName),
+  // Admission already required each ref to have been issued to the chat;
+  // revalidation only rechecks that the catalog still offers it.
+  const classified = classifyLoadItems(
+    catalog,
+    [
+      ...payload.additions.skillRefs.map((ref) =>
+        encodeDeferredCatalogRef(encodeSkillRef(ref.sourceId, ref.skillName)),
       ),
-    ),
-    ...payload.additions.mcpServerRefs.map((ref) =>
-      encodeDeferredCatalogRef(encodeMcpRef(ref.serverId, ref.configId)),
-    ),
-  ]);
+      ...payload.additions.pluginRefs.map((ref) =>
+        encodeDeferredCatalogRef(
+          encodePluginRef(ref.marketplaceId, ref.pluginName),
+        ),
+      ),
+      ...payload.additions.mcpServerRefs.map((ref) =>
+        encodeDeferredCatalogRef(encodeMcpRef(ref.serverId, ref.configId)),
+      ),
+    ],
+    () => true,
+  );
   if (classified.rejected.length > 0) {
     const rejected = classified.rejected[0];
     return `${rejected.ref}: ${rejected.message}`;

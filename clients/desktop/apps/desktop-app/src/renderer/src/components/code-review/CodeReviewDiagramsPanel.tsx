@@ -22,6 +22,8 @@ import { usePlanDiagramViews } from '@/components/plan-explore/diagram/usePlanDi
 import type { DiagramSearchHandle } from '@canopy/ui-app/find';
 import type { AddNodeCommentInput } from '@/components/plan-explore/usePlanComments';
 import {
+  Surface,
+  Stack,
   Button,
   SegmentedControl,
   Heading,
@@ -220,16 +222,18 @@ export const CodeReviewDiagramsPanel = forwardRef<
   if (!armed && !hasAnyArtifact) {
     return (
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col items-center justify-center overflow-hidden p-8">
-        <div className="max-w-md text-center">
-          <Heading level={2} variant="section">
-            Review this branch
-          </Heading>
-          <p className="mt-1 text-s fg-secondary">
-            Generate annotations and diagrams for the branch&apos;s changes.
-          </p>
+        <div className="flex flex-col max-w-md text-center gap-5">
+          <Stack gap="tight">
+            <Heading level={2} variant="section">
+              Review this branch
+            </Heading>
+            <p className="text-s fg-secondary">
+              Generate annotations and diagrams for the branch&apos;s changes.
+            </p>
+          </Stack>
           <Button
+            className="self-center"
             variant="primary"
-            className="mt-5"
             onClick={onArm}
             data-testid="code-review-start"
           >
@@ -243,32 +247,34 @@ export const CodeReviewDiagramsPanel = forwardRef<
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {dataModelPresent && (
-        <div
-          data-testid="change-diagram-type-row"
-          className="flex shrink-0 items-center gap-1 border-b px-2 py-1.5"
-        >
-          <SegmentedControl
-            label="Diagram type"
-            semantics="tabs"
-            shape="capsule"
-            width="content"
-            value={resolvedTab}
-            onChange={setActiveTab}
-            options={[
-              { value: 'logicDiff', label: 'Logic' },
-              ...(dataModelPresent
-                ? [
-                    {
-                      value: 'dataModelDiff' as const,
-                      label: 'Data model',
-                      dataTestId: 'code-review-data-model-tab',
-                    },
-                  ]
-                : []),
-            ]}
-          />
-          <div className="ml-auto">{refreshAction}</div>
-        </div>
+        <Surface variant="section" boundary="bottom" className="shrink-0">
+          <div
+            data-testid="change-diagram-type-row"
+            className="flex shrink-0 items-center gap-1 px-2 py-1.5"
+          >
+            <SegmentedControl
+              label="Diagram type"
+              semantics="tabs"
+              shape="capsule"
+              width="content"
+              value={resolvedTab}
+              onChange={setActiveTab}
+              options={[
+                { value: 'logicDiff', label: 'Logic' },
+                ...(dataModelPresent
+                  ? [
+                      {
+                        value: 'dataModelDiff' as const,
+                        label: 'Data model',
+                        dataTestId: 'code-review-data-model-tab',
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+            <div className="ml-auto">{refreshAction}</div>
+          </div>
+        </Surface>
       )}
 
       {/* The diagrams are derived from the diff: blocked from session replay.

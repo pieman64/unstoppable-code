@@ -7,7 +7,7 @@ import {
   type SharedWorkspaceTemplateDocument,
   type WorkspaceTemplateMcpServerRef,
 } from '@canopy/protocol';
-import type { AccountMcpConnection } from '@canopy/desktop-shared/types/mcp-servers';
+import type { AccountMcpConnection } from '@canopy/execution-engine/types/mcp-servers';
 import { accountMcpConnectionForRef } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { loadAccountMcpRefConnections } from '../mcp/account-catalog';
 import type { PipelinePackageEnvironmentRequirement } from '@canopy/protocol/pipelines';

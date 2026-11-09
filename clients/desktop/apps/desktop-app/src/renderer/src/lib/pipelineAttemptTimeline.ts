@@ -5,7 +5,7 @@ import type {
   MaterializedJob,
   NormalizedStep,
   StepResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 export type SelectedStepSource = 'current' | 'retry' | 'iteration';
 

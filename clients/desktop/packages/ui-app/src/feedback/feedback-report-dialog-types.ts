@@ -18,6 +18,8 @@ export interface FeedbackReportDialogProps {
   readonly error?: FeedbackReportError;
   /** Session links read when the error happened, never at opening. */
   readonly telemetry?: FeedbackReportTelemetry;
+  /** The window to draw in: a popped-out panel's, not the main one. */
+  readonly ownerDocument?: Document | undefined;
 }
 
 export type DraftState =

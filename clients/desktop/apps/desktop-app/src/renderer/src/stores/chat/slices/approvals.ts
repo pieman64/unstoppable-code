@@ -23,6 +23,40 @@ import {
 import { pendingTabCreation } from '../pending-tab-creation';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 
+/**
+ * Keeps a still-live card at its current revision after a refused answer,
+ * unless it was settled or re-delivered at a newer revision meanwhile.
+ */
+function refreshedApproval(
+  state: ChatState,
+  live: ApprovalRequestEvent,
+): Partial<ChatState> {
+  const current = state.pendingApprovals[live.requestId];
+  if (
+    !current ||
+    (current.policyRevision ?? -1) > (live.policyRevision ?? -1)
+  ) {
+    return {};
+  }
+  return {
+    pendingApprovals: { ...state.pendingApprovals, [live.requestId]: live },
+  };
+}
+
+async function liveApprovalEvent(
+  requestId: string,
+): Promise<ApprovalRequestEvent | undefined> {
+  try {
+    return (await window.api.approvals.pendingRequests()).find(
+      (event) => event.requestId === requestId,
+    );
+  } catch {
+    // The card is removed as before; record that the live check failed.
+    reportClientAppError(new Error('Approval pending-request refresh failed'));
+    return undefined;
+  }
+}
+
 interface InFlightApprovalDefaultFetch {
   generation: number;
   forceFresh: boolean;
@@ -257,9 +291,19 @@ export const createApprovalsSlice: StateCreator<
         worktreeId: pending.worktreeId,
         chatId: pending.chatId,
         decision,
+        ...(pending.policyRevision !== undefined
+          ? { policyRevision: pending.policyRevision }
+          : {}),
       });
     } catch {
       return;
+    }
+    if (!resolved) {
+      const live = await liveApprovalEvent(requestId);
+      if (live) {
+        set((state) => refreshedApproval(state, live));
+        return;
+      }
     }
     set((state) => {
       const nextPendingApprovals = { ...state.pendingApprovals };
@@ -289,6 +333,9 @@ export const createApprovalsSlice: StateCreator<
         chatId: pending.chatId,
         bindingId,
         secret,
+        ...(pending.policyRevision !== undefined
+          ? { policyRevision: pending.policyRevision }
+          : {}),
       });
     } catch {
       // Never send secret-input transport details to telemetry.
@@ -322,6 +369,13 @@ export const createApprovalsSlice: StateCreator<
       });
     } catch {
       return;
+    }
+    if (!resolved) {
+      const live = await liveApprovalEvent(requestId);
+      if (live) {
+        set((state) => refreshedApproval(state, live));
+        return;
+      }
     }
     set((state) => {
       const nextPendingApprovals = { ...state.pendingApprovals };

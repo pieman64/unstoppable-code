@@ -28,7 +28,8 @@ import type {
  * of its sample intervals, or one the daemon could not measure, is left out:
  * Electron's live rows, which hold the daemon whenever Electron launched it,
  * stand alone. Pressure is recomputed over the combined memory against the
- * desktop's thresholds; admission still reads Electron main's own accounting.
+ * desktop's thresholds, and memory admission compares the same combined
+ * memory (CAN-5695).
  */
 
 const DAEMON_ID_PREFIX = 'daemon:';

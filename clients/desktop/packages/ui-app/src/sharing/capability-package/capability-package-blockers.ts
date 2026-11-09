@@ -72,6 +72,7 @@ const SEVERITY_RANK: Record<PipelinePackageBlockerCode, number> = {
   MISSING_DEPENDENCY_SOURCE: 6,
   MISSING_REQUIRED_ASSET: 6,
   DEPENDENCY_HAS_INSTALLED_PACKAGE: 6,
+  LOCAL_ONLY_PIPELINE_TRIGGER: 6,
   AMBIGUOUS_INVOCATION: 7,
   AMBIGUOUS_PIPELINE_REFERENCE: 7,
   DUPLICATE_PIPELINE_KEY: 7,
@@ -131,6 +132,10 @@ function titleFor(
       return subject
         ? `The child pipeline ${subject} is only known when the pipeline runs`
         : 'A child pipeline is only known when the pipeline runs';
+    case 'LOCAL_ONLY_PIPELINE_TRIGGER':
+      return subject
+        ? `${subject} has a Workflow trigger`
+        : 'A pipeline in this share has a Workflow trigger';
     case 'AMBIGUOUS_INVOCATION':
       return subject
         ? `${subject} matches more than one command`
@@ -221,6 +226,8 @@ function detailFor(
         : 'Set the pipeline ID as a literal in env and reference that instead.';
     case 'MISSING_DEPENDENCY_SOURCE':
       return 'Reinstall it, or remove it from the step.';
+    case 'LOCAL_ONLY_PIPELINE_TRIGGER':
+      return "Workflows with a Workflow trigger can't be shared yet. Remove the trigger, or leave that pipeline out of the share.";
     case 'SUSPECTED_SECRET':
       return 'Remove the credential from this file.';
     case 'SYMLINK_BLOCKED':

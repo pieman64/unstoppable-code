@@ -8,6 +8,7 @@ import type {
   ExplorerSearchLogEntry,
 } from '@canopy/protocol/settings/organization-memory';
 import {
+  Stack,
   Badge,
   DataTable,
   DelayedLoadingPlaceholder,
@@ -166,17 +167,17 @@ export function OpsView({
 
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
-      <div className="space-y-6">
+      <Stack gap="section">
         <section className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
+            <Stack gap="tight">
               <Heading level={2} variant="section">
                 Ingest jobs
               </Heading>
-              <p className="mt-1 text-xs fg-secondary">
+              <p className="text-xs fg-secondary">
                 Attempts, worker heartbeat, and terminal errors.
               </p>
-            </div>
+            </Stack>
             <SettingsSelect
               value={status}
               onValueChange={(value) => {
@@ -232,11 +233,11 @@ export function OpsView({
           )}
         </section>
 
-        <Surface as="section" variant="card" padding="default">
+        <Surface gap="group" as="section" variant="card" padding="default">
           <Heading level={2} variant="section">
             Recently injected
           </Heading>
-          <div className="mt-4 space-y-4 border-l pl-4">
+          <div className="border-l pl-4 flex flex-col gap-4">
             {searchEntries.length === 0 ? (
               <EmptyStateRow title="No search activity yet." />
             ) : (
@@ -283,7 +284,7 @@ export function OpsView({
                     · {entry.injectedFacts.length} facts injected
                   </p>
                   {entry.injectedFacts.length > 0 && (
-                    <ul className="mt-2 space-y-1">
+                    <Stack as="ul" gap="tight" className="mt-2">
                       {entry.injectedFacts.map((fact) => (
                         <Surface as="li" variant="inset" key={fact.id}>
                           <div
@@ -296,14 +297,14 @@ export function OpsView({
                           </div>
                         </Surface>
                       ))}
-                    </ul>
+                    </Stack>
                   )}
                 </article>
               ))
             )}
           </div>
         </Surface>
-      </div>
+      </Stack>
 
       <Surface
         as="aside"

@@ -68,7 +68,7 @@ export function BrowserInspector({
       {
         // Early access: the tabs and, at the row's end, a way to close the
         // details.
-        <div className="flex min-w-0 items-center">
+        <div className="flex min-w-0 items-center pr-1">
           <div ref={tabRowRef} className="min-w-0 flex-1">
             <TabBar
               items={TABS.map((tab) => ({
@@ -88,7 +88,6 @@ export function BrowserInspector({
             tone="neutral"
             aria-label="Close browser details"
             data-testid="browser-inspector-close"
-            className="mr-1"
             onClick={(): void => toggleInspector(browserId)}
           >
             <CloseMediumIcon size={16} aria-hidden="true" />

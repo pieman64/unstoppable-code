@@ -6,8 +6,8 @@ import type {
   PersistedChatTab,
   ThinkingLevel,
 } from '@canopy/desktop-shared/types';
-import { withCodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
-import type { CodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
+import { withCodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
+import type { CodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
 import type {
   CoreChatModelChange,
   CoreChatSettingsHost,

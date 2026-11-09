@@ -6,12 +6,15 @@ import {
 } from '@canopy/protocol/pipelines';
 import { useId, useState, type JSX, type ReactNode } from 'react';
 import {
+  Stack,
   Badge,
   Button,
   Checkbox,
   RichHoverTooltip,
   SettingsSelect,
   Heading,
+  ErrorBanner,
+  Notice,
 } from '@canopy/ui-shared/components';
 import { QuestionMarkIcon } from '@canopy/ui-shared/icons';
 import {
@@ -414,8 +417,9 @@ export function CapabilityPackageDependencies({
   // marks itself busy, so marking one token never blanks the list.
   if (loading && analysis === null) {
     return (
-      <section
-        className="space-y-2"
+      <Stack
+        as="section"
+        gap="inline"
         data-testid={`${testIdPrefix}-dependencies`}
         data-state="loading"
       >
@@ -424,14 +428,15 @@ export function CapabilityPackageDependencies({
           summary={LOADING_LABEL}
           toggle={null}
         />
-      </section>
+      </Stack>
     );
   }
 
   if (errored || !analysis) {
     return (
-      <section
-        className="space-y-2"
+      <Stack
+        as="section"
+        gap="inline"
         data-testid={`${testIdPrefix}-dependencies`}
         data-state="error"
       >
@@ -452,15 +457,19 @@ export function CapabilityPackageDependencies({
           }
         >
           {/* One alert region, so the reason is announced with the failure. */}
-          <div className="space-y-1" role="alert">
-            <p className="text-xs fg-destructive">{ANALYSIS_FAILURE_LABEL}</p>
-            <AnalysisFailureReason
-              reason={errorReason}
-              testIdPrefix={testIdPrefix}
-            />
-          </div>
+          <Notice
+            intent="destructive"
+            detail={
+              <AnalysisFailureReason
+                reason={errorReason}
+                testIdPrefix={testIdPrefix}
+              />
+            }
+          >
+            {ANALYSIS_FAILURE_LABEL}
+          </Notice>
         </SummaryRow>
-      </section>
+      </Stack>
     );
   }
 
@@ -528,8 +537,9 @@ export function CapabilityPackageDependencies({
           });
 
   return (
-    <section
-      className="space-y-3"
+    <Stack
+      as="section"
+      gap="item"
       data-testid={`${testIdPrefix}-dependencies`}
       data-state={loading ? 'revalidating' : analysis.state}
       data-busy={loading ? 'true' : 'false'}
@@ -620,10 +630,10 @@ export function CapabilityPackageDependencies({
         <WithheldFileList files={withheldFiles} testIdPrefix={testIdPrefix} />
       )}
 
-      <div
+      <Stack
         id={detailsId}
         hidden={!expanded || !hasOptionalFiles}
-        className="space-y-3"
+        gap="item"
         data-testid={`${testIdPrefix}-dependencies-details`}
       >
         {expanded && hasOptionalFiles && (
@@ -707,7 +717,7 @@ export function CapabilityPackageDependencies({
             )}
 
             {(analysis.unpackageableSelectionLabels?.length ?? 0) > 0 && (
-              <div className="space-y-1.5">
+              <div className="flex flex-col gap-1.5">
                 <p className="text-xs font-medium fg-primary">
                   Kept private when sharing
                 </p>
@@ -723,8 +733,8 @@ export function CapabilityPackageDependencies({
             )}
           </>
         )}
-      </div>
-    </section>
+      </Stack>
+    </Stack>
   );
 }
 
@@ -749,7 +759,7 @@ function SummaryRow({
       className="flex items-start justify-between gap-3"
       data-testid={`${testIdPrefix}-dependencies-summary`}
     >
-      <div className="min-w-0 space-y-0.5">
+      <div className="min-w-0 flex flex-col gap-0.5">
         <div className="flex items-center gap-1">
           <Heading level={3} variant="title">
             {INCLUDED_FILES_HEADING}
@@ -838,7 +848,7 @@ function DependencyRow({
             className="mt-0.5"
           />
         )}
-        <div className="min-w-0 flex-1 space-y-1">
+        <Stack gap="tight" className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-s font-medium fg-primary">
               {resource.displayName}
@@ -891,7 +901,7 @@ function DependencyRow({
           {showReason && reason && (
             <p className="text-xs fg-secondary">{reason}</p>
           )}
-        </div>
+        </Stack>
         {required && (
           <span className="shrink-0 text-xs fg-tertiary">Required</span>
         )}
@@ -967,7 +977,7 @@ function PackagedPipelineList({
     pipelines.some((pipeline) => pipeline.optional);
   return (
     <div
-      className="space-y-1.5"
+      className="flex flex-col gap-1.5"
       data-testid={`${testIdPrefix}-dependencies-pipelines`}
     >
       <Heading level={4} variant="title">
@@ -1002,7 +1012,7 @@ function PackagedPipelineList({
                 ) : anyChoosable ? (
                   <span aria-hidden="true" className="h-4 w-4 shrink-0" />
                 ) : null}
-                <div className="min-w-0 flex-1 space-y-0.5">
+                <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                   <span className="text-s font-medium fg-primary">
                     {pipeline.name}
                   </span>
@@ -1039,13 +1049,11 @@ function PackagedPipelineList({
         />
       )}
       {addError !== null && (
-        <p
-          className="text-xs fg-destructive"
-          role="alert"
-          data-testid={`${testIdPrefix}-dependencies-pipeline-add-error`}
-        >
-          {addError}
-        </p>
+        <ErrorBanner
+          className=""
+          error={addError}
+          testId={`${testIdPrefix}-dependencies-pipeline-add-error`}
+        />
       )}
     </div>
   );
@@ -1067,14 +1075,14 @@ function WithheldFileList({
 }): JSX.Element {
   return (
     <div
-      className="space-y-1.5"
+      className="flex flex-col gap-1.5"
       data-testid={`${testIdPrefix}-dependencies-withheld`}
     >
       <Heading level={4} variant="title">
         {WITHHELD_HEADING}
       </Heading>
       <p className="text-xs fg-secondary">{WITHHELD_HELPER}</p>
-      <ul className="space-y-1">
+      <Stack as="ul" gap="tight">
         {files.map((file) => (
           <li
             key={`${file.pipelineKey}\0${file.assetId}\0${file.relativePath}`}
@@ -1088,7 +1096,7 @@ function WithheldFileList({
             <Badge>{WITHHELD_REASON_LABELS[file.reason]}</Badge>
           </li>
         ))}
-      </ul>
+      </Stack>
     </div>
   );
 }
@@ -1107,7 +1115,7 @@ function RecipientSetupList({
 }): JSX.Element {
   return (
     <div
-      className="space-y-1.5"
+      className="flex flex-col gap-1.5"
       data-testid={`${testIdPrefix}-dependencies-recipient-setup`}
     >
       <Heading level={4} variant="title">
@@ -1116,7 +1124,7 @@ function RecipientSetupList({
       <p className="text-xs fg-secondary">
         {PIPELINE_PACKAGE_PUBLISHER_NO_CREDENTIALS_NOTE}
       </p>
-      <ul className="space-y-1">
+      <Stack as="ul" gap="tight">
         {requirements.map((requirement) => {
           const locations = requirement.affectedSteps
             .map(bindingLabelFor)
@@ -1145,7 +1153,7 @@ function RecipientSetupList({
             </Surface>
           );
         })}
-      </ul>
+      </Stack>
     </div>
   );
 }

@@ -6,12 +6,18 @@ import {
 import {
   AppErrorSchema,
   AppErrorSurfaceSchema,
+  type AppError,
   type AppErrorRecord,
 } from '@canopy/protocol/app-errors';
 import { sanitizeInstrumentationContext } from './privacy';
 import type { DesktopInstrumentationContext } from './types';
 
 export const APP_ERROR_POSTHOG_EVENT = 'app:operation_fail';
+/**
+ * A renderer saw a failure another process owns. Links that reference to this
+ * session's replay; it is not a failure count, so never sum it with the above.
+ */
+export const APP_ERROR_VIEW_POSTHOG_EVENT = 'app:error_view';
 
 /** Host adapters supply SDK accessors, never caller context or identity URLs. */
 export interface AppErrorTelemetrySessions {
@@ -77,6 +83,25 @@ export function buildAppErrorPostHogProperties(
   record: AppErrorRecord,
 ): DesktopInstrumentationContext {
   return sanitizeInstrumentationContext(metadata(record)) ?? {};
+}
+
+export function buildAppErrorViewPostHogProperties(
+  value: AppError,
+  appVersion: string,
+): DesktopInstrumentationContext {
+  const error = AppErrorSchema.parse(value);
+  return (
+    sanitizeInstrumentationContext({
+      error_kind: error.kind,
+      error_code: error.code,
+      error_reference_id: error.referenceId,
+      ...(error.source === undefined ? {} : { error_source: error.source }),
+      ...(error.recovery === undefined
+        ? {}
+        : { recovery_kind: error.recovery }),
+      app_version: appVersion,
+    }) ?? {}
+  );
 }
 
 /**

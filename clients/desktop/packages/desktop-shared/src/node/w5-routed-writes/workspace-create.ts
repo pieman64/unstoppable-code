@@ -23,9 +23,9 @@ import type {
 } from '../../types';
 import { hasManifestRepos } from '../lib/canopy-json';
 import { assertImportFolderExists } from '../lib/import-folder';
-import { isRecord } from '../lib/type-guards';
+import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import { getWorkspacesRootDir } from '../lib/workspace-cli-reads';
-import { withStorageAdmission } from '../lib/storage-admission';
+import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import {
   acquireWorkspacePath,
   availableWorkspacePath,

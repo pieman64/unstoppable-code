@@ -1,4 +1,4 @@
-import type { Pipeline } from '../types/pipeline';
+import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import { parsePipelineText } from '../pipelines/parse-pipeline';
 import { SEND_AGENT_MESSAGE_AUTHORITY_INPUTS } from '../pipelines/host-send-agent-message';
 

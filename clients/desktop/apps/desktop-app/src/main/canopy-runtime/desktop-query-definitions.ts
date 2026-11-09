@@ -1,18 +1,28 @@
 import {
   CANOPY_QUERY_DEFINITIONS,
+  CORE_COWORK_FOLDER_QUERIES,
   CORE_CATALOG_QUERY_DEFINITIONS,
   CORE_CATALOG_SKILL_QUERY_DEFINITIONS,
   CORE_CATALOG_SOURCE_QUERY_DEFINITIONS,
+  CORE_CONFIG_QUERY_DEFINITIONS,
+  CORE_MEMORY_QUERY_DEFINITIONS,
+  CORE_INITIATED_WORK_WATCHER_QUERY_DEFINITIONS,
+  CORE_AGENT_DEFERRED_TOOLS_QUERY_DEFINITIONS,
   WORKER_CATALOG_QUERY_DEFINITIONS,
   composeCanopyQueryRegistries,
 } from '@canopy/protocol/canopy-core';
 
-/** The desktop dispatcher's queries: the composed registry plus the catalog reads and the in-process worker's materialization read (CAN-4123) the daemon does not serve. */
+/** The desktop dispatcher's queries: the composed registry plus the catalog reads, the in-process worker's materialization read (CAN-4123), the config read (CAN-5992), the memory reads (CAN-5993), the agent watcher list (CAN-5994) and the deferred tools search (CAN-5995) the daemon does not serve. */
 export const DESKTOP_QUERY_DEFINITIONS = composeCanopyQueryRegistries(
   CANOPY_QUERY_DEFINITIONS,
+  CORE_COWORK_FOLDER_QUERIES,
   CORE_CATALOG_QUERY_DEFINITIONS,
   CORE_CATALOG_SOURCE_QUERY_DEFINITIONS,
   WORKER_CATALOG_QUERY_DEFINITIONS,
   CORE_CATALOG_SKILL_QUERY_DEFINITIONS,
+  CORE_CONFIG_QUERY_DEFINITIONS,
+  CORE_MEMORY_QUERY_DEFINITIONS,
+  CORE_INITIATED_WORK_WATCHER_QUERY_DEFINITIONS,
+  CORE_AGENT_DEFERRED_TOOLS_QUERY_DEFINITIONS,
 );
 export type DesktopQueryDefinitions = typeof DESKTOP_QUERY_DEFINITIONS;

@@ -22,7 +22,7 @@ import { TextDecoder } from 'node:util';
 import * as yaml from 'js-yaml';
 import { BRAND } from '@canopy/brand/current';
 import { isPipelinePackageDigest } from '@canopy/protocol/pipelines';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type {
   InstalledSkillInfo,
   FetchAvailableSkillsResponse,

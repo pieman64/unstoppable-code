@@ -10,11 +10,13 @@ import {
   type ExternalAgentState,
   type ExternalAgentStore,
 } from '@canopy/app-state/external-agents';
-import type {
-  ExternalAgentConfirmationChange,
-  ExternalAgentConfirmationMode,
-  ExternalAgentConnectionDetail,
-  ExternalAgentExpiryChange,
+import {
+  EXTERNAL_AGENT_LABEL_MAX_LENGTH,
+  externalAgentDisplayName,
+  type ExternalAgentConfirmationChange,
+  type ExternalAgentConfirmationMode,
+  type ExternalAgentConnectionDetail,
+  type ExternalAgentExpiryChange,
 } from '@canopy/protocol/external-agents';
 import {
   AgentAccessEditor,
@@ -24,6 +26,7 @@ import {
   NoticeButton,
   SegmentedControl,
   SettingsSelect,
+  TextInput,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import { formatDate } from '@canopy/ui-shared/lib';
@@ -263,6 +266,7 @@ function ExternalAgentDetailView({
   const [textContentCompatibility, setTextContentCompatibility] = useState(
     detail.textContentCompatibility,
   );
+  const [labelDraft, setLabelDraft] = useState(detail.label ?? '');
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
   const [confirmingExposeNames, setConfirmingExposeNames] = useState(false);
   const source: AccessModelSource = {
@@ -294,6 +298,9 @@ function ExternalAgentDetailView({
   const hasConfirmationChanges = Object.keys(confirmationChange).length > 0;
   const hasCompatibilityChange =
     textContentCompatibility !== detail.textContentCompatibility;
+  // A cleared field removes the label, falling back to the client's name.
+  const nextLabel = labelDraft.trim() === '' ? null : labelDraft.trim();
+  const hasLabelChange = nextLabel !== detail.label;
   // A Tasks connection must reach at least one host.
   const hostsMissing = accessHostsMissing(source, draft, {
     keepUnusedScope: true,
@@ -302,6 +309,7 @@ function ExternalAgentDetailView({
     (hasAccessChanges ||
       hasConfirmationChanges ||
       hasCompatibilityChange ||
+      hasLabelChange ||
       expiry !== 'keep') &&
     !overToolLimit &&
     !hostsMissing &&
@@ -314,6 +322,7 @@ function ExternalAgentDetailView({
     hasAccessChanges ||
     hasConfirmationChanges ||
     hasCompatibilityChange ||
+    hasLabelChange ||
     expiry !== 'keep';
 
   const setOrganizationMode = (mode: 'all' | 'selected'): void => {
@@ -357,6 +366,7 @@ function ExternalAgentDetailView({
       expiry: expiryChange(expiry),
       ...(hasConfirmationChanges ? { confirmation: confirmationChange } : {}),
       ...(hasCompatibilityChange ? { textContentCompatibility } : {}),
+      ...(hasLabelChange ? { label: nextLabel } : {}),
     });
   };
 
@@ -381,6 +391,7 @@ function ExternalAgentDetailView({
     setDraft(accessFormStateFromDetail(detail));
     setConfirmationDraft({ ...detail.confirmation });
     setTextContentCompatibility(detail.textContentCompatibility);
+    setLabelDraft(detail.label ?? '');
     setExpiry('keep');
   };
 
@@ -518,6 +529,30 @@ function ExternalAgentDetailView({
                 {detail.clientName},{' '}
                 {detail.verified ? 'verified' : 'unverified'}
               </FactRow>
+              {detail.status === 'expired' ? null : (
+                <SettingsRow
+                  label="Your name for it"
+                  description={`Shows as “Your name (${detail.clientName})”. Clear it to show ${detail.clientName} alone.`}
+                  htmlFor="external-agent-label"
+                  control={
+                    <div className="w-52 shrink-0">
+                      <TextInput
+                        id="external-agent-label"
+                        density="settings"
+                        maxLength={EXTERNAL_AGENT_LABEL_MAX_LENGTH}
+                        autoComplete="off"
+                        placeholder="Optional"
+                        value={labelDraft}
+                        disabled={disabled}
+                        onChange={(event): void =>
+                          setLabelDraft(event.target.value)
+                        }
+                        data-testid="external-agent-label"
+                      />
+                    </div>
+                  }
+                />
+              )}
               {detail.from === null ? null : (
                 <FactRow label="From">
                   <span className="font-mono">{detail.from}</span>
@@ -755,7 +790,7 @@ function ExternalAgentDetailView({
       {confirmingExposeNames ? (
         <ConfirmDialog
           title="Show device names to this agent?"
-          message={`${detail.clientName} will see each device’s name next to its host ID. Device names often include your name.`}
+          message={`${externalAgentDisplayName(detail)} will see each device’s name next to its host ID. Device names often include your name.`}
           confirmLabel="Show device names"
           onConfirm={confirmExposeNames}
           onCancel={(): void => setConfirmingExposeNames(false)}
@@ -767,8 +802,8 @@ function ExternalAgentDetailView({
       ) : null}
       {confirmingRemoval ? (
         <ConfirmDialog
-          title={`Remove ${detail.clientName}?`}
-          message={`${detail.clientName} stops working with your account at once. Every sign-in it holds stops working. This cannot be undone.`}
+          title={`Remove ${externalAgentDisplayName(detail)}?`}
+          message={`${externalAgentDisplayName(detail)} stops working with your account at once. Every sign-in it holds stops working. This cannot be undone.`}
           confirmLabel="Remove"
           destructive
           onConfirm={(): void => void confirmRemove()}

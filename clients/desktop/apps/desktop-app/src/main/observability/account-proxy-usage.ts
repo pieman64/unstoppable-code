@@ -7,7 +7,7 @@ import type { AccountProxyResponse } from '../account-proxy/attribution';
 import type {
   AgentAuditAccountProxyAccount,
   AgentAuditAccountProxyUsage,
-} from '@canopy/desktop-shared/types/observability';
+} from '@canopy/execution-engine/types/observability';
 
 /** Bounds an entry; a turn that moved this often keeps its busiest accounts. */
 export const MAX_AUDIT_ACCOUNT_PROXY_ACCOUNTS = 16;

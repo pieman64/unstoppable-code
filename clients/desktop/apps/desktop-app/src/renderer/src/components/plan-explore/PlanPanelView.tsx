@@ -16,6 +16,7 @@ import {
   type DiagramSearchHandle,
 } from '@canopy/ui-app/find';
 import {
+  LoadingRegion,
   HeaderActionButton,
   RailTabBar,
   type RailTabBarTab,
@@ -34,10 +35,7 @@ import { usePlanDiagramRevealRequest } from '@/components/plan-explore/usePlanDi
 import { usePlanFollowUpActions } from '@/components/plan-explore/usePlanFollowUpActions';
 import { usePlanPanelCommentSubmit } from '@/components/plan-explore/usePlanPanelCommentSubmit';
 import { useSharedPlanCommentPull } from '@/components/plan-explore/usePlanViewData';
-import {
-  CenteredLoadingSpinner,
-  DelayedLoadingPlaceholder,
-} from '@canopy/ui-shared/components';
+import {} from '@canopy/ui-shared/components';
 import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
 import {
   planDiagramPanelTitle,
@@ -268,12 +266,7 @@ function PlanPanelBody({
         >
           <Suspense
             fallback={
-              <DelayedLoadingPlaceholder
-                className="flex-1"
-                slowNote="Still loading diagram…"
-              >
-                <CenteredLoadingSpinner className="my-12" />
-              </DelayedLoadingPlaceholder>
+              <LoadingRegion layout="fill" slowNote="Still loading diagram…" />
             }
           >
             <PlanVisualizer

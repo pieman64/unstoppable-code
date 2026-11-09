@@ -60,12 +60,12 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
       legacyWrites: count((d) => d.kind === 'legacy' && d.access === 'write'),
       legacyReads: count((d) => d.kind === 'legacy' && d.access === 'read'),
     }).toEqual({
-      coreWrites: 78,
-      coreReads: 51,
+      coreWrites: 128,
+      coreReads: 99,
       hostPresentation: 3,
-      presentation: 81,
-      legacyWrites: 146,
-      legacyReads: 73,
+      presentation: 85,
+      legacyWrites: 92,
+      legacyReads: 25,
     });
   });
 

@@ -1,4 +1,4 @@
-import type { AgentAuditStatus } from '@canopy/desktop-shared/types/observability';
+import type { AgentAuditStatus } from '@canopy/execution-engine/types/observability';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isSkillSuggestionsEnabled } from './feature-gate';
 import {

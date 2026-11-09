@@ -12,7 +12,7 @@ jest.mock('../config-paths', () => ({
   getBundledPipelinesDir: (): string => join(mockRoot, 'bundled'),
 }));
 import { saveStoredPipeline } from '../store';
-import type { PipelineIndex } from '../../types/pipeline';
+import type { PipelineIndex } from '@canopy/execution-engine/types/pipeline';
 
 const REPOSITORY_ROOT = resolve(__dirname, '../../../../..');
 const WRITER = join(__dirname, 'pipeline-definition-writer-process.ts');

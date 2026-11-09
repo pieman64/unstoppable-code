@@ -5,7 +5,7 @@ import type {
   ScheduledActivity,
   ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
 import { compactPipelineStatusReasonLabel } from '@canopy/ui-shared/lib';
 import {
   NO_PROJECT_LABEL,
@@ -24,6 +24,7 @@ import {
   type WorkflowWatcherState,
 } from '@canopy/ui-app/workflows';
 import { resolveAutomationPipelineTarget } from '@canopy/desktop-shared/lib/automation-pipeline-target';
+import { workflowPageIdForActivity } from './edit-target';
 
 /**
  * The desktop Runs feed (CAN-3981): one projection over the stores the
@@ -143,6 +144,8 @@ function executionStarter(execution: ExecutionSummary): WorkflowRunStarter {
       return 'plan-approved';
     case 'task_ready':
       return 'task-ready';
+    case 'workflow':
+      return 'workflow';
     default:
       return 'manual';
   }
@@ -485,6 +488,10 @@ function buildAutomationRow(
       // The row opens its execution, so the chat it sent to is an action.
       execution && input.automationRunOpensChat?.(run) === true
         ? ['go-to-chat']
+        : [],
+      // A workflow schedule's run opens its Workflow page (CAN-5782).
+      activity && workflowPageIdForActivity(activity) !== undefined
+        ? ['open-workflow']
         : [],
       activity ? ['open-library'] : [],
     ),

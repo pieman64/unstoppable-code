@@ -307,7 +307,11 @@ export function ChatPluginsModal({
         />
       </div>
 
-      <ErrorBanner error={saveError} className="mx-6 mb-3" />
+      {saveError && (
+        <div className="shrink-0 px-6 pb-3">
+          <ErrorBanner error={saveError} className="" />
+        </div>
+      )}
     </DialogModal>
   );
 }

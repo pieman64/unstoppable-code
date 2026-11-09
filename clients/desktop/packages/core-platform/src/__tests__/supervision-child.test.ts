@@ -4,12 +4,20 @@ import { createChildServices } from '../supervision/child';
 type Os = Runtime.PlatformOperatingSystem;
 type Source = Record<string, string | undefined>;
 const OSES = ['darwin', 'linux', 'win32'] as const;
+const WINDOWS_PROGRAM_FILES_KEYS = [
+  'ProgramFiles',
+  'ProgramFiles(x86)',
+] as const;
+const WINDOWS_GIT_KEYS = [
+  ...WINDOWS_PROGRAM_FILES_KEYS,
+  'CANOPY_GIT_EXECUTABLE',
+] as const;
 
 const POSIX_SYSTEM = '/usr/bin:/bin:/usr/sbin:/sbin';
 const WIN = 'C:\\Windows';
 const WIN_SYSTEM = `${WIN}\\System32;${WIN};${WIN}\\System32\\WindowsPowerShell\\v1.0`;
 const HOSTILE: Source = Object.fromEntries(
-  'PATH Path LANG LC_ALL TZ USER LOGNAME USERNAME CANOPY_TOKEN AWS_SECRET_ACCESS_KEY NODE_OPTIONS DYLD_INSERT_LIBRARIES LD_PRELOAD ComSpec PATHEXT windir'
+  'PATH Path LANG LC_ALL TZ USER LOGNAME USERNAME CANOPY_TOKEN AWS_SECRET_ACCESS_KEY NODE_OPTIONS DYLD_INSERT_LIBRARIES LD_PRELOAD GIT_EXEC_PATH GIT_CONFIG_GLOBAL GIT_CONFIG_COUNT GIT_SSH_COMMAND ComSpec PATHEXT windir'
     .split(' ')
     .map((key) => [key, 'evil-secret']),
 );
@@ -97,6 +105,138 @@ describe('createChildServices.childEnvironment', () => {
     for (const key of ['TMPDIR', 'TEMP', 'TMP'])
       expect(result).not.toHaveProperty(key);
   });
+
+  it.each(WINDOWS_GIT_KEYS)(
+    'selects Windows %s without changing PATH',
+    (key) => {
+      for (const value of [
+        'C:\\Program Files\\Git\\cmd\\git.exe',
+        '\\\\server\\share\\Git with spaces',
+        'D:/Git with spaces',
+        'D:\\Git;with semicolon',
+      ]) {
+        const source = Object.freeze({
+          ...W,
+          [key]: value,
+          [key.toLowerCase()]: value,
+          PATH: 'D:\\user-bin',
+        });
+        const result = env('win32', source);
+        expect(result).toEqual({ ...env('win32', W), [key]: value });
+        expect(result.PATH).toBe(WIN_SYSTEM);
+        expect(Object.isFrozen(result)).toBe(true);
+      }
+    },
+  );
+
+  it.each(WINDOWS_GIT_KEYS)('omits missing or empty Windows %s', (key) => {
+    for (const value of [undefined, ''])
+      expect(env('win32', { ...W, [key]: value })).toEqual(env('win32', W));
+    expect(
+      env('win32', { ...W, [key]: undefined, [key.toLowerCase()]: 'D:\\Git' }),
+    ).toEqual({ ...env('win32', W), [key]: 'D:\\Git' });
+  });
+
+  it.each(WINDOWS_PROGRAM_FILES_KEYS)(
+    'omits non-qualified optional Windows %s without preventing startup',
+    (key) => {
+      for (const value of [
+        'relative',
+        'C:drive-relative',
+        '\\rooted-only',
+        '/posix',
+        '\\\\server',
+        '\\\\?\\C:\\device',
+        '\\\\.\\C:\\device',
+      ])
+        expect(env('win32', { ...W, [key]: value })).toEqual(env('win32', W));
+    },
+  );
+
+  it.each(WINDOWS_GIT_KEYS)(
+    'omits every C0 control and DEL in optional Windows %s',
+    (key) => {
+      for (const code of [...Array(32).keys(), 127])
+        expect(
+          env('win32', { ...W, [key]: `C:\\Git${String.fromCharCode(code)}` }),
+        ).toEqual(env('win32', W));
+    },
+  );
+
+  it('preserves nonempty control-free overrides for selector validation without changing PATH', () => {
+    for (const value of [
+      'git',
+      'git.exe',
+      '.\\git.exe',
+      'C:git.exe',
+      '\\git.exe',
+      '/git.exe',
+      '\\\\server',
+      '\\\\?\\C:\\git.exe',
+      '\\\\.\\C:\\git.exe',
+      '  C:\\Git\\cmd\\git.exe  ',
+      'git;other',
+      ' ',
+    ]) {
+      const source = Object.freeze({
+        ...W,
+        canopy_git_executable: value,
+        CANOPY_GIT_EXECUTABLE: value,
+        PATH: 'D:\\user-bin',
+      });
+      expect(env('win32', source)).toEqual({
+        ...env('win32', W),
+        CANOPY_GIT_EXECUTABLE: value,
+      });
+    }
+  });
+
+  it('drops only the unsafe discovery hint and no validation of existing keys', () => {
+    const source = {
+      ...WINDOWS,
+      ProgramFiles: 'C:\\Program Files',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+      CANOPY_GIT_EXECUTABLE: 'git\n',
+    };
+    expect(env('win32', source)).toEqual({
+      ...env('win32', WINDOWS),
+      ProgramFiles: source.ProgramFiles,
+      'ProgramFiles(x86)': source['ProgramFiles(x86)'],
+    });
+    expect(() => env('win32', { ...source, TEMP: 'relative' })).toThrow(
+      new Error('Invalid child environment TEMP'),
+    );
+    expect(() => env('win32', { ...source, appdata: 'D:\\Other' })).toThrow(
+      new Error('Invalid child environment APPDATA'),
+    );
+  });
+
+  it.each(WINDOWS_GIT_KEYS)(
+    'omits conflicting case variants of optional Windows %s',
+    (key) => {
+      for (const value of ['D:\\other', ''])
+        expect(
+          env('win32', {
+            ...W,
+            [key]: 'C:\\Git',
+            [key.toLowerCase()]: value,
+          }),
+        ).toEqual(env('win32', W));
+    },
+  );
+
+  it.each(['darwin', 'linux'] as const)(
+    '%s ignores Windows Git inputs',
+    (os) => {
+      for (const value of ['C:\\Git', 'relative\0']) {
+        const source = {
+          HOME: '/h',
+          ...Object.fromEntries(WINDOWS_GIT_KEYS.map((key) => [key, value])),
+        };
+        expect(env(os, source)).toEqual({ HOME: '/h', PATH: POSIX_SYSTEM });
+      }
+    },
+  );
 
   it.each<[Os, Source, string[], RegExp]>([
     ['darwin', {}, [], /HOME/],

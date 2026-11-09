@@ -1,4 +1,4 @@
-import { killProcessGroupByPid } from '../lib/process-kill';
+import { killProcessGroupByPid } from '@canopy/execution-engine/node/lib/process-kill';
 
 /**
  * Best-effort termination of a Cursor child and everything it spawned.

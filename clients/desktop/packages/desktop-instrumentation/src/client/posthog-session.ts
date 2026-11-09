@@ -1,5 +1,5 @@
 import type { CaptureResult, PostHog } from 'posthog-js';
-import type { PostHogSessionState } from '@canopy/desktop-shared/types/observability';
+import type { PostHogSessionState } from '@canopy/execution-engine/types/observability';
 import {
   isPostHogSessionState,
   isValidPostHogSessionId,

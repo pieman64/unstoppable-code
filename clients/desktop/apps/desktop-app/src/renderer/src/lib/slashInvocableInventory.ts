@@ -6,7 +6,7 @@ import type {
   ResolveInvocableSelectionResponse,
   PluginSelectionTombstones,
 } from '@canopy/desktop-shared/types';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { PluginInfo } from '@canopy/desktop-shared/types/plugins';
 import { appendEnableRef } from '@canopy/desktop-shared/lib/slash-invocable-inventory';
 

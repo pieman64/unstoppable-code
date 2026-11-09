@@ -16,7 +16,7 @@ import type { DynamicToolSpec } from '@canopy/desktop-shared/node/codex-runtime/
 import type { DynamicToolCallResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolCallResponse';
 import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   ADD_LEDGER_ENTRY_DESCRIPTION,
   SEARCH_LEDGER_ENTRIES_DESCRIPTION,

@@ -7,9 +7,9 @@ import type {
 import type {
   PipelineData,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
-import type { AgentModelDefinition } from '@canopy/desktop-shared/types/agent-models';
+import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import { ShareAgentModal } from '@/components/agents/ShareAgentModal';
 import { ShareAutomationModal } from '@/components/automations/ShareAutomationModal';

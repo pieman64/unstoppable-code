@@ -1,7 +1,15 @@
 'use client';
 
-import { useRef, type JSX, type ReactNode } from 'react';
+import {
+  Children,
+  Fragment,
+  isValidElement,
+  useRef,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import { HomeSections } from './HomeSection';
+import { Stack } from './Stack';
 
 export type ComposerHeroFrameRhythm = 'spacious' | 'compact';
 
@@ -28,12 +36,17 @@ const ROWS_CLASSNAME: Record<ComposerHeroFrameRhythm, string> = {
 
 const BELOW_CLASSNAME: Record<ComposerHeroFrameRhythm, string> = {
   spacious: 'mt-16 flex w-full flex-col gap-12',
-  compact: 'mt-5 flex w-full flex-col gap-12 sm:mt-6',
+  compact: 'mt-5 flex w-full flex-col gap-10 sm:mt-6',
 };
 
 export interface ComposerHeroFrameProps {
   /** Hangs above the composer, out of flow: the heading and its notices. */
   readonly above?: ReactNode;
+  /** Margin-free notices, kept 12px apart above the context or composer. */
+  readonly aboveNotices?: ReactNode;
+  /** One context group; a tray and drawer inside it keep their own adjacency. */
+  readonly aboveContext?: ReactNode;
+
   /** The composer box. Its vertical midpoint sits on the frame's centre. */
   readonly composer: ReactNode;
   /**
@@ -73,8 +86,31 @@ export interface ComposerHeroFrameProps {
  * Pure CSS on purpose: no measurement, so the server HTML already has the
  * final geometry and hydrating moves nothing.
  */
+function visibleAboveContent(children: ReactNode): ReactNode[] {
+  const result: ReactNode[] = [];
+  Children.forEach(children, (child) => {
+    if (
+      child == null ||
+      typeof child === 'boolean' ||
+      (typeof child === 'string' && child.trim() === '')
+    )
+      return;
+    if (
+      isValidElement<{ readonly children?: ReactNode }>(child) &&
+      child.type === Fragment
+    ) {
+      result.push(...visibleAboveContent(child.props.children));
+    } else {
+      result.push(child);
+    }
+  });
+  return Children.toArray(result);
+}
+
 export function ComposerHeroFrame({
   above,
+  aboveNotices,
+  aboveContext,
   composer,
   hanging,
   below,
@@ -89,6 +125,14 @@ export function ComposerHeroFrame({
   // The column keeps every wrapper and lets the ones that only position the
   // centred frame drop out of layout with `contents`.
   const column = layout === 'column';
+  const structuredAbove =
+    aboveNotices !== undefined || aboveContext !== undefined;
+  const noticeNodes = visibleAboveContent(aboveNotices);
+  const contextNodes = visibleAboveContent(aboveContext);
+  // With no context after the notices, the frame owns the final notice-to-box gap.
+  const noticeEndsAboveComposer =
+    !column && noticeNodes.length > 0 && contextNodes.length === 0;
+
   return (
     <div
       data-testid={anchorTestId}
@@ -111,8 +155,21 @@ export function ComposerHeroFrame({
                 ? 'contents'
                 : 'pointer-events-none absolute inset-x-0 bottom-full flex flex-col items-stretch'
             }
+            style={
+              noticeEndsAboveComposer
+                ? { bottom: 'calc(100% + var(--spacing) * 3)' }
+                : undefined
+            }
           >
             {above}
+            {structuredAbove ? (
+              <Stack gap="item">
+                {noticeNodes}
+                {contextNodes.length > 0 ? (
+                  <div className="flex flex-col">{contextNodes}</div>
+                ) : null}
+              </Stack>
+            ) : null}
           </div>
           {/* Above the rows that hang after it, so the composer's own menus
               open over them. */}

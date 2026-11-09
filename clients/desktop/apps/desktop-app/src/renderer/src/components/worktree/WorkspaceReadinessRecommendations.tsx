@@ -31,6 +31,7 @@ import {
 } from '@/stores/workspaceReadinessLaunchStore';
 import { Button, LoadingSpinner } from '../shared';
 import {
+  Stack,
   DelayedLoadingPlaceholder,
   ErrorBanner,
   Heading,
@@ -192,12 +193,9 @@ export function WorkspaceReadinessRecommendations({
 
   if (surface === 'row') {
     return (
-      <div
-        className="flex flex-col gap-3"
-        data-testid="workspace-readiness-recommendations"
-      >
+      <Stack gap="item" data-testid="workspace-readiness-recommendations">
         <div className="flex min-h-10 items-center justify-between gap-6">
-          <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="flex flex-col min-w-0 flex-1 gap-0.5">
             <div className="text-s font-medium fg-primary">
               Repository readiness
             </div>
@@ -253,7 +251,7 @@ export function WorkspaceReadinessRecommendations({
                 key={key}
                 className="flex min-h-10 items-center justify-between gap-6"
               >
-                <div className="min-w-0 flex-1 space-y-0.5">
+                <div className="flex flex-col min-w-0 flex-1 gap-0.5">
                   <div className="text-s fg-primary">{issue.title}</div>
                   <div className="text-xs text-pretty fg-secondary">
                     {issue.message}
@@ -281,14 +279,15 @@ export function WorkspaceReadinessRecommendations({
               </div>
             );
           })}
-        <ErrorBanner error={launchError} className="" />
-      </div>
+        <ErrorBanner className="" error={launchError} />
+      </Stack>
     );
   }
 
   return (
     <Surface
       as="section"
+      gap="group"
       variant="group"
       padding="default"
       data-testid="workspace-readiness-recommendations"
@@ -303,98 +302,108 @@ export function WorkspaceReadinessRecommendations({
         >
           {ready ? <CheckIcon size="sm" /> : <WrenchIcon size="sm" />}
         </span>
-        <div className="min-w-0 flex-1">
-          <Heading level={3} variant="title">
-            Repository readiness
-          </Heading>
-          {loadState === 'loading' && (
-            <DelayedLoadingPlaceholder slowNote="Still checking repository readiness…">
-              <Skeleton
-                loading
-                label="Checking repository readiness"
-                testId="workspace-readiness-loading"
-              >
-                <p className="mt-1 text-xs fg-secondary">
-                  This Code project has setup and launch scripts, hooks, and
-                  shared agent instructions in place.
-                </p>
-              </Skeleton>
-            </DelayedLoadingPlaceholder>
-          )}
-          {ready && (
-            <p className="mt-1 text-xs fg-secondary">
-              This Code project has setup and launch scripts, hooks, and shared
-              agent instructions in place.
-            </p>
-          )}
+        <Stack gap="inline" className="min-w-0 flex-1">
+          <Stack gap="tight">
+            <Heading level={3} variant="title">
+              Repository readiness
+            </Heading>
+            {loadState === 'loading' && (
+              <DelayedLoadingPlaceholder slowNote="Still checking repository readiness…">
+                <Skeleton
+                  loading
+                  label="Checking repository readiness"
+                  testId="workspace-readiness-loading"
+                >
+                  <p className="text-xs fg-secondary">
+                    This Code project has setup and launch scripts, hooks, and
+                    shared agent instructions in place.
+                  </p>
+                </Skeleton>
+              </DelayedLoadingPlaceholder>
+            )}
+            {ready && (
+              <p className="text-xs fg-secondary">
+                This Code project has setup and launch scripts, hooks, and
+                shared agent instructions in place.
+              </p>
+            )}
+          </Stack>
           {loadState === 'error' && (
             <ErrorBanner
+              className=""
               error="Couldn’t check repository readiness."
               onRetry={() => void load()}
-              className="mt-2"
             />
           )}
-        </div>
+        </Stack>
       </div>
 
-      {loadState === 'ready' && groupedIssues.length > 0 && (
-        <div className="mt-4 space-y-4">
-          {groupedIssues.map(([repoName, repoIssues]) => (
-            <div key={repoName}>
-              <Heading level={4} variant="label" className="mb-2">
-                {repoName}
-              </Heading>
-              <div className="space-y-2">
-                {repoIssues.map((issue) => {
-                  const key = `${targetKey}:${issue.code === 'recovery-required' ? workspaceReadinessIssueKey(issue) : `${issue.repoId ?? 'project'}:${issue.code}`}`;
-                  const isLaunching = launchingKey === key;
-                  const launched = launchFor(issue);
-                  const chatMissing =
-                    launched !== undefined &&
-                    missingChats.includes(launchedReadinessFixKey(launched));
-                  return (
-                    <Surface variant="inset" key={key}>
-                      <div className="flex items-center justify-between gap-4 px-3 py-3">
-                        <div className="min-w-0">
-                          <div className="text-xs font-medium fg-primary">
-                            {issue.title}
+      {((loadState === 'ready' && groupedIssues.length > 0) || launchError) && (
+        <Stack gap="item">
+          {loadState === 'ready' && groupedIssues.length > 0 && (
+            <Stack gap="group">
+              {groupedIssues.map(([repoName, repoIssues]) => (
+                <Stack gap="inline" key={repoName}>
+                  <Heading className="" level={4} variant="label">
+                    {repoName}
+                  </Heading>
+                  <Stack gap="inline">
+                    {repoIssues.map((issue) => {
+                      const key = `${targetKey}:${issue.code === 'recovery-required' ? workspaceReadinessIssueKey(issue) : `${issue.repoId ?? 'project'}:${issue.code}`}`;
+                      const isLaunching = launchingKey === key;
+                      const launched = launchFor(issue);
+                      const chatMissing =
+                        launched !== undefined &&
+                        missingChats.includes(
+                          launchedReadinessFixKey(launched),
+                        );
+                      return (
+                        <Surface variant="inset" key={key}>
+                          <div className="flex items-center justify-between gap-4 px-3 py-3">
+                            <Stack gap="tight" className="min-w-0">
+                              <div className="text-xs font-medium fg-primary">
+                                {issue.title}
+                              </div>
+                              <div className="text-xs fg-secondary">
+                                {issue.message}
+                                {chatMissing && ' Conversation unavailable.'}
+                              </div>
+                            </Stack>
+                            {issue.fixPrompt === null ? null : launched ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => void handleView(launched)}
+                              >
+                                {chatMissing
+                                  ? 'Open worktree'
+                                  : 'View conversation'}
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={launchingKey !== null}
+                                onClick={() => void handleFix(issue)}
+                              >
+                                {isLaunching
+                                  ? 'Starting…'
+                                  : 'Fix in new worktree'}
+                              </Button>
+                            )}
                           </div>
-                          <div className="mt-1 text-xs fg-secondary">
-                            {issue.message}
-                            {chatMissing && ' Conversation unavailable.'}
-                          </div>
-                        </div>
-                        {issue.fixPrompt === null ? null : launched ? (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => void handleView(launched)}
-                          >
-                            {chatMissing
-                              ? 'Open worktree'
-                              : 'View conversation'}
-                          </Button>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={launchingKey !== null}
-                            onClick={() => void handleFix(issue)}
-                          >
-                            {isLaunching ? 'Starting…' : 'Fix in new worktree'}
-                          </Button>
-                        )}
-                      </div>
-                    </Surface>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+                        </Surface>
+                      );
+                    })}
+                  </Stack>
+                </Stack>
+              ))}
+            </Stack>
+          )}
 
-      <ErrorBanner error={launchError} className="mt-3" />
+          <ErrorBanner className="" error={launchError} />
+        </Stack>
+      )}
     </Surface>
   );
 }

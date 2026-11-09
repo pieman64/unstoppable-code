@@ -20,7 +20,7 @@ import type {
   Pipeline,
   PipelineData,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   getStoredPipelineIndexEntry,
   listStoredPipelines,
@@ -35,6 +35,7 @@ import {
 } from '../pipelines/pipeline-definition-presentation';
 import { buildSharedPipelineInfo } from '../pipelines/shared-pipeline-info';
 import { getDesktopCanopyRuntime } from './desktop-runtime-access';
+import { withSelfFilteringAgentRead } from './self-filtering-agent-reads';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 
 /*
@@ -271,6 +272,19 @@ export async function deleteUserPipeline(
 }
 
 /** Every definition a list names, across its pages. */
+/**
+ * Runs a read as `caller`. Only main's own shared agent caller object marks
+ * the read as one that applies the CAN-4551 rule itself (CAN-5991).
+ */
+function asCaller<Result>(
+  caller: CanopyCallerDescriptor,
+  read: () => Promise<Result>,
+): Promise<Result> {
+  return caller === PIPELINE_DEFINITION_AGENT_CALLER
+    ? withSelfFilteringAgentRead(caller, read)
+    : read();
+}
+
 export async function listPipelineDefinitions(
   params: Omit<PipelineDefinitionListParams, 'cursor' | 'limit' | '_meta'>,
   caller: CanopyCallerDescriptor,
@@ -282,14 +296,17 @@ export async function listPipelineDefinitions(
   let unavailableSources: PipelineDefinitionSource[] = [];
   let cursor: string | undefined;
   do {
-    const page = await getDesktopCanopyRuntime().query(
-      'core.pipeline.definition.list',
-      {
-        ...params,
-        limit: PIPELINE_DEFINITION_LIST_MAX_LIMIT,
-        ...(cursor === undefined ? {} : { cursor }),
-      },
-      { caller },
+    const pageParams = {
+      ...params,
+      limit: PIPELINE_DEFINITION_LIST_MAX_LIMIT,
+      ...(cursor === undefined ? {} : { cursor }),
+    };
+    const page = await asCaller(caller, () =>
+      getDesktopCanopyRuntime().query(
+        'core.pipeline.definition.list',
+        pageParams,
+        { caller },
+      ),
     );
     items.push(...page.items);
     unavailableSources = page.unavailableSources;
@@ -304,10 +321,12 @@ export async function getPipelineDefinition(
   caller: CanopyCallerDescriptor,
 ): Promise<PipelineDefinition> {
   return (
-    await getDesktopCanopyRuntime().query(
-      'core.pipeline.definition.get',
-      { definitionId, scope },
-      { caller },
+    await asCaller(caller, () =>
+      getDesktopCanopyRuntime().query(
+        'core.pipeline.definition.get',
+        { definitionId, scope },
+        { caller },
+      ),
     )
   ).definition;
 }

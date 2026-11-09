@@ -7,9 +7,45 @@ import {
 import {
   statIfPresent,
   privateDirectory,
+  flush,
 } from '@canopy/desktop-shared/node/internal-root-migration/filesystem';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import {
+  internalRootFilesystemHost,
+  createPrivateMigrationDirectory,
+  observeMigrationNode,
+} from '@canopy/desktop-shared/node/internal-root-migration/filesystem-host';
 import { createW5RecoveryMaintenanceContext } from './w5-recovery-maintenance';
 import { runW5Maintenance, W5MaintenanceRefusedError } from './w5-maintenance';
+
+function diagnosticField(error: unknown, field: string): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  try {
+    const value: unknown = Reflect.get(error, field);
+    return typeof value === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function recoveryDiagnostic(error: unknown): string {
+  // Node/Jest errors can cross realms; read validated fields, not instanceof Error.
+  const message =
+    typeof error === 'string' ? error : diagnosticField(error, 'message');
+  const limit = 1024;
+  const text = message
+    ?.slice(0, limit)
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const fields: string[] = [];
+  for (const key of ['code', 'stage']) {
+    const value = diagnosticField(error, key);
+    if (value && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(value))
+      fields.push(`${key} ${value}`);
+  }
+  return `${text || 'Unknown failure'}${message && message.length > limit ? '…' : ''}${fields.length ? ` (${fields.join(', ')})` : ''}`;
+}
 
 /**
  * Transaction-qualified pre-Cut-B source recovery (no UI/flip gate or destination startup).
@@ -24,7 +60,7 @@ import { runW5Maintenance, W5MaintenanceRefusedError } from './w5-maintenance';
  * Refusals: recovery-required for lost qualification, aliased W5/workspaces,
  * history without a log, aliased/nonregular/foreign/linked log or SQLite sidecars,
  * missing worker, W5 exclusion/recovery failures, remaining
- * commits/reservations, non-untracked file issues, lifecycle artifacts or log issues.
+ * commits/reservations, non-untracked W5-owned file issues, lifecycle artifacts or log issues.
  * unsupported-layout refuses nonprivate source permissions; investigate ownership
  * rather than blindly repairing permissions.
  * Recovery: preserve the ORIGINAL root and journal; use teammate-assisted offline
@@ -34,8 +70,24 @@ export async function settleInternalRootW5(
   source: string,
   workerEntry: string,
   qualification: InternalRootColdRecovery,
+  options: {
+    readonly ownedChildPath?: string;
+    readonly windowsProcessPath?: string;
+  } = {},
 ): Promise<'settled' | 'nothing-to-settle'> {
   await qualification.assertHeld();
+  const windows = hostOperatingSystem() === 'win32';
+  if (
+    windows &&
+    (!qualification.assertCold ||
+      !options.windowsProcessPath ||
+      !options.ownedChildPath)
+  )
+    throw new InternalRootMigrationRefused(
+      'recovery-required',
+      'Windows offline migration requires native cold qualification and trusted custody/process helpers.',
+    );
+  const host = internalRootFilesystemHost(options.ownedChildPath);
   if (
     qualification.identity.source !== source ||
     (await realpath(source)) !== source
@@ -44,7 +96,7 @@ export async function settleInternalRootW5(
       'recovery-required',
       'Source is not the qualified canonical original root. Preserve both roots and request offline diagnosis.',
     );
-  await privateDirectory(source);
+  await privateDirectory(source, host);
   const w5 = join(source, 'w5');
   for (const path of [w5, join(source, 'workspaces')]) {
     const stat = await statIfPresent(path);
@@ -53,6 +105,7 @@ export async function settleInternalRootW5(
         'recovery-required',
         'Aliased or unsupported W5 state requires offline diagnosis at the original root.',
       );
+    if (windows && stat) await privateDirectory(path, host);
   }
   const logPath = join(w5, 'commit-log.sqlite');
   for (const suffix of ['', '-wal', '-shm', '-journal']) {
@@ -62,13 +115,14 @@ export async function settleInternalRootW5(
       stat &&
       (!stat.isFile() ||
         stat.nlink !== 1 ||
-        stat.uid !== process.getuid?.() ||
+        (!windows && stat.uid !== process.getuid?.()) ||
         (await realpath(path)) !== path)
     )
       throw new InternalRootMigrationRefused(
         'recovery-required',
         'Aliased or unsupported W5 log/SQLite sidecar. Preserve the original root and obtain offline W5 diagnosis before retrying.',
       );
+    if (stat) await observeMigrationNode(path, stat, host);
   }
   if (!(await statIfPresent(logPath))) {
     if ((await statIfPresent(w5)) && (await readdir(w5)).length)
@@ -80,6 +134,16 @@ export async function settleInternalRootW5(
     return 'nothing-to-settle'; // No worker or W5 writes for preferences-only roots.
   }
   try {
+    // Pre-Cut-A roots may contain W5 history but no daemon runtime yet. This is
+    // W5 settlement infrastructure, created only under B's cold qualification.
+    await qualification.assertHeld();
+    const runtime = join(source, 'runtime');
+    if (!(await statIfPresent(runtime))) {
+      await createPrivateMigrationDirectory(runtime, host);
+    }
+    await privateDirectory(runtime, host);
+    await flush(runtime);
+    await flush(source);
     const worker = await statIfPresent(workerEntry);
     if (!worker?.isFile() || (await realpath(workerEntry)) !== workerEntry)
       throw new InternalRootMigrationRefused(
@@ -88,10 +152,25 @@ export async function settleInternalRootW5(
       );
     await qualification.assertHeld();
     const result = await runW5Maintenance(
-      createW5RecoveryMaintenanceContext(source, {
-        workerEntry,
-        admission: qualification.assertHeld,
-      }),
+      {
+        ...createW5RecoveryMaintenanceContext(source, {
+          workerEntry,
+          admission: qualification.assertHeld,
+          windowsProcessPath: options.windowsProcessPath,
+          confinementAddon: options.ownedChildPath,
+          ...(qualification.assertCold
+            ? {
+                offlineMigration: async (): Promise<void> => {
+                  await qualification.assertHeld();
+                  if (!qualification.assertCold)
+                    throw new Error('Missing native cold qualification');
+                  await qualification.assertCold();
+                },
+              }
+            : {}),
+        }),
+        diagnosisScope: 'w5-owned',
+      },
       { source: 'offline_maintenance', mode: 'reopen' },
     );
     if (result.mode !== 'reopen') throw new Error('Unexpected recovery result');
@@ -115,11 +194,17 @@ export async function settleInternalRootW5(
     return 'settled';
   } catch (error) {
     if (error instanceof InternalRootMigrationRefused) throw error;
-    throw new InternalRootMigrationRefused(
-      'recovery-required',
+    // Offline diagnosis needs the actual failure; exclusion still refuses closed.
+    const detail =
       error instanceof W5MaintenanceRefusedError
-        ? `W5 source maintenance refused (${error.reason}). Preserve the original root and run W5 offline diagnosis there.`
-        : 'W5 source recovery failed or exclusion was unavailable. Preserve the original root and run W5 offline diagnosis there.',
+        ? `W5 source maintenance refused (${error.reason})${error.operationError === undefined ? '' : `: ${recoveryDiagnostic(error.operationError)}`}`
+        : `W5 source recovery failed or exclusion was unavailable: ${recoveryDiagnostic(error)}`;
+    throw Object.assign(
+      new InternalRootMigrationRefused(
+        'recovery-required',
+        `${detail}. Preserve the original root and run W5 offline diagnosis there.`,
+      ),
+      { cause: error },
     );
   }
 }

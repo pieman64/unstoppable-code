@@ -1,3 +1,4 @@
+import { Dot } from '@canopy/ui-shared/components/Badge';
 import {
   OrgProjectPlaceholderRow,
   OrgProjectPlaceholderSection,
@@ -48,9 +49,9 @@ import {
   ProjectListPagination,
   RailIconButton,
   SidebarFadePresence,
+  SidebarSectionToggle,
   WorkspaceSectionHeader,
 } from '@canopy/ui-shared/components';
-import { SIDEBAR_INDICATOR_BLUE } from '@canopy/ui-shared/lib';
 import {
   defaultCoworkWorkspaceIdForContext,
   isDefaultCoworkWorkspaceId,
@@ -661,29 +662,15 @@ export function SidebarWorkspacesSection({
         <StickyWorkspaceControls
           workspaceHeader={
             <div className="sidebar-sticky-header group group/workspaces group/sidebar-item flex min-w-0 items-center gap-1 px-1">
-              <button
-                type="button"
-                data-testid="sidebar-section-code-toggle"
-                className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                aria-expanded={!collapsed}
+              <SidebarSectionToggle
+                section="workspaces"
+                label={WORKSPACE_LABEL_PLURAL}
+                open={!collapsed}
+                testId="sidebar-section-code-toggle"
+                chevronTestId="sidebar-workspaces-chevron"
+                onboardingAnchor="sidebar-workspaces"
                 onClick={(): void => setCollapsed(!collapsed)}
-              >
-                <div
-                  className="flex h-8 min-w-0 flex-1 translate-y-0.5 items-center gap-1 px-1 text-s font-normal"
-                  data-onboarding-anchor="sidebar-workspaces"
-                >
-                  <span className="shrink-0 whitespace-nowrap fg-quaternary transition-colors group-hover/workspaces:fg-secondary group-focus-within/workspaces:fg-secondary">
-                    {WORKSPACE_LABEL_PLURAL}
-                  </span>
-                  <ChevronDownMediumIcon
-                    size="sm"
-                    data-testid="sidebar-workspaces-chevron"
-                    className={`shrink-0 fg-quaternary transition-[color,opacity] group-hover/workspaces:fg-secondary group-hover/workspaces:opacity-100 group-focus-within/workspaces:fg-secondary group-focus-within/workspaces:opacity-100 ${
-                      collapsed ? '-rotate-90 opacity-100' : 'opacity-0'
-                    }`}
-                  />
-                </div>
-              </button>
+              />
               {/* Nudged 2px down with the label, so the "+" sits on its line. */}
               <div className="ml-auto shrink-0 translate-y-0.5">
                 <div className="flex shrink-0 items-center gap-0.5">
@@ -721,10 +708,10 @@ export function SidebarWorkspacesSection({
                       onClick={(): void => setProjectsMenuOpen((open) => !open)}
                     />
                     {projectsFiltered && (
-                      <span
-                        aria-hidden="true"
+                      <Dot
+                        tone="filter"
                         data-testid="sidebar-section-code-more-active-dot"
-                        className={`pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full ${SIDEBAR_INDICATOR_BLUE.background}`}
+                        className="pointer-events-none absolute right-0.5 top-0.5"
                       />
                     )}
                   </div>

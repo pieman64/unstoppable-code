@@ -27,7 +27,7 @@ import {
   savedRuleDeniedMessage,
   userDeniedMessage,
 } from '@canopy/protocol/approvals';
-import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
   evaluateApproval,
@@ -38,7 +38,7 @@ import { addWorkspaceApprovalRule } from '../lib/approvals-persistence';
 import { updatePreferencesFile } from '../lib/preferences-store';
 import { sendToWindow, type SendableBrowserWindow } from '../lib/window-send';
 import { getObservabilityService } from '../observability';
-import { requestApprovalFromRenderer } from './prompt-bridge';
+import { requestApprovalDecision } from './prompt-bridge';
 import {
   cancelApproval,
   rejectAllApprovalsForSession,
@@ -825,7 +825,8 @@ export function createApprovalSession(
     const timerTransitionId = `approval:${randomUUID()}`;
     let ownsTimerPause = false;
     let releaseFailed = false;
-    let promptDecision: ApprovalPromptDecision;
+    let policyEnded: 'policy_denied' | 'revalidation_failed' | null = null;
+    let promptDecision: ApprovalPromptDecision | undefined;
     let registeredRequestId: string | undefined;
     try {
       await commitApprovalTurnPause('PauseOpened', timerTransitionId);
@@ -845,7 +846,7 @@ export function createApprovalSession(
       if (disposed || generation !== promptGeneration) {
         return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
       }
-      promptDecision = await requestApprovalFromRenderer({
+      const bridged = await requestApprovalDecision({
         sessionKey: ctx.sessionKey,
         event: {
           ...(ctx.trackChatTurn === false ? { surface: 'non-chat' } : {}),
@@ -927,9 +928,19 @@ export function createApprovalSession(
         ...(ctx.promptTimeoutMs !== undefined
           ? { timeoutMs: ctx.promptTimeoutMs }
           : {}),
+        revalidate: async () => {
+          if (disposed || generation !== promptGeneration) return 'failed';
+          const evaluated = await evaluateCheckFailClosed(approvalCheck);
+          if (!evaluated || disposed || generation !== promptGeneration) {
+            return 'failed';
+          }
+          return evaluated.evaluation.outcome;
+        },
       });
       cancellation.throwIfCancelled();
       cancellation.accept();
+      if (bridged.kind === 'decision') promptDecision = bridged.decision;
+      else policyEnded = bridged.kind;
     } catch {
       cancellation.throwIfCancelled();
       recordDecision({
@@ -968,6 +979,21 @@ export function createApprovalSession(
       } catch {
         releaseFailed = true;
       }
+    }
+
+    if (policyEnded !== null) {
+      recordDecision({
+        decision: 'deny',
+        scope: 'once',
+        targetKind: approvalCheck.kind,
+      });
+      return {
+        decision: 'deny',
+        message:
+          policyEnded === 'policy_denied'
+            ? POLICY_DENIED_FALLBACK_MESSAGE
+            : FAIL_CLOSED_MESSAGE,
+      };
     }
 
     if (releaseFailed || !isApprovalPromptDecision(promptDecision)) {
@@ -1061,7 +1087,7 @@ export function createApprovalSession(
   // Serializes actual renderer prompts for this handle: "one approval prompt
   // at a time per chat; parallel tool calls queue." A check that resolves
   // via the engine (allow/deny) never touches this chain. A check that needs
-  // a prompt appends itself here so its `requestApprovalFromRenderer` call
+  // a prompt appends itself here so its `requestApprovalDecision` call
   // only starts once every earlier-queued prompt has been answered.
   let promptChain: Promise<unknown> = Promise.resolve();
 
@@ -1467,7 +1493,7 @@ export function createApprovalSession(
    *   downstream from the user pressing Deny, and would kill the turn of a
    *   user who just widened permissions.
    * - **Resolution goes through the bridge promise**, not through some private
-   *   outcome channel. Unwinding `requestApprovalFromRenderer` is what releases
+   *   outcome channel. Unwinding `requestApprovalDecision` is what releases
    *   the main-owned turn-timer pause, `observability.pauseChatTurn`, and the
    *   `approval:<requestId>` attention signal that drives the cloud push.
    * - **All async work happens before the map is touched**, then resolution is

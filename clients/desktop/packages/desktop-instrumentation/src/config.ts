@@ -176,20 +176,30 @@ export function getPostHogInstrumentationReadiness(
 }
 
 export interface PostHogRuntimePolicy {
+  /** Product events: operations, screens, `$set`/`$identify`, flag calls. */
   captureEnabled: boolean;
+  /** `$exception` and the app-error events. Independent of `captureEnabled`. */
+  errorCaptureEnabled: boolean;
   sessionReplaySampleRate: number;
   /** Click autocapture, rage clicks, and dead clicks. */
   autocaptureEnabled: boolean;
 }
 
-/** Runtime flags can only narrow the immutable build-time configuration. */
+/**
+ * Runtime flags can only narrow the immutable build-time configuration. The
+ * LaunchDarkly capture flag gates both categories; the member's effective
+ * usage-data choices then gate product events and errors separately. Every
+ * flag other than `true` fails closed.
+ */
 export function resolvePostHogRuntimePolicy(
   config: PostHogInstrumentationConfig,
   flags?: PostHogRuntimeFlags,
 ): PostHogRuntimePolicy {
-  const captureEnabled =
+  const capturePermitted =
     getPostHogInstrumentationReadiness(config).enabled &&
     flags?.captureEnabled === true;
+  const captureEnabled = capturePermitted && flags?.productAnalytics === true;
+  const errorCaptureEnabled = capturePermitted && flags?.errorReports === true;
   const rate = flags?.sessionReplaySampleRate;
   const validRate =
     typeof rate === 'number' &&
@@ -198,8 +208,9 @@ export function resolvePostHogRuntimePolicy(
     rate <= 100;
   return {
     captureEnabled,
+    errorCaptureEnabled,
     sessionReplaySampleRate:
-      captureEnabled && validRate
+      captureEnabled && flags?.sessionReplay === true && validRate
         ? Math.min(config.sessionReplaySampleRate, rate)
         : 0,
     autocaptureEnabled: captureEnabled && flags?.autocaptureEnabled === true,

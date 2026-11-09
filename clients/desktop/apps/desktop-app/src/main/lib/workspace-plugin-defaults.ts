@@ -11,7 +11,7 @@ import type {
   ChatTabPluginSelections,
   WorkspaceConfigFile,
 } from '@canopy/desktop-shared/types';
-import type { McpServerRef } from '@canopy/desktop-shared/types/mcp-servers';
+import type { McpServerRef } from '@canopy/execution-engine/types/mcp-servers';
 import {
   rewriteMcpSelections,
   rewriteMcpTombstones,

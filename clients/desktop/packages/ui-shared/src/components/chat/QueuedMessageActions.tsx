@@ -119,11 +119,6 @@ export interface QueuedMessageActionsProps {
   readonly cornerLeading?: ReactNode;
 }
 
-const POPOVER_EDIT_CLASS =
-  'rounded-md bg-popover/80 px-2 py-1 text-2xs font-medium fg-secondary transition-colors hover:bg-popover hover:fg-primary';
-const POPOVER_CANCEL_CLASS =
-  'rounded-md bg-popover/80 p-1.5 fg-secondary transition-colors hover:bg-popover hover:fg-destructive';
-
 /**
  * The queued-message action strip shared by every queued-message bubble.
  * Hosts decide which callbacks a row gets; the strip owns the controls'
@@ -170,17 +165,17 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
             onEdit={onEdit}
           />
         ) : showEdit && onEdit ? (
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="compact"
             data-testid="queued-message-edit"
             onClick={() => void onEdit()}
-            className={POPOVER_EDIT_CLASS}
             aria-label={editLabel}
           >
             Edit
-          </button>
+          </Button>
         ) : null}
-        {onCancel && isBadge ? (
+        {onCancel ? (
           <Button
             variant="secondary"
             size="compact"
@@ -192,17 +187,6 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
           >
             <TrashIcon size="sm" />
           </Button>
-        ) : onCancel ? (
-          <button
-            type="button"
-            data-testid="queued-message-cancel"
-            disabled={pending}
-            onClick={onCancel}
-            className={POPOVER_CANCEL_CLASS}
-            aria-label={cancelLabel}
-          >
-            <TrashIcon size="sm" />
-          </button>
         ) : null}
       </div>
     );

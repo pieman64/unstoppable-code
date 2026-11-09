@@ -57,6 +57,20 @@ export function isBuiltInPluginMarketplaceId(id: string): boolean {
  */
 export const CURATED_PLUGIN_MARKETPLACE_ID = 'curated/cloud';
 
+const SYSTEM_CATALOG_GITHUB_REPOS: ReadonlyMap<string, string> = new Map([
+  ['claude-plugins-official', 'anthropics/claude-plugins-official'],
+  ['anthropic-skills', 'anthropics/skills'],
+  ['openai-curated', 'openai/plugins'],
+]);
+
+/**
+ * The GitHub repo behind a system catalog, for hosts holding a catalog row that
+ * carries no source URL (the cloud catalog's rows).
+ */
+export function systemCatalogGithubRepo(catalogId: string): string | undefined {
+  return SYSTEM_CATALOG_GITHUB_REPOS.get(catalogId);
+}
+
 /**
  * Stable, machine-independent source URL marker for the curated marketplace.
  * Mirrors {@link BUILTIN_PLUGIN_MARKETPLACE_SOURCE_URL}'s role for the
@@ -114,6 +128,11 @@ export interface PluginHookInfo {
   command?: string;
 }
 
+export interface PluginModInfo {
+  module: string;
+  hooksFile: string;
+}
+
 export interface PluginMcpServerInfo {
   name: string;
   type: 'command' | 'http';
@@ -137,6 +156,7 @@ export interface PluginDetails {
   commands: PluginCommandInfo[];
   apps?: PluginAppInfo[];
   hooks: PluginHookInfo[];
+  mods?: PluginModInfo[];
   mcpServers: PluginMcpServerInfo[];
   lspServers: PluginLspServerInfo[];
   hasReadme: boolean;

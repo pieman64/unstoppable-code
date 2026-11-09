@@ -10,6 +10,7 @@ import {
   SettingsSelect,
   ToggleSwitch,
   type SettingsSelectOption,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import {
   getGlobalInheritedRows,
@@ -142,12 +143,12 @@ function NewRuleRow({ onAdd }: NewRuleRowProps): JSX.Element {
         </Button>
       </div>
       {error !== null && (
-        <p
-          className="text-xs fg-destructive"
+        <FieldError
+          id={`${TEST_ID_PREFIX}-error`}
           data-testid={`${TEST_ID_PREFIX}-error`}
         >
           {error}
-        </p>
+        </FieldError>
       )}
     </div>
   );

@@ -32,8 +32,8 @@ import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
+import { WORKER_TERMINAL_LOST_SIGNAL } from '@canopy/protocol/canopy-core';
 import {
-  SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
   APP_ADVISOR_PROJECT_ID,
   IPC_CHANNELS,
   ClaudeTerminalLaunchError,
@@ -70,6 +70,12 @@ import {
   captureSessionWorkOwner,
   resolveSessionWorkOwner,
 } from '../agents/work-owner';
+import {
+  clearClaudeModAdmissionSessionRecords,
+  replaceClaudeModAdmissionSessionRecords,
+  shouldReloadForClaudeModChange,
+  spawnWithClaudeModsSkippedEvent,
+} from '../agents/claude-mod-admission-session';
 import type {
   ClaudeTerminalHookCallbackBody,
   ClaudeTerminalHookEventName,
@@ -114,7 +120,7 @@ import {
   readClaudeCodeGraphToolAnswer,
   recordClaudeCodeGraphOrientation,
 } from '../lib/claude-code-graph-orientation';
-import { spawnManagedTerminal } from '../services/terminal-service';
+import { spawnPlacedManagedTerminal } from '../services/terminal-service';
 import type { WorkerTerminalEvent } from '@canopy/core-runtime/node/terminal';
 import { workerTerminal } from '../terminal/worker-terminal';
 import type {
@@ -291,6 +297,8 @@ interface RuntimeRecord {
    * the relaunched terminal exits or is cleaned up first.
    */
   inheritedPlanTurnLease?: PlanTurnLease;
+  /** A Mod admission change waits for the turn to end, then relaunches. */
+  relaunchWhenIdle?: boolean;
 }
 
 type InterruptSource =
@@ -304,6 +312,8 @@ export interface ClaudeTerminalLaunchRuntimeOptions {
   pluginSelections?: ChatTabPluginSelections;
   /** Trusted persisted context for an automation or hook-owned launch. */
   executionContext?: string;
+  /** The launch came from the Remote Control bridge; its terminal stays in process (CAN-5097). */
+  fromRemoteBridge?: boolean;
   /** Preserved only for an in-process deferred-reload continuation. */
   watcherRuntimeGeneration?: string;
   deferredToolsReloadContinuation?: {
@@ -392,6 +402,8 @@ export interface ClaudeTerminalSessionService {
     chatId: string,
     mode: ApprovalMode,
   ): Promise<void>;
+  /** Ends auto-mode terminals after a Mod admission change; see the class. */
+  relaunchForModAdmissionChange(scope: 'skipped' | 'all'): void;
   updateDeferredToolsContext(
     projectId: string,
     worktreeId: string,
@@ -1586,6 +1598,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
                   ? { appAdvisorRuntime: record.appAdvisorRuntime }
                   : {}),
                 ...(options.getWindow ? { getWindow: options.getWindow } : {}),
+                ...(options.fromRemoteBridge ? { fromRemoteBridge: true } : {}),
                 watcherRuntimeGeneration:
                   current?.watcherRuntimeGeneration ??
                   record.watcherRuntimeGeneration,
@@ -1833,6 +1846,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
         assistantMode: appAdvisorMode ? 'app-advisor' : 'default',
         interfaceTools: resolveSessionInterfaceTools({
           assistantMode: appAdvisorMode ? 'app-advisor' : 'default',
+          chatId: request.chatId,
         }),
         cwd,
         sdkSessionId,
@@ -1845,26 +1859,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
           this.handleHookCallback(sessionKey, body),
         codeGraphToolsAdvertised,
         ...(record.ledgerTools ? { ledgerTools: record.ledgerTools } : {}),
-        onSetAutoArchive: async (enabled) => {
-          const data = {
-            type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
-            enabled,
-          } as const;
-          await getChatStateService().ingestProviderEvent({
-            projectId: request.projectId,
-            worktreeId: request.worktreeId,
-            chatId: request.chatId,
-            data,
-            mutationId: `terminal:auto-archive:${randomUUID()}`,
-            source: 'terminal',
-          });
-          this.eventSender(IPC_CHANNELS.chatEvent, {
-            projectId: request.projectId,
-            worktreeId: request.worktreeId,
-            chatId: request.chatId,
-            data,
-          });
-        },
+        autoArchiveAvailable: true,
         ...(appAdvisorMode && options.appAdvisorRuntime
           ? { appAdvisorRuntime: options.appAdvisorRuntime }
           : {}),
@@ -1946,6 +1941,12 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
           preventClaudeNativeCaffeinate:
             preferences?.preventClaudeNativeCaffeinate !== false,
           canopyMcpServerName: appAdvisorMode ? 'canopy_app_advisor' : 'canopy',
+        }).then((config) => {
+          replaceClaudeModAdmissionSessionRecords(
+            sessionKey,
+            config.claudeModAdmission?.skippedMods ?? [],
+          );
+          return config;
         });
       let launchApprovalMode = effectiveApprovalMode;
       let config = await buildLaunchConfig(launchApprovalMode);
@@ -1979,30 +1980,84 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
           request.initialPromptIdempotencyKey,
         );
       }
-      const terminal = spawnManagedTerminal({
-        projectId: request.projectId,
-        worktreeId: request.worktreeId,
-        selectedRepoId: appAdvisorMode ? undefined : request.selectedRepoId,
-        cwd,
-        cols: request.cols,
-        rows: request.rows,
-        managedCommand: {
-          executable: config.executable,
-          args: config.args,
-          env: config.env,
-          pathPrepend: config.pathPrepend,
-          title: 'Claude Code',
-          kind: 'claude-code',
-          chatId: request.chatId,
-          sessionKey,
+      const placedTerminal = await spawnPlacedManagedTerminal(
+        {
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          selectedRepoId: appAdvisorMode ? undefined : request.selectedRepoId,
+          cwd,
+          cols: request.cols,
+          rows: request.rows,
+          managedCommand: {
+            executable: config.executable,
+            args: config.args,
+            env: config.env,
+            pathPrepend: config.pathPrepend,
+            title: 'Claude Code',
+            kind: 'claude-code',
+            chatId: request.chatId,
+            sessionKey,
+          },
         },
-      });
+        { fromRemoteBridge: options.fromRemoteBridge === true },
+      );
+      // The terminal starts asynchronously in the daemon; a cleanup or a
+      // newer launch in the meantime owns the chat now (CAN-5097).
+      if (
+        this.records.get(key) !== record ||
+        record.state.turnState === 'cleaning_up' ||
+        record.state.turnState === 'exited'
+      ) {
+        workerTerminal.kill(placedTerminal.id, {
+          signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+        });
+        throw new Error(
+          'Terminal launch was superseded while its terminal started.',
+        );
+      }
+      // Emit only once the terminal has started and still owns the chat.
+      const terminal = spawnWithClaudeModsSkippedEvent(
+        sessionKey,
+        () => placedTerminal,
+        (data): void => {
+          void getChatStateService()
+            .ingestProviderEvent({
+              projectId: request.projectId,
+              worktreeId: request.worktreeId,
+              chatId: request.chatId,
+              mutationId: data.sourceEventId,
+              data,
+              source: 'terminal',
+            })
+            .then((applied): void => {
+              if (!applied) return;
+              getExecutionObservabilityIngest().observeChatEvent(
+                request.projectId,
+                request.worktreeId,
+                request.chatId,
+                data,
+              );
+              this.eventSender(IPC_CHANNELS.chatEvent, {
+                projectId: request.projectId,
+                worktreeId: request.worktreeId,
+                chatId: request.chatId,
+                data,
+              });
+            })
+            .catch((): void => {
+              logMainProcessWarn(
+                '[claude-terminal] Failed to emit skipped Claude Mods notice',
+              );
+            });
+        },
+      );
       terminalId = terminal.id;
     } catch (error) {
       if (routeRegistered) {
         server.unregisterCanopyWorktreeSessionRoute(sessionKey);
         server.unregisterMcpProxyRoutesForSession(sessionKey);
       }
+      clearClaudeModAdmissionSessionRecords(sessionKey);
       record.ledgerTools?.dispose();
       record.ledgerTools = undefined;
       record.approvalSession?.dispose();
@@ -2035,9 +2090,12 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     record.state = {
       ...record.state,
       terminalId,
-      turnState: 'idle',
-      lastHookAt: Date.now(),
+      // A daemon-placed CLI can report hooks before its create resolves (CAN-5097).
+      ...(record.state.turnState === 'starting'
+        ? { turnState: 'idle' as const, lastHookAt: Date.now() }
+        : {}),
     };
+    this.reconcilePlacedTerminalEvents(record, terminalId);
     try {
       await this.persistTabState(
         request.projectId,
@@ -2239,6 +2297,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       const server = getDesktopIntegrationServer();
       server.unregisterCanopyWorktreeSessionRoute(record.state.sessionKey);
       server.unregisterMcpProxyRoutesForSession(record.state.sessionKey);
+      clearClaudeModAdmissionSessionRecords(record.state.sessionKey);
     }
     // The Ledger binding lives exactly as long as the route that carried it.
     record.ledgerTools?.dispose();
@@ -3210,14 +3269,22 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     }
     const key = runtimeKey(record.projectId, record.worktreeId, record.chatId);
     this.clearIdleTtl(key);
-    const timer = setTimeout(() => {
-      this.idleTtlTimers.delete(key);
-      const current = this.records.get(key);
-      if (!current || current.state.turnState !== 'idle') {
-        return;
-      }
-      void this.cleanupRecord(current, 'auto-idle-ttl').catch(() => undefined);
-    }, CLAUDE_TERMINAL_AUTO_IDLE_TTL_MS);
+    // A pending Mod admission relaunch reaps at once instead of after the TTL.
+    const relaunch = record.relaunchWhenIdle === true;
+    const timer = setTimeout(
+      () => {
+        this.idleTtlTimers.delete(key);
+        const current = this.records.get(key);
+        if (!current || current.state.turnState !== 'idle') {
+          return;
+        }
+        void this.cleanupRecord(
+          current,
+          relaunch ? 'settings-change' : 'auto-idle-ttl',
+        ).catch(() => undefined);
+      },
+      relaunch ? 0 : CLAUDE_TERMINAL_AUTO_IDLE_TTL_MS,
+    );
     if (process.env.NODE_ENV !== 'test') {
       timer.unref?.();
     }
@@ -3229,6 +3296,30 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     if (timer) {
       clearTimeout(timer);
       this.idleTtlTimers.delete(key);
+    }
+  }
+
+  /**
+   * After a Mod admission change, end auto-mode terminals so the next send
+   * relaunches and decides admission again. A busy one ends when its turn
+   * does. A terminal the person types into keeps running until it next
+   * launches. `skipped` reaches only launches that skipped a Mod.
+   */
+  public relaunchForModAdmissionChange(scope: 'skipped' | 'all'): void {
+    for (const record of Array.from(this.records.values())) {
+      if (record.interfaceMode !== 'auto') continue;
+      // A record that never launched has no skipped Mods. One still deciding
+      // admission is flagged too: the reap waits until it is idle.
+      const { sessionKey } = record.state;
+      if (
+        scope === 'skipped' &&
+        (sessionKey === undefined ||
+          !shouldReloadForClaudeModChange(sessionKey, 'skipped'))
+      ) {
+        continue;
+      }
+      record.relaunchWhenIdle = true;
+      this.syncIdleTtl(record);
     }
   }
 
@@ -4061,12 +4152,39 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
    * until this lands, and the recorded spawn→output latency makes slow cold
    * starts attributable from session diagnostics.
    */
-  private handleFirstTerminalOutput(payload: TerminalOutputEvent): void {
-    if (!this.pendingFirstOutputTerminalIds.has(payload.terminalId)) {
+  /** A daemon terminal can report output or its exit before its launch resumes (CAN-5097 D16). */
+  private reconcilePlacedTerminalEvents(
+    record: RuntimeRecord,
+    terminalId: string,
+  ): void {
+    if (!workerTerminal.get(terminalId)) {
+      this.handleTerminalEvent({
+        type: 'exit',
+        payload: {
+          projectId: record.projectId,
+          worktreeId: record.worktreeId,
+          terminalId,
+          kind: 'claude-code',
+          exitCode: null,
+          signal: WORKER_TERMINAL_LOST_SIGNAL,
+        },
+      });
       return;
     }
-    this.pendingFirstOutputTerminalIds.delete(payload.terminalId);
-    const record = this.recordsByTerminalId.get(payload.terminalId);
+    if (workerTerminal.replayText(terminalId))
+      this.noteFirstTerminalOutput(terminalId);
+  }
+
+  private handleFirstTerminalOutput(payload: TerminalOutputEvent): void {
+    this.noteFirstTerminalOutput(payload.terminalId);
+  }
+
+  private noteFirstTerminalOutput(terminalId: string): void {
+    if (!this.pendingFirstOutputTerminalIds.has(terminalId)) {
+      return;
+    }
+    this.pendingFirstOutputTerminalIds.delete(terminalId);
+    const record = this.recordsByTerminalId.get(terminalId);
     if (!record || record.state.firstOutputAt !== undefined) {
       return;
     }

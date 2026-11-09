@@ -225,7 +225,7 @@ import {
   resolveRuntimeModel,
 } from '@canopy/desktop-shared/types';
 import { DEFAULT_VOICE_DICTATION_ENABLED } from '@canopy/desktop-shared/constants/preferences';
-import { computeUsageLimitResumePrompt } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { computeUsageLimitResumePrompt } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import { normalizeEpochMs } from '@canopy/desktop-shared/ai-credits-routing-state';
 import {
   EMPTY_COMPLETION_RESUME_PROMPT,
@@ -248,7 +248,7 @@ import type {
   PipelineModelAliasPreference,
   PipelinePluginCollectionPreference,
   PipelinePreferenceLocator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   resolveEffectiveProviderType,
   selectDiscoverySlashCommands,
@@ -265,7 +265,6 @@ import {
 import { useSubscriptionSwitch } from './useSubscriptionSwitch';
 import { useEffectiveAiCreditsRouting } from '@/hooks/useEffectiveAiCreditsRouting';
 import { useResumeInterruptedTurnOnAiCredits } from '@/hooks/useResumeInterruptedTurnOnAiCredits';
-import { OllamaConnectionBanner } from './OllamaConnectionBanner';
 import { ModelUnlockConfirmedBanner } from './ModelUnlockConfirmedBanner';
 import { ModelUnlockPendingBanner } from './ModelUnlockPendingBanner';
 import { ModelGatewayKeyBanner } from './ModelGatewayKeyBanner';
@@ -283,6 +282,7 @@ import { FirstSendFailedSlot } from './FirstSendFailedSlot';
 import { usePanelHostState } from '@/lib/panels/panel-host-context';
 import { TransientRetryBanner } from './TransientRetryBanner';
 import { ScheduledAutomationsNotice } from './ScheduledAutomationsNotice';
+import { ClaudeModsComposerNotice } from './ClaudeModsComposerNotice';
 import { TryItSignInBanner } from './TryItSignInBanner';
 import {
   useAiCreditsBannerStore,
@@ -310,7 +310,7 @@ import { useCatchingUpLag } from '@/stores/ingestionLagStore';
 import {
   isGatewayOnlyModel,
   resolveOrgGatewayOrganizationId,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { openPendingPlanExit } from '@/lib/plans/open-tracked-plan';
 import { PlanReadyPipelineModal } from './PlanReadyPipelineModal';
 import { usePipelineRunWatcher } from '@/components/activity/usePipelineRunWatcher';
@@ -2840,6 +2840,18 @@ function ChatInputContent({
     selectedWorktree,
     useChatStore,
   ]);
+
+  // The chat a Mod allow applies to: its repository finds a skills folder.
+  const claudeModsComposerContext = useMemo(
+    () =>
+      sessionChatTarget
+        ? {
+            ...sessionChatTarget,
+            ...(selectedRepoId !== undefined ? { repoId: selectedRepoId } : {}),
+          }
+        : null,
+    [sessionChatTarget, selectedRepoId],
+  );
 
   // Code-worktree-only actions remain scoped to real worktrees. Cowork and App
   // Advisor share scheduling, but do not gain worktree-specific plan detection
@@ -5702,6 +5714,15 @@ function ChatInputContent({
     if (activeQuestion)
       setQuestionPromptClosed(activeQuestion.requestId, false);
   }, [activeQuestion]);
+  // A picked answer takes the typed text with it, as a send would.
+  const takeQuestionText = useCallback((): string => {
+    const { text } = serializeEditorValue(editor.children);
+    if (!text.trim()) return '';
+    resetEditor(editor);
+    setValue(createEmptyValue());
+    if (tabId) useChatStore.getState().clearTabDraft(tabId);
+    return text;
+  }, [editor, tabId]);
   useEffect(() => {
     const chatId = tab?.id;
     if (!composerProjectId || !composerWorktreeId || !chatId) return undefined;
@@ -6924,7 +6945,6 @@ function ChatInputContent({
               target={tab ? bannerTarget : null}
               model={model}
             />
-            <OllamaConnectionBanner target={bannerTarget} />
             {/* An org gateway the member has no working key for. Reads its own
                 state rather than the target-keyed store: nothing has failed at
                 runtime yet — the point is to catch it BEFORE the first turn. */}
@@ -7029,6 +7049,19 @@ function ChatInputContent({
         {!isEditingQueued && (
           <ScheduledAutomationsNotice target={sessionChatTarget} />
         )}
+
+        {/* Mods of plugins this chat turned on that its next message won't
+            load, from discovery for the provider the chat uses now. */}
+        {!isEditingQueued &&
+        claudeModsComposerContext &&
+        tabDiscovery?.skippedMods &&
+        tabDiscovery.providerType === discoveryProviderType ? (
+          <ClaudeModsComposerNotice
+            key={claudeModsComposerContext.chatId}
+            context={claudeModsComposerContext}
+            mods={tabDiscovery.skippedMods}
+          />
+        ) : null}
       </ComposerNoticeStack>
 
       {/* Docked tool-approval prompt(s) — replaces the previous in-transcript
@@ -7221,6 +7254,7 @@ function ChatInputContent({
             disconnected={questionPrompt.disconnected}
             onRetry={questionPrompt.retry}
             onClose={closeQuestionPrompt}
+            takeText={takeQuestionText}
           >
             {promptTextRow}
           </QuestionPrompt>

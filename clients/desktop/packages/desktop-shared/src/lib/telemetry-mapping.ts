@@ -54,8 +54,8 @@ import type {
   AgentAuditEntry,
   AgentAuditEventType,
   PipelineRunUsageEvent,
-} from '../types/observability';
-import { redactSecrets } from './redaction';
+} from '@canopy/execution-engine/types/observability';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 
 /**
  * Exhaustive value-level mapping from every desktop `AgentAuditEventType` to

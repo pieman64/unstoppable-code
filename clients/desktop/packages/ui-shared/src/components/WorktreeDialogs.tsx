@@ -1,5 +1,6 @@
 'use client';
 
+import { Stack } from './Stack';
 import {
   useId,
   useRef,
@@ -16,6 +17,7 @@ import { DialogModal } from './DialogModal';
 import { DialogFormField } from './DialogFormField';
 import { ListRow } from './ListRow';
 import { TextInput } from './Field';
+import { ErrorBanner } from './StatusBlocks';
 
 function stopPropagation(event: SyntheticEvent): void {
   event.stopPropagation();
@@ -109,15 +111,13 @@ export function WorktreeInfoDialog({
         {...(mode === 'label' ? { initialFocusRef: labelInputRef } : {})}
         {...(returnFocusRef ? { restoreFocusRef: returnFocusRef } : {})}
       >
-        <form id={formId} className="flex flex-col" onSubmit={submit}>
+        <form
+          id={formId}
+          className="flex flex-col gap-5 pt-4"
+          onSubmit={submit}
+        >
           {mode === 'info' ? (
-            <FactList
-              size="s"
-              columnGap="3"
-              rowGap="2"
-              labelTone="secondary"
-              placement="mt-4"
-            >
+            <FactList size="s" columnGap="3" rowGap="2" labelTone="secondary">
               <Fact label="Branch" fit="break-all">
                 {branch}
               </Fact>
@@ -126,7 +126,7 @@ export function WorktreeInfoDialog({
               </Fact>
             </FactList>
           ) : (
-            <div className="mt-4">
+            <Stack gap="inline">
               <DialogFormField label="Display label" htmlFor={labelInputId}>
                 <TextInput
                   ref={labelInputRef}
@@ -138,13 +138,16 @@ export function WorktreeInfoDialog({
                 />
               </DialogFormField>
               {saveError && (
-                <p role="alert" className="mt-2 text-s fg-destructive">
-                  Failed to save the label. Try again.
-                </p>
+                <div>
+                  <ErrorBanner
+                    className=""
+                    error="Failed to save the label. Try again."
+                  />
+                </div>
               )}
-            </div>
+            </Stack>
           )}
-          <div className="mt-5 flex justify-end gap-2">
+          <div className="flex justify-end gap-2">
             <Button size="compact" onClick={close} disabled={saving}>
               Close
             </Button>
@@ -209,31 +212,33 @@ export function PipelinePickerDialog({
         trapFocus
         {...(returnFocusRef ? { restoreFocusRef: returnFocusRef } : {})}
       >
-        <div className="mt-3 space-y-1">
-          {entries.map((entry) => (
-            <ListRow
-              key={entry.id}
-              disabled={entry.disabled === true || running}
-              onClick={() => {
-                const result = onRun(entry.id);
-                if (result instanceof Promise) {
-                  setRunning(true);
-                  void result.then(onClose, () => setRunning(false));
-                } else {
-                  onClose();
-                }
-              }}
-              data-testid={testIds?.entry?.(entry.id)}
-              trailing={entry.statusLabel || undefined}
-            >
-              {entry.name}
-            </ListRow>
-          ))}
-        </div>
-        <div className="mt-4 flex justify-end">
-          <Button size="compact" onClick={close} disabled={running}>
-            Cancel
-          </Button>
+        <div className="flex flex-col gap-4 pt-3">
+          <Stack gap="tight">
+            {entries.map((entry) => (
+              <ListRow
+                key={entry.id}
+                disabled={entry.disabled === true || running}
+                onClick={() => {
+                  const result = onRun(entry.id);
+                  if (result instanceof Promise) {
+                    setRunning(true);
+                    void result.then(onClose, () => setRunning(false));
+                  } else {
+                    onClose();
+                  }
+                }}
+                data-testid={testIds?.entry?.(entry.id)}
+                trailing={entry.statusLabel || undefined}
+              >
+                {entry.name}
+              </ListRow>
+            ))}
+          </Stack>
+          <div className="flex justify-end">
+            <Button size="compact" onClick={close} disabled={running}>
+              Cancel
+            </Button>
+          </div>
         </div>
       </DialogModal>
     </RowEventBoundary>

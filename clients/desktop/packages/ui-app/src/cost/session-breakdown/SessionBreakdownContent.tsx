@@ -16,6 +16,7 @@ import {
   ArchivedStateIcon,
   HeaderActionButton,
   SegmentedControl,
+  SegmentsBar,
   ThinkingSpinner,
   Heading,
 } from '@canopy/ui-shared/components';
@@ -463,31 +464,11 @@ function ContextMeter({
     .join(', ');
 
   return (
-    <div
-      role="img"
-      aria-label={`Context window by category: ${description}`}
-      className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted"
-    >
-      {categorizedTokens > 0 ? (
-        <div
-          className="flex h-full gap-px"
-          style={{ width: `${scale * 100}%` }}
-        >
-          {contextBarSegments.map((segment) => (
-            <span
-              key={segment.key}
-              aria-hidden="true"
-              className="h-full"
-              style={{
-                flexGrow: segment.value / categorizedTokens,
-                flexBasis: 0,
-                backgroundColor: segment.color,
-              }}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
+    <SegmentsBar
+      segments={contextBarSegments}
+      scale={scale}
+      label={`Context window by category: ${description}`}
+    />
   );
 }
 

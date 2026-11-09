@@ -65,3 +65,5 @@ export * from './CustomizeSearchRow';
 
 export * from './MarketplaceOwnerRow';
 export * from './marketplaceCopyLinkMenuItem';
+export * from './claude-mods';
+export { githubRepoRef } from './pluginProvenance';

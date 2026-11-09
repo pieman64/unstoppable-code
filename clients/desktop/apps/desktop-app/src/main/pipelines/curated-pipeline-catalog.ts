@@ -13,8 +13,9 @@ import {
 import { dirname, join } from 'node:path';
 import { BRAND } from '@canopy/brand/current';
 import {
-  isCuratedPipelineDetail,
   isCuratedPipelineListResponse,
+  readCuratedPipelineDetail,
+  readCuratedPipelineListResponse,
   type CuratedPipelineDetail,
   type CuratedPipelineListResponse,
   type CuratedPipelineSummary,
@@ -36,7 +37,7 @@ import {
 import type {
   PipelineData,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/executor';
 import type {
   ImportCuratedPipelineRequest,
@@ -192,14 +193,15 @@ export async function listCuratedPipelines(
     const raw: unknown = await requestCanopyCloudJson(`${PREFIX}?${query}`, {
       credentialContext: context,
     });
-    if (!isCuratedPipelineListResponse(raw))
+    const list = readCuratedPipelineListResponse(raw);
+    if (!list)
       throw new InvalidCatalogResponseError(
         'Invalid curated workflow catalog response.',
       );
     const response: CuratedPipelineListResponse = {
       version: 1,
-      data: raw.data.map(summary),
-      nextCursor: raw.nextCursor,
+      data: list.data.map(summary),
+      nextCursor: list.nextCursor,
     };
     await assertCurrentCredentials(context);
     await catalogCache
@@ -232,12 +234,13 @@ async function fetchDetailUncached(
   context: CanopyCloudCredentialContext,
 ): Promise<CuratedPipelineDetail> {
   validateKey(key);
-  const raw: unknown = await requestCanopyCloudJson(
+  const response: unknown = await requestCanopyCloudJson(
     `${PREFIX}/${encodeURIComponent(key)}/content`,
     { credentialContext: context },
   );
   await assertCurrentCredentials(context);
-  if (!isCuratedPipelineDetail(raw) || raw.key !== key)
+  const raw = readCuratedPipelineDetail(response);
+  if (!raw || raw.key !== key)
     throw new Error('Invalid curated workflow content.');
   const bytes = Buffer.from(raw.rawPipeline, 'utf8');
   if (

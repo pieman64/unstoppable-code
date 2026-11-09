@@ -114,7 +114,12 @@ export function SourceTranscriptView({
             The transcript could not be decrypted or parsed.
           </p>
         ) : (
-          <div className={withPrivacyClass('mt-5 space-y-3', blockClassName)}>
+          <div
+            className={withPrivacyClass(
+              'mt-5 flex flex-col gap-3',
+              blockClassName,
+            )}
+          >
             {transcript.messages.map((message) => {
               const highlighted = message.localMessageId === targetMessageId;
               return (

@@ -148,6 +148,7 @@ function fakes(): Fakes {
       Promise.resolve(resolveSelectedSkillDirectory(ref, warnings)),
     canonicalSkillDirectory: (ref) =>
       Promise.resolve(cursorSkillSourceDir(ref)),
+    describeMcpServer: () => Promise.resolve(null),
   };
   return Object.assign(state, { deps });
 }

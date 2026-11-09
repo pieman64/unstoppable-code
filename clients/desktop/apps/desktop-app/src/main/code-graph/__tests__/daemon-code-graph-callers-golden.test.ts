@@ -348,7 +348,10 @@ describe('agent and scheduler builds on the daemon route (CAN-5625)', () => {
   });
 
   it.each([
-    ['on Windows', (): void => void mockPlatform.mockReturnValue('win32')],
+    [
+      'on an unsupported host',
+      (): void => void mockPlatform.mockReturnValue('freebsd'),
+    ],
     ['when latched', (): void => void mockLatched.mockReturnValue(true)],
     [
       'when Code Graph is unavailable',
@@ -441,7 +444,7 @@ describe('agent and scheduler builds on the daemon route (CAN-5625)', () => {
   it('remembers a daemon-routed scheduler build for cleanup', async () => {
     const calls = daemon();
     await startScheduledCodeGraphBuild(scheduled({ worktreeId: 'remembered' }));
-    mockPlatform.mockReturnValue('win32');
+    mockPlatform.mockReturnValue('freebsd');
     await drainDaemonCodeGraphWorktree('project', 'remembered');
     expect(calls.map((call) => call.name)).toEqual([
       'worker.codeGraph.build',

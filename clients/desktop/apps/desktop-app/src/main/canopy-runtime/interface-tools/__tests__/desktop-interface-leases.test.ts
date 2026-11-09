@@ -12,6 +12,7 @@ import {
 import type {
   AppAdvisorRendererToolCancellation,
   AppAdvisorRendererToolRequest,
+  PipelineEditorRendererToolRequest,
 } from '@canopy/desktop-shared/types';
 import {
   createDesktopInterfaceLeases,
@@ -119,6 +120,7 @@ interface Harness {
     target: number;
     cancellation: AppAdvisorRendererToolCancellation;
   }[];
+  editorSent: { target: number; request: PipelineEditorRendererToolRequest }[];
   desktop: DesktopInterfaceLeases;
 }
 
@@ -133,6 +135,10 @@ function harness(): Harness {
     target: number;
     cancellation: AppAdvisorRendererToolCancellation;
   }[] = [];
+  const editorSent: {
+    target: number;
+    request: PipelineEditorRendererToolRequest;
+  }[] = [];
   let leases = 0;
   const desktop = createDesktopInterfaceLeases({
     registry,
@@ -145,9 +151,13 @@ function harness(): Harness {
       cancellations.push({ target: target.id, cancellation });
       return true;
     },
+    sendPipelineEditor: (target, request) => {
+      editorSent.push({ target: target.id, request });
+      return true;
+    },
     newLeaseId: (surface, id) => `lease-${surface}-${id}-${++leases}`,
   });
-  return { registry, contents, sent, cancellations, desktop };
+  return { registry, contents, sent, cancellations, editorSent, desktop };
 }
 
 const showFiles = (
@@ -305,6 +315,65 @@ describe('desktop interface leases (CAN-4131)', () => {
     });
     desktop.reply(1, { requestId: sent[1]?.request.requestId, ok: true });
     expect((await second).ok).toBe(true);
+  });
+
+  it('a Pipeline Editor call reaches its lease as a pipeline editor request and only its reply settles it (CAN-5822)', async () => {
+    const { registry, sent, editorSent, cancellations, desktop } = harness();
+    expect(
+      permissionDenied(() =>
+        register(
+          desktop,
+          caller({}, 'app-advisor', 2),
+          params(['ui.pipeline_editor.get_current']),
+        ),
+      ),
+    ).toBe('invalid_argument');
+    register(
+      desktop,
+      caller({}, 'main', 1),
+      params(['ui.pipeline_editor.get_current', 'ui.pipeline_editor.open']),
+    );
+    const pending = registry.invoke({
+      toolName: 'ui.pipeline_editor.open',
+      input: { locator: { pipelineId: 'pipe-1' }, originChatId: 'editor' },
+      scope,
+    });
+    expect(sent).toEqual([]);
+    expect(editorSent).toEqual([
+      {
+        target: 1,
+        request: {
+          kind: 'open',
+          requestId: editorSent[0]?.request.requestId,
+          locator: { pipelineId: 'pipe-1' },
+          originChatId: 'editor',
+        },
+      },
+    ]);
+    const requestId = editorSent[0]?.request.requestId;
+    expect(desktop.reply(2, { requestId, ok: true })).toBe('wrong_lease');
+    expect(desktop.reply(1, { requestId, ok: true })).toBe('settled');
+    expect((await pending).ok).toBe(true);
+    // A malformed call is never delivered; a cancelled one sends no cancel.
+    expect(
+      errorOf(
+        await registry.invoke({
+          toolName: 'ui.pipeline_editor.open',
+          input: { locator: 'not a locator' },
+          scope,
+        }),
+      ),
+    ).toBe('capability_unavailable');
+    const controller = new AbortController();
+    const cancelled = registry.invoke({
+      toolName: 'ui.pipeline_editor.get_current',
+      input: {},
+      scope,
+      signal: controller.signal,
+    });
+    controller.abort();
+    expect(errorOf(await cancelled)).toBe('cancelled');
+    expect(cancellations).toEqual([]);
   });
 
   it('App Advisor presentation reaches the main lease as a flagged dispatch and a malformed action is not delivered (CAN-4133)', async () => {
@@ -484,6 +553,7 @@ describe('desktop interface leases (CAN-4131)', () => {
           return true;
         },
         sendCancellation: () => true,
+        sendPipelineEditor: () => true,
       });
       const relay = createRendererRelay({
         bindingProvider: createInterimInMemoryBindingProvider(runtime, {

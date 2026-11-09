@@ -20,11 +20,11 @@ import { isoDay, writeJson, writeJsonl } from './fsHelpers.mjs';
  * `eventType` + `startedAt` segments (mirrors the spec helper).
  *
  * `AgentAuditEntry` shape lives in
- * `packages/desktop-shared/src/types/observability.ts`.
+ * `packages/execution-engine/src/types/observability.ts`.
  *
  * @param {object} options
  * @param {string} options.userDataDir absolute CANOPY_DATA_DIR
- * @param {import('@canopy/desktop-shared/types/observability').AgentAuditEntry[]} options.entries
+ * @param {import('@canopy/execution-engine/types/observability').AgentAuditEntry[]} options.entries
  * @param {string} [options.day] override the `YYYY-MM-DD` bucket filename
  * @param {boolean | object} [options.snapshot] write `snapshot.json`. `true`
  *   (the default) writes a minimal snapshot embedding `entries` as

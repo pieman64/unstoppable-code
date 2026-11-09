@@ -1,4 +1,4 @@
-import type { AgentAuditEntry } from '@canopy/desktop-shared/types/observability';
+import type { AgentAuditEntry } from '@canopy/execution-engine/types/observability';
 import { getObservabilityService } from '../observability';
 import { readSharedRunMetadata } from '../lib/chat-tabs-reader';
 import { shareRun } from '../lib/shared-run-sync';

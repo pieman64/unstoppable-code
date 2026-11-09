@@ -700,6 +700,33 @@ describe('worktree:list-branches', () => {
 });
 
 describe('home:list-branch-targets', () => {
+  it('reports the source branch state and clears it after an external first commit', async () => {
+    const repo = repos[NO_ORIGIN_WS];
+    const branch = 'unborn-home';
+    git(repo, ['symbolic-ref', 'HEAD', `refs/heads/${branch}`]);
+    try {
+      expect(
+        await ipc(IPC_CHANNELS.homeListBranchTargets, {
+          workspaceId: NO_ORIGIN_WS,
+        }),
+      ).toMatchObject({ result: { supported: true, headUnborn: true } });
+      git(repo, [
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'first commit on source branch',
+      ]);
+      expect(
+        await ipc(IPC_CHANNELS.homeListBranchTargets, {
+          workspaceId: NO_ORIGIN_WS,
+        }),
+      ).toMatchObject({ result: { supported: true, headUnborn: false } });
+    } finally {
+      git(repo, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+      git(repo, ['branch', '-D', branch]);
+    }
+  });
+
   it('lists the reference repository of a single-repo workspace', async () => {
     expect(
       await branchTargets({ workspaceId: FRESH_WS }, repos[FRESH_WS]),
@@ -868,6 +895,27 @@ describe('daemon branch-list route equivalence', () => {
     neverDirect.mockClear();
     reads.length = 0;
     queryOptions.length = 0;
+  });
+
+  it('keeps the legacy closed result and opts into verified source HEAD state', async () => {
+    const route = routeFor();
+    const params: WorkerGitBranchListParams = {
+      scope: { workspaceId: NO_ORIGIN_WS },
+      repository: { kind: 'reference' },
+    };
+    expect(await list(route, params)).not.toHaveProperty('headUnborn');
+    expect(
+      await list(route, { ...params, includeHeadState: true }),
+    ).toHaveProperty('headUnborn', false);
+    const repo = repos[NO_ORIGIN_WS];
+    git(repo, ['symbolic-ref', 'HEAD', 'refs/heads/unborn-daemon']);
+    try {
+      expect(
+        await list(route, { ...params, includeHeadState: true }),
+      ).toHaveProperty('headUnborn', true);
+    } finally {
+      git(repo, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+    }
   });
 
   it('preserves the repositoryUnavailable code through the L0 error codec', () => {

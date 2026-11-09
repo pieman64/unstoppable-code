@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ApprovalRequestEvent } from '@canopy/desktop-shared/types';
 import type { SendableBrowserWindow } from '../lib/window-send';
-import { requestApprovalFromRenderer } from './prompt-bridge';
+import { requestApprovalDecision } from './prompt-bridge';
 import {
   registerApprovalSecretConsumer,
   cancelApproval,
@@ -23,7 +23,7 @@ export async function requestSecretInputApproval<T>(options: {
   if (options.signal.aborted) return null;
   options.signal.addEventListener('abort', cancel, { once: true });
   try {
-    const decision = await requestApprovalFromRenderer({
+    const result = await requestApprovalDecision({
       sessionKey: options.sessionKey,
       getWindow: options.getWindow,
       timeoutMs: 120_000,
@@ -35,6 +35,9 @@ export async function requestSecretInputApproval<T>(options: {
           label: 'API key',
         },
       },
+      // No tool policy applies to a secret prompt: a policy change shows it
+      // again at the new revision and never decides it (CAN-4129).
+      revalidate: () => Promise.resolve('prompt'),
       onRegistered: (id) => {
         requestId = id;
         registerApprovalSecretConsumer(id, (secret) => {
@@ -46,7 +49,12 @@ export async function requestSecretInputApproval<T>(options: {
         if (options.signal.aborted) cancel();
       },
     });
-    if (decision.behavior !== 'allow' || options.signal.aborted || !operation)
+    if (
+      result.kind !== 'decision' ||
+      result.decision.behavior !== 'allow' ||
+      options.signal.aborted ||
+      !operation
+    )
       return null;
     return await operation;
   } catch (error) {

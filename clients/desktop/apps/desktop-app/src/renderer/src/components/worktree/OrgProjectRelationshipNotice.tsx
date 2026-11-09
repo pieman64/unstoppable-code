@@ -33,7 +33,8 @@ export function OrgProjectRelationshipNotice({
       // carries its own live region rather than making the whole notice live.
       role="none"
       actionsPlacement="below"
-      detail={error === null ? undefined : <span role="alert">{error}</span>}
+      detail={error ?? undefined}
+      announceDetail
       actions={
         <>
           <NoticeButton

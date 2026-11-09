@@ -6,12 +6,12 @@ import {
   type CodexSpeedSetActiveRequest,
   type ReadCodexSpeedRouteRequest,
 } from '@canopy/desktop-shared/types';
-import type { CodexSpeedRouteFacts } from '@canopy/desktop-shared/lib/codex-speed-availability';
+import type { CodexSpeedRouteFacts } from '@canopy/execution-engine/lib/codex-speed-availability';
 import {
   isCodexSpeedReadRouteRequest,
   isCodexSpeedRouteFacts,
 } from '@canopy/desktop-shared/lib/codex-speed-route';
-import { isCodexSpeedCatalog } from '@canopy/desktop-shared/lib/codex-speed-availability';
+import { isCodexSpeedCatalog } from '@canopy/execution-engine/lib/codex-speed-availability';
 
 const INVALID_REQUEST = 'Invalid Codex speed capability request.';
 const UNAVAILABLE = 'Codex speed capabilities were unavailable.';

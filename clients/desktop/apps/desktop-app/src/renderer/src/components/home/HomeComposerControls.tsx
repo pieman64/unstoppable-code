@@ -18,7 +18,7 @@ import type { ComposerPlusMenuProps } from '../shared/ComposerPlusMenu';
 import type { ComposerMenuController } from '@/hooks/useComposerMenu';
 import type { FileMentionOption } from '@canopy/ui-rich/types';
 import { useComposerActions } from '@/hooks/useComposerActions';
-import { isCursorModel } from '@canopy/desktop-shared/lib/cursor-models';
+import { isCursorModel } from '@canopy/execution-engine/lib/cursor-models';
 import {
   useCallback,
   useEffect,

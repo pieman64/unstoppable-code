@@ -1,4 +1,4 @@
-import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
 import type { JSX } from 'react';
 import { Tooltip } from '@canopy/ui-shared';
 import { MaximizeIcon as AppCatalogMaximizeIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -28,7 +28,7 @@ export function PipelineChildExecution({
   // The drill-in action sits at the end of the toggle's row, centred on it,
   // while the child run opens full width under both.
   return (
-    <div className="relative mt-1">
+    <div className="relative">
       <Disclosure
         open={expanded}
         onOpenChange={onToggle}

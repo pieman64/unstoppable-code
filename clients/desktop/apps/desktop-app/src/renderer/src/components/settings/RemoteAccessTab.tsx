@@ -1,27 +1,28 @@
-import { useState, type JSX, type ReactNode } from 'react';
+import { useMemo, useState, type JSX, type ReactNode } from 'react';
 import { useShallow } from 'zustand/shallow';
+import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
-  Button,
   ConfirmDialog,
-  Dot,
   Notice,
   NoticeButton,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
-import type {
-  RemoteControlController,
-  RemoteControlHost,
-} from '@canopy/desktop-shared/types';
-import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import {
-  ADD_COMPUTER_LABEL,
-  CONTROL_RISK_SENTENCE,
-  REMOTE_ACCESS_LABEL,
-  describeError,
-  platformLabel,
-  remoteHostDotTone,
-  remoteHostStatus,
-} from '@/components/remote-access/remote-access-copy';
+  RemoteControlDevices,
+  type RemoteControlDevicesPorts,
+  type RemoteControlFailureText,
+  type RemoteControlIncomingDevices,
+} from '@canopy/ui-app/remote-control';
+import { useRemoteControlStore } from '@/stores/remoteControlStore';
+import { useNavigationStore } from '@/stores/navigationStore';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import {
+  inlineFailure,
+  inlineFailureText,
+  type InlineFailure,
+} from '@/lib/inline-app-error';
 import {
   SettingsGroup,
   SettingsPage,
@@ -31,15 +32,25 @@ import {
 } from './SettingsLayout';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
 
-type PendingRemoval =
-  | { readonly role: 'host'; readonly device: RemoteControlHost }
-  | { readonly role: 'controller'; readonly device: RemoteControlController };
+/**
+ * B1 copy (CAN-5985). The helper names both ways to pair: holding the link
+ * pairs without a second prompt, a code needs approval here.
+ */
+const PAGE_DESCRIPTION =
+  'Control this computer from your other devices, or control your other computers from here.';
+const ALLOW_INCOMING_LABEL =
+  'Allow your other devices to control this computer';
+const ALLOW_INCOMING_HELPER =
+  'A paired device can see and change everything on this computer, including running commands. Pair using the QR code or link, or approve a matching code on this computer.';
+/** B3: turning Remote Control off keeps every pairing. */
+const TURN_OFF_MESSAGE =
+  "Paired devices disconnect now and can't reconnect until you turn it back on. Their pairings are kept.";
 
 /**
- * Settings → Remote access: whether other computers on the account may
- * control this one, the computers this one can control, and the computers
- * that can control it. Main owns every value; each action returns the new
- * state, which the store applies.
+ * Settings → Remote Control: the single opt-in that lets this account's
+ * other devices control this computer, the devices that can, and the
+ * computers this one can control. Main owns every value; each action
+ * returns the new state, which the store applies.
  */
 export function RemoteAccessTab(): JSX.Element {
   const {
@@ -48,7 +59,6 @@ export function RemoteAccessTab(): JSX.Element {
     setAllowIncoming,
     openMachine,
     forgetDevice,
-    disconnectController,
     openPairDialog,
   } = useRemoteControlStore(
     useShallow((store) => ({
@@ -57,23 +67,58 @@ export function RemoteAccessTab(): JSX.Element {
       setAllowIncoming: store.setAllowIncoming,
       openMachine: store.openMachine,
       forgetDevice: store.forgetDevice,
-      disconnectController: store.disconnectController,
       openPairDialog: store.openPairDialog,
     })),
   );
-  const [savingAllow, setSavingAllow] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busyDevice, setBusyDevice] = useState<string | null>(null);
-  const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(
-    null,
+  const openRemoteControl = useNavigationStore(
+    (store) => store.openCanopyPortal,
   );
-  const [removing, setRemoving] = useState(false);
-  const [removeError, setRemoveError] = useState<string | null>(null);
+  const [savingAllow, setSavingAllow] = useState(false);
+  const [confirmingTurnOff, setConfirmingTurnOff] = useState(false);
+  const [error, setError] = useState<InlineFailure | null>(null);
+  const devicePorts = useMemo<RemoteControlDevicesPorts>(
+    () => ({
+      openHost: openMachine,
+      removeDevice: forgetDevice,
+      connectComputer: openPairDialog,
+      reportActionFailure: (failure): void => {
+        if (failure === null) {
+          setError(null);
+          return;
+        }
+        const appError = toAppError(resolveClientAppError(failure.cause));
+        if (appError) setError(inlineFailure(appError, failure.fallback));
+      },
+      describeRemovalFailure: (
+        cause,
+        fallback,
+      ): RemoteControlFailureText | null => {
+        const appError = toAppError(resolveClientAppError(cause));
+        if (!appError) return null;
+        const failure = inlineFailure(appError, fallback);
+        const message = inlineFailureText(failure);
+        if (message === null) return null;
+        return failure.details === undefined
+          ? { message }
+          : { message, details: failure.details };
+      },
+    }),
+    [openMachine, forgetDevice, openPairDialog],
+  );
+  const incoming = useMemo<RemoteControlIncomingDevices>(
+    () => ({
+      controllers: state.controllers,
+      // The Remote Control dialog opens the pairing window, or offers to
+      // turn Remote Control on first.
+      pairDevice: openRemoteControl,
+    }),
+    [state.controllers, openRemoteControl],
+  );
 
   const page = (children: ReactNode): JSX.Element => (
     <SettingsPage
-      title={REMOTE_ACCESS_LABEL}
-      description="Control your other computers from this one, or let them control it."
+      title={REMOTE_CONTROL_LABEL}
+      description={PAGE_DESCRIPTION}
       dataTestId="settings-tab-remote-access"
     >
       {children}
@@ -88,7 +133,7 @@ export function RemoteAccessTab(): JSX.Element {
     return page(
       <Notice
         intent="attention"
-        title="Sign in to pair computers"
+        title="Sign in to pair devices"
         data-testid="settings-remote-access-signed-out"
         actions={
           <NoticeButton
@@ -99,44 +144,31 @@ export function RemoteAccessTab(): JSX.Element {
           </NoticeButton>
         }
       >
-        Every computer you pair must be signed in to the same account.
+        Every device you pair must be signed in to the same account.
       </Notice>,
     );
   }
 
-  const run = (deviceId: string, action: () => Promise<void>): void => {
-    setBusyDevice(deviceId);
-    setError(null);
-    void action()
-      .catch((cause: unknown) => {
-        setError(describeError(cause, 'Something went wrong. Try again.'));
-      })
-      .finally(() => setBusyDevice(null));
-  };
-
-  const toggleAllow = (next: boolean): void => {
+  const saveAllow = (next: boolean): Promise<void> => {
     setSavingAllow(true);
     setError(null);
-    void setAllowIncoming(next)
+    return setAllowIncoming(next)
       .catch((cause: unknown) => {
-        setError(describeError(cause, "Couldn't save the setting. Try again."));
+        const appError = toAppError(resolveClientAppError(cause));
+        if (appError)
+          setError(inlineFailure(appError, "Couldn't save the setting."));
       })
       .finally(() => setSavingAllow(false));
   };
 
-  const confirmRemoval = (): void => {
-    if (!pendingRemoval) return;
-    setRemoving(true);
-    setRemoveError(null);
-    void forgetDevice({
-      deviceId: pendingRemoval.device.deviceId,
-      role: pendingRemoval.role,
-    })
-      .then(() => setPendingRemoval(null))
-      .catch((cause: unknown) => {
-        setRemoveError(describeError(cause, "Couldn't remove the computer."));
-      })
-      .finally(() => setRemoving(false));
+  // Turning on takes effect at once; turning off disconnects paired devices,
+  // so it asks first (B3).
+  const toggleAllow = (next: boolean): void => {
+    if (next) {
+      void saveAllow(true);
+      return;
+    }
+    setConfirmingTurnOff(true);
   };
 
   return page(
@@ -147,28 +179,28 @@ export function RemoteAccessTab(): JSX.Element {
           title="Can't reach the connection service"
           data-testid="settings-remote-access-unavailable"
         >
-          Paired computers can't connect until it's back. Retrying
-          automatically.
+          Paired devices can't connect until it's back. Retrying automatically.
         </Notice>
       ) : null}
-      {error ? (
-        <Notice intent="destructive" data-testid="settings-remote-access-error">
-          {error}
-        </Notice>
-      ) : null}
+      <DesktopErrorBanner
+        className=""
+        error={error?.error}
+        {...(error?.details === undefined ? {} : { details: error.details })}
+        testId="settings-remote-access-error"
+      />
 
-      <SettingsSection title="This computer">
+      <SettingsSection>
         <SettingsGroup>
           <SettingsRow
-            label="Allow other computers to control this one"
-            description={`A paired computer ${CONTROL_RISK_SENTENCE}. Each new pairing needs your approval on this computer.`}
+            label={ALLOW_INCOMING_LABEL}
+            description={ALLOW_INCOMING_HELPER}
             htmlFor="settings-remote-access-allow-incoming"
             dataTestId="settings-remote-access-allow-row"
             control={
               <ToggleSwitch
                 id="settings-remote-access-allow-incoming"
                 checked={state.allowIncoming}
-                label="Allow other computers to control this one"
+                label={ALLOW_INCOMING_LABEL}
                 dataTestId="settings-remote-access-allow-incoming"
                 disabled={savingAllow}
                 onChange={toggleAllow}
@@ -178,156 +210,27 @@ export function RemoteAccessTab(): JSX.Element {
         </SettingsGroup>
       </SettingsSection>
 
-      <SettingsSection
-        title="Computers you can control"
-        dataTestId="settings-remote-access-hosts"
-      >
-        <SettingsGroup>
-          {state.hosts.map((host) => {
-            const status = remoteHostStatus(host);
-            const dot = remoteHostDotTone(status.tone);
-            return (
-              <SettingsRow
-                key={host.deviceId}
-                dataTestId={`settings-remote-access-host-${host.deviceId}`}
-                label={
-                  <span className="inline-flex min-w-0 items-center gap-2">
-                    <span className="truncate">{host.name}</span>
-                    {dot ? <Dot tone={dot} /> : null}
-                  </span>
-                }
-                description={
-                  host.connection === 'error' && host.error
-                    ? `${platformLabel(host.platform)} · ${status.label}. ${host.error}`
-                    : `${platformLabel(host.platform)} · ${status.label}`
-                }
-                control={
-                  <>
-                    <Button
-                      size="compact"
-                      variant="secondary"
-                      disabled={busyDevice === host.deviceId}
-                      onClick={() => {
-                        setRemoveError(null);
-                        setPendingRemoval({ role: 'host', device: host });
-                      }}
-                      data-testid={`settings-remote-access-host-remove-${host.deviceId}`}
-                    >
-                      Remove
-                    </Button>
-                    <Button
-                      size="compact"
-                      variant="secondary"
-                      disabled={busyDevice === host.deviceId}
-                      onClick={() =>
-                        run(host.deviceId, () => openMachine(host.deviceId))
-                      }
-                      data-testid={`settings-remote-access-host-open-${host.deviceId}`}
-                    >
-                      Open
-                    </Button>
-                  </>
-                }
-              />
-            );
-          })}
-          <SettingsRow
-            label={
-              state.hosts.length === 0
-                ? 'Pair a computer'
-                : 'Pair another computer'
-            }
-            description="On the other computer, turn on Allow other computers to control this one. Both must be signed in to the same account."
-            dataTestId="settings-remote-access-add-row"
-            control={
-              <Button
-                size="compact"
-                variant="secondary"
-                onClick={openPairDialog}
-                data-testid="settings-remote-access-add"
-              >
-                {ADD_COMPUTER_LABEL}
-              </Button>
-            }
-          />
-        </SettingsGroup>
-      </SettingsSection>
+      <RemoteControlDevices
+        hosts={state.hosts}
+        incoming={incoming}
+        ports={devicePorts}
+        testIdPrefix="settings-remote-access"
+      />
 
-      {state.controllers.length > 0 ? (
-        <SettingsSection
-          title="Computers that can control this one"
-          dataTestId="settings-remote-access-controllers"
-        >
-          <SettingsGroup>
-            {state.controllers.map((controller) => (
-              <SettingsRow
-                key={controller.deviceId}
-                dataTestId={`settings-remote-access-controller-${controller.deviceId}`}
-                label={controller.name}
-                description={`${platformLabel(controller.platform)} · ${
-                  controller.connected
-                    ? 'Controlling now'
-                    : controller.online
-                      ? 'Online'
-                      : 'Offline'
-                }`}
-                control={
-                  <>
-                    <Button
-                      size="compact"
-                      variant="secondary"
-                      disabled={busyDevice === controller.deviceId}
-                      onClick={() => {
-                        setRemoveError(null);
-                        setPendingRemoval({
-                          role: 'controller',
-                          device: controller,
-                        });
-                      }}
-                      data-testid={`settings-remote-access-controller-remove-${controller.deviceId}`}
-                    >
-                      Remove
-                    </Button>
-                    {controller.connected ? (
-                      <Button
-                        size="compact"
-                        variant="secondary"
-                        disabled={busyDevice === controller.deviceId}
-                        onClick={() =>
-                          run(controller.deviceId, () =>
-                            disconnectController(controller.deviceId),
-                          )
-                        }
-                        data-testid={`settings-remote-access-controller-disconnect-${controller.deviceId}`}
-                      >
-                        Disconnect
-                      </Button>
-                    ) : null}
-                  </>
-                }
-              />
-            ))}
-          </SettingsGroup>
-        </SettingsSection>
-      ) : null}
-
-      {pendingRemoval ? (
+      {confirmingTurnOff ? (
         <ConfirmDialog
-          title={`Remove ${pendingRemoval.device.name}?`}
-          message={
-            pendingRemoval.role === 'host'
-              ? `You won't be able to open ${pendingRemoval.device.name} from here until you pair it again.`
-              : `${pendingRemoval.device.name} won't be able to control this computer, and control ends now if it's connected. It needs your approval to pair again.`
-          }
-          confirmLabel="Remove computer"
-          busyLabel="Removing…"
-          busy={removing}
-          errorMessage={removeError}
+          title={`Turn off ${REMOTE_CONTROL_LABEL}?`}
+          message={TURN_OFF_MESSAGE}
+          confirmLabel="Turn off"
+          busyLabel="Turning off…"
+          busy={savingAllow}
           destructive
-          onConfirm={confirmRemoval}
-          onCancel={() => setPendingRemoval(null)}
-          confirmTestId="settings-remote-access-remove-confirm"
-          dataTestId="settings-remote-access-remove-dialog"
+          onConfirm={() => {
+            void saveAllow(false).finally(() => setConfirmingTurnOff(false));
+          }}
+          onCancel={() => setConfirmingTurnOff(false)}
+          confirmTestId="settings-remote-access-turn-off-confirm"
+          dataTestId="settings-remote-access-turn-off-dialog"
         />
       ) : null}
     </>,

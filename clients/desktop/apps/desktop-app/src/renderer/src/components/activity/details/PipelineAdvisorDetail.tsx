@@ -1,11 +1,11 @@
 import { useEffect, useState, type JSX } from 'react';
-import { EmptyStateRow, Surface } from '@canopy/ui-shared/components';
+import { Stack, EmptyStateRow, Surface } from '@canopy/ui-shared/components';
 import { formatTimingTimestamp } from '@/lib/pipelineTiming';
 import type {
   ExecutionState,
   PipelineAdvisorReport,
   PipelineAdvisorSnapshot,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { AgentAssistantIcon } from '@canopy/ui-shared/icons';
 import { LoadingSpinner } from '../../shared/loading/spinners/LoadingSpinner';
 import { RefreshSpinner } from '../../shared/loading/spinners/RefreshSpinner';
@@ -243,7 +243,9 @@ export function AdvisorActionControl({
 }): JSX.Element | null {
   if (canStartPipelineAdvisor({ snapshot, pipelineStatus })) {
     return (
-      <AdvisorRunButton snapshot={snapshot} running={running} onRun={onRun} />
+      <div className="self-start">
+        <AdvisorRunButton snapshot={snapshot} running={running} onRun={onRun} />
+      </div>
     );
   }
   const advisorBusy = isPipelineAdvisorBusy({ snapshot, running });
@@ -255,7 +257,11 @@ export function AdvisorActionControl({
   if (latestAdvisorComplete) {
     return null;
   }
-  return <AdvisorRefreshButton pipelineStatus={pipelineStatus} onRun={onRun} />;
+  return (
+    <div className="self-start">
+      <AdvisorRefreshButton pipelineStatus={pipelineStatus} onRun={onRun} />
+    </div>
+  );
 }
 
 function severityBadgeTone(
@@ -389,7 +395,7 @@ function AdvisorReportContent({
   const recommendations = report.recommendations;
   const showHistorySelector = reportHistory.length > 1;
   return (
-    <div className="space-y-3">
+    <Stack gap="item">
       <div className="flex flex-wrap items-center gap-2">
         {hideHealthBadge ? null : (
           <Badge tone={advisorHealthBadgeTone(report.health.status)}>
@@ -424,20 +430,20 @@ function AdvisorReportContent({
           ) : null}
         </span>
       </div>
-      <div>
+      <Stack gap="tight">
         <div className="text-3xs font-medium fg-secondary/70">Health</div>
-        <div className="mt-1 text-s fg-primary/85">
+        <div className="text-s fg-primary/85">
           <PipelineAdvisorMarkdownText>
             {report.health.summary}
           </PipelineAdvisorMarkdownText>
         </div>
-      </div>
-      <div>
+      </Stack>
+      <Stack gap="tight">
         <div className="text-3xs font-medium fg-secondary/70">Evidence</div>
         {evidence.length === 0 ? (
-          <p className="mt-1 text-s fg-secondary">No evidence recorded.</p>
+          <p className="text-s fg-secondary">No evidence recorded.</p>
         ) : (
-          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-s fg-primary/85">
+          <ul className="flex flex-col list-disc pl-5 text-s fg-primary/85 gap-0.5">
             {evidence.map((entry, index) => (
               <li key={index} className="break-words">
                 <PipelineAdvisorMarkdownText>
@@ -447,15 +453,15 @@ function AdvisorReportContent({
             ))}
           </ul>
         )}
-      </div>
-      <div>
+      </Stack>
+      <Stack gap="tight">
         <div className="text-3xs font-medium fg-secondary/70">
           Inefficiencies
         </div>
         {inefficiencies.length === 0 ? (
-          <p className="mt-1 text-s fg-secondary">No inefficiencies flagged.</p>
+          <p className="text-s fg-secondary">No inefficiencies flagged.</p>
         ) : (
-          <ul className="mt-1 space-y-2">
+          <ul className="flex flex-col gap-2">
             {inefficiencies.map((item, index) => (
               <Surface
                 as="li"
@@ -463,7 +469,7 @@ function AdvisorReportContent({
                 size="small"
                 key={`${item.title}-${index}`}
               >
-                <div className="px-3 py-2">
+                <div className="flex flex-col px-3 py-2 gap-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge tone={severityBadgeTone(item.severity)}>
                       {severityLabelForModal(item.severity)}
@@ -472,13 +478,13 @@ function AdvisorReportContent({
                       {item.title}
                     </PipelineAdvisorMarkdownText>
                   </div>
-                  <div className="mt-1 text-s fg-primary/80">
+                  <div className="text-s fg-primary/80">
                     <PipelineAdvisorMarkdownText>
                       {item.evidence}
                     </PipelineAdvisorMarkdownText>
                   </div>
                   {item.recommendation && (
-                    <div className="mt-1 text-s fg-primary/70">
+                    <div className="text-s fg-primary/70">
                       <span>Recommendation: </span>
                       <PipelineAdvisorMarkdownText>
                         {item.recommendation}
@@ -490,23 +496,23 @@ function AdvisorReportContent({
             ))}
           </ul>
         )}
-      </div>
-      <div>
+      </Stack>
+      <Stack gap="tight">
         <div className="text-3xs font-medium fg-secondary/70">Summary</div>
-        <div className="mt-1 text-s fg-primary/85">
+        <div className="text-s fg-primary/85">
           <PipelineAdvisorMarkdownText>
             {report.summary}
           </PipelineAdvisorMarkdownText>
         </div>
-      </div>
-      <div>
+      </Stack>
+      <Stack gap="tight">
         <div className="text-3xs font-medium fg-secondary/70">
           Recommendations
         </div>
         {recommendations.length === 0 ? (
-          <p className="mt-1 text-s fg-secondary">No recommendations.</p>
+          <p className="text-s fg-secondary">No recommendations.</p>
         ) : (
-          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-s fg-primary/85">
+          <ul className="flex flex-col list-disc pl-5 text-s fg-primary/85 gap-0.5">
             {recommendations.map((entry, index) => (
               <li key={index} className="break-words">
                 <PipelineAdvisorMarkdownText>
@@ -516,8 +522,8 @@ function AdvisorReportContent({
             ))}
           </ul>
         )}
-      </div>
-    </div>
+      </Stack>
+    </Stack>
   );
 }
 
@@ -548,7 +554,7 @@ export function AdvisorSection({
 
   if (!snapshot) {
     return (
-      <div className="space-y-2">
+      <Stack gap="inline">
         <EmptyStateRow title="No advisor update is available yet." />
         {onRun ? (
           <AdvisorActionControl
@@ -558,7 +564,7 @@ export function AdvisorSection({
           />
         ) : null}
         {startError ? <AdvisorStartErrorMessage message={startError} /> : null}
-      </div>
+      </Stack>
     );
   }
   const reportHistory = getAdvisorReportHistory(snapshot);
@@ -588,7 +594,7 @@ export function AdvisorSection({
       new Date(error.at).getTime() > new Date(report.generatedAt).getTime());
   if (!report && errorIsStale && error) {
     return (
-      <div className="space-y-2">
+      <Stack gap="inline">
         <p className="text-s fg-warning">
           Advisor update failed: {error.message}
         </p>
@@ -601,12 +607,12 @@ export function AdvisorSection({
           />
         ) : null}
         {startError ? <AdvisorStartErrorMessage message={startError} /> : null}
-      </div>
+      </Stack>
     );
   }
   if (!report) {
     return (
-      <div className="space-y-2">
+      <Stack gap="inline">
         <p className="text-s fg-secondary">Advisor update pending.</p>
         {onRun ? (
           <AdvisorActionControl
@@ -617,11 +623,11 @@ export function AdvisorSection({
           />
         ) : null}
         {startError ? <AdvisorStartErrorMessage message={startError} /> : null}
-      </div>
+      </Stack>
     );
   }
   return (
-    <div className="space-y-3">
+    <Stack gap="item">
       <AdvisorReportContent
         report={report}
         reportHistory={reportHistory}
@@ -636,7 +642,7 @@ export function AdvisorSection({
         </p>
       ) : null}
       {startError ? <AdvisorStartErrorMessage message={startError} /> : null}
-    </div>
+    </Stack>
   );
 }
 

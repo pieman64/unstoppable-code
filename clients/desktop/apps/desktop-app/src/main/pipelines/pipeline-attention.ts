@@ -1,7 +1,7 @@
 import type {
   ExecutionEvent,
   PipelineStatusReason,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { getAttentionTracker } from '../services/attention-tracker';
 
 /**

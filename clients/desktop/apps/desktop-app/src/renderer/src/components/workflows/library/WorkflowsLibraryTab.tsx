@@ -1,4 +1,7 @@
-import { pipelineShareLinkItemId } from '@/lib/workflows/library-projection';
+import {
+  pipelineShareLinkItemId,
+  workflowDeletePlan,
+} from '@/lib/workflows/library-projection';
 import {
   useCallback,
   useEffect,
@@ -52,6 +55,7 @@ import { useAutomationsStore } from '@/stores/automationsStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useWorkflowsViewStore } from '@/stores/workflowsViewStore';
+import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import type { AutomationMutationResponse } from '@canopy/desktop-shared/types';
 import type { AutomationsPageBodyApi } from '../../pages/AutomationsPage';
 import type { PipelinesPageListApi } from '../../pages/PipelinesPage';
@@ -534,6 +538,39 @@ export function WorkflowsLibraryTab({
     ],
   );
 
+  // Every schedule with a run in progress: main refuses to delete one, so a
+  // workflow's Delete is refused before any of its schedules goes.
+  const runningActivityIds = useMemo(
+    () =>
+      new Set([
+        ...automations.recentRuns
+          .filter((run) => run.status === 'running')
+          .map((run) => run.activityId),
+        ...(automations.runningActivityId !== null
+          ? [automations.runningActivityId]
+          : []),
+      ]),
+    [automations.recentRuns, automations.runningActivityId],
+  );
+  // Main deletes a workflow page's row, the whole workflow, in one write.
+  const removeAutomationRow = useCallback(
+    (activity: ScheduledActivity): Promise<void> =>
+      automations.remove(
+        activity,
+        activity.workflowSchedule ? { workflow: true } : undefined,
+      ),
+    [automations],
+  );
+  const deletePlan =
+    pendingDelete?.target.kind === 'automation'
+      ? workflowDeletePlan(
+          pendingDelete.target.activity,
+          automations.activities,
+          runningActivityIds,
+        )
+      : undefined;
+  const deleteScheduleCount = deletePlan?.ok ? deletePlan.schedules.length : 1;
+
   const confirmDelete = useCallback((): void => {
     if (!pendingDelete) return;
     const { target } = pendingDelete;
@@ -541,7 +578,7 @@ export function WorkflowsLibraryTab({
     void (async (): Promise<void> => {
       try {
         if (target.kind === 'automation') {
-          await automations.remove(target.activity);
+          await removeAutomationRow(target.activity);
         } else if (target.kind === 'pipeline') {
           await pipelines.remove(target.pipeline);
         }
@@ -552,7 +589,7 @@ export function WorkflowsLibraryTab({
         setDeleteBusy(false);
       }
     })();
-  }, [automations, pipelines, pendingDelete]);
+  }, [pipelines, pendingDelete, removeAutomationRow]);
 
   const deletingRunning =
     pendingDelete?.row.lastRun?.state === 'running' &&
@@ -638,13 +675,18 @@ export function WorkflowsLibraryTab({
         <ConfirmDialog
           title={`Delete "${pendingDelete.row.name}"?`}
           message={
-            deletingRunning
-              ? 'A run is in progress and will be stopped. This cannot be undone.'
-              : 'This cannot be undone.'
+            deletePlan?.ok === false
+              ? deletePlan.error
+              : deleteScheduleCount > 1
+                ? `Deletes the workflow and its ${String(deleteScheduleCount)} schedules. This cannot be undone.`
+                : deletingRunning
+                  ? 'A run is in progress and will be stopped. This cannot be undone.'
+                  : 'This cannot be undone.'
           }
           confirmLabel="Delete"
           busyLabel="Deleting…"
           busy={deleteBusy}
+          confirmDisabled={deletePlan?.ok === false}
           errorMessage={deleteError}
           destructive
           dataTestId="workflows-library-delete"

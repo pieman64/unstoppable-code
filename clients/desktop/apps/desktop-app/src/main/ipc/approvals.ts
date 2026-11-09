@@ -75,6 +75,12 @@ function approvalOwnersFor(sender: object): object[] {
   return mirrored === sender ? [sender] : [sender, mirrored];
 }
 
+function responderIdOf(sender: object): string {
+  return 'id' in sender && typeof sender.id === 'number'
+    ? `webcontents:${sender.id}`
+    : 'webcontents:unknown';
+}
+
 function requireWorkspaceId(workspaceId: string | undefined): string {
   if (!workspaceId) {
     throw new Error('workspaceId is required for project-scope approval rules');
@@ -90,6 +96,7 @@ const secretInputRequestSchema = z.strictObject({
   worktreeId: z.string().min(1).max(256),
   chatId: z.string().min(1).max(256),
   secret: z.string().trim().max(16384),
+  policyRevision: z.number().int().nonnegative().optional(),
 });
 
 export function registerApprovalHandlers(): void {
@@ -100,7 +107,10 @@ export function registerApprovalHandlers(): void {
       // Use the actual local sender; remote-control mirrors may not supply secrets.
       return (
         request.success &&
-        resolveApprovalSecretInput(request.data, event.sender)
+        resolveApprovalSecretInput(request.data, {
+          id: responderIdOf(event.sender),
+          owners: [event.sender],
+        })
       );
     },
   );
@@ -114,8 +124,21 @@ export function registerApprovalHandlers(): void {
       if (!isApprovalPromptDecision(req.decision)) {
         throw new Error('Invalid approval decision');
       }
-      return approvalOwnersFor(event.sender).some((owner) =>
-        resolveApproval(req.requestId, req.decision, owner, req),
+      if (
+        req.policyRevision !== undefined &&
+        (!Number.isSafeInteger(req.policyRevision) || req.policyRevision < 0)
+      ) {
+        throw new Error('Invalid approval policy revision');
+      }
+      return resolveApproval(
+        req.requestId,
+        req.decision,
+        {
+          id: responderIdOf(event.sender),
+          owners: approvalOwnersFor(event.sender),
+        },
+        req,
+        req.policyRevision,
       );
     },
   );
@@ -127,26 +150,22 @@ export function registerApprovalHandlers(): void {
       validateId(req.projectId, 'projectId');
       validateId(req.worktreeId, 'worktreeId');
       validateId(req.chatId, 'chatId');
-      return approvalOwnersFor(event.sender).some((owner) =>
-        resolveApproval(
-          req.requestId,
-          {
-            behavior: 'deny',
-            scope: 'once',
-          },
-          owner,
-          req,
-        ),
+      return resolveApproval(
+        req.requestId,
+        { behavior: 'deny', scope: 'once' },
+        {
+          id: responderIdOf(event.sender),
+          owners: approvalOwnersFor(event.sender),
+        },
+        req,
+        undefined,
       );
     },
   );
 
   registerIpcHandler<[], ApprovalRequestEvent[]>(
     IPC_CHANNELS.approvalPendingRequests,
-    (event) =>
-      approvalOwnersFor(event.sender).flatMap((owner) =>
-        pendingApprovalRequests(owner),
-      ),
+    (event) => pendingApprovalRequests(approvalOwnersFor(event.sender)),
   );
 
   registerIpcHandler<[ApprovalModeSetRequest], void>(

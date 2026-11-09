@@ -10,8 +10,13 @@
 export const CHAT_WAIT_KINDS = ['question', 'approval'] as const;
 export type ChatWaitKind = (typeof CHAT_WAIT_KINDS)[number];
 export type ChatWaitNoClientMode = 'wait' | 'fail';
-/** The shipped no-client rule for every chat wait kind (CAN-4128). */
-export const CHAT_WAIT_NO_CLIENT_MODE: ChatWaitNoClientMode = 'wait';
+/**
+ * The shipped no-client rule for every chat wait kind (CAN-4128). 'fail'
+ * since CAN-4129: approvals have no canonical record or core respond
+ * instruction to wait on (rule 8), so a new question or approval with no
+ * eligible client fails at once. A wait already open survives a disconnect.
+ */
+export const CHAT_WAIT_NO_CLIENT_MODE: ChatWaitNoClientMode = 'fail';
 export const CHAT_WAIT_NO_CLIENT_REASON = 'no_client';
 
 export interface ChatWaitScope {

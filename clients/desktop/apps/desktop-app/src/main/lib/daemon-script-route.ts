@@ -36,7 +36,6 @@ import type { ElectronDaemonClient } from '../canopy-runtime/electron-daemon-hos
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
 import { getDaemonScopeResolver } from '../canopy-runtime/daemon-scope-resolver';
 import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
-import { getLabsExperimentsService } from '../services/labs-experiments-runtime';
 import { DaemonScriptRuns } from './daemon-script-runs';
 import { logMainProcessWarn } from './main-process-logging';
 import { resolveScriptRunDir } from './paths';
@@ -44,21 +43,21 @@ import { desktopScriptWorker, setExternalScriptRuns } from './script-runner';
 import { assertWorkspaceTargetRuntimeStartAllowed } from './workspace-target-exclusion';
 
 /**
- * Routing of renderer script runs to the daemon's script worker (CAN-5087)
- * under the `daemon-scripts` Labs experiment. Only the `script:run` handler
+ * Routing of renderer script runs to the daemon's script worker (CAN-5087),
+ * by default on eligible hosts (CAN-5960). Only the `script:run` handler
  * passes a route context, so setup, pipelines, agent actions, Portal, gates
  * and the remote-control bridge keep Electron main's worker. Electron main
  * still records the run, redeems its secrets and sends its complete
  * environment as `_execution`; the daemon writes the run log.
  */
 
-/** Which hosts may run renderer scripts in the daemon. Windows waits for CAN-5091. */
+/** Which hosts may run renderer scripts in the daemon. Windows since CAN-5091. */
 export const DAEMON_SCRIPT_PLATFORMS: Readonly<
   Record<PlatformOperatingSystem, boolean>
 > = {
   darwin: true,
   linux: true,
-  win32: false,
+  win32: true,
 };
 
 /** Set only by the `script:run` handler, from the trusted event. */
@@ -69,7 +68,6 @@ export interface DaemonScriptRouteContext {
 
 export interface DaemonScriptRouteInput {
   readonly platform: PlatformOperatingSystem | null;
-  readonly experimentEnabled: boolean;
   readonly context: DaemonScriptRouteContext | undefined;
   /** Main's record says the daemon cannot be reached right now. */
   readonly daemonLatched: boolean;
@@ -86,25 +84,10 @@ export function isDaemonScriptRouteEligible(
   input: DaemonScriptRouteInput,
 ): boolean {
   return (
-    input.experimentEnabled &&
     isDaemonScriptPlatformEligible(input.platform) &&
     input.context?.localWindow === true &&
     !input.daemonLatched
   );
-}
-
-function isExperimentEnabled(): boolean {
-  try {
-    const snapshot = getLabsExperimentsService().getSnapshot();
-    return (
-      snapshot.ready &&
-      snapshot.experiments.some(
-        (entry) => entry.id === 'daemon-scripts' && entry.enabled,
-      )
-    );
-  } catch {
-    return false;
-  }
 }
 
 function hostPlatform(): PlatformOperatingSystem | null {
@@ -115,13 +98,12 @@ function hostPlatform(): PlatformOperatingSystem | null {
   }
 }
 
-/** Reads only local state: the platform, the Labs snapshot (`ready && enabled`; a throw is false) and the health latch. */
+/** Reads only local state: the platform and the health latch. */
 export function selectDaemonScripts(
   context: DaemonScriptRouteContext | undefined,
 ): boolean {
   return isDaemonScriptRouteEligible({
     platform: hostPlatform(),
-    experimentEnabled: context !== undefined && isExperimentEnabled(),
     context,
     daemonLatched: getElectronDaemonHealth().isLatched(),
   });
@@ -425,10 +407,12 @@ export async function executeScriptInDaemon(args: {
 }
 
 /**
- * The run-log pass of a worktree drain, after this app's own daemon runs
- * have stopped: cancels the script keys of runs another writer still runs.
- * The log keeps only each key's latest run, so the cancel names the key, not
- * a run, and the daemon stops every run of it there.
+ * The run-log pass of a worktree drain: drains the script keys of running
+ * runs this process does not run itself, including the ones it mirrors. The
+ * log keeps only each key's latest run, so the drain names the key, not a
+ * run, and the daemon drains every run of it there. A drain answers once
+ * each run's whole process tree has exited (CAN-5839); a mirrored run's own
+ * abort only stops it, which answers when its shell exits.
  */
 async function sweepDaemonScriptRuns(
   projectId: string,
@@ -442,17 +426,12 @@ async function sweepDaemonScriptRuns(
         .list()
         .flatMap((tracking) => tracking.runId ?? tracking.logRef?.runId ?? []),
     );
-    const mirrored = new Set(
-      daemonScriptRuns.list().flatMap((tracking) => tracking.runId ?? []),
-    );
     const { runs } = await desktopScriptWorker.list({ scope, tailLines: 0 });
     const scriptKeys = new Set(
       runs
         .filter(
           ({ execution }) =>
-            execution.status === 'running' &&
-            !local.has(execution.executionId) &&
-            !mirrored.has(execution.executionId),
+            execution.status === 'running' && !local.has(execution.executionId),
         )
         .map(({ execution }) => execution.script.scriptKey),
     );
@@ -476,7 +455,7 @@ async function sweepDaemonScriptRuns(
           onSession((session) =>
             session.instruction(
               'worker.script.execution.cancel',
-              { scope, scriptKey },
+              { scope, scriptKey, drain: true },
               {
                 metadata: { idempotencyKey: randomUUID() },
                 signal: deadline,

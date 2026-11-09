@@ -6,7 +6,7 @@ import {
 
 import type { AccountProxyQuotaWait } from '../../account-proxy/quota-wait';
 import { resolveSessionAiCreditsAttribution } from '../ai-credits-routing';
-import { getRawOpenCodeModelId } from '@canopy/desktop-shared/lib/opencode-models';
+import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import { OPENCODE_RUNTIME_VERSION } from '@canopy/desktop-shared/node/opencode/runtime-metadata';
 import {
   assertOpenCodeSelectionAvailable,
@@ -14,12 +14,12 @@ import {
 } from '../../opencode/selection';
 import type { OpenCodeDelegationPreparation } from './opencode-runner';
 import type { CopilotAccount } from '@canopy/desktop-shared/types';
-import { getRawCopilotModelId } from '@canopy/desktop-shared/lib/copilot-models';
+import { getRawCopilotModelId } from '@canopy/execution-engine/lib/copilot-models';
 import { COPILOT_RUNTIME_VERSION } from '@canopy/desktop-shared/node/copilot/runtime-metadata';
 import { readCopilotAccount } from '../../copilot/connection';
 import { isCopilotHarnessEnabled } from '../../copilot/feature-flag';
 import type { CopilotDelegationPreparation } from './copilot-runner';
-import { getRawCursorModelId } from '@canopy/desktop-shared/lib/cursor-models';
+import { getRawCursorModelId } from '@canopy/execution-engine/lib/cursor-models';
 import { CURSOR_RUNTIME_VERSION } from '@canopy/desktop-shared/node/cursor/runtime-metadata';
 import type { CursorTurnGates } from '@canopy/desktop-shared/node/cursor/turn-driver';
 import { readCursorAccount } from '../../cursor/connection';
@@ -75,7 +75,7 @@ import {
   isJsonValue,
   type CodexSpawnProfileRequest,
 } from '@canopy/desktop-shared/node/codex-runtime';
-import type { CodexConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   isAgentModel,
   type ApprovalCheck,
@@ -84,7 +84,7 @@ import {
   type CodexSelectedCapabilityRoot,
 } from '@canopy/desktop-shared/types';
 import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
-import { resolveAnthropicMockEnvOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import type { AgentSessionOptions } from '../types';
 import { resolveSessionWorkOwner } from '../work-owner';
 import { buildChatSessionKey } from '../session-key';
@@ -161,9 +161,13 @@ import {
 import {
   delegatedClaudeConfigDirectory,
   resolveAmbientClaudePluginIds,
+  resolveAutoLoadedClaudeModPluginIds,
 } from './claude-settings';
 import { isCodeGraphAvailableForWorkspace } from '../../lib/code-graph-availability';
-import type { ClaudeDelegationPreparation } from './claude-runner';
+import {
+  DELEGATED_CLAUDE_SETTING_SOURCES,
+  type ClaudeDelegationPreparation,
+} from './claude-runner';
 import type { CodexDelegationPreparation } from './codex-runner';
 import { getMcpHttpProxyService } from '../../mcp/http-proxy-service';
 import { getCodexRuntimeService } from '../../codex/runtime-service';
@@ -1205,11 +1209,24 @@ export class DelegationRouteRuntime {
       model: session.captured.model,
       waitForQuotaRecovery: session.captured.waitForQuotaRecovery,
       tools: session.tools,
-      ambientPluginIds: await resolveAmbientClaudePluginIds({
-        home: os.homedir(),
-        cwd: session.tools.cwd,
-        ...(claudeConfigDirectory ? { configDir: claudeConfigDirectory } : {}),
-      }),
+      ambientPluginIds: [
+        ...(await resolveAmbientClaudePluginIds({
+          home: os.homedir(),
+          cwd: session.tools.cwd,
+          ...(claudeConfigDirectory
+            ? { configDir: claudeConfigDirectory }
+            : {}),
+        })),
+        // Auto-loaded Mods have no settings entry, so they are switched off by id.
+        ...resolveAutoLoadedClaudeModPluginIds({
+          home: os.homedir(),
+          cwd: session.tools.cwd,
+          ...(claudeConfigDirectory
+            ? { configDir: claudeConfigDirectory }
+            : {}),
+          settingSources: DELEGATED_CLAUDE_SETTING_SOURCES,
+        }),
+      ],
       environment: buildDelegationClaudeEnvironment({
         canonicalHome: os.homedir(),
         temporaryDirectory: temporary,

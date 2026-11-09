@@ -1,13 +1,16 @@
 import {
   WORKER_PIPELINE_GRANTS,
   WORKER_PIPELINE_OWNER_RESULT_KIND,
+  isWorkerPipelineHostWithdrawal,
   isWorkerPipelineOwnerAction,
   type CanopyCallerDescriptor,
   type CanopyInstructionHandler,
   type CanopyStreamHandlerMap,
   type WorkerPipelineHostRequest,
+  type WorkerPipelineHostRequestsItem,
   type WorkerPipelineHostRespondResult,
   type WorkerPipelineHostResult,
+  type WorkerPipelineHostStepValues,
   type WorkerPipelineOwnerValues,
 } from '@canopy/protocol/canopy-core';
 
@@ -60,11 +63,19 @@ export interface PipelineOwnerSettlement {
   readonly values?: WorkerPipelineOwnerValues;
 }
 
+/** A host step's answer and its host-local values (CAN-5771). */
+export interface PipelineHostStepAnswer {
+  readonly result: PipelineHostStepResult;
+  /** `_execution.pipelineHostStep` from the settling respond; absent without one. */
+  readonly values?: WorkerPipelineHostStepValues;
+}
+
 interface Pending {
   readonly request: WorkerPipelineHostRequest;
   resolve(
     result: WorkerPipelineHostResult,
     values?: WorkerPipelineOwnerValues,
+    hostStep?: WorkerPipelineHostStepValues,
   ): void;
 }
 
@@ -112,8 +123,13 @@ export class PipelineHostRequestBroker {
     { executionId: string; settledAt: string }
   >();
   private readonly subscribers = new Set<
-    (request: WorkerPipelineHostRequest) => void
+    (item: WorkerPipelineHostRequestsItem) => void
   >();
+  private readonly announceWithdrawals: boolean;
+
+  constructor(options: { readonly announceWithdrawals?: boolean } = {}) {
+    this.announceWithdrawals = options.announceWithdrawals === true;
+  }
 
   /** Whether a core is subscribed to settle requests. */
   get settled(): boolean {
@@ -134,6 +150,26 @@ export class PipelineHostRequestBroker {
         new Error('Owner requests are raised with raiseOwner.'),
       );
     return this.enqueue(request, signal, (result) => hostStepResult(result));
+  }
+
+  /**
+   * `raise`, resolving with the host-local values the settling respond
+   * carried in `_execution.pipelineHostStep` (CAN-5771).
+   */
+  raiseHostStep(
+    request: WorkerPipelineHostRequest,
+    signal: AbortSignal,
+  ): Promise<PipelineHostStepAnswer> {
+    if (isOwnerRequest(request))
+      return Promise.reject(
+        new Error('Owner requests are raised with raiseOwner.'),
+      );
+    return this.enqueue(request, signal, (result, _values, hostStep) => {
+      const answered = hostStepResult(result);
+      return hostStep && answered === result
+        ? { result: answered, values: hostStep }
+        : { result: answered };
+    });
   }
 
   /**
@@ -158,6 +194,7 @@ export class PipelineHostRequestBroker {
     settle: (
       result: WorkerPipelineHostResult,
       values: WorkerPipelineOwnerValues | undefined,
+      hostStep: WorkerPipelineHostStepValues | undefined,
     ) => T,
   ): Promise<T> {
     if (this.subscribers.size === 0)
@@ -174,6 +211,14 @@ export class PipelineHostRequestBroker {
         this.pending.delete(request.requestId);
         this.remember(request);
         reject(withdrawn());
+        if (!this.announceWithdrawals) return;
+        const withdrawal = {
+          withdrawn: true,
+          executionId: request.executionId,
+          requestId: request.requestId,
+        } as const;
+        for (const subscriber of Array.from(this.subscribers))
+          subscriber(withdrawal);
       };
       if (signal.aborted) {
         reject(withdrawn());
@@ -182,9 +227,9 @@ export class PipelineHostRequestBroker {
       signal.addEventListener('abort', withdraw, { once: true });
       this.pending.set(request.requestId, {
         request,
-        resolve: (result, values) => {
+        resolve: (result, values, hostStep) => {
           signal.removeEventListener('abort', withdraw);
-          resolve(settle(result, values));
+          resolve(settle(result, values, hostStep));
         },
       });
       for (const subscriber of Array.from(this.subscribers))
@@ -192,12 +237,16 @@ export class PipelineHostRequestBroker {
     });
   }
 
-  /** Settle a pending request exactly once; `values` only for an owner request. */
+  /**
+   * Settle a pending request exactly once; `values` only for an owner
+   * request, `hostStep` only for a host step (CAN-5771).
+   */
   respond(
     executionId: string,
     requestId: string,
     result: WorkerPipelineHostResult,
     values?: WorkerPipelineOwnerValues,
+    hostStep?: WorkerPipelineHostStepValues,
   ): WorkerPipelineHostRespondResult {
     if (values !== undefined && values.requestId !== requestId)
       throw canopyInvalidArgumentError(
@@ -207,9 +256,11 @@ export class PipelineHostRequestBroker {
     if (pending?.request.executionId === executionId) {
       this.pending.delete(requestId);
       const settledAt = this.remember(pending.request);
+      const owner = isOwnerRequest(pending.request);
       pending.resolve(
         result,
-        isOwnerRequest(pending.request) ? values : undefined,
+        owner ? values : undefined,
+        owner ? undefined : hostStep,
       );
       return { executionId, requestId, outcome: 'applied', settledAt };
     }
@@ -238,9 +289,9 @@ export class PipelineHostRequestBroker {
     return settledAt;
   }
 
-  /** Deliver every pending request, then each new one. */
+  /** Deliver every pending request, then each new item. */
   subscribe(
-    subscriber: (request: WorkerPipelineHostRequest) => void,
+    subscriber: (item: WorkerPipelineHostRequestsItem) => void,
   ): () => void {
     this.subscribers.add(subscriber);
     for (const { request } of Array.from(this.pending.values()))
@@ -279,6 +330,7 @@ export function createWorkerPipelineHostRequestHandlers(
             requestId,
             result,
             context.execution?.pipelineOwnerValues,
+            context.execution?.pipelineHostStep,
           ),
         ),
     },
@@ -289,8 +341,8 @@ export function createWorkerPipelineHostRequestHandlers(
         sink,
       ): Promise<() => void> => {
         let stop: (() => void) | null = null;
-        stop = broker.subscribe((request) => {
-          if (sink.emit(request) === null) stop?.();
+        stop = broker.subscribe((item) => {
+          if (sink.emit(item) === null) stop?.();
         });
         return Promise.resolve(() => stop?.());
       },
@@ -334,8 +386,10 @@ export async function settlePipelineHostRequests(options: {
       signal: controller.signal,
       onFrame: (frame) => {
         if (frame.kind !== 'item') return;
-        const request = frame.item;
-        if (!isHostRequest(request)) return;
+        const item = frame.item;
+        if (!isHostRequestsItem(item) || isWorkerPipelineHostWithdrawal(item))
+          return;
+        const request = item;
         void (async (): Promise<void> => {
           let settlement: PipelineOwnerSettlement;
           try {
@@ -383,6 +437,8 @@ export async function settlePipelineHostRequests(options: {
   };
 }
 
-function isHostRequest(value: unknown): value is WorkerPipelineHostRequest {
+function isHostRequestsItem(
+  value: unknown,
+): value is WorkerPipelineHostRequestsItem {
   return typeof value === 'object' && value !== null && 'requestId' in value;
 }

@@ -778,6 +778,10 @@ function SharedActivityPanelAdapterContents({
         subtitle: emptyTitle
           ? null
           : headerChrome[rendered.definition.id]?.subtitle,
+        subtitleGap:
+          rendered.definition.id === 'todo'
+            ? headerChrome.todo.subtitleGap
+            : undefined,
         collapsedIconColor:
           headerChrome[rendered.definition.id]?.collapsedIconColor,
         headerAction:

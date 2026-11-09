@@ -1,6 +1,6 @@
 import type { PipelineUsageIdentity } from '@canopy/desktop-shared/types';
-import type { NormalizedStep } from '@canopy/desktop-shared/types/pipeline';
-import type { PipelineRunUsageEvent } from '@canopy/desktop-shared/types/observability';
+import type { NormalizedStep } from '@canopy/execution-engine/types/pipeline';
+import type { PipelineRunUsageEvent } from '@canopy/execution-engine/types/observability';
 import type {
   ExecutionEvent,
   ExecutionState,

@@ -17,7 +17,7 @@
  * tab remains available in the main window.
  */
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import { Heading, Surface, TabBar } from '@canopy/ui-shared/components';
+import { Stack, Heading, Surface, TabBar } from '@canopy/ui-shared/components';
 import { useEffect, useState, type JSX } from 'react';
 import type {
   AppAdvisorWorkspaceSettingsFile,
@@ -240,7 +240,7 @@ export function AppAdvisorSettingsModal({
       >
         {activeTab === 'defaults' &&
           (prefs ? (
-            <div className="space-y-6">
+            <Stack gap="section">
               <ModelThinkingPreferenceRow
                 title="Default model"
                 description={`Model and thinking level used for new ${ORCHESTRATOR_LABEL} chats.`}
@@ -268,7 +268,7 @@ export function AppAdvisorSettingsModal({
                   savePreferences({ appAdvisorPluginSelections: selections })
                 }
               />
-            </div>
+            </Stack>
           ) : (
             <div className="py-8 text-center text-s fg-secondary">
               {prefsError
@@ -278,16 +278,22 @@ export function AppAdvisorSettingsModal({
           ))}
 
         {activeTab === 'instructions' && (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <Heading level={3} variant="title" id="app-advisor-claude-md-label">
-              CLAUDE.md
-            </Heading>
-            <p
-              id="app-advisor-claude-md-description"
-              className="mt-1 text-xs fg-secondary"
-            >
-              Instructions loaded into every {ORCHESTRATOR_LABEL} chat.
-            </p>
+          <Stack gap="inline" className="min-h-0 flex-1">
+            <Stack gap="tight">
+              <Heading
+                level={3}
+                variant="title"
+                id="app-advisor-claude-md-label"
+              >
+                CLAUDE.md
+              </Heading>
+              <p
+                id="app-advisor-claude-md-description"
+                className="text-xs fg-secondary"
+              >
+                Instructions loaded into every {ORCHESTRATOR_LABEL} chat.
+              </p>
+            </Stack>
             <TextArea
               mono
               value={claudeMd}
@@ -296,72 +302,79 @@ export function AppAdvisorSettingsModal({
               aria-labelledby="app-advisor-claude-md-label"
               aria-describedby="app-advisor-claude-md-description"
               data-testid="app-advisor-settings-claude-md"
-              className="mt-2 min-h-0 flex-1"
+              className="min-h-0 flex-1"
               placeholder={`# ${ORCHESTRATOR_LABEL} instructions\n\nAdd assistant instructions here...`}
             />
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'advanced' && (
-          <div className="space-y-4">
+          <Stack gap="group">
             <Surface
               variant="outline"
               padding="default"
               data-testid="app-advisor-settings-retention"
             >
-              <div data-testid="app-advisor-settings-retention-card">
-                <Heading level={3} variant="title">
-                  Deletion retention
-                </Heading>
-                <p className="mt-1 text-xs fg-secondary">
-                  {`Deleted and archived chats are kept for ${retentionDays} ${retentionDays === 1 ? 'day' : 'days'} before they're removed. Archived work entries are kept until you delete them.`}
-                </p>
-                <div className="mt-3 flex items-center gap-3">
-                  <span
-                    id="app-advisor-retention-days-label"
-                    className="text-s fg-primary"
-                  >
-                    Keep deleted chats for
-                  </span>
-                  <div className="w-28">
-                    <TextInput
-                      density="settings"
-                      type="number"
-                      aria-labelledby="app-advisor-retention-days-label"
-                      trailing="days"
-                      value={retentionDays}
-                      onChange={(e) =>
-                        setRetentionDays(
-                          Math.max(
-                            1,
-                            Math.min(
-                              MAX_ARCHIVE_RETENTION_DAYS,
-                              parseInt(e.target.value) ||
-                                DEFAULT_ARCHIVE_RETENTION_DAYS,
+              <Stack
+                gap="item"
+                data-testid="app-advisor-settings-retention-card"
+              >
+                <Stack gap="tight">
+                  <Heading level={3} variant="title">
+                    Deletion retention
+                  </Heading>
+                  <p className="text-xs fg-secondary">
+                    {`Deleted and archived chats are kept for ${retentionDays} ${retentionDays === 1 ? 'day' : 'days'} before they're removed. Archived work entries are kept until you delete them.`}
+                  </p>
+                </Stack>
+                <div className="flex flex-col gap-0">
+                  <div className="flex items-center gap-3">
+                    <span
+                      id="app-advisor-retention-days-label"
+                      className="text-s fg-primary"
+                    >
+                      Keep deleted chats for
+                    </span>
+                    <div className="w-28">
+                      <TextInput
+                        density="settings"
+                        type="number"
+                        aria-labelledby="app-advisor-retention-days-label"
+                        trailing="days"
+                        value={retentionDays}
+                        onChange={(e) =>
+                          setRetentionDays(
+                            Math.max(
+                              1,
+                              Math.min(
+                                MAX_ARCHIVE_RETENTION_DAYS,
+                                parseInt(e.target.value) ||
+                                  DEFAULT_ARCHIVE_RETENTION_DAYS,
+                              ),
                             ),
-                          ),
-                        )
-                      }
-                      min={1}
-                      max={MAX_ARCHIVE_RETENTION_DAYS}
-                      data-testid="app-advisor-settings-retention-days"
-                    />
+                          )
+                        }
+                        min={1}
+                        max={MAX_ARCHIVE_RETENTION_DAYS}
+                        data-testid="app-advisor-settings-retention-days"
+                      />
+                    </div>
                   </div>
+                  <AutoArchiveSettingsControl
+                    enabled={autoArchiveEnabled}
+                    days={autoArchiveDays}
+                    maxDays={MAX_ARCHIVE_RETENTION_DAYS}
+                    fallbackDays={DEFAULT_AUTO_ARCHIVE_DAYS}
+                    description="Delete fully idle sessions after a period of inactivity."
+                    toggleTestId="app-advisor-settings-auto-archive-toggle"
+                    daysTestId="app-advisor-settings-auto-archive-days"
+                    onEnabledChange={setAutoArchiveEnabled}
+                    onDaysChange={setAutoArchiveDays}
+                  />
                 </div>
-                <AutoArchiveSettingsControl
-                  enabled={autoArchiveEnabled}
-                  days={autoArchiveDays}
-                  maxDays={MAX_ARCHIVE_RETENTION_DAYS}
-                  fallbackDays={DEFAULT_AUTO_ARCHIVE_DAYS}
-                  description="Delete fully idle sessions after a period of inactivity."
-                  toggleTestId="app-advisor-settings-auto-archive-toggle"
-                  daysTestId="app-advisor-settings-auto-archive-days"
-                  onEnabledChange={setAutoArchiveEnabled}
-                  onDaysChange={setAutoArchiveDays}
-                />
-              </div>
+              </Stack>
             </Surface>
-          </div>
+          </Stack>
         )}
       </div>
 

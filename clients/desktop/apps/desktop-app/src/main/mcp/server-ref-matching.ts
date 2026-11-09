@@ -5,7 +5,7 @@ import type {
 import type {
   McpServerRef,
   RewriteMcpServerRefsRequest,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 
 /** One server (any config) or one server config that moved. */
 export type McpServerRefMatcher = RewriteMcpServerRefsRequest['from'][number];

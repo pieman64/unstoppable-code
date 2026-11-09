@@ -1,3 +1,4 @@
+import type { CoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { worktreeScopedParentLocalId } from '@canopy/protocol';
@@ -643,11 +644,16 @@ export function createCommandFailedPayload(
   code: string,
   message: string,
   retryable = false,
+  coworkFolderMissing?: CoworkFolderMissing,
 ): PortalCommandFailedPayload {
   return {
     commandId: command.id,
     sequenceNumber: command.sequence,
-    error: { code, message },
+    error: {
+      code,
+      message,
+      ...(coworkFolderMissing ? { coworkFolderMissing } : {}),
+    },
     ...(command.type.startsWith('portal.script_actions.') ||
     command.type === 'portal.collections.save'
       ? { response: { code, message } }

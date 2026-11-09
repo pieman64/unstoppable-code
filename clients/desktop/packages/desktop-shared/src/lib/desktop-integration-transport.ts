@@ -16,11 +16,11 @@
 
 import { buildDesktopIntegrationRoutes } from '@canopy/protocol/brand';
 import { BRAND } from '@canopy/brand/current';
-import type { CanopyInjectedToolSurface } from './canopy-injected-tools';
+import type { CanopyInjectedToolSurface } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS,
   type CanopyInjectedToolKey,
-} from './canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 
 // ---------------------------------------------------------------------------
 // Hostname / port binding

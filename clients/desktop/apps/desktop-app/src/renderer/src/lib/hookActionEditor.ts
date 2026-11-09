@@ -20,7 +20,7 @@ import {
   getShareablePluginRefKey,
   type ShareablePluginRef,
 } from '@canopy/desktop-shared/plugin-refs';
-import type { PipelineInputDef } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInputDef } from '@canopy/execution-engine/types/pipeline';
 import type {
   EditableHookAction,
   EditableHookActionDraft,

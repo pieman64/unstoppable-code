@@ -13,6 +13,7 @@
 //  - opens the shared `WatcherManagementModal` on click, which handles all
 //    jump and delete interactions.
 
+import { Button } from '@canopy/ui-shared/components/Button';
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { AppAdvisorWatcherSummary } from '@canopy/desktop-shared/types';
@@ -121,14 +122,6 @@ export function WatcherManagementButton({
 
   if (watchers.length === 0) return null;
 
-  const buttonClasses = [
-    'focus-ring inline-flex h-7 items-center justify-center gap-1 rounded-lg border border-fg-info/30 bg-info-subtle px-1.5 fg-info transition-colors hover:bg-info-subtle/80',
-    watchers.length === 1 ? 'w-7 px-0' : '',
-    className ?? '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-
   const openModal = (): void => {
     setTooltipOpen(false);
     setModalOpen(true);
@@ -186,10 +179,8 @@ export function WatcherManagementButton({
     );
 
   const preview = (
-    <div className="text-xs font-normal fg-primary">
-      <div className="mb-1.5 text-xs font-normal fg-secondary">
-        {tooltipTitle}
-      </div>
+    <div className="flex flex-col gap-1.5 text-xs font-normal fg-primary">
+      <div className="text-xs font-normal fg-secondary">{tooltipTitle}</div>
       <ul className="flex flex-col gap-1.5">
         {visibleTooltipRows.map((watcher, index) => {
           const target = watcherTargetDisplay(watcher.target);
@@ -263,9 +254,7 @@ export function WatcherManagementButton({
         })}
       </ul>
       {overflowCount > 0 && (
-        <div className="mt-1.5 text-2xs fg-secondary">
-          +{overflowCount} more
-        </div>
+        <div className="text-2xs fg-secondary">+{overflowCount} more</div>
       )}
     </div>
   );
@@ -318,34 +307,34 @@ export function WatcherManagementButton({
             />
           </span>
         ) : (
-          <button
-            type="button"
-            aria-label={ariaLabel}
-            data-testid={dataTestId}
-            className={buttonClasses}
-            onClick={(event): void => {
-              // Pipeline rows and chat panels treat the surrounding click area as
-              // their own selection target — stop propagation so opening the
-              // watcher modal does not also open the pipeline detail modal /
-              // refocus the chat composer.
-              event.stopPropagation();
-              openModal();
-            }}
-          >
-            {icon === 'bigtop' ? (
-              <AppAdvisorWatcherIcon size="sm" />
-            ) : (
-              <WatcherEyeIcon size="sm" />
-            )}
-            {watchers.length > 1 && (
-              <span
-                data-testid={`${dataTestId}-count`}
-                className="text-3xs font-semibold leading-none fg-info"
-              >
-                {watchers.length}
-              </span>
-            )}
-          </button>
+          <span className={className}>
+            <Button
+              variant="ghost-accent"
+              size="sm"
+              iconOnly={watchers.length === 1}
+              aria-label={ariaLabel}
+              data-testid={dataTestId}
+              onClick={(event): void => {
+                // Pipeline rows and chat panels treat the surrounding click area as
+                // their own selection target — stop propagation so opening the
+                // watcher modal does not also open the pipeline detail modal /
+                // refocus the chat composer.
+                event.stopPropagation();
+                openModal();
+              }}
+            >
+              {icon === 'bigtop' ? (
+                <AppAdvisorWatcherIcon size="sm" />
+              ) : (
+                <WatcherEyeIcon size="sm" />
+              )}
+              {watchers.length > 1 && (
+                <span data-testid={`${dataTestId}-count`}>
+                  {watchers.length}
+                </span>
+              )}
+            </Button>
+          </span>
         )}
       </RichHoverTooltip>
 

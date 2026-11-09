@@ -1,3 +1,4 @@
+import { hasOnlyLocalPipelineTriggers } from '@canopy/protocol/pipelines';
 import {
   useCallback,
   useEffect,
@@ -13,7 +14,7 @@ import type { WorkflowEditSection } from '@canopy/desktop-shared/types';
 import {
   getTriggerTypes,
   type PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   PipelineTriggers,
   WorkflowEditShell,
@@ -21,14 +22,19 @@ import {
   type UnsavedChangesSaveResult,
 } from '@canopy/ui-app/workflows';
 import {
+  ConfirmDialog,
   EmptyState,
   InlineTextInput,
   Notice,
-  NoticeButton,
 } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { pipelineStartKinds } from '@/lib/workflows/pipeline-automations';
+import {
+  hooksRunningPipeline,
+  pipelineStartKinds,
+  pipelineUserCount,
+} from '@/lib/workflows/pipeline-automations';
+import { useProjectsStore } from '@/stores/projectsStore';
 import { pipelineInfoToDocumentLocator } from '@/lib/pipelineDocument';
 import {
   pipelineEditLinkFromLocator,
@@ -60,10 +66,18 @@ import {
 } from './PipelineEditSections';
 import { replaceSavedDraft } from './replaceSavedDraft';
 import { useWorkflowEditGuard } from './useWorkflowEditGuard';
+import { useWorkflowSchedules } from './useWorkflowSchedules';
 import { usePipelineAssistantDraft } from '@/components/pipeline/pipelineAssistantDraft';
 import { WorkflowEditNotFound } from './WorkflowEditNotFound';
 
 type PipelineTarget = Extract<WorkflowEditTarget, { kind: 'pipeline' }>;
+
+/** How the agent-grant confirmation was answered. */
+type GrantChoice = 'save' | 'duplicate' | 'cancel';
+
+const GRANT_SAVE_TITLE = 'Save changes to this workflow?';
+const GRANT_SAVE_MESSAGE =
+  'Its schedule will stop using the plugins and approval mode the agent was granted, so runs that need them will fail. Duplicate the workflow to run it as yours.';
 
 export interface PipelineEditAdapterProps {
   readonly target: PipelineTarget;
@@ -177,8 +191,12 @@ export function PipelineEditAdapter({
   const [openedWorktree] = useState(contextWorktree);
   const worktree = contextWorktree ?? openedWorktree;
 
+  // The pipeline the last save stored, read by a related-row link right
+  // after its save, before the session's own info has rendered.
+  const savedInfoRef = useRef<PipelineInfo | null>(null);
   const handleSaved = useCallback(
     (saved: PipelineInfo, { wasDraft }: { wasDraft: boolean }): void => {
+      savedInfoRef.current = saved;
       if (!wasDraft) return;
       replaceSavedDraft(targetKey, {
         kind: 'pipeline',
@@ -216,33 +234,130 @@ export function PipelineEditAdapter({
     },
   );
 
+  const projects = useProjectsStore((state) => state.projects);
+  // CAN-5782: a workflow page's schedules, edited on its Trigger tab.
+  const listedInfo = session.pipelineInfo
+    ? pipelines.pipelines.find(
+        (row) => row.source === 'user' && row.id === session.pipelineInfo?.id,
+      )
+    : undefined;
+  const schedules = useWorkflowSchedules({
+    info: session.pipelineInfo,
+    // The list carries the workflow-page facts; it is refreshed after a
+    // Remove that keeps the workflow, so they stay current here.
+    workflowPage: listedInfo?.workflowPage,
+    name: session.name,
+    pipelineDirty: session.isDirty,
+    pipeline: session.pipeline,
+    automations,
+    pipelines,
+    ...(session.canDuplicate ? { onDuplicateWorkflow: session.duplicate } : {}),
+    ...(target.focusScheduleId !== undefined
+      ? { focusScheduleId: target.focusScheduleId }
+      : {}),
+  });
+
+  // CAN-5782: a save that writes an agent-granted workflow's pipeline voids
+  // its grant, so it asks first. Schedule-only saves don't write it.
+  const [grantChoice, setGrantChoice] = useState<
+    ((choice: GrantChoice) => void) | null
+  >(null);
+  const askGrant = useCallback(
+    (): Promise<GrantChoice> =>
+      new Promise((resolve) => {
+        setGrantChoice(() => (choice: GrantChoice): void => {
+          setGrantChoice(null);
+          resolve(choice);
+        });
+      }),
+    [],
+  );
+
   // A failed save, from Save, ⌘S or the unsaved-changes prompt: the item
   // stays dirty, the shell shows why and moves to Definition, where every
   // pipeline field is. A declined save-impact confirm reports no message.
   const [saveFailure, setSaveFailure] = useState<string | null>(null);
   const sessionSave = session.save;
+  const sessionDirty = session.isDirty;
+  const sessionDuplicate = session.duplicate;
+  const { agentGranted, saveAll: saveSchedules } = schedules;
   const save = useCallback(async (): Promise<UnsavedChangesSaveResult> => {
     setSaveFailure(null);
-    const result = await sessionSave();
-    if (!result.ok && result.message !== undefined) {
-      setSaveFailure(result.message);
-      const shown = useNavigationStore.getState().workflowEdit;
-      if (shown !== undefined && workflowEditKey(shown) === targetKey) {
-        setSection('definition');
+    if (sessionDirty) {
+      if (agentGranted) {
+        const choice = await askGrant();
+        if (choice === 'duplicate') sessionDuplicate();
+        if (choice !== 'save') return { ok: false };
+      }
+      const result = await sessionSave();
+      if (!result.ok) {
+        if (result.message !== undefined) {
+          setSaveFailure(result.message);
+          const shown = useNavigationStore.getState().workflowEdit;
+          if (shown !== undefined && workflowEditKey(shown) === targetKey) {
+            setSection('definition');
+          }
+        }
+        return result;
       }
     }
-    return result;
-  }, [sessionSave, targetKey]);
+    // The pipeline first, then each changed schedule, under the name the
+    // pipeline save stored.
+    const scheduled = await saveSchedules(
+      sessionDirty ? savedInfoRef.current?.name : undefined,
+    );
+    if (!scheduled.ok && scheduled.message !== undefined) {
+      setSaveFailure(scheduled.message);
+      const shown = useNavigationStore.getState().workflowEdit;
+      if (shown !== undefined && workflowEditKey(shown) === targetKey) {
+        setSection('trigger');
+      }
+    }
+    return scheduled;
+  }, [
+    agentGranted,
+    askGrant,
+    saveSchedules,
+    sessionDirty,
+    sessionDuplicate,
+    sessionSave,
+    targetKey,
+  ]);
   const requestSave = useCallback((): void => {
     void save();
   }, [save]);
+
+  // A related row (similar pipelines, its skills and plugins) leaves the
+  // page: it saves the way Save does, the grant question and the schedules
+  // included, before it goes.
+  const schedulesDirty = schedules.dirty;
+  const pipelineInfoRef = useRef(session.pipelineInfo);
+  pipelineInfoRef.current = session.pipelineInfo;
+  const relatedNavigate = useCallback(
+    (navigate: (savedPipelineInfo?: PipelineInfo) => void): void => {
+      if (!sessionDirty && !schedulesDirty) {
+        navigate(pipelineInfoRef.current ?? undefined);
+        return;
+      }
+      void save().then((result) => {
+        if (!result.ok) return;
+        const saved = savedInfoRef.current ?? pipelineInfoRef.current;
+        runWithoutNavigationGuard((): void => navigate(saved ?? undefined));
+      });
+    },
+    [save, schedulesDirty, sessionDirty],
+  );
+  const bodySession = useMemo(
+    () => ({ ...session, relatedNavigate }),
+    [relatedNavigate, session],
+  );
 
   // Text typed into the Assistant and not sent is unsaved work too (Sergii's
   // QA, 2026-10-23): leaving asks, and Discard drops it with the edits.
   const assistantDraft = usePipelineAssistantDraft();
   // With only the draft unsaved, Save keeps the draft and writes nothing: a
   // clean pipeline has nothing to save.
-  const sessionIsDirty = session.isDirty;
+  const sessionIsDirty = session.isDirty || schedules.dirty;
   const guardSave = useCallback(
     (): Promise<UnsavedChangesSaveResult> =>
       sessionIsDirty ? save() : Promise.resolve({ ok: true }),
@@ -250,10 +365,12 @@ export function PipelineEditAdapter({
   );
   const sessionDiscard = session.discard;
   const discardAssistantDraft = assistantDraft.discard;
+  const discardSchedules = schedules.discard;
   const discard = useCallback((): void => {
     sessionDiscard();
+    discardSchedules();
     discardAssistantDraft();
-  }, [sessionDiscard, discardAssistantDraft]);
+  }, [sessionDiscard, discardSchedules, discardAssistantDraft]);
   const guard = useWorkflowEditGuard({
     isDirty: sessionIsDirty || (!session.readOnly && assistantDraft.present),
     save: guardSave,
@@ -273,26 +390,28 @@ export function PipelineEditAdapter({
     [pipelines.pipelines, pipelines.shared.rows],
   );
   const enabled = info ? !pipelines.disabledPipelineIds.has(info.id) : true;
-  // A converted chat automation's own pipeline names it (CAN-4551).
-  const owner =
-    info?.source === 'user'
-      ? automations.activities.find(
-          (activity) => activity.ownedPipeline?.pipelineId === info.id,
-        )
-      : undefined;
+  const scheduleIds = useMemo(
+    () => new Set(schedules.records.map((record) => record.id)),
+    [schedules.records],
+  );
   const draft = session.isDraft;
 
   const plan = resolveWorkflowEditPlan({
     kind: 'pipeline',
     readOnly: session.readOnly,
-    dirty: session.isDirty,
-    saving: session.saving || deleting,
+    dirty: sessionIsDirty,
+    saving: session.saving || schedules.saving || deleting,
     draft,
-    canSubmit: session.canSave,
+    // A schedule-only change saves without the pipeline's own checks.
+    canSubmit: session.canSave || (!session.isDirty && schedules.dirty),
     userOwned: session.isUserOwned,
     // A saved pipeline runs once its info has loaded; a draft keeps Run in
-    // place, disabled until its first save.
-    runnable: draft || info !== null,
+    // place, disabled until its first save. The run picker lists only
+    // pipelines it can start, so one that starts only from the Workflows
+    // page (`workflow`, CAN-5782) has no Run here yet.
+    runnable:
+      draft ||
+      (info !== null && !hasOnlyLocalPipelineTriggers(info.triggerTypes)),
     // A draft keeps Share in place, disabled until its first save.
     shareable: draft || session.canShare,
     // The Library offers Delete on a shared pipeline only when allowed.
@@ -304,9 +423,10 @@ export function PipelineEditAdapter({
     kind: 'pipeline',
     ...(info ? { id: info.id } : {}),
     section,
-    dirty: session.isDirty,
+    dirty: sessionIsDirty,
     readonly: session.readOnly,
     draft,
+    ...(schedules.isWorkflowPage ? { scheduleIds: [...scheduleIds] } : {}),
   });
 
   const run = useCallback((): void => {
@@ -474,6 +594,21 @@ export function PipelineEditAdapter({
         }
       : undefined;
 
+  // CAN-5782 phase 09: an edit to these steps reaches every workflow that
+  // uses the pipeline, so Definition says so when there are several. The
+  // list row carries the run-pipeline callers of a user pipeline; any other
+  // pipeline (a project one that hooks run) counts from the opened info.
+  const countedInfo = listedInfo ?? info;
+  const sharedUserCount = countedInfo
+    ? pipelineUserCount(countedInfo, {
+        activities: automations.activities,
+        // Local and cloud rows, so an automation that runs a cloud pipeline
+        // finds it.
+        pipelines: listedPipelines,
+        hookCount: hooksRunningPipeline(projects, countedInfo).length,
+      })
+    : 0;
+
   const renderSection = (id: WorkflowEditSection): ReactNode => {
     if (id === 'definition') {
       return (
@@ -482,16 +617,21 @@ export function PipelineEditAdapter({
           <PipelineEditorNotices
             session={session}
             showDuplicateAction={false}
-          />
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
-            <PipelineEditorBody
-              session={session}
-              returnToEntryId={target.returnToEntryId}
-              returnToEntryContext={target.returnToEntryContext}
-              returnToPipeline={target.returnToPipeline}
-              returnToMarketplace={target.returnToMarketplace}
-            />
-          </div>
+            sharedUserCount={sharedUserCount}
+          >
+            <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
+              <PipelineEditorBody
+                session={bodySession}
+                returnToEntryId={target.returnToEntryId}
+                returnToEntryContext={target.returnToEntryContext}
+                returnToPipeline={target.returnToPipeline}
+                returnToMarketplace={target.returnToMarketplace}
+                {...(schedules.firstScheduleInputs
+                  ? { inputValues: schedules.firstScheduleInputs }
+                  : {})}
+              />
+            </div>
+          </PipelineEditorNotices>
         </div>
       );
     }
@@ -524,12 +664,14 @@ export function PipelineEditAdapter({
               : info.triggerTypes
           }
           {...(onEditTriggers ? { onEditTriggers } : {})}
+          {...(schedules.triggers ? { schedules: schedules.triggers } : {})}
         />
       ) : (
         <PipelineRunsSection
           pipeline={info}
           pipelines={listedPipelines}
           automations={automations}
+          {...(schedules.isWorkflowPage ? { scheduleIds } : {})}
         />
       );
     return <div className="min-h-0 flex-1 overflow-auto pb-8">{content}</div>;
@@ -561,37 +703,16 @@ export function PipelineEditAdapter({
         // The page's bar (CAN-4319) holds the way back and the actions.
         pageBar={{ actionsTarget: pipelines.editActionsTarget }}
         notices={
-          owner ||
           // The editor shows its own load, save and Raw errors on Definition.
-          (saveFailure !== null &&
-            session.error === null &&
-            session.rawYamlError === null) ? (
-            <>
-              {owner ? (
-                <Notice
-                  intent="neutral"
-                  data-testid="pipeline-editor-owned-by"
-                  actions={
-                    <NoticeButton onClick={() => automations.beginEdit(owner)}>
-                      Open automation
-                    </NoticeButton>
-                  }
-                >
-                  This workflow belongs to the automation{' '}
-                  <span className={REPLAY_MASK_CLASS}>{owner.name}</span>.
-                </Notice>
-              ) : null}
-              {saveFailure !== null &&
-              session.error === null &&
-              session.rawYamlError === null ? (
-                <Notice
-                  intent="destructive"
-                  data-testid="pipeline-editor-save-error"
-                >
-                  {saveFailure}
-                </Notice>
-              ) : null}
-            </>
+          saveFailure !== null &&
+          session.error === null &&
+          session.rawYamlError === null ? (
+            <Notice
+              intent="destructive"
+              data-testid="pipeline-editor-save-error"
+            >
+              {saveFailure}
+            </Notice>
           ) : undefined
         }
         onSave={requestSave}
@@ -623,6 +744,21 @@ export function PipelineEditAdapter({
       {session.shareModal}
       {session.shareGateModal}
       {session.saveImpactDialog}
+      {grantChoice !== null ? (
+        <ConfirmDialog
+          title={GRANT_SAVE_TITLE}
+          message={GRANT_SAVE_MESSAGE}
+          confirmLabel="Save anyway"
+          onConfirm={(): void => grantChoice('save')}
+          secondaryAction={{
+            label: 'Duplicate instead',
+            onSelect: (): void => grantChoice('duplicate'),
+            testId: 'workflow-grant-save-duplicate',
+          }}
+          onCancel={(): void => grantChoice('cancel')}
+          dataTestId="workflow-grant-save-confirm"
+        />
+      ) : null}
       {dispatchPipelineModal}
     </>
   );

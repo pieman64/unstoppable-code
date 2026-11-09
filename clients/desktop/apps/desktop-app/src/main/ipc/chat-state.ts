@@ -50,12 +50,12 @@ import {
 } from '@canopy/agent-transcript/lib/visual-ref';
 import { serializeAgentArtifactReceipt } from '@canopy/desktop-shared/lib/agent-artifacts';
 import { isApprovalMode } from '@canopy/desktop-shared/lib/approval-engine';
-import { isModelHarness } from '@canopy/desktop-shared/model-harnesses';
+import { isModelHarness } from '@canopy/execution-engine/model-harnesses';
 import {
   codexSpeedFastMode,
   isCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
-import { isCodexContextWindowSetting } from '@canopy/desktop-shared/lib/codex-context-window';
+} from '@canopy/execution-engine/lib/codex-speed';
+import { isCodexContextWindowSetting } from '@canopy/execution-engine/lib/codex-context-window';
 import { isChatTabPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { registerIpcHandler } from './register';
 import {

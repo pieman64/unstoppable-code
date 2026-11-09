@@ -15,6 +15,7 @@ import {
 import type { WorkspaceNoteItem } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
+  Stack,
   Button,
   DialogFormField,
   EmptyStateRow,
@@ -131,7 +132,7 @@ function EditorModal({
 
   return (
     <DialogModal onClose={onClose} title={heading} maxWidth="md">
-      <div className="space-y-3">
+      <Stack gap="item">
         <DialogFormField label="Title" htmlFor={titleId}>
           <TextInput
             id={titleId}
@@ -153,7 +154,7 @@ function EditorModal({
             />
           </div>
         </DialogFormField>
-        <ErrorBanner error={saveError} className="" />
+        <ErrorBanner className="" error={saveError} />
         <div className="flex justify-end gap-2">
           <Button size="compact" onClick={onClose}>
             Cancel
@@ -167,7 +168,7 @@ function EditorModal({
             {saving ? 'Saving…' : 'Save'}
           </Button>
         </div>
-      </div>
+      </Stack>
     </DialogModal>
   );
 }
@@ -479,7 +480,7 @@ export function WorkspaceMarkdownItemsSection({
         {items.length === 0 ? (
           <EmptyStateRow title={`No ${noun}s yet`} />
         ) : (
-          <div className="space-y-1">
+          <Stack gap="tight">
             {items.map((item) => (
               <ItemRow
                 key={item.id}
@@ -492,7 +493,7 @@ export function WorkspaceMarkdownItemsSection({
                 readOnly={readOnly}
               />
             ))}
-          </div>
+          </Stack>
         )}
       </div>
 

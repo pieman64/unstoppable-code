@@ -55,7 +55,16 @@ export type GitRepositoryWrite =
   | { readonly kind: 'commit-message'; readonly message: string }
   /** The key binds the daemon's recipient lease to this dispatch. */
   | { readonly kind: 'push-head'; readonly key: string }
-  | GitRepositoryMergeWrite;
+  | GitRepositoryMergeWrite
+  | {
+      readonly kind: 'worktree-add';
+      readonly path: string;
+      readonly branch: string;
+      readonly create: boolean;
+      readonly startPoint: string | null;
+    }
+  | { readonly kind: 'worktree-remove'; readonly path: string }
+  | { readonly kind: 'worktree-prune' };
 
 /**
  * The fixed commands `worker.git.fetch` and `worker.git.pull` run (CAN-5517).

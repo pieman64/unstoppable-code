@@ -8,7 +8,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type { TrackedPlanData } from '@canopy/desktop-shared/types';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import type { PipelinePluginCollectionRunContext } from '@/components/activity/PipelineTriggerModal';
 import type { PlanReadyPipelineModalOnRun } from '@/components/chat/PlanReadyPipelineModal';
 import type { SharePlanShareRequest } from '@/components/shared/SharePlanModal';

@@ -9,8 +9,8 @@ import type {
   SharedSkillDetail,
   DesktopSharedSkillDetail,
 } from '@canopy/desktop-shared/types/skills';
-import { classifyResourceOwner } from '@canopy/desktop-shared/lib/resource-context';
-import { normalizeInstallReceiptDisplayNames } from '@canopy/desktop-shared/lib/resource-context-policy';
+import { classifyResourceOwner } from '@canopy/execution-engine/lib/resource-context';
+import { normalizeInstallReceiptDisplayNames } from '@canopy/execution-engine/lib/resource-context-policy';
 import { createResourceInstallReceiptsStore } from '../lib/resource-install-receipts';
 import { readCanopyCloudAccountWithStatus } from '../lib/canopy-cloud-account-store';
 import { listCapabilityPackageInstalls } from '../pipelines/pipeline-package-install-store';

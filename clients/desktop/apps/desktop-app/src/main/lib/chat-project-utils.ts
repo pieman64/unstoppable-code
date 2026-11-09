@@ -1,3 +1,7 @@
+import {
+  ensureWorkspaceWriteDirectory,
+  withCoworkWrite,
+} from './cowork-folder-guard';
 import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ChatProjectData } from '@canopy/desktop-shared/types';
@@ -49,7 +53,7 @@ export const STANDALONE_CHAT_CLAUDE_MD_CONTENT = [
  *   touches the legacy `standalone-chat/{project}/project.json` file, since a
  *   newly created cowork workspace has no legacy on-disk counterpart to seed.
  * - **External** (`externalPath` registered via {@link getWorkspaceExternalPath}):
- *   only ensures the user's chosen directory exists. It deliberately does NOT
+ *   never creates the user's chosen directory. It deliberately does NOT
  *   seed `CLAUDE.md`/`AGENTS.md` or proactively create the `.{brand}/`
  *   managed subfolder there — the user's folder stays untouched until a
  *   managed feature (notes/prompts/attachments) actually writes to it, and
@@ -69,7 +73,7 @@ export async function ensureCoworkHomeScaffold(
 
   const externalPath = getWorkspaceExternalPath(workspaceId);
   if (externalPath !== null) {
-    await mkdir(externalPath, { recursive: true });
+    // Selection and history reads must never recreate a user-owned root.
     return;
   }
 
@@ -157,5 +161,15 @@ export async function syncChatProjectAgentsMd(
   projectId: string,
 ): Promise<void> {
   const workspaceId = resolveCoworkWorkspaceId(projectId);
-  await ensureAgentsMdSymlinkOrCopy(getCoworkWorkspaceRootDir(workspaceId));
+  // Managed blueprint staging seeds instructions before sidebar publication.
+  // This trusted seeder may address that app-owned home; public folder checks
+  // still reject unknown project IDs.
+  if (getWorkspaceExternalPath(workspaceId) === null) {
+    await ensureAgentsMdSymlinkOrCopy(getCoworkWorkspaceRootDir(workspaceId));
+    return;
+  }
+  await withCoworkWrite(workspaceId, async () => {
+    await ensureWorkspaceWriteDirectory(getCoworkWorkspaceRootDir(workspaceId));
+    await ensureAgentsMdSymlinkOrCopy(getCoworkWorkspaceRootDir(workspaceId));
+  });
 }

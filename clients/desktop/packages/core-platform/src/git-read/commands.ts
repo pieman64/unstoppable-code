@@ -21,6 +21,7 @@ export type GitReadEnvironment = Readonly<Record<string, string>>;
  * revisions, each `HEAD` or a full object id.
  */
 export type GitReadCommand =
+  | { readonly kind: 'git-head-commit'; readonly executable: string }
   | { readonly kind: 'git-version'; readonly executable: string }
   /** macOS only: `init --bare` into a fresh directory under `temporaryRoot`. */
   | {
@@ -56,6 +57,7 @@ export type GitReadCommand =
   | { readonly kind: 'getent-passwd'; readonly uid: number }
   /** Windows: `where.exe`, resolved through the supplied PATH only. */
   | { readonly kind: 'where-git' }
+  | { readonly kind: 'where-winget' }
   /** POSIX repository reads for the `worker.git.*` queries (D10). */
   | { readonly kind: 'git-branch-refs'; readonly executable: string }
   | { readonly kind: 'git-common-dir'; readonly executable: string }
@@ -95,6 +97,7 @@ export type GitReadCommandKind = GitReadCommand['kind'];
 
 /** The POSIX repository reads' command kinds. */
 type RepositoryCommandKind =
+  | 'git-head-commit'
   | 'git-branch-refs'
   | 'git-common-dir'
   | 'git-worktree-list'
@@ -275,6 +278,7 @@ const POSIX: readonly PlatformOperatingSystem[] = ['darwin', 'linux'];
 const AVAILABLE: Readonly<
   Record<GitReadCommandKind, readonly PlatformOperatingSystem[]>
 > = {
+  'git-head-commit': POSIX,
   'git-version': ['darwin', 'linux', 'win32'],
   'git-bare-init-smoke': ['darwin'],
   'git-check-ignore': ['darwin', 'linux', 'win32'],
@@ -284,6 +288,7 @@ const AVAILABLE: Readonly<
   'linux-login-shell-path': ['linux'],
   'getent-passwd': ['linux'],
   'where-git': ['win32'],
+  'where-winget': ['win32'],
   'git-branch-refs': POSIX,
   'git-common-dir': POSIX,
   'git-worktree-list': POSIX,
@@ -506,6 +511,7 @@ const REPOSITORY_COMMANDS: ReadonlyMap<string, RepositoryCommandKind> = new Map<
   GitRepositoryRead['kind'],
   RepositoryCommandKind
 >([
+  ['head-commit', 'git-head-commit'],
   ['branch-refs', 'git-branch-refs'],
   ['common-dir', 'git-common-dir'],
   ['worktree-list', 'git-worktree-list'],
@@ -840,6 +846,8 @@ export function planGitReadCommand(
       });
     case 'where-git':
       return plan('where.exe', ['git']);
+    case 'where-winget':
+      return plan('where.exe', ['winget']);
     case 'git-branch-refs':
       return repository(command, [
         'for-each-ref',
@@ -847,6 +855,15 @@ export function planGitReadCommand(
         'refs/heads/',
         'refs/remotes/origin/',
       ]);
+    case 'git-head-commit':
+      return repository(
+        command,
+        ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'],
+        {
+          timeoutMs: 2000,
+          maxBuffer: 4096,
+        },
+      );
     case 'git-common-dir':
       return repository(command, ['rev-parse', '--git-common-dir']);
     case 'git-worktree-list':

@@ -13,6 +13,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -25,15 +26,22 @@ import {
 } from '@playwright/test';
 import { measureE2eHarnessOperation } from '../../../../scripts/lib/e2e-harness-measurement.mjs';
 import {
+  SUPERVISED_RETAIN_FILE_ENV,
+  groupIsRetained,
   killProcessTree,
   listPosixProcesses,
+  parsePosixProcessList,
   posixProcessGroupIsOwned,
   processGroupExists,
+  readRetainedRoot,
+  retainedProcessPids,
+  retainedTreeRows,
 } from '../performance/process-tree-supervisor.mjs';
 import headlessBootstrap from '../performance/browser-profiles-production-headless-bootstrap.cjs';
 import { assertProductionHeadlessTerminal } from '../performance/browser-profiles-evidence.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
+import { RENDERER_GONE_MARKER } from './renderer-gone-marker.mjs';
 
 const currentFilePath = fileURLToPath(import.meta.url);
 const currentDirPath = path.dirname(currentFilePath);
@@ -187,8 +195,6 @@ const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   // Terminals stay in the app; terminal acceptance opts in through Labs.
   'canopy-desktop-labs-daemon-terminals': 'offered',
   'canopy-desktop-labs-daemon-code-graph': 'offered',
-  // Scripts run in the app; the scripts acceptance opts in through Labs.
-  'canopy-desktop-labs-daemon-scripts': 'offered',
   // Chat automations save natively unless a spec opts in through Labs.
   'canopy-desktop-labs-chat-automation-pipelines': 'offered',
   // The Labs page experiments are `offered` (off until switched on) in
@@ -606,7 +612,116 @@ export function registerSupervisedProcessTree(
     pid: supervisedTreePid,
     trackedGroupsFile: tracking.trackedGroupsFile,
     runNonce: tracking.runNonce,
+    retainFile: tracking.retainFile,
   });
+}
+
+// Daemons specs keep across an app quit (CAN-5862), by root PID and `ps`
+// start time. Only killRetainedDaemons and the exit guard below end them: a
+// relaunched app's supervisor doesn't track a daemon it didn't start.
+const retainedDaemons = new Map();
+let retainedDaemonExitGuard = false;
+
+/**
+ * Every process group in a retained daemon's tree, including processes it
+ * held at retention that have since outlived it.
+ */
+function retainedDaemonGroups(rows, root, known) {
+  return [
+    ...new Set(retainedTreeRows(rows, root, known).map((row) => row.pgid)),
+  ].filter((pgid) => pgid > 1);
+}
+
+function killRetainedDaemonsSync() {
+  if (retainedDaemons.size === 0) return;
+  let rows;
+  try {
+    rows = parsePosixProcessList(
+      execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,lstart='], {
+        encoding: 'utf8',
+        env: { ...process.env, LC_ALL: 'C', LANG: 'C', TZ: 'UTC' },
+        timeout: 5_000,
+      }),
+    );
+  } catch {
+    return;
+  }
+  for (const [pid, { startTime, known }] of retainedDaemons) {
+    for (const pgid of retainedDaemonGroups(rows, { pid, startTime }, known)) {
+      try {
+        process.kill(-pgid, 'SIGKILL');
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+  retainedDaemons.clear();
+}
+
+/**
+ * Kill every daemon a spec kept across an app quit, with its pipeline hosts
+ * and steps, and wait (bounded) for their groups to go. Call it in the
+ * spec's cleanup; the process-exit guard covers a cleanup that never ran.
+ */
+export async function killRetainedDaemons({
+  listProcesses = listPosixProcesses,
+  killTree = killProcessTree,
+  treeExists = processGroupExists,
+  delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  deadlineMs = 5_000,
+} = {}) {
+  const signaled = [];
+  for (const [pid, { startTime, known }] of retainedDaemons) {
+    const rows = await listProcesses();
+    for (const pgid of retainedDaemonGroups(rows, { pid, startTime }, known)) {
+      await killTree(pgid, 'SIGKILL');
+      signaled.push(pgid);
+    }
+    retainedDaemons.delete(pid);
+  }
+  const deadline = Date.now() + deadlineMs;
+  while (signaled.some((pgid) => treeExists(pgid)) && Date.now() < deadline)
+    await delay(50);
+}
+
+/** Record the data root's daemon as retained before the app quits. */
+async function retainDaemonAcrossClose(userDataDir, supervisedTree) {
+  const descriptor = path.join(
+    realpathSync(userDataDir),
+    'runtime',
+    'core.json',
+  );
+  const pid = existsSync(descriptor)
+    ? JSON.parse(readFileSync(descriptor, 'utf8')).pid
+    : undefined;
+  const rows = await listPosixProcesses();
+  const root = Number.isInteger(pid)
+    ? rows.find((row) => row.pid === pid)
+    : undefined;
+  if (!root) throw new Error('retainDaemon: no running daemon to retain');
+  // The supervisor's watchdog reaps the daemon once this worker is gone.
+  const controller = rows.find((row) => row.pid === process.pid);
+  if (!controller)
+    throw new Error(
+      'retainDaemon: this test worker is not in the process list',
+    );
+  writeFileSync(
+    supervisedTree.retainFile,
+    JSON.stringify({
+      v: 1,
+      nonce: supervisedTree.runNonce,
+      pid,
+      startTime: root.startTime,
+      controller: { pid: process.pid, startTime: controller.startTime },
+    }),
+  );
+  const known = new Map();
+  retainedTreeRows(rows, { pid, startTime: root.startTime }, known);
+  retainedDaemons.set(pid, { startTime: root.startTime, known });
+  if (!retainedDaemonExitGuard) {
+    retainedDaemonExitGuard = true;
+    process.on('exit', killRetainedDaemonsSync);
+  }
 }
 
 function readSupervisedPosixGroups(
@@ -712,6 +827,7 @@ export async function reapSupervisedProcessTree(
     deadlineMs = 2_000,
     trackedGroupsFile,
     runNonce,
+    retainFile,
     listProcesses = listPosixProcesses,
     readFile = readFileSync,
   } = {},
@@ -728,11 +844,17 @@ export async function reapSupervisedProcessTree(
   const trackedGroups = tracking?.groups ?? [];
   if (!treeExists(supervisedTreePid) && trackedGroups.length === 0) return;
 
+  const retainedRoot =
+    process.platform === 'win32'
+      ? null
+      : readRetainedRoot(retainFile, runNonce, readFile);
   const signaledGroups = [];
   for (const group of trackedGroups) {
     try {
       const rows = await listProcesses();
       if (!posixProcessGroupIsOwned(group, rows)) continue;
+      if (groupIsRetained(group, rows, retainedProcessPids(rows, retainedRoot)))
+        continue;
       await killTree(group.pgid, 'SIGKILL');
       signaledGroups.push(group.pgid);
     } catch {
@@ -2164,7 +2286,6 @@ export function resolveLaunchRuntimeRoot(rootPath) {
  * Helper-created data roots are removed by `closeCanopy` after the supervised
  * process tree is reaped.
  */
-const RENDERER_GONE_MARKER = '[canopy-e2e] render-process-gone';
 
 /**
  * Only main learns why a renderer died. Relay it to the test's stderr so a
@@ -2266,7 +2387,13 @@ async function launchCanopyUnmeasured(options) {
     userDataDir,
     '.e2e-supervised-groups.ndjson',
   );
+  // The record closeCanopy({ retainDaemon }) writes before it quits the app.
+  const supervisedRetainFile =
+    options.retainDaemon === true && process.platform !== 'win32'
+      ? path.join(userDataDir, '.e2e-supervised-retain.json')
+      : undefined;
   try {
+    if (supervisedRetainFile) rmSync(supervisedRetainFile, { force: true });
     const electronArgs = platformElectronArgs(
       userDataDir,
       rendererCodeCacheSchemeElectronArgs(
@@ -2324,6 +2451,9 @@ async function launchCanopyUnmeasured(options) {
         [SUPERVISED_PID_FILE_ENV]: supervisedPidFile,
         [SUPERVISED_GROUPS_FILE_ENV]: supervisedGroupsFile,
         [SUPERVISED_RUN_NONCE_ENV]: supervisedRunNonce,
+        ...(supervisedRetainFile && {
+          [SUPERVISED_RETAIN_FILE_ENV]: supervisedRetainFile,
+        }),
       },
       { preserveProviderState: options.preserveProviderState === true },
     );
@@ -2387,6 +2517,7 @@ async function launchCanopyUnmeasured(options) {
     registerSupervisedProcessTree(electronApp, supervisedTreePid, {
       trackedGroupsFile: supervisedGroupsFile,
       runNonce: supervisedRunNonce,
+      retainFile: supervisedRetainFile,
     });
     trackDaemonDryRunLaunch(electronApp, userDataDir, {
       testInfo: options.testInfo ?? currentPlaywrightTestInfo(),
@@ -2961,6 +3092,7 @@ export async function closeCanopy(electronApp, userDataDir, options = {}) {
 
 async function closeCanopyUnrecorded(electronApp, userDataDir, options) {
   const {
+    retainDaemon = false,
     keepUserData = false,
     reapTree = reapSupervisedProcessTree,
     removeDataDir = removeTestDataDir,
@@ -2989,6 +3121,25 @@ async function closeCanopyUnrecorded(electronApp, userDataDir, options) {
         record?.observe ? record.observe(stage, action) : action();
       const supervisedTree = supervisedProcessTrees.get(electronApp);
       const supervisedTreePid = supervisedTree?.pid;
+      // CAN-5862: keep the daemon (and its runs) running after the app
+      // quits. The app still closes when retention can't be recorded; the
+      // failure is reported after it.
+      let retainError;
+      if (retainDaemon) {
+        try {
+          if (!keepUserData)
+            throw new Error(
+              'retainDaemon needs keepUserData: the daemon uses the data root',
+            );
+          if (!supervisedTree?.retainFile || sidecar)
+            throw new Error(
+              'retainDaemon needs a POSIX launchCanopy({ retainDaemon: true })',
+            );
+          await retainDaemonAcrossClose(userDataDir, supervisedTree);
+        } catch (error) {
+          retainError = error;
+        }
+      }
       const terminalObservation = electronTerminalObservations.get(electronApp);
       // A Windows terminal failure reports these steps, so the next run shows
       // whether the harness forced Electron or its launcher.
@@ -3078,6 +3229,7 @@ async function closeCanopyUnrecorded(electronApp, userDataDir, options) {
             reapTree(supervisedTreePid, {
               trackedGroupsFile: supervisedTree.trackedGroupsFile,
               runNonce: supervisedTree.runNonce,
+              retainFile: supervisedTree.retainFile,
             }),
           );
           trace('reap-complete');
@@ -3139,6 +3291,7 @@ async function closeCanopyUnrecorded(electronApp, userDataDir, options) {
       };
       if (sidecar) {
         await closeWithRetainedFailures(close, cleanup);
+        if (retainError) throw retainError;
         return;
       }
       if (terminalObservation) {
@@ -3151,6 +3304,7 @@ async function closeCanopyUnrecorded(electronApp, userDataDir, options) {
             closeSteps,
           });
         });
+        if (retainError) throw retainError;
         return;
       }
       // Preserve ordinary E2E teardown behavior; the retained-failure branch is
@@ -3160,6 +3314,7 @@ async function closeCanopyUnrecorded(electronApp, userDataDir, options) {
       } finally {
         await cleanup();
       }
+      if (retainError) throw retainError;
     },
   );
 }

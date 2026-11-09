@@ -47,6 +47,15 @@ interface PendingOutput {
   scriptKey: string;
   lines: string[];
   script: ScriptDescriptor;
+  runId?: string;
+}
+
+interface ScriptRunIdentity {
+  token: symbol;
+  runId?: string;
+  awaitingStart: boolean;
+  completionReceived: boolean;
+  failureNotified: boolean;
 }
 
 let outputBuffer: IdleOutputBuffer<PendingOutput> | null = null;
@@ -142,26 +151,29 @@ interface ScriptsState {
     projectId: string,
     worktreeId: string,
     script: ScriptDescriptor,
-  ) => void;
+  ) => symbol;
   startRunFromEvent: (event: ScriptStartedEvent) => void;
   appendOutput: (event: ScriptOutputEvent) => void;
   markStopping: (
     projectId: string,
     worktreeId: string,
     scriptKey: string,
-  ) => boolean;
+  ) => symbol | false;
   completeRun: (
     projectId: string,
     worktreeId: string,
     scriptKey: string,
     response: ScriptRunResponse,
+    token?: symbol,
   ) => void;
   completeStaleRun: (
     projectId: string,
     worktreeId: string,
     scriptKey: string,
+    token?: symbol,
   ) => void;
-  completeRunFromEvent: (event: ScriptCompleteEvent) => void;
+  completeRunFromEvent: (event: ScriptCompleteEvent) => boolean;
+  claimFailureNotification: (event: ScriptCompleteEvent) => boolean;
   loadWorktreeRuns: (projectId: string, worktreeId: string) => Promise<void>;
   unloadWorktreeRuns: (projectId: string, worktreeId: string) => void;
   cleanupWorktree: (projectId: string, worktreeId: string) => void;
@@ -348,10 +360,59 @@ function applyBatchToRuns(
 }
 
 export const useScriptsStore = create<ScriptsState>((set, get) => {
+  // Keep one identity per current script, including unloaded worktrees whose
+  // events still notify. Local tokens associate invoke responses with the
+  // start that issued them; lifecycle messages use the service's existing ID.
+  const identities = new Map<string, Map<string, ScriptRunIdentity>>();
+  const identityFor = (
+    wk: string,
+    scriptKey: string,
+  ): ScriptRunIdentity | undefined => identities.get(wk)?.get(scriptKey);
+  const setIdentity = (
+    wk: string,
+    scriptKey: string,
+    runId?: string,
+    awaitingStart = false,
+  ): ScriptRunIdentity => {
+    const identity: ScriptRunIdentity = {
+      token: Symbol(),
+      runId,
+      awaitingStart,
+      completionReceived: false,
+      failureNotified: false,
+    };
+    const worktree: Map<string, ScriptRunIdentity> =
+      identities.get(wk) ?? new Map<string, ScriptRunIdentity>();
+    worktree.set(scriptKey, identity);
+    identities.set(wk, worktree);
+    return identity;
+  };
+  const acceptsEvent = (
+    wk: string,
+    scriptKey: string,
+    runId: string | undefined,
+  ): boolean => {
+    if (runId === undefined) return true;
+    const current = identityFor(wk, scriptKey);
+    return (
+      current === undefined ||
+      (!current.awaitingStart && current.runId === undefined) ||
+      current.runId === runId
+    );
+  };
   const buffer = createIdleOutputBuffer<PendingOutput>({
     getWorktreeKey: (item) => worktreeKey(item.projectId, item.worktreeId),
     flushBatch: (batch) => {
-      set((state) => ({ runs: applyBatchToRuns(state.runs, batch) }));
+      const current = batch.filter((item) =>
+        acceptsEvent(
+          worktreeKey(item.projectId, item.worktreeId),
+          item.scriptKey,
+          item.runId,
+        ),
+      );
+      if (current.length > 0) {
+        set((state) => ({ runs: applyBatchToRuns(state.runs, current) }));
+      }
     },
     minFlushIntervalMs: 250,
   });
@@ -364,8 +425,9 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
       projectId: string,
       worktreeId: string,
       script: ScriptDescriptor,
-    ): void => {
+    ): symbol => {
       const wk = worktreeKey(projectId, worktreeId);
+      const identity = setIdentity(wk, script.scriptKey, undefined, true);
       loadedWorktreeKeys.add(wk);
       set((state) => {
         const nextRun: ScriptRunState = createRunState(script);
@@ -380,17 +442,29 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
           },
         };
       });
+      return identity.token;
     },
 
     startRunFromEvent: (event: ScriptStartedEvent): void => {
-      if (
-        !loadedWorktreeKeys.has(worktreeKey(event.projectId, event.worktreeId))
-      ) {
-        return;
+      const wk = worktreeKey(event.projectId, event.worktreeId);
+      const current = identityFor(wk, event.script.scriptKey);
+      if (event.runId !== undefined && current?.runId === event.runId) return;
+      if (current?.awaitingStart) {
+        current.runId = event.runId;
+        current.awaitingStart = false;
+      } else {
+        setIdentity(wk, event.script.scriptKey, event.runId);
       }
-      useScriptsStore
-        .getState()
-        .startRun(event.projectId, event.worktreeId, event.script);
+      if (!loadedWorktreeKeys.has(wk)) return;
+      set((state) => ({
+        runs: {
+          ...state.runs,
+          [wk]: {
+            ...state.runs[wk],
+            [event.script.scriptKey]: createRunState(event.script),
+          },
+        },
+      }));
     },
 
     appendOutput: (event: ScriptOutputEvent): void => {
@@ -404,6 +478,7 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
         scriptKey: event.script.scriptKey,
         lines: event.lines,
         script: event.script,
+        runId: event.runId,
       });
     },
 
@@ -411,7 +486,7 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
       projectId: string,
       worktreeId: string,
       scriptKey: string,
-    ): boolean => {
+    ): symbol | false => {
       const wk = worktreeKey(projectId, worktreeId);
       const worktreeRuns = get().runs[wk];
       if (!worktreeRuns) return false;
@@ -432,7 +507,7 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
         },
       }));
 
-      return true;
+      return (identityFor(wk, scriptKey) ?? setIdentity(wk, scriptKey)).token;
     },
 
     completeRun: (
@@ -440,8 +515,16 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
       worktreeId: string,
       scriptKey: string,
       response: ScriptRunResponse,
+      token?: symbol,
     ): void => {
       const wk = worktreeKey(projectId, worktreeId);
+      const identity = identityFor(wk, scriptKey);
+      if (
+        token !== undefined &&
+        (identity?.token !== token || identity.completionReceived)
+      ) {
+        return;
+      }
       set((state) => {
         const worktreeRuns = state.runs[wk];
         if (!worktreeRuns) return state;
@@ -470,8 +553,12 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
       projectId: string,
       worktreeId: string,
       scriptKey: string,
+      token?: symbol,
     ): void => {
       const wk = worktreeKey(projectId, worktreeId);
+      if (token !== undefined && identityFor(wk, scriptKey)?.token !== token) {
+        return;
+      }
       set((state) => {
         const worktreeRuns = state.runs[wk];
         if (!worktreeRuns) return state;
@@ -496,8 +583,15 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
       });
     },
 
-    completeRunFromEvent: (event: ScriptCompleteEvent): void => {
+    completeRunFromEvent: (event: ScriptCompleteEvent): boolean => {
       const wk = worktreeKey(event.projectId, event.worktreeId);
+      if (!acceptsEvent(wk, event.script.scriptKey, event.runId)) return false;
+      const identity =
+        identityFor(wk, event.script.scriptKey) ??
+        setIdentity(wk, event.script.scriptKey, event.runId);
+      identity.runId = event.runId ?? identity.runId;
+      identity.completionReceived = true;
+      buffer.flush();
       set((state) => {
         const worktreeRuns = state.runs[wk] ?? {};
         if (!loadedWorktreeKeys.has(wk) && state.runs[wk] === undefined) {
@@ -522,6 +616,21 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
           },
         };
       });
+      return true;
+    },
+
+    claimFailureNotification: (event: ScriptCompleteEvent): boolean => {
+      // Older producers have no reliable identity; preserve their behavior.
+      if (event.runId === undefined) return true;
+      const identity = identityFor(
+        worktreeKey(event.projectId, event.worktreeId),
+        event.script.scriptKey,
+      );
+      if (identity?.runId !== event.runId || identity.failureNotified) {
+        return false;
+      }
+      identity.failureNotified = true;
+      return true;
     },
 
     loadWorktreeRuns: async (
@@ -588,6 +697,7 @@ export const useScriptsStore = create<ScriptsState>((set, get) => {
 
     cleanupWorktree: (projectId: string, worktreeId: string): void => {
       const wk = worktreeKey(projectId, worktreeId);
+      identities.delete(wk);
       loadedWorktreeKeys.delete(wk);
       buffer.removeWorktree(wk);
       set((state) => {

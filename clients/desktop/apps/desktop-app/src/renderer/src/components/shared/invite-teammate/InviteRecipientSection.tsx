@@ -225,7 +225,7 @@ export function InviteRecipientSection({
       {!eligible ? null : byEmail ? (
         <div
           ref={fieldRef}
-          className="space-y-3"
+          className="flex flex-col gap-3"
           data-testid="shared-container-invite-modal-email"
         >
           <EmailRecipientInput

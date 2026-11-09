@@ -25,7 +25,7 @@ import {
   emptyHelperAgentPluginRuntime,
   type HelperAgentPluginRuntime,
 } from '@canopy/desktop-shared/lib/helper-agent-plugins';
-import type { HelperUsage } from '@canopy/desktop-shared/lib/helper-usage';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import { readPreferencesFile } from '../lib/preferences-store';
 import {
   getClaudeWorkerSessionService,
@@ -36,22 +36,22 @@ import { READ_ONLY_TOOLS } from '@canopy/desktop-shared/builtin-actions/agent-pr
 import { getEffectiveClaudeWorkerModePreferences } from '../lib/claude-tui-workers';
 import { codexRuntimeForWorkerRun } from '../codex/runtime-service';
 import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
-import { resolveCodexMockAppServerOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import { resolveCodexMockAppServerOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import { createHash } from 'node:crypto';
 import {
   codexServiceTierForModelConfig,
   mapThinkingToReasoningEffort,
   type CodexConfig,
   type CodexConfigValue,
-} from '@canopy/desktop-shared/lib/codex-model-config';
+} from '@canopy/execution-engine/lib/codex-model-config';
 import { prepareCodexReportOnlyThread } from './codex-report-only';
-import { codexNativeMemoryThreadConfig } from '@canopy/desktop-shared/node/lib/native-memory';
+import { codexNativeMemoryThreadConfig } from '@canopy/execution-engine/node/lib/native-memory';
 import { resolveCodexRuntimeEnvironmentProfile } from '../lib/user-environment-runtime';
 import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
 import {
   runWithTransientAgentRetry,
   AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 import type {
   CodexSpawnProfileRequest,
   CodexThreadHandle,
@@ -60,7 +60,7 @@ import { spawnClaudeCodeProcessOffMain } from '../agents/claude-process-host-run
 import {
   DEFAULT_CODEX_SPEED,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   admitCodexSpeed,
   reportCodexSpeedTurnFailure,

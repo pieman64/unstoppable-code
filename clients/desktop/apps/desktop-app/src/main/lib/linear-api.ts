@@ -1,3 +1,8 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
+import {
+  classifyFetchFailure,
+  retryAtFromDelay,
+} from '@canopy/desktop-shared/node/lib/app-error-classification';
 /**
  * Every Linear request Electron main makes, without `@linear/sdk`.
  *
@@ -128,6 +133,12 @@ export class LinearApiError extends Error {
     this.status = status;
     this.retryAfterMs = retryAfterMs;
     this.notFound = notFound;
+    if (type === 'ratelimited')
+      classifyError(this, 'external.rate_limited', {
+        retryAt: retryAtFromDelay(retryAfterMs),
+      });
+    if (status !== null && status >= 500 && status <= 599)
+      classifyError(this, 'external.service_unavailable');
   }
 }
 
@@ -203,7 +214,7 @@ interface ApiResponse {
 type BodyReadResult =
   | { readonly kind: 'read'; readonly bytes: Uint8Array }
   | { readonly kind: 'too_large' }
-  | { readonly kind: 'failed' };
+  | { readonly kind: 'failed'; readonly failure: unknown };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -318,7 +329,19 @@ function readChunk(
   return new Promise((resolve, reject) => {
     const onAbort = (): void => {
       void reader.cancel().catch(() => undefined);
-      reject(new Error('Linear response read aborted'));
+      const reason: unknown = signal.reason;
+      reject(
+        reason instanceof Error
+          ? reason
+          : Object.defineProperty(
+              new Error('Linear response read aborted'),
+              'cause',
+              {
+                value: reason,
+                configurable: true,
+              },
+            ),
+      );
     };
     if (signal.aborted) {
       onAbort();
@@ -330,9 +353,13 @@ function readChunk(
         signal.removeEventListener('abort', onAbort);
         resolve(result);
       },
-      () => {
+      (failure: unknown) => {
         signal.removeEventListener('abort', onAbort);
-        reject(new Error('Linear response read failed'));
+        reject(
+          failure instanceof Error
+            ? failure
+            : new Error('Linear response read failed'),
+        );
       },
     );
   });
@@ -364,9 +391,9 @@ async function readResponseBody(
       offset += chunk.byteLength;
     }
     return { kind: 'read', bytes };
-  } catch {
+  } catch (failure) {
     void reader.cancel().catch(() => undefined);
-    return { kind: 'failed' };
+    return { kind: 'failed', failure };
   } finally {
     try {
       reader.releaseLock();
@@ -398,13 +425,16 @@ function responseError(
   const errors = isRecord(payload) ? payload.errors : null;
   if (Array.isArray(errors) && errors.length > 0) {
     const firstError: unknown = errors[0];
-    return new LinearApiError(
+    const error = new LinearApiError(
       operation,
       graphqlErrorType(firstError),
       response.status,
       retryAfterMs,
       hasEntityNotFound(errors),
     );
+    if (error.type === 'authentication')
+      classifyError(error, 'external.sign_in_required');
+    return error;
   }
   if (!response.ok) {
     return new LinearApiError(
@@ -463,13 +493,19 @@ async function request(parameters: RequestParameters): Promise<ApiResponse> {
       );
     }
     if (body.kind === 'failed') {
-      throw new LinearApiError(
+      const failure = new LinearApiError(
         parameters.operation,
         'network',
         response.status,
         retryAfterMs,
         false,
       );
+      // Keep the public error free of provider data. Only its classification
+      // uses the read's diagnostics; an existing HTTP classification wins.
+      throw parameters.signal?.aborted ||
+        (response.status >= 500 && response.status <= 599)
+        ? failure
+        : classifyFetchFailure(body.failure, failure);
     }
 
     let payload: unknown = null;
@@ -503,13 +539,16 @@ async function request(parameters: RequestParameters): Promise<ApiResponse> {
     return { data, status: response.status, retryAfterMs };
   } catch (error: unknown) {
     if (isLinearApiError(error)) throw error;
-    throw new LinearApiError(
+    const result = new LinearApiError(
       parameters.operation,
       'network',
       response?.status ?? null,
       response ? readRetryAfter(response) : null,
       false,
     );
+    throw parameters.signal?.aborted
+      ? result
+      : classifyFetchFailure(error, result);
   }
 }
 

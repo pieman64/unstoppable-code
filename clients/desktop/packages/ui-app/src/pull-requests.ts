@@ -82,6 +82,10 @@ export {
   type BaseBranchDrift,
 } from './code/pull-requests/BaseBranchDrift';
 export {
+  PullRequestActionError,
+  type PullRequestActionErrorProps,
+} from './code/pull-requests/PullRequestActionError';
+export {
   PrMergeWarningDialog,
   type PrMergeWarningDialogProps,
 } from './code/pull-requests/PrMergeWarningDialog';

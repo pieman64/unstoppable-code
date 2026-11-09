@@ -415,6 +415,38 @@ export interface AccountProxySwitchBlock {
   sourceEventId?: string;
 }
 
+/** Main's session event when a Claude launch skipped one or more Mods. */
+export const CANOPY_CLAUDE_MODS_SKIPPED_EVENT_TYPE =
+  'canopy_claude_mods_skipped';
+
+/** Why a launch skipped a plugin's Mod (Claude Mods safety phase 04). */
+export type ClaudeModSkippedReason =
+  | 'not-admitted'
+  | 'digest-changed'
+  | 'kill-switch'
+  | 'authority-unreadable'
+  | 'inspection-failed'
+  | 'projection-failed';
+
+export interface ClaudeModsSkippedEntry {
+  /** The Claude plugin id, `<plugin>@<marketplace>`. */
+  pluginId: string;
+  reason: ClaudeModSkippedReason;
+}
+
+/**
+ * A line where a Claude launch skipped plugins' Mods while Mod admission was
+ * on: the plugins and why. Path-free; shared chats leave it out.
+ */
+export interface ClaudeModsSkippedBlock {
+  type: 'claude_mods_skipped';
+  /** Unix-ms when the launch started. */
+  timestamp: number;
+  mods: ClaudeModsSkippedEntry[];
+  /** Identifies the launch so a replayed event is not shown twice. */
+  sourceEventId?: string;
+}
+
 export type PersistedChatBlock =
   | {
       type: 'mcp_activation';
@@ -575,6 +607,7 @@ export type PersistedChatBlock =
   | CompactionInfoBlock
   | ClaudeTerminalSyncWarningBlock
   | AccountProxySwitchBlock
+  | ClaudeModsSkippedBlock
   | {
       type: 'rebase_resolution_info';
       kind: 'rebase_conflict' | 'stash_pop_conflict';

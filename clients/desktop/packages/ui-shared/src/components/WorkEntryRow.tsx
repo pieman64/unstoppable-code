@@ -1,5 +1,6 @@
 'use client';
 
+import { Dot } from './Badge';
 import {
   memo,
   useCallback,
@@ -630,7 +631,7 @@ function WorkEntryRowImpl({
       onContextMenu={hasMenu ? handleContextMenu : undefined}
       onPointerDown={dragBinding ? handlePointerDown : undefined}
       onKeyDown={handleKeyDown}
-      className={`group group/sidebar-item relative flex ${touchTarget ? 'min-h-11' : 'h-8'} w-full cursor-default items-center gap-1.5 rounded-row px-1.5 py-0 text-left text-s transition-opacity ${
+      className={`group group/sidebar-item relative flex ${touchTarget ? 'min-h-11' : 'h-8'} w-full items-center gap-1.5 rounded-row px-1.5 py-0 text-left text-s transition-opacity ${
         dragBinding ? 'touch-none select-none' : ''
       } ${multiSelected ? 'bg-muted fg-primary' : selected && !multiSelect?.active ? 'bg-muted fg-primary' : `fg-secondary hover:bg-subtle${menuOpen && marksRowWhileMenuOpen ? ' bg-subtle' : ''}`} ${
         removing ? 'pointer-events-none opacity-50' : ''
@@ -1018,10 +1019,7 @@ export function WorkEntryRowTrailingStatus({
           aria-label="Question waiting"
           data-testid={testIdFor('-question')}
         >
-          <span
-            className="h-2 w-2 rounded-full bg-fg-warning"
-            aria-hidden="true"
-          />
+          <Dot tone="attention" />
         </span>
       )}
       {attentionDot === 'unread' && (
@@ -1030,10 +1028,7 @@ export function WorkEntryRowTrailingStatus({
           aria-label="Unread messages"
           data-testid={testIdFor('-unread')}
         >
-          <span
-            className={`h-2 w-2 rounded-full ${SIDEBAR_INDICATOR_BLUE.background}`}
-            aria-hidden="true"
-          />
+          <Dot tone="unread" />
         </span>
       )}
     </span>

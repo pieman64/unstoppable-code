@@ -34,7 +34,7 @@ import {
   type CodexSpeed,
   readCodexSpeedRecord,
   withCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import type { AgentModelConfig } from '@canopy/desktop-shared/types';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
@@ -44,7 +44,7 @@ import {
   type PipelineData,
   type PipelineInputDef,
   type PipelinePreferenceLocator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { sendToWindow } from './window-send';
 import {
   createPipelineExecutionId,

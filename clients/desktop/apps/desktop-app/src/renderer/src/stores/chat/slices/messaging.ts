@@ -2482,6 +2482,11 @@ export const createMessagingSlice: StateCreator<
       .getState()
       .getStateForChat(sel.projectId, sel.worktreeId, chatId);
     const providerTypeForSend = resolveTabProviderType(tab);
+    if (providerTypeForSend === 'ollama') {
+      useOllamaConnectionBannerStore
+        .getState()
+        .recordSendTarget(ollamaBannerTarget);
+    }
     const shouldStartFreshAppAdvisorNativeSession =
       shouldStartFreshNativeAppAdvisorSessionAfterTerminal(
         sel,
@@ -3381,6 +3386,7 @@ export const createMessagingSlice: StateCreator<
           input.userMessageId,
           input.attemptId,
           input.failure,
+          input.refusedBeforeDispatch === true,
         ),
       ),
     );

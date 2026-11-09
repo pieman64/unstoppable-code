@@ -1,6 +1,9 @@
 import { useEffect } from 'react';
 import { useHooksStore } from '@/stores/hooksStore';
 import { useGitHubStore } from '@/stores/githubStore';
+import { addFailureToast, type ToastMeta } from '@/stores/toastStore';
+import { worktreeToastOrigin } from '@/lib/toastWorktreeNavigation';
+import { ownWorkToastError } from '@canopy/ui-shared/lib';
 import { useProjectsStore } from '@/stores/projectsStore';
 import type {
   HookCompleteEvent,
@@ -114,19 +117,39 @@ export function useHookEventSubscriptions(): void {
         const project = useProjectsStore
           .getState()
           .projects.find((entry) => entry.id === event.projectId);
+        const meta: ToastMeta = {
+          category: 'Hook',
+          workspaceName: project?.name,
+          projectId: event.projectId,
+          worktreeId: event.worktreeId,
+        };
         // Hooks are automated work in the space: a failed run is a failure,
-        // a stopped or skipped one is routine (CAN-3615).
+        // a stopped or skipped one is routine (CAN-3615). Hook events carry no
+        // run ID or time, so a later success can't safely clear a failure.
+        if (toast.type === 'error') {
+          addFailureToast({
+            message: toast.message,
+            error: ownWorkToastError(toast.message),
+            origin: worktreeToastOrigin(event.projectId, event.worktreeId),
+            meta: {
+              ...meta,
+              notificationScope: {
+                projectId: event.projectId,
+                worktreeId: event.worktreeId,
+                eventClass: 'failure',
+              },
+            },
+          });
+          return;
+        }
         useGitHubStore
           .getState()
-          .addToast(toast.message, toast.type, undefined, {
-            category: 'Hook',
-            workspaceName: project?.name,
-            projectId: event.projectId,
-            worktreeId: event.worktreeId,
+          .addToast(toast.message, 'warning', undefined, {
+            ...meta,
             notificationScope: {
               projectId: event.projectId,
               worktreeId: event.worktreeId,
-              eventClass: toast.type === 'error' ? 'failure' : 'routine',
+              eventClass: 'routine',
             },
           });
       },

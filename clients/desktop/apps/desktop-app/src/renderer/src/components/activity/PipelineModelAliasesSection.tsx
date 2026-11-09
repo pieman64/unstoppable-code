@@ -12,7 +12,7 @@ import type {
   PipelineModelAlias,
   PipelineModelAliasPreference,
   PipelinePluginCollection,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { PipelineModelAliasEditor } from './PipelineModelAliasEditor';
 import { Heading } from '@canopy/ui-shared/components';
 
@@ -40,7 +40,7 @@ export function PipelineModelAliasesSection({
 
   return (
     <section
-      className="space-y-1.5"
+      className="flex flex-col gap-1.5"
       data-testid="pipeline-model-aliases-section"
     >
       <Heading level={3} variant="label">
@@ -51,7 +51,7 @@ export function PipelineModelAliasesSection({
         are used as the baseline when available.
       </p>
 
-      <div className="space-y-2 pt-1">
+      <div className="flex flex-col pt-1 gap-2">
         {aliases.map((alias) => (
           <PipelineModelAliasEditor
             key={alias.id}

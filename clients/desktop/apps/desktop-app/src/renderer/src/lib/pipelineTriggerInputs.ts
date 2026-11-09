@@ -3,8 +3,8 @@ import type {
   PipelineInputDef,
   PipelineInputValue,
   PipelineTriggerType,
-} from '@canopy/desktop-shared/types/pipeline';
-import { getTriggerInputDefs } from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
+import { getTriggerInputDefs } from '@canopy/execution-engine/types/pipeline';
 import { isPipelineInputValue } from '@canopy/desktop-shared/pipelines/json-values';
 import type { NormalizedPipeline } from '@canopy/desktop-shared/pipelines/types';
 import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';

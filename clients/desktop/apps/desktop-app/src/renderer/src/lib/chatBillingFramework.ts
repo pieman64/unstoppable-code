@@ -6,7 +6,7 @@
 //
 //   1. the selected model's capability (can it route through the gateway? is it
 //      gateway-only?), via the browser-safe
-//      `@canopy/desktop-shared/lib/gateway-model-availability` helpers,
+//      `@canopy/execution-engine/lib/gateway-model-availability` helpers,
 //   2. the account's availability (native login and/or an AI Credits balance),
 //      via the `ProviderModelAvailability` shape, and
 //   3. the stored per-tab preference plus the live main-process routing bit.
@@ -28,7 +28,7 @@ import {
   isGatewayOnlyModel,
   isGatewayRoutableModel,
   resolveGatewayModelEntry,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import type { ProviderModelAvailability } from '@/hooks/useProviderAvailability';
 import { getProviderLabel } from '@/lib/providerLabels';
 

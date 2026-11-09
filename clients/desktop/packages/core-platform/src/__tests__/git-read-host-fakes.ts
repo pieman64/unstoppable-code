@@ -190,8 +190,10 @@ function answer(world: World, command: GitReadCommand): GitReadOutput {
       return world.developerDir === null
         ? output('', 1)
         : output(world.developerDir);
-    case 'where-git': {
-      const listed = world.whereExe.git;
+    case 'where-git':
+    case 'where-winget': {
+      const listed =
+        world.whereExe[command.kind === 'where-git' ? 'git' : 'winget'];
       return listed === undefined ? output('', 1) : output(listed);
     }
     case 'git-version':
@@ -209,6 +211,7 @@ function answer(world: World, command: GitReadCommand): GitReadOutput {
       throw new Error('check-ignore runs through checkIgnoredPathsSelected');
     case 'git-ls-files-ignored':
       throw new Error('ls-files runs through listIgnoredPathsSelected');
+    case 'git-head-commit':
     case 'git-branch-refs':
     case 'git-common-dir':
     case 'git-worktree-list':
@@ -425,11 +428,10 @@ export const DIVERGENCES = {
     'macOS probes get SHELL, USER and LOGNAME from the account, which a GUI-launched desktop inherits.',
   'probe-directory-cwd':
     "Validation and discovery probes run in the trusted probe directory; desktop's GUI cwd is /.",
-  'no-winget-probe': 'Windows detection never looks for winget.',
   'detection-deadline':
     'One 30 s deadline bounds a request, so a cold first listing may show nothing ignored; desktop waits.',
   'overlay-keying-and-ttl':
-    'A rejected explicit value stays rejected while its stat identity is unchanged, for 5 minutes; a changed identity (a retargeted symlink) re-selects at once, except that a repaired override behind a selected fallback waits until detection re-runs.',
+    'Outside Windows, a rejected explicit value stays rejected while its stat identity is unchanged for 5 minutes. Spawn fast paths on all hosts keep a fallback until detection re-runs; Windows status observations always revalidate.',
   'windows-absolute-path':
     'Windows accepts only host-absolute saved values and candidates; desktop resolves relative ones against its cwd.',
   'other-linux-snapshot-path':

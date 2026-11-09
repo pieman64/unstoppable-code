@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import type { InheritedCursorRoots } from '@canopy/desktop-shared/node/cursor/inherited-capabilities';
 import {
   resolveClaudeConfigDir,

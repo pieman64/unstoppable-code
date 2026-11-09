@@ -1,5 +1,7 @@
 'use client';
 
+import { Stack } from '@canopy/ui-shared/components/Stack';
+
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
@@ -434,248 +436,252 @@ function ModelPolicyCard({
           ) : null}
         </div>
       </div>
-      <div className={SETTINGS_CARD_GROUP_CLASS}>
-        <ErrorBanner
-          className="mt-3"
-          error={error?.copy}
-          details={error?.details}
-        />
-        <ErrorBanner
-          className="mt-3"
-          error={loadError?.copy}
-          details={loadError?.details}
-          onRetry={retryLoad}
-        />
-        {/* Its own banner: a save clears `error` and must not take an
+      <div
+        className={`${SETTINGS_CARD_GROUP_CLASS} flex flex-col ${entitlementResolved && enforcing !== null && catalogReady && entitled !== true && !relaxOnly ? 'gap-0' : 'gap-4'}`}
+      >
+        <Stack gap="item" className="empty:hidden">
+          <ErrorBanner
+            className=""
+            error={error?.copy}
+            details={error?.details}
+          />
+          <ErrorBanner
+            className=""
+            error={loadError?.copy}
+            details={loadError?.details}
+            onRetry={retryLoad}
+          />
+          {/* Its own banner: a save clears `error` and must not take an
               unresolved plan-read failure with it. */}
-        <ErrorBanner
-          className="mt-3"
-          // One load banner: both share the same copy and Retry.
-          error={loadError === null ? entitlementError?.copy : null}
-          details={loadError === null ? entitlementError?.details : undefined}
-          onRetry={retryLoad}
-        />
-
-        {!entitlementResolved || enforcing === null || !catalogReady ? (
-          <div className="mt-4" data-testid="model-policy-pending">
-            <DelayedLoadingPlaceholder>
-              <ModelPolicySkeleton />
-            </DelayedLoadingPlaceholder>
-          </div>
-        ) : entitled === true || relaxOnly ? (
-          <>
-            <div className="mt-4">
-              <SettingsRowsRow
-                label="Enforce member model access policy"
-                description="Members can only use the models you choose from an enabled policy."
-                control={
-                  <ToggleSwitch
-                    label="Enforce member model access policy"
-                    checked={enforcing}
-                    disabled={saving}
-                    dataTestId="enforce-member-model-policy-checkbox"
-                    onChange={handleMasterChange}
-                  />
-                }
-              />
+          <ErrorBanner
+            className=""
+            // One load banner: both share the same copy and Retry.
+            error={loadError === null ? entitlementError?.copy : null}
+            details={loadError === null ? entitlementError?.details : undefined}
+            onRetry={retryLoad}
+          />
+        </Stack>
+        <div>
+          {!entitlementResolved || enforcing === null || !catalogReady ? (
+            <div data-testid="model-policy-pending">
+              <DelayedLoadingPlaceholder>
+                <ModelPolicySkeleton />
+              </DelayedLoadingPlaceholder>
             </div>
-            {relaxOnly ? (
-              <Notice
-                intent="attention"
-                icon={<Lock size={14} />}
-                className="mt-3"
-                data-testid="model-policy-relax-only-note"
-              >
-                Your plan no longer includes a model policy, but the one you set
-                is still in force for your members, and models released since
-                your last save are blocked too. From here you can turn
-                enforcement off or allow models it blocks. To block a model
-                again, or to turn enforcement back on later, you&apos;ll need
-                the capability back.{' '}
-                <SettingsLink
-                  href={billingHref}
-                  data-testid="model-policy-relax-only-upgrade"
-                  className="underline fg-accent"
-                >
-                  {upgradeText}
-                </SettingsLink>
-              </Notice>
-            ) : null}
-          </>
-        ) : (
-          /*
-           * Painted door, for an org with no capability AND no live policy
-           * (enforcement off, or a plan read that never resolved). The switch
-           * stays VISIBLE so the capability is discoverable, but the model
-           * list never renders: showing an uneditable list of models would
-           * read as a policy this org has, and it has none. An org that IS
-           * still enforcing gets the relax-only controls above instead, since
-           * for it the policy is real and it needs a way out.
-           */
-          <Tooltip
-            label={
-              <span className="block max-w-64 whitespace-normal">
-                Your plan doesn&apos;t include a model policy, so members may
-                use any model.
-              </span>
-            }
-            link={{
-              href: billingHref,
-              text: upgradeText,
-              external: false,
-            }}
-          >
-            <span
-              className="mt-4 flex cursor-not-allowed items-start gap-3 opacity-60"
-              data-testid="model-policy-upgrade-cta"
-            >
-              <Lock
-                size={14}
-                aria-hidden="true"
-                className="mt-0.5 fg-secondary/70"
-              />
-              <span className="min-w-0">
-                <span className="block text-s font-medium fg-primary">
-                  Enforce member model access policy
-                </span>
-                <span className="block text-xs fg-secondary">
-                  {requiredPlanName
-                    ? `Available on ${requiredPlanName}.`
-                    : 'Not included in your plan.'}
-                </span>
-              </span>
-            </span>
-          </Tooltip>
-        )}
-
-        {showList ? (
-          <>
-            {pendingReviewIds.length > 0 ? (
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-                <p
-                  className="text-xs fg-warning"
-                  data-testid="model-policy-pending-review-note"
-                >
-                  {pendingReviewIds.length === 1
-                    ? '1 model is new since your last save and is blocked until you review it. Switch it on to allow it.'
-                    : `${pendingReviewIds.length} models are new since your last save and are blocked until you review them. Switch each one on to allow it.`}
-                </p>
-                <Button
-                  variant="secondary"
-                  size="compact"
-                  disabled={saving}
-                  data-testid="model-policy-mark-all-reviewed"
-                  onClick={() => {
-                    setError(null);
-                    setConfirmReviewAll(true);
-                  }}
-                >
-                  Mark all as reviewed
-                </Button>
-              </div>
-            ) : null}
-
-            <ul className="flex flex-col" data-testid="model-policy-list">
-              {visible.map((model) => (
-                <ModelPolicyRow
-                  key={model.id}
-                  model={model}
-                  allowed={
-                    !blocked.has(model.id) && !pendingReviewSet.has(model.id)
+          ) : entitled === true || relaxOnly ? (
+            <Stack gap="item">
+              <div>
+                <SettingsRowsRow
+                  label="Enforce member model access policy"
+                  description="Members can only use the models you choose from an enabled policy."
+                  control={
+                    <ToggleSwitch
+                      label="Enforce member model access policy"
+                      checked={enforcing}
+                      disabled={saving}
+                      dataTestId="enforce-member-model-policy-checkbox"
+                      onChange={handleMasterChange}
+                    />
                   }
-                  pendingReview={pendingReviewSet.has(model.id)}
-                  busy={saving}
-                  /*
-                   * Only an ALLOWED row locks in relax-only mode: switching
-                   * it off would add a blocked id, which the server refuses
-                   * without the capability. Blocked and unreviewed rows stay
-                   * live, because switching those on is a relaxation.
-                   */
-                  locked={
-                    relaxOnly &&
-                    !blocked.has(model.id) &&
-                    !pendingReviewSet.has(model.id)
-                  }
-                  upgradeHref={billingHref}
-                  upgradeText={upgradeText}
-                  onChange={(allow) => void saveModel(model.id, allow)}
                 />
-              ))}
-              {visible.length === 0 ? (
-                <li className="px-4">
-                  <EmptyStateRow
-                    testId="model-policy-empty"
-                    title="No models are available to configure yet."
-                  />
-                </li>
-              ) : null}
-            </ul>
-
-            {pageCount > 1 ? (
-              <div
-                className="mt-3 flex items-center justify-between gap-3"
-                data-testid="model-policy-pager"
-              >
-                <Button
-                  variant="secondary"
-                  size="compact"
-                  disabled={currentPage === 0}
-                  data-testid="model-policy-pager-prev"
-                  onClick={() => setPage(Math.max(0, currentPage - 1))}
-                >
-                  Previous
-                </Button>
-                <span className="text-xs fg-secondary">
-                  Page {currentPage + 1} of {pageCount}
-                </span>
-                <Button
-                  variant="secondary"
-                  size="compact"
-                  disabled={currentPage >= pageCount - 1}
-                  data-testid="model-policy-pager-next"
-                  onClick={() =>
-                    setPage(Math.min(pageCount - 1, currentPage + 1))
-                  }
-                >
-                  Next
-                </Button>
               </div>
-            ) : null}
+              {relaxOnly ? (
+                <Notice
+                  intent="attention"
+                  icon={<Lock size={14} />}
+                  data-testid="model-policy-relax-only-note"
+                >
+                  Your plan no longer includes a model policy, but the one you
+                  set is still in force for your members, and models released
+                  since your last save are blocked too. From here you can turn
+                  enforcement off or allow models it blocks. To block a model
+                  again, or to turn enforcement back on later, you&apos;ll need
+                  the capability back.{' '}
+                  <SettingsLink
+                    href={billingHref}
+                    data-testid="model-policy-relax-only-upgrade"
+                    className="underline fg-accent"
+                  >
+                    {upgradeText}
+                  </SettingsLink>
+                </Notice>
+              ) : null}
+            </Stack>
+          ) : (
+            /*
+             * Painted door, for an org with no capability AND no live policy
+             * (enforcement off, or a plan read that never resolved). The switch
+             * stays VISIBLE so the capability is discoverable, but the model
+             * list never renders: showing an uneditable list of models would
+             * read as a policy this org has, and it has none. An org that IS
+             * still enforcing gets the relax-only controls above instead, since
+             * for it the policy is real and it needs a way out.
+             */
+            <Tooltip
+              label={
+                <span className="block max-w-64 whitespace-normal">
+                  Your plan doesn&apos;t include a model policy, so members may
+                  use any model.
+                </span>
+              }
+              link={{
+                href: billingHref,
+                text: upgradeText,
+                external: false,
+              }}
+            >
+              <span
+                className="mt-4 flex cursor-not-allowed items-start gap-3 opacity-60"
+                data-testid="model-policy-upgrade-cta"
+              >
+                <Lock
+                  size={14}
+                  aria-hidden="true"
+                  className="mt-0.5 fg-secondary/70"
+                />
+                <span className="min-w-0">
+                  <span className="block text-s font-medium fg-primary">
+                    Enforce member model access policy
+                  </span>
+                  <span className="block text-xs fg-secondary">
+                    {requiredPlanName
+                      ? `Available on ${requiredPlanName}.`
+                      : 'Not included in your plan.'}
+                  </span>
+                </span>
+              </span>
+            </Tooltip>
+          )}
 
-            {confirmReviewAll && pendingReviewIds.length > 0 ? (
-              <SettingsConfirmDialog
-                dataTestId="model-policy-review-all-dialog"
-                errorMessage={error?.copy}
-                errorDetails={error?.details}
-                title={
-                  pendingReviewIds.length === 1
-                    ? 'Mark 1 model as reviewed?'
-                    : `Mark ${pendingReviewIds.length} models as reviewed?`
-                }
-                confirmLabel="Mark as reviewed"
-                busyLabel="Saving…"
-                busy={savingReviewAll}
-                onCancel={() => setConfirmReviewAll(false)}
-                onConfirm={() => void markAllReviewed()}
-                message={
-                  <div className="flex flex-col gap-2">
-                    <p>
-                      This clears the review backlog for every model in the
-                      catalog, including any on pages you have not opened yet.
-                      Each one becomes available to your members right away
-                      unless you block it.
-                    </p>
-                    <p>
-                      {relaxOnly
-                        ? 'New models that ship later stay blocked until you review them too. Your plan no longer lets you block a model, though, so only do this if every model in the catalog is fine for your members.'
-                        : 'You can still block any model afterwards, and new models that ship later stay blocked until you review them too.'}
-                    </p>
-                  </div>
-                }
-              />
-            ) : null}
-          </>
-        ) : null}
+          {showList ? (
+            <>
+              {pendingReviewIds.length > 0 ? (
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                  <p
+                    className="text-xs fg-warning"
+                    data-testid="model-policy-pending-review-note"
+                  >
+                    {pendingReviewIds.length === 1
+                      ? '1 model is new since your last save and is blocked until you review it. Switch it on to allow it.'
+                      : `${pendingReviewIds.length} models are new since your last save and are blocked until you review them. Switch each one on to allow it.`}
+                  </p>
+                  <Button
+                    variant="secondary"
+                    size="compact"
+                    disabled={saving}
+                    data-testid="model-policy-mark-all-reviewed"
+                    onClick={() => {
+                      setError(null);
+                      setConfirmReviewAll(true);
+                    }}
+                  >
+                    Mark all as reviewed
+                  </Button>
+                </div>
+              ) : null}
+
+              <ul className="flex flex-col" data-testid="model-policy-list">
+                {visible.map((model) => (
+                  <ModelPolicyRow
+                    key={model.id}
+                    model={model}
+                    allowed={
+                      !blocked.has(model.id) && !pendingReviewSet.has(model.id)
+                    }
+                    pendingReview={pendingReviewSet.has(model.id)}
+                    busy={saving}
+                    /*
+                     * Only an ALLOWED row locks in relax-only mode: switching
+                     * it off would add a blocked id, which the server refuses
+                     * without the capability. Blocked and unreviewed rows stay
+                     * live, because switching those on is a relaxation.
+                     */
+                    locked={
+                      relaxOnly &&
+                      !blocked.has(model.id) &&
+                      !pendingReviewSet.has(model.id)
+                    }
+                    upgradeHref={billingHref}
+                    upgradeText={upgradeText}
+                    onChange={(allow) => void saveModel(model.id, allow)}
+                  />
+                ))}
+                {visible.length === 0 ? (
+                  <li className="px-4">
+                    <EmptyStateRow
+                      testId="model-policy-empty"
+                      title="No models are available to configure yet."
+                    />
+                  </li>
+                ) : null}
+              </ul>
+
+              {pageCount > 1 ? (
+                <div
+                  className="mt-3 flex items-center justify-between gap-3"
+                  data-testid="model-policy-pager"
+                >
+                  <Button
+                    variant="secondary"
+                    size="compact"
+                    disabled={currentPage === 0}
+                    data-testid="model-policy-pager-prev"
+                    onClick={() => setPage(Math.max(0, currentPage - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <span className="text-xs fg-secondary">
+                    Page {currentPage + 1} of {pageCount}
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="compact"
+                    disabled={currentPage >= pageCount - 1}
+                    data-testid="model-policy-pager-next"
+                    onClick={() =>
+                      setPage(Math.min(pageCount - 1, currentPage + 1))
+                    }
+                  >
+                    Next
+                  </Button>
+                </div>
+              ) : null}
+
+              {confirmReviewAll && pendingReviewIds.length > 0 ? (
+                <SettingsConfirmDialog
+                  dataTestId="model-policy-review-all-dialog"
+                  errorMessage={error?.copy}
+                  errorDetails={error?.details}
+                  title={
+                    pendingReviewIds.length === 1
+                      ? 'Mark 1 model as reviewed?'
+                      : `Mark ${pendingReviewIds.length} models as reviewed?`
+                  }
+                  confirmLabel="Mark as reviewed"
+                  busyLabel="Saving…"
+                  busy={savingReviewAll}
+                  onCancel={() => setConfirmReviewAll(false)}
+                  onConfirm={() => void markAllReviewed()}
+                  message={
+                    <div className="flex flex-col gap-2">
+                      <p>
+                        This clears the review backlog for every model in the
+                        catalog, including any on pages you have not opened yet.
+                        Each one becomes available to your members right away
+                        unless you block it.
+                      </p>
+                      <p>
+                        {relaxOnly
+                          ? 'New models that ship later stay blocked until you review them too. Your plan no longer lets you block a model, though, so only do this if every model in the catalog is fine for your members.'
+                          : 'You can still block any model afterwards, and new models that ship later stay blocked until you review them too.'}
+                      </p>
+                    </div>
+                  }
+                />
+              ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
     </section>
   );

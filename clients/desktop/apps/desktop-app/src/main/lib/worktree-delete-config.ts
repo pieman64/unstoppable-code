@@ -1,4 +1,4 @@
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 
 export const DEFAULT_WORKTREE_DELETE_TIMEOUT_MS = 5 * 60_000;
 const MIN_WORKTREE_DELETE_TIMEOUT_MS = 1_000;

@@ -1,5 +1,6 @@
 #!/usr/bin/env -S node --import tsx
 import { startHostMeasurement } from './host-measurement.mjs';
+import { bundleIdentityRecord } from '../../../../scripts/lib/bundle-identity.mjs';
 import {
   LOCAL_SMOKE_POLICY,
   formatSmokeAcceptance,
@@ -180,9 +181,24 @@ function environmentMetadata(packageJson, options) {
   };
 }
 
+function printRendererCrashLines(scenario) {
+  for (const exit of scenario.rendererProcessGone ?? [])
+    console.error(
+      `[perf]   renderer exited: reason=${exit.reason ?? 'unknown'} exitCode=${exit.exitCode ?? 'unknown'}`,
+    );
+  const dumps = scenario.crashDumps;
+  if (!dumps) return;
+  console.error(
+    dumps.retained
+      ? `[perf]   crash dumps: ${dumps.files.length} retained in ${dumps.directory}${dumps.skippedFiles ? ` (${dumps.skippedFiles} over the size bound)` : ''}`
+      : `[perf]   crash dumps: none retained (${dumps.reason ?? 'no dump written'})`,
+  );
+}
+
 function printScenarioSummary(scenario) {
   if (scenario.status === 'error') {
     console.error(`[perf] ${scenario.name}: FAILED - ${scenario.error}`);
+    printRendererCrashLines(scenario);
     return;
   }
   const response = scenario.monitoring?.summary;
@@ -201,6 +217,7 @@ function printScenarioSummary(scenario) {
       `key-to-paint p95 ${response?.rendererKeyToPaintConfirmationMs?.p95?.toFixed(1) ?? 'n/a'}ms, ` +
       `working-set max ${response?.totalWorkingSetMb?.max?.toFixed(1) ?? 'n/a'}MB`,
   );
+  printRendererCrashLines(scenario);
   for (const line of frameAreaLines(scenario.frameBudgets)) console.log(line);
   for (const violation of scenario.responsiveness?.violations ?? []) {
     const unit = violation.unit === 'count' ? '' : (violation.unit ?? 'ms');
@@ -322,6 +339,16 @@ async function main() {
       ? selectE2eBuildRoot(options)
       : null;
   const gitStatus = gitValue(['status', '--porcelain'], '');
+  const bundleRoot = measuredBuild?.root ?? repoRoot;
+  const bundleIdentity = bundleIdentityRecord(
+    bundleRoot,
+    path.join(
+      bundleRoot,
+      options.releaseLike
+        ? 'out'
+        : (process.env.CANOPY_E2E_OUT_DIR ?? 'out-e2e'),
+    ),
+  );
   const treatment = options.w5Store
     ? w5StoreRunTreatment(options.w5Store, measuredBuild?.root ?? repoRoot)
     : null;
@@ -357,6 +384,9 @@ async function main() {
             },
           }
         : {}),
+      // Additive: `measuredBuild` keeps reporting the checkout; this says
+      // whether the launched bundle was built from it.
+      bundleIdentity,
     },
     environment: {
       ...environmentMetadata(packageJson, options),
@@ -407,6 +437,10 @@ async function main() {
     ],
     scenarios: [],
   };
+  if (bundleIdentity.status !== 'verified')
+    console.warn(
+      `[perf] Bundle identity ${bundleIdentity.status} (${bundleIdentity.reasons.join(', ')}): ${bundleIdentity.outDir} stamp ${bundleIdentity.stamp?.commit ?? 'missing'}, checkout ${bundleIdentity.checkout?.commit ?? 'unknown'}`,
+    );
   // Repeated runs are sample-major: every scenario runs once per sample, each
   // a fresh launch, so slow drift in host load spreads across scenarios.
   const repeated = options.repeat > 1;
@@ -499,11 +533,18 @@ async function runSample({ result, options, outputPath, mockServers, sample }) {
     let scenario;
     const host = usesLocalSmokePolicy(result) ? startHostMeasurement() : null;
     try {
-      scenario = await runPerformanceScenario(
-        scenarioName,
-        options.config,
-        options,
-      );
+      scenario = await runPerformanceScenario(scenarioName, options.config, {
+        ...options,
+        crashDumpOutputDir: path.join(
+          diagnosticOutputDir(
+            outputPath,
+            sample === null
+              ? scenarioName
+              : `${scenarioName}-sample-${sample + 1}`,
+          ),
+          'crash-dumps',
+        ),
+      });
     } catch (error) {
       scenario = failedPerformanceScenario(
         scenarioName,

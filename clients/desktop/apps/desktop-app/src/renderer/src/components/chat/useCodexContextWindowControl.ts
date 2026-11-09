@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { CodexSpeedRouteFacts } from '@canopy/desktop-shared/lib/codex-speed-availability';
+import type { CodexSpeedRouteFacts } from '@canopy/execution-engine/lib/codex-speed-availability';
 import {
   CODEX_CONTEXT_WINDOW_FLOOR,
   CODEX_LONG_CONTEXT_THRESHOLD,
@@ -9,7 +9,7 @@ import {
   resolveCodexContextWindowTokens,
   type CodexContextWindowBounds,
   type CodexContextWindowSetting,
-} from '@canopy/desktop-shared/lib/codex-context-window';
+} from '@canopy/execution-engine/lib/codex-context-window';
 import type { ChatContextUsageRequest } from '@canopy/desktop-shared/types';
 import type {
   CodexContextWindowControlState,

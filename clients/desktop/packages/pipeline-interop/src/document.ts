@@ -295,10 +295,19 @@ export interface PipelineTaskReadyTrigger {
   inputs?: Record<string, PipelineInputDef>;
 }
 
+/**
+ * Started from the Workflows page and its schedules (CAN-5782). Shaped like
+ * `dispatch`; plugin collections stay top-level.
+ */
+export interface PipelineWorkflowTrigger {
+  inputs?: Record<string, PipelineInputDef>;
+}
+
 export interface PipelineTriggerConfig {
   dispatch?: PipelineDispatchTrigger;
   plan_ready?: PipelinePlanReadyTrigger;
   task_ready?: PipelineTaskReadyTrigger;
+  workflow?: PipelineWorkflowTrigger;
 }
 
 export type PipelineTrigger = PipelineTriggerType | PipelineTriggerConfig;
@@ -326,6 +335,9 @@ export function getTriggerTypes(
     }
     if (trigger.task_ready !== undefined) {
       rawTypes.push('task_ready');
+    }
+    if (trigger.workflow !== undefined) {
+      rawTypes.push('workflow');
     }
   }
 

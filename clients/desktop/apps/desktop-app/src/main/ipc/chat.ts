@@ -1,3 +1,5 @@
+import { assertCoworkChatRootPresent } from '../lib/cowork-folder-guard';
+import { committedSelectionsStillStored } from './committed-plugin-selections';
 import { chatVisualsPromptEligible } from '../lib/chat-visuals-feature-flag';
 import { DELEGATION_NOTICE_KIND } from '@canopy/agent-actions';
 import {
@@ -26,7 +28,10 @@ import {
 import { withEffectiveAiCreditsRouting } from '../agents/effective-ai-credits-routing';
 import { requestAppAdvisorPresentation } from '../app-advisor/advisor-presentation';
 import { randomUUID } from 'node:crypto';
-import { logMainProcessError } from '../lib/main-process-logging';
+import {
+  logMainProcessError,
+  logMainProcessWarn,
+} from '../lib/main-process-logging';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
 import { BRAND } from '@canopy/brand/current';
@@ -73,25 +78,26 @@ import {
   type ChatInterfaceMode,
   type ChatModel,
 } from '@canopy/desktop-shared/types';
-import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   applyAgentSessionCodexSpeed,
   codexSpeedFastMode,
   codexSpeedFromFastMode,
   CodexSpeedUnsupportedError,
   isCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   appendUserOverallPreferencesBlock,
   buildUserOverallPreferencesBlock,
-} from '@canopy/desktop-shared/lib/global-instructions';
-import type { CodexReasoningProviderType } from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/global-instructions';
+import type { CodexReasoningProviderType } from '@canopy/execution-engine/lib/gateway-model-availability';
 import type { PersistedChatDispatchMetadata } from '../lib/chat-tabs-reader';
 import type {
   CancelQueuedHookChatRequest,
   CancelQueuedHookChatResponse,
   ChatSendMessageRequest,
   ChatSendMessageResult,
+  ChatCancelIpcRequest,
   ChatCancelRequest,
   ChatContextUsageBreakdown,
   ChatContextUsageRequest,
@@ -140,13 +146,17 @@ import {
   chatSurfaceUsesGlobalPluginDefaults,
   normalizePluginSelectionTombstones,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import { resolveWorktreeCwd } from '../lib/resolve-worktree';
+import {
+  resolveWorktreeCwd,
+  resolveWorktreeTargetIds,
+} from '../lib/resolve-worktree';
 import { describeTurnAuthRefusal } from '../lib/auth-preflight';
 import { clearUsageLimitedChat } from '../lib/usage-limited-chats-registry';
 import { getWorkspaceType, isCoworkWorkspace } from '../lib/workspace-registry';
 import { checkModelGatewayRoute } from '../lib/model-gateway-state';
 import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
+import { stopExactChatTurn } from './chat-cancel-exact';
 import {
   getSession,
   chatHasNativeBackgroundWork,
@@ -214,6 +224,7 @@ import type { ChatSettingsLiveEffects } from '../services/chat-settings-host';
 import {
   CoreChatLifecycleResultSchema,
   CoreChatUpdateParamsSchema,
+  type CanopyCallerDescriptor,
 } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
@@ -253,6 +264,7 @@ import { sendToWindow, sendToWindowDetailed } from '../lib/window-send';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import {
   buildExistingTabDispatchOptions,
+  cancelWorktreeChatTurn,
   dispatchLocalWorktreeChatMessage,
   assertWatcherDeliveryIngress,
   resumeStoppedWorktreeChatTurn,
@@ -266,7 +278,15 @@ import {
   type ChatQueueRevivalLease,
 } from '../services/chat-queue-service';
 import { getStoppedTurnResumeService } from '../services/stopped-turn-resume-service';
-import { assertNotSplitLocked } from '../services/split-lock-service';
+import {
+  assertNotSplitLocked,
+  isSplitLocked,
+} from '../services/split-lock-service';
+import {
+  installChatAutoArchiver,
+  onCommittedArchiveUnblocks,
+} from '../services/chat-auto-archive';
+import { chatCloseBlockReason } from '../agents/background-work';
 import { dispatchAppAdvisorChatMessage } from '../app-advisor/chat-service';
 
 import { dispatchPipelineEditorChatMessage } from '../pipeline-editor/chat-service';
@@ -979,6 +999,9 @@ function createInstalledChatSettingsHost(): ReturnType<
  */
 export async function applyChatPluginSelectionsUpdate(
   req: ChatUpdatePluginsRequest,
+  // Main-only, never from the IPC DTO: the caller already committed these
+  // selections through a checked core.chat.update (CAN-5999).
+  options: { readonly committed?: true } = {},
 ): Promise<ChatUpdatePluginsResponse> {
   const { projectId, worktreeId, chatId } = req;
   assertWritableScope(projectId);
@@ -1273,6 +1296,20 @@ export async function applyChatPluginSelectionsUpdate(
         // the old session, so the resume cannot silently start fresh.
         if (deferredReloadActive && currentThreadId) {
           committedSessionId = currentThreadId;
+        }
+        if (options.committed) {
+          // Never write again: a selection edited since the commit stays,
+          // and these older ones do not reach the live session.
+          if (
+            !committedSelectionsStillStored(
+              canonicalTab.pluginSelections,
+              req.pluginSelections,
+            )
+          )
+            throw new Error(
+              'Chat plugins changed while tools were being updated',
+            );
+          return;
         }
         await commitCanonicalTabSettings(
           projectId,
@@ -2037,6 +2074,7 @@ function withChatScopeActivity(
     // A legacy plan chat is refused before its scope is opened, so a crafted
     // send neither migrates nor touches its stored transcript.
     assertChatScopeAcceptsTurns(request.projectId);
+    await assertCoworkChatRootPresent(request.projectId, request.worktreeId);
     return getChatStateService().runWithScopeActivity(
       {
         projectId: request.projectId,
@@ -2216,11 +2254,67 @@ export async function stopChatForUser(
   return {};
 }
 
+/** Main's auto-archiver acts as its own principal with the chat write grant (CAN-6014). */
+const AUTO_ARCHIVE_CALLER: CanopyCallerDescriptor = {
+  principalId: 'desktop-main-auto-archive',
+  clientInstanceId: 'desktop-main-chat',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: ['core.chat.write'],
+};
+
+function installDesktopChatAutoArchiver(
+  runtime: DesktopCanopyRuntimeAccessors | undefined,
+): void {
+  const chatState = getChatStateService();
+  installChatAutoArchiver({
+    onTurnStateCommitted: (listener) =>
+      chatState.onTurnStateCommitted(listener),
+    onUnblocked: (listener) =>
+      onCommittedArchiveUnblocks(
+        (changed) => chatState.subscribe(changed),
+        listener,
+      ),
+    readSnapshot: (scope) => chatState.getCommittedWatcherSnapshot(scope),
+    closeBlocked: (target) =>
+      chatCloseBlockReason(
+        target.projectId,
+        target.worktreeId,
+        target.chatId,
+      ) !== null,
+    locked: (target) => {
+      const resolved = resolveWorktreeTargetIds(
+        target.projectId,
+        target.worktreeId,
+      );
+      return resolved
+        ? isSplitLocked(resolved.projectId, resolved.worktreeId)
+        : false;
+    },
+    dispatchInFlight: (target) => chatState.isDispatchInFlight(target),
+    dispatch: (request) =>
+      runtime
+        ? dispatchTrustedChatCommand(
+            request,
+            createChatCommandDispatchOptions(
+              chatState,
+              runtime.dispatcher,
+              AUTO_ARCHIVE_CALLER,
+            ),
+          )
+        : chatState.command(request),
+    warn: (message, details) => {
+      logMainProcessWarn(`[auto-archive] ${message}`, details);
+    },
+  });
+}
+
 export function registerChatHandlers(
   accessors: WindowAccessors,
   runtime?: DesktopCanopyRuntimeAccessors,
 ): void {
   chatCommandRuntime = runtime;
+  installDesktopChatAutoArchiver(runtime);
   const getWindow = accessors.getMainWindow;
   chatSettingsWindow = getWindow;
   setCoreChatSettingsHost(createInstalledChatSettingsHost());
@@ -2241,6 +2335,7 @@ export function registerChatHandlers(
   setSendModelPreparer((req) => prepareSendModel(req, getWindow));
   setAutoModelRoutingDispatcher(
     async (req, origin, fromQueue): Promise<ChatSendMessageRequest> => {
+      await assertCoworkChatRootPresent(req.projectId, req.worktreeId);
       if (
         req.modelSelectionMode === 'auto' &&
         req.asyncQuestionId === undefined &&
@@ -2534,6 +2629,7 @@ export function registerChatHandlers(
     // are unaffected; a genuine worktree-targeted send whose worktree is
     // mid-split is refused with the typed lock error.
     assertNotSplitLocked(projectId, worktreeId, 'sending a chat message');
+    await assertCoworkChatRootPresent(projectId, worktreeId);
     // Before memory preparation and the prompt commit: a Stop or newer
     // dispatch since admission makes this attempt stale. Only the inline
     // Cowork path dispatches here; a worktree send is admitted downstream
@@ -2888,6 +2984,7 @@ export function registerChatHandlers(
           ),
         });
 
+        await assertCoworkChatRootPresent(projectId, worktreeId);
         if (shouldRecreateSessionOnNextTurn(projectId, worktreeId, chatId)) {
           await destroySession(projectId, worktreeId, chatId, {
             retainDelegations: true,
@@ -3622,6 +3719,7 @@ export function registerChatHandlers(
             watcherContext,
           ).catch(() => undefined);
         }
+        await assertCoworkChatRootPresent(projectId, worktreeId);
         const dispatchStartedAt = Date.now();
         try {
           turnRun.signal.throwIfAborted();
@@ -3956,9 +4054,19 @@ export function registerChatHandlers(
     return getContextUsageForSession(req.projectId, req.worktreeId, req.chatId);
   });
 
-  registerIpcHandler<[ChatCancelRequest], ChatCancelResult>(
+  registerIpcHandler<[ChatCancelIpcRequest], ChatCancelResult>(
     IPC_CHANNELS.chatCancel,
     async (_event, req) => {
+      if (req.expectedUserMessageId !== undefined) {
+        // Only that turn, never a newer one (CAN-5985).
+        return stopExactChatTurn(req, req.expectedUserMessageId, {
+          validateId,
+          isCoworkWorkspace,
+          stopActiveTurn: (request, expected) =>
+            stopChatForUser(request, getWindow, expected),
+          cancelWorktreeTurn: cancelWorktreeChatTurn,
+        });
+      }
       const result = await stopChatForUser(req, getWindow);
       return result ?? {};
     },

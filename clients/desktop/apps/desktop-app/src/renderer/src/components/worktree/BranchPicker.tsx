@@ -1,4 +1,11 @@
-import { Button, FloatingMenu, ListRow } from '@canopy/ui-shared/components';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  Stack,
+  Button,
+  FloatingMenu,
+  ListRow,
+} from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -8,7 +15,8 @@ import {
   type JSX,
   type KeyboardEvent,
 } from 'react';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import type { BranchEntry } from '@canopy/desktop-shared/types';
 import {
   collapseBranchDuplicates,
@@ -55,7 +63,10 @@ export function BranchPicker({
   const [view, setView] = useState<PickerView>('list');
   const [branches, setBranches] = useState<BranchEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<InlineFailure | null>(null);
+  const [loadError, setLoadError] = useState<InlineFailure | null>(null);
+  // Bumped by Try again on a failed branch load to fetch the list again.
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [search, setSearch] = useState('');
   const [switching, setSwitching] = useState<string | null>(null);
 
@@ -64,7 +75,7 @@ export function BranchPicker({
   const [newBaseBranch, setNewBaseBranch] = useState('');
   const [newBaseBranchIsRemote, setNewBaseBranchIsRemote] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<InlineFailure | null>(null);
   const [showBasePicker, setShowBasePicker] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -76,7 +87,7 @@ export function BranchPicker({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     window.api
       .listBranches({ projectId, worktreeId, repoId })
       .then((response) => {
@@ -93,15 +104,15 @@ export function BranchPicker({
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(
-          err instanceof Error ? err.message : 'Failed to load branches',
-        );
         setLoading(false);
+        const appError = toAppError(resolveClientAppError(err));
+        if (appError)
+          setLoadError(inlineFailure(appError, "Couldn't load branches."));
       });
     return (): void => {
       cancelled = true;
     };
-  }, [projectId, worktreeId, repoId, baseBranch]);
+  }, [projectId, worktreeId, repoId, baseBranch, loadAttempt]);
 
   // Focus search input when list view opens
   useEffect(() => {
@@ -149,9 +160,11 @@ export function BranchPicker({
           onBranchSwitched(response.branchName);
         }
       } catch (err: unknown) {
-        setError(
-          err instanceof Error ? err.message : 'Failed to switch branch',
-        );
+        const appError = toAppError(resolveClientAppError(err));
+        if (appError)
+          setError(
+            inlineFailure(appError, `Couldn't switch to ${branch.name}.`),
+          );
       } finally {
         setSwitching(null);
       }
@@ -177,9 +190,14 @@ export function BranchPicker({
         onBranchCreated(response.branchName, newBaseBranch);
       }
     } catch (err: unknown) {
-      setCreateError(
-        err instanceof Error ? err.message : 'Failed to create branch',
-      );
+      // The server's refusal (an existing name, a git failure) is the
+      // action's, not the field's: a banner above the buttons, keeping both
+      // typed values.
+      const appError = toAppError(resolveClientAppError(err));
+      if (appError)
+        setCreateError(
+          inlineFailure(appError, `Couldn't create ${trimmedName}.`),
+        );
     } finally {
       setCreating(false);
     }
@@ -248,7 +266,7 @@ export function BranchPicker({
   };
 
   return (
-    <div className="mt-1 w-full rounded-lg bg-card shadow-lg">
+    <div className="w-full rounded-lg bg-card shadow-lg">
       {view === 'list' && (
         <>
           {/* Search input */}
@@ -264,14 +282,17 @@ export function BranchPicker({
           </div>
 
           {/* Branch list */}
-          <div ref={listRef} className="max-h-60 overflow-y-auto p-1">
+          <div
+            ref={listRef}
+            className="flex max-h-60 flex-col gap-1 overflow-y-auto p-1 [&>*]:shrink-0"
+          >
             {loading && (
               <div className="flex items-center justify-center py-4">
                 <span className="text-xs fg-secondary">Loading branches…</span>
               </div>
             )}
 
-            {!loading && filteredBranches.length === 0 && (
+            {!loading && !loadError && filteredBranches.length === 0 && (
               <div className="py-3 text-center text-xs fg-secondary">
                 {search ? 'No matching branches' : 'No branches found'}
               </div>
@@ -287,7 +308,7 @@ export function BranchPicker({
             )}
 
             {!loading && remoteBranches.length > 0 && (
-              <div className={localBranches.length > 0 ? 'mt-1' : ''}>
+              <div>
                 <div className="px-2 py-1 text-3xs font-semibold fg-secondary">
                   Remote
                 </div>
@@ -297,9 +318,21 @@ export function BranchPicker({
           </div>
 
           {/* Error display */}
-          {error && (
-            <div className="border-t px-2 py-1.5">
-              <ErrorBanner error={error} className="" />
+          {(loadError || error) && (
+            <div className="flex flex-col gap-1.5 border-t px-2 py-1.5">
+              <DesktopErrorBanner
+                className=""
+                error={loadError?.error}
+                details={loadError?.details}
+                onRetry={() => setLoadAttempt((n) => n + 1)}
+              />
+              <DesktopErrorBanner
+                className=""
+                error={error?.error}
+                details={error?.details}
+                blockMessageFromReplay
+                onDismiss={() => setError(null)}
+              />
             </div>
           )}
 
@@ -319,8 +352,8 @@ export function BranchPicker({
       )}
 
       {view === 'create' && (
-        <div className="p-3">
-          <div className="mb-2 flex items-center gap-1.5">
+        <div className="flex flex-col p-3 gap-2">
+          <div className="flex items-center gap-1.5">
             <Button
               variant="ghost"
               size="compact"
@@ -339,8 +372,8 @@ export function BranchPicker({
           </div>
 
           {/* Branch name input */}
-          <div className="space-y-2">
-            <FormField label="Branch name" error={createError}>
+          <Stack gap="inline">
+            <FormField label="Branch name">
               {(control) => (
                 <TextInput
                   {...control}
@@ -444,6 +477,13 @@ export function BranchPicker({
               </FloatingMenu>
             </div>
 
+            <DesktopErrorBanner
+              className=""
+              error={createError?.error}
+              details={createError?.details}
+              blockMessageFromReplay
+              onDismiss={() => setCreateError(null)}
+            />
             <div className="flex justify-end gap-1.5">
               <Button
                 size="compact"
@@ -464,7 +504,7 @@ export function BranchPicker({
                 {creating ? 'Creating…' : 'Create'}
               </Button>
             </div>
-          </div>
+          </Stack>
         </div>
       )}
     </div>

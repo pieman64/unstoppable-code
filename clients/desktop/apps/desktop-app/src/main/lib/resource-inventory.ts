@@ -1,4 +1,4 @@
-import { classifyResourceOwner } from '@canopy/desktop-shared/lib/resource-context';
+import { classifyResourceOwner } from '@canopy/execution-engine/lib/resource-context';
 import {
   LanePartitioned,
   laneKey,

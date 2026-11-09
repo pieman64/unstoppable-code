@@ -46,6 +46,7 @@ function provider(
     }),
     bind: () => Promise.reject(failure),
     probe: () => Promise.resolve({ state: 'absent' }),
+    prepare: () => Promise.resolve(),
     verifyIdentity: () => Promise.resolve('changed'),
     unlinkStale: () => Promise.resolve('changed'),
   };

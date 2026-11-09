@@ -1,11 +1,18 @@
 import { useEffect, useRef, type JSX } from 'react';
+import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
 import {
   getRendererToolRequestScopeKey,
   type PipelineEditorRendererToolRequest,
   type PipelineEditorRendererToolResponse,
+  type PipelineEditorSaveSnapshot,
   type PipelineEditorValidationIssue,
 } from '@canopy/desktop-shared/types';
-import type { Pipeline } from '@canopy/desktop-shared/types/pipeline';
+import type {
+  Pipeline,
+  PipelineInfo,
+} from '@canopy/execution-engine/types/pipeline';
+import { contributeInterfaceTools } from '@/client/interface-tools-client';
+import { sharedDetailToPipelineInfo } from '@/lib/pipelineDocument';
 import {
   serializePipelineToYaml,
   tryParseAndValidateYaml,
@@ -31,23 +38,35 @@ const KEPT_EDITING_MESSAGE = 'The person kept editing unsaved changes.';
 const PAGE_CONTROLLER_TIMEOUT_MS = 5_000;
 const EDITOR_CONTROLLER_TIMEOUT_MS = 5_000;
 const BRIDGE_WAIT_INTERVAL_MS = 25;
-const SHARED_PIPELINE_SAVE_IMPACT_MESSAGE =
-  'People using this workflow in their automations will need to approve your changes before they run again.';
+const MAX_REMEMBERED_SNAPSHOTS = 8;
+// Longer than main's save round trip; a save whose report never arrives
+// (main restarted, the lease ended) frees the editor's save guard anyway.
+const SAVE_HOLD_TIMEOUT_MS = 120_000;
+const SAVE_BUSY_MESSAGE = 'Failed to save the pipeline.';
 
-async function sharedPipelineSaveImpactNote(
-  editorController: PipelineEditorControllerAdapter,
-): Promise<string | undefined> {
-  const remoteId = editorController.getTarget().sharedRemoteId;
-  if (!remoteId) return undefined;
-  try {
-    const result = await window.pipelines.getSharedUpdateImpact(remoteId);
-    if (result.success && result.data && result.data.automations.length === 0) {
-      return undefined;
-    }
-  } catch {
-    // Unknown impact fails toward the same publisher warning as the UI save.
-  }
-  return SHARED_PIPELINE_SAVE_IMPACT_MESSAGE;
+/** The catalog tools this bridge serves on the main window's lease (CAN-5822). */
+const PIPELINE_EDITOR_INTERFACE_TOOLS: readonly InterfaceToolName[] = [
+  'ui.pipeline_editor.adopt_saved',
+  'ui.pipeline_editor.create',
+  'ui.pipeline_editor.get_current',
+  'ui.pipeline_editor.list',
+  'ui.pipeline_editor.open',
+  'ui.pipeline_editor.prepare_save',
+  'ui.pipeline_editor.set_yaml',
+  'ui.pipeline_editor.to_list',
+];
+
+/** A draft handed to main for saving, kept until main reports what it saved. */
+interface RememberedSnapshot {
+  /** The editor that handed over the draft; only it may adopt the save. */
+  controller: PipelineEditorControllerAdapter;
+  target: PipelineEditorControllerTarget;
+  /** The loaded row the draft saves over, absent for a new draft. */
+  loaded?: { id: string; source: PipelineInfo['source'] };
+  pipeline: Pipeline;
+  rawYamlText?: string;
+  /** Frees the editor's save guard, held until main reports the save. */
+  release: () => void;
 }
 
 function toValidationIssues(
@@ -79,11 +98,19 @@ export function PipelineEditorRuntimeBridge(): JSX.Element {
     null,
   );
 
+  const snapshotsRef = useRef<Map<string, RememberedSnapshot>>(new Map());
+
   useEffect(() => {
     const dispose = window.api.pipelineEditor.onToolRequest((request) => {
       void handleRequest(request);
     });
-    return dispose;
+    const withdrawTools = contributeInterfaceTools(
+      PIPELINE_EDITOR_INTERFACE_TOOLS,
+    );
+    return (): void => {
+      withdrawTools();
+      dispose();
+    };
     // `handleRequest` reads only the bridge store (via getState) and stable
     // module helpers; listing it would force a re-subscription each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -192,10 +219,13 @@ export function PipelineEditorRuntimeBridge(): JSX.Element {
         return handleGetCurrent(requestId);
 
       case 'set_yaml':
-        return handleSetYaml(requestId, request.yaml);
+        return handleApplyYaml(requestId, request.yaml);
 
-      case 'save':
-        return handleSave(requestId);
+      case 'prepare_save':
+        return handlePrepareSave(requestId);
+
+      case 'adopt_saved':
+        return handleAdoptSaved(request);
 
       default: {
         // Exhaustiveness guard for the current union shape.
@@ -266,157 +296,253 @@ export function PipelineEditorRuntimeBridge(): JSX.Element {
     return handleReady(ready.editorController);
   }
 
-  async function handleSetYaml(
+  /**
+   * Keeps the draft main will save and describes it: which pipeline it
+   * saves over and the revision this editor loaded, the save's precondition.
+   */
+  function forgetSnapshot(id: string): RememberedSnapshot | undefined {
+    const remembered = snapshotsRef.current.get(id);
+    snapshotsRef.current.delete(id);
+    remembered?.release();
+    return remembered;
+  }
+
+  /**
+   * Holds the editor's save guard and keeps the draft main will save, so no
+   * other save overlaps it. Null when a save is already running.
+   */
+  function rememberSnapshot(
+    editorController: PipelineEditorControllerAdapter,
+    pipeline: Pipeline,
+    rawYamlText?: string,
+  ): PipelineEditorSaveSnapshot | null {
+    const editor = editorController.getEditor();
+    const releaseHold = editor.holdSave();
+    if (!releaseHold) return null;
+    const id = crypto.randomUUID();
+    const target = editorController.getTarget();
+    const info = editor.pipelineInfo;
+    const timer = setTimeout(() => forgetSnapshot(id), SAVE_HOLD_TIMEOUT_MS);
+    snapshotsRef.current.set(id, {
+      controller: editorController,
+      target,
+      ...(info ? { loaded: { id: info.id, source: info.source } } : {}),
+      pipeline,
+      ...(rawYamlText === undefined ? {} : { rawYamlText }),
+      release: (): void => {
+        clearTimeout(timer);
+        releaseHold();
+      },
+    });
+    while (snapshotsRef.current.size > MAX_REMEMBERED_SNAPSHOTS) {
+      const oldest = snapshotsRef.current.keys().next().value;
+      if (oldest === undefined) break;
+      forgetSnapshot(oldest);
+    }
+    return {
+      id,
+      target: {
+        ...(info?.id ? { persistedId: info.id } : {}),
+        ...(info?.source ? { source: info.source } : {}),
+        ...(info?.revision === undefined ? {} : { revision: info.revision }),
+        ...(target.sharedRemoteId
+          ? { sharedRemoteId: target.sharedRemoteId }
+          : {}),
+      },
+      pipeline,
+    };
+  }
+
+  /**
+   * The window's half of an agent save: the draft for main to save, or, when
+   * another save is running, today's refusal.
+   */
+  function toSave(
+    state: Pick<
+      PipelineEditorRendererToolResponse,
+      'requestId' | 'pipelineYaml' | 'isDirty' | 'validation'
+    >,
+    editorController: PipelineEditorControllerAdapter,
+    pipeline: Pipeline,
+    rawYamlText?: string,
+  ): PipelineEditorRendererToolResponse {
+    const snapshot = rememberSnapshot(editorController, pipeline, rawYamlText);
+    return snapshot
+      ? { ...state, ok: true, readonly: false, snapshot }
+      : {
+          ...state,
+          ok: false,
+          error: editorController.getEditor().error ?? SAVE_BUSY_MESSAGE,
+          readonly: false,
+        };
+  }
+
+  /** Applies the agent's YAML to the editor. Main saves it (CAN-5822). */
+  async function handleApplyYaml(
     requestId: string,
     yamlText: string,
   ): Promise<PipelineEditorRendererToolResponse> {
-    return withReadyEditorController(
-      requestId,
-      async (readyEditorController) => {
-        const editor = readyEditorController.getEditor();
-        if (editor.readonly) {
-          return {
-            requestId,
-            ok: false,
-            error: READONLY_MESSAGE,
-            readonly: true,
-          };
-        }
-
-        const result = tryParseAndValidateYaml(yamlText);
-        if (!result.success) {
-          // Parse/validation failure: report it without mutating the editor.
-          return {
-            requestId,
-            ok: false,
-            error: result.error,
-            readonly: false,
-          };
-        }
-
-        const impactNote = await sharedPipelineSaveImpactNote(
-          readyEditorController,
-        );
-        // Apply + persist. Pass the parsed pipeline as the explicit save override
-        // because `save()` defaults to the closure pipeline, which React has not
-        // re-rendered to the new value yet after `replaceEntirePipeline`.
-        editor.replaceEntirePipeline(result.pipeline);
-        const saved = await editor.save(result.pipeline);
-
-        // Keep the visible raw textarea in sync so a later view-switch does not
-        // clobber the agent's change with a stale competing edit.
-        if (readyEditorController.isRawMode()) {
-          readyEditorController.setRawYamlText(yamlText);
-          readyEditorController.clearRawYamlError();
-          readyEditorController.resetRawYamlBaseline(yamlText);
-        }
-
+    return withReadyEditorController(requestId, (readyEditorController) => {
+      const editor = readyEditorController.getEditor();
+      if (editor.readonly) {
         return {
           requestId,
-          ok: saved !== null,
-          ...(saved && impactNote ? { note: impactNote } : {}),
-          ...(saved
-            ? {}
-            : {
-                error:
-                  readyEditorController.getEditor().error ??
-                  'Failed to save the pipeline.',
-              }),
-          pipelineYaml: serializePipelineToYaml(result.pipeline),
-          isDirty: !saved,
-          validation: toValidationIssues(result.pipeline),
+          ok: false,
+          error: READONLY_MESSAGE,
+          readonly: true,
+        };
+      }
+
+      const result = tryParseAndValidateYaml(yamlText);
+      if (!result.success) {
+        // Parse/validation failure: report it without mutating the editor.
+        return {
+          requestId,
+          ok: false,
+          error: result.error,
           readonly: false,
         };
-      },
-    );
+      }
+
+      editor.replaceEntirePipeline(result.pipeline);
+      // Keep the visible raw textarea in sync so a later view-switch does not
+      // clobber the agent's change with a stale competing edit.
+      if (readyEditorController.isRawMode()) {
+        readyEditorController.setRawYamlText(yamlText);
+        readyEditorController.clearRawYamlError();
+        readyEditorController.resetRawYamlBaseline(yamlText);
+      }
+
+      // The parsed pipeline, not the editor's: React has not re-rendered
+      // the replacement yet.
+      return toSave(
+        {
+          requestId,
+          pipelineYaml: serializePipelineToYaml(result.pipeline),
+          isDirty: true,
+          validation: toValidationIssues(result.pipeline),
+        },
+        readyEditorController,
+        result.pipeline,
+      );
+    });
   }
 
-  async function handleSave(
+  /** Hands main the draft to save, applying a dirty raw buffer first. */
+  async function handlePrepareSave(
     requestId: string,
   ): Promise<PipelineEditorRendererToolResponse> {
-    return withReadyEditorController(
-      requestId,
-      async (readyEditorController) => {
-        const editor = readyEditorController.getEditor();
-        if (editor.readonly) {
+    return withReadyEditorController(requestId, (readyEditorController) => {
+      const editor = readyEditorController.getEditor();
+      if (editor.readonly) {
+        return {
+          requestId,
+          ok: false,
+          error: READONLY_MESSAGE,
+          readonly: true,
+        };
+      }
+      if (editor.saving) {
+        return {
+          requestId,
+          ok: false,
+          error: editor.error ?? SAVE_BUSY_MESSAGE,
+          isDirty: editor.isDirty,
+          readonly: false,
+        };
+      }
+
+      // Raw mode with unsaved buffer edits: validate and apply the buffer
+      // first (mirrors the editor session's save).
+      if (
+        readyEditorController.isRawMode() &&
+        readyEditorController.isRawYamlDirty()
+      ) {
+        const rawText = readyEditorController.getRawYamlText();
+        if (!readyEditorController.applyRawYaml()) {
           return {
             requestId,
             ok: false,
-            error: READONLY_MESSAGE,
-            readonly: true,
+            error:
+              readyEditorController.getRawYamlError() ??
+              'Failed to apply raw pipeline YAML.',
           };
         }
-
-        // Raw mode with unsaved buffer edits: validate + persist the buffer first
-        // (mirrors the editor session's save).
-        if (
-          readyEditorController.isRawMode() &&
-          readyEditorController.isRawYamlDirty()
-        ) {
-          const rawText = readyEditorController.getRawYamlText();
-          if (!readyEditorController.applyRawYaml()) {
-            return {
-              requestId,
-              ok: false,
-              error:
-                readyEditorController.getRawYamlError() ??
-                'Failed to apply raw pipeline YAML.',
-            };
-          }
-          const result = tryParseAndValidateYaml(rawText);
-          if (!result.success) {
-            return { requestId, ok: false, error: result.error };
-          }
-          const impactNote = await sharedPipelineSaveImpactNote(
-            readyEditorController,
-          );
-          const saved = await editor.save(result.pipeline);
-          const didSave = saved !== null;
-          if (didSave) {
-            readyEditorController.resetRawYamlBaseline(rawText);
-          }
-          return {
+        const result = tryParseAndValidateYaml(rawText);
+        if (!result.success) {
+          return { requestId, ok: false, error: result.error };
+        }
+        return toSave(
+          {
             requestId,
-            ok: didSave,
-            ...(didSave && impactNote ? { note: impactNote } : {}),
-            ...(didSave
-              ? {}
-              : {
-                  error:
-                    readyEditorController.getEditor().error ??
-                    'Failed to save the pipeline.',
-                }),
             pipelineYaml: serializePipelineToYaml(result.pipeline),
-            isDirty: !didSave,
+            isDirty: true,
             validation: toValidationIssues(result.pipeline),
-            readonly: false,
-          };
-        }
-
-        const impactNote = await sharedPipelineSaveImpactNote(
+          },
           readyEditorController,
+          result.pipeline,
+          rawText,
         );
-        const saved = await editor.save();
-        const didSave = saved !== null;
-        const current = readyEditorController.getEditor();
-        return {
+      }
+
+      const { pipeline } = editor;
+      if (!pipeline) {
+        return { requestId, ok: false, error: NO_PIPELINE_LOADED_MESSAGE };
+      }
+      return toSave(
+        {
           requestId,
-          ok: didSave,
-          ...(didSave && impactNote ? { note: impactNote } : {}),
-          ...(didSave
-            ? {}
-            : { error: current.error ?? 'Failed to save the pipeline.' }),
-          ...(current.pipeline
-            ? {
-                pipelineYaml: serializePipelineToYaml(current.pipeline),
-                validation: toValidationIssues(current.pipeline),
-              }
-            : {}),
-          isDirty: didSave ? false : current.isDirty,
-          readonly: false,
-        };
-      },
-    );
+          pipelineYaml: serializePipelineToYaml(pipeline),
+          validation: toValidationIssues(pipeline),
+          isDirty: editor.isDirty,
+        },
+        readyEditorController,
+        pipeline,
+      );
+    });
+  }
+
+  /**
+   * Shows what core saved as the editor's saved state, when the editor still
+   * shows the pipeline it was saved from. Edits made since stay unsaved.
+   */
+  function handleAdoptSaved(
+    request: Extract<
+      PipelineEditorRendererToolRequest,
+      { kind: 'adopt_saved' }
+    >,
+  ): PipelineEditorRendererToolResponse {
+    const { requestId, saved } = request;
+    // Main reports every save it ran, so the save guard is freed either way.
+    const remembered = forgetSnapshot(request.snapshotId);
+    const editorController =
+      usePipelineEditorBridgeStore.getState().editorController;
+    // Only the editor that handed over the draft, still showing the same
+    // pipeline from the same source, adopts what core saved for it.
+    const shown = editorController?.getEditor().pipelineInfo;
+    if (
+      !saved ||
+      !remembered ||
+      editorController !== remembered.controller ||
+      !targetsMatch(editorController.getTarget(), remembered.target) ||
+      shown?.id !== remembered.loaded?.id ||
+      shown?.source !== remembered.loaded?.source
+    ) {
+      return { requestId, ok: true };
+    }
+    const info =
+      saved.kind === 'stored'
+        ? saved.info
+        : sharedDetailToPipelineInfo(saved.detail);
+    editorController.adoptSaved(remembered.pipeline, info);
+    if (
+      remembered.rawYamlText !== undefined &&
+      editorController.isRawMode() &&
+      editorController.getRawYamlText() === remembered.rawYamlText
+    ) {
+      editorController.resetRawYamlBaseline(remembered.rawYamlText);
+    }
+    return { requestId, ok: true };
   }
 
   function cacheResponse(

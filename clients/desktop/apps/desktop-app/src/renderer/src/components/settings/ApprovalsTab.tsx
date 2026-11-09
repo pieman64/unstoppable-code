@@ -27,9 +27,15 @@ import {
   POSTHOG_REPLAY_MASK_CLASS,
 } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
+import {
   Button,
   FormField,
-  Notice,
   SettingsSelect,
   StatusBadge,
 } from '@canopy/ui-shared/components';
@@ -98,14 +104,13 @@ function describeRuleTarget(target: ApprovalRuleTarget): string {
 
 /** The origin of a site the user typed, or null when it is not a web URL. */
 function uploadOrigin(value: string): string | null {
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === 'https:' || url.protocol === 'http:'
-      ? url.origin
-      : null;
-  } catch {
-    return null;
-  }
+  const trimmed = value.trim();
+  // Typed text that isn't a URL is an expected outcome, not a failure.
+  if (!URL.canParse(trimmed)) return null;
+  const url = new URL(trimmed);
+  return url.protocol === 'https:' || url.protocol === 'http:'
+    ? url.origin
+    : null;
 }
 
 function ruleKindLabel(kind: RuleKind): string {
@@ -565,10 +570,13 @@ export function ApprovalsTab(): JSX.Element {
   const [projectRules, setProjectRules] = useState<ApprovalRule[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
   const [projectRulesLoading, setProjectRulesLoading] = useState(false);
-  const [globalRulesError, setGlobalRulesError] = useState<string | null>(null);
-  const [projectRulesError, setProjectRulesError] = useState<string | null>(
+  const [defaultsError, setDefaultsError] = useState<InlineFailure | null>(
     null,
   );
+  const [globalRulesError, setGlobalRulesError] =
+    useState<InlineFailure | null>(null);
+  const [projectRulesError, setProjectRulesError] =
+    useState<InlineFailure | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -586,7 +594,8 @@ export function ApprovalsTab(): JSX.Element {
         if (cancelled || syncedDefaultsRef.current) return;
         setDefaults(prefs.approvalDefaults);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        reportClientAppError(error);
         if (cancelled || syncedDefaultsRef.current) return;
         setDefaults(FALLBACK_APPROVAL_DEFAULTS);
       });
@@ -596,10 +605,14 @@ export function ApprovalsTab(): JSX.Element {
         if (cancelled) return;
         setGlobalRules(response.global);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (cancelled) return;
         setGlobalRules([]);
-        setGlobalRulesError('Could not load global rules.');
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError)
+          setGlobalRulesError(
+            inlineFailure(appError, "Couldn't load global rules."),
+          );
       });
     return (): void => {
       cancelled = true;
@@ -626,10 +639,14 @@ export function ApprovalsTab(): JSX.Element {
         if (cancelled) return;
         setProjectRules(response.project);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (cancelled) return;
         setProjectRules([]);
-        setProjectRulesError('Could not load project rules.');
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError)
+          setProjectRulesError(
+            inlineFailure(appError, "Couldn't load project rules."),
+          );
       })
       .finally(() => {
         if (!cancelled) setProjectRulesLoading(false);
@@ -648,6 +665,7 @@ export function ApprovalsTab(): JSX.Element {
     defaultsRevisionRef.current = requestRevision;
     const next: ApprovalDefaults = { ...defaults, [surface]: mode };
     setDefaults(next);
+    setDefaultsError(null);
     // Clear send-time defaults immediately so a privileged cached value can
     // never survive a hard flip to Ask while persistence is in flight.
     invalidateApprovalDefaults();
@@ -668,8 +686,13 @@ export function ApprovalsTab(): JSX.Element {
         useChatStore.setState({ approvalDefaultsCache: {} });
         emitPreferencesUpdated(normalized);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (defaultsRevisionRef.current !== requestRevision) return;
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError)
+          setDefaultsError(
+            inlineFailure(appError, "Couldn't save the approval mode."),
+          );
         void window.api
           .loadPreferences()
           .then((normalized) => {
@@ -678,20 +701,27 @@ export function ApprovalsTab(): JSX.Element {
             invalidateApprovalDefaults();
             useChatStore.setState({ approvalDefaultsCache: {} });
           })
-          .catch(() => {
+          .catch((reloadError: unknown) => {
+            reportClientAppError(reloadError);
             if (defaultsRevisionRef.current !== requestRevision) return;
             setDefaults(FALLBACK_APPROVAL_DEFAULTS);
           });
       });
   }
 
-  const rollbackGlobalRules = useCallback((message: string): void => {
-    setGlobalRulesError(message);
-    void window.api.approvals
-      .listRules({})
-      .then((response) => setGlobalRules(response.global))
-      .catch(() => setGlobalRules([]));
-  }, []);
+  const rollbackGlobalRules = useCallback(
+    (failure: InlineFailure | null): void => {
+      setGlobalRulesError(failure);
+      void window.api.approvals
+        .listRules({})
+        .then((response) => setGlobalRules(response.global))
+        .catch((error: unknown) => {
+          reportClientAppError(error);
+          setGlobalRules([]);
+        });
+    },
+    [],
+  );
 
   const addGlobalRule = useCallback(
     (behavior: RuleBehavior, target: ApprovalRuleTarget): void => {
@@ -706,7 +736,14 @@ export function ApprovalsTab(): JSX.Element {
       setGlobalRulesError(null);
       void window.api.approvals
         .addRule({ scope: 'global', rule })
-        .catch(() => rollbackGlobalRules('Could not add global rule.'));
+        .catch((error: unknown) => {
+          const appError = toAppError(resolveClientAppError(error));
+          rollbackGlobalRules(
+            appError
+              ? inlineFailure(appError, "Couldn't add the global rule.")
+              : null,
+          );
+        });
     },
     [rollbackGlobalRules],
   );
@@ -717,19 +754,29 @@ export function ApprovalsTab(): JSX.Element {
       setGlobalRulesError(null);
       void window.api.approvals
         .removeRule({ scope: 'global', ruleId })
-        .catch(() => rollbackGlobalRules('Could not remove global rule.'));
+        .catch((error: unknown) => {
+          const appError = toAppError(resolveClientAppError(error));
+          rollbackGlobalRules(
+            appError
+              ? inlineFailure(appError, "Couldn't remove the global rule.")
+              : null,
+          );
+        });
     },
     [rollbackGlobalRules],
   );
 
   const rollbackProjectRules = useCallback(
-    (message: string): void => {
+    (failure: InlineFailure | null): void => {
       if (!selectedWorkspaceId) return;
-      setProjectRulesError(message);
+      setProjectRulesError(failure);
       void window.api.approvals
         .listRules({ workspaceId: selectedWorkspaceId })
         .then((response) => setProjectRules(response.project))
-        .catch(() => setProjectRules([]));
+        .catch((error: unknown) => {
+          reportClientAppError(error);
+          setProjectRules([]);
+        });
     },
     [selectedWorkspaceId],
   );
@@ -752,7 +799,14 @@ export function ApprovalsTab(): JSX.Element {
           workspaceId: selectedWorkspaceId,
           rule,
         })
-        .catch(() => rollbackProjectRules('Could not add project rule.'));
+        .catch((error: unknown) => {
+          const appError = toAppError(resolveClientAppError(error));
+          rollbackProjectRules(
+            appError
+              ? inlineFailure(appError, "Couldn't add the project rule.")
+              : null,
+          );
+        });
     },
     [selectedWorkspaceId, rollbackProjectRules],
   );
@@ -768,7 +822,14 @@ export function ApprovalsTab(): JSX.Element {
           workspaceId: selectedWorkspaceId,
           ruleId,
         })
-        .catch(() => rollbackProjectRules('Could not remove project rule.'));
+        .catch((error: unknown) => {
+          const appError = toAppError(resolveClientAppError(error));
+          rollbackProjectRules(
+            appError
+              ? inlineFailure(appError, "Couldn't remove the project rule.")
+              : null,
+          );
+        });
     },
     [selectedWorkspaceId, rollbackProjectRules],
   );
@@ -788,6 +849,15 @@ export function ApprovalsTab(): JSX.Element {
       dataTestId="settings-approvals-section"
     >
       <SettingsSection title="Default mode">
+        <DesktopErrorBanner
+          className=""
+          error={defaultsError?.error}
+          {...(defaultsError?.details === undefined
+            ? {}
+            : { details: defaultsError.details })}
+          onDismiss={(): void => setDefaultsError(null)}
+          testId="approval-defaults-error"
+        />
         <SettingsGroup>
           <ApprovalDefaultRow
             surface="worktree"
@@ -817,9 +887,14 @@ export function ApprovalsTab(): JSX.Element {
         title="Global rules"
         description="Apply in every project, whatever the default mode."
       >
-        {globalRulesError && (
-          <Notice intent="destructive">{globalRulesError}</Notice>
-        )}
+        <DesktopErrorBanner
+          className=""
+          error={globalRulesError?.error}
+          {...(globalRulesError?.details === undefined
+            ? {}
+            : { details: globalRulesError.details })}
+          testId="approval-global-rules-error"
+        />
         <RuleList
           rules={globalRules}
           emptyMessage="No global rules yet."
@@ -843,9 +918,14 @@ export function ApprovalsTab(): JSX.Element {
           </SettingsGroup>
         ) : (
           <>
-            {projectRulesError && (
-              <Notice intent="destructive">{projectRulesError}</Notice>
-            )}
+            <DesktopErrorBanner
+              className=""
+              error={projectRulesError?.error}
+              {...(projectRulesError?.details === undefined
+                ? {}
+                : { details: projectRulesError.details })}
+              testId="approval-project-rules-error"
+            />
             {/* The project picker is the group's first row: the rules
                 under it belong to the project it names. */}
             <RuleList

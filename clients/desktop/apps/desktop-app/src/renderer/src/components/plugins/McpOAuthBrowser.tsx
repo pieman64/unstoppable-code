@@ -1,9 +1,12 @@
 import { requestBrowserSessionDestruction } from '@/lib/panels/browser-panel-sync';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useEffect, useRef, useState, type JSX } from 'react';
-import { MCP_OAUTH_BROWSER_SCOPE } from '@canopy/desktop-shared/types/browser';
+import { MCP_OAUTH_BROWSER_SCOPE } from '@canopy/execution-engine/types/browser';
 import { Button, Notice } from '@canopy/ui-shared';
-import { LoadingPlaceholder } from '@/components/shared/loading';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { BrowserPane } from '@/components/browser/BrowserPane';
 import { ensureBrowserEventSubscription } from '@/stores/browserEventSubscription';
 import { useBrowserStore } from '@/stores/browserStore';
@@ -114,7 +117,7 @@ export function McpOAuthBrowser({
     <aside
       data-testid={testId}
       aria-label={allowExternalOpen ? 'Connect account' : title}
-      className={className}
+      className={`flex flex-col gap-3 ${className ?? ''}`}
       onKeyDown={
         focusOnOpen
           ? (event): void => {
@@ -126,7 +129,7 @@ export function McpOAuthBrowser({
           : undefined
       }
     >
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <Heading level={3} variant="title">
           {title}
         </Heading>
@@ -150,7 +153,7 @@ export function McpOAuthBrowser({
         </div>
       </div>
       {allowExternalOpen && (
-        <p className="mb-3 text-xs fg-secondary">
+        <p className="text-xs fg-secondary">
           If this service requires your usual browser, choose Open in browser.
         </p>
       )}
@@ -165,12 +168,11 @@ export function McpOAuthBrowser({
           />
         </div>
       ) : (
-        <div role="status">
-          <LoadingPlaceholder
-            label="Opening sign-in…"
-            space="section"
-            showSpinner
-          />
+        <div className="py-8">
+          <DelayedLoadingPlaceholder slowNote="Still opening sign-in…">
+            {/* The native sign-in browser has no DOM content to measure here. */}
+            <CenteredLoadingSpinner />
+          </DelayedLoadingPlaceholder>
         </div>
       )}
     </aside>

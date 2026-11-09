@@ -948,7 +948,7 @@ export function PipelineRunTreeRow({
           onClick={() => onToggleExpand(summary.id)}
         />
         {isExpanded && (
-          <div className="mt-2 space-y-1.5 border-l-2 ml-1 pl-2.5">
+          <div className="mt-2 flex flex-col gap-1.5 border-l-2 ml-1 pl-2.5">
             {children.map((child) => (
               <PipelineRunTreeRow
                 key={child.summary.id}

@@ -11,7 +11,7 @@ import {
   Button,
   SettingsRowsRow,
   TextInput,
-  CopyDetailsButton,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
@@ -229,13 +229,14 @@ export function ProfileSection({
         </div>
       </form>
       {editor.error ? (
-        <p className="pb-3 text-xs fg-destructive" role="alert">
-          {editor.error.copy}
-        </p>
-      ) : null}
-      {editor.error?.details !== undefined ? (
         <div className="pb-3">
-          <CopyDetailsButton details={editor.error.details} />
+          <ErrorBanner
+            className=""
+            error={editor.error.copy}
+            {...(editor.error.details !== undefined
+              ? { details: editor.error.details }
+              : {})}
+          />
         </div>
       ) : null}
     </>

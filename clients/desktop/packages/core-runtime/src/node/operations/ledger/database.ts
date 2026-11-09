@@ -127,6 +127,30 @@ const SCHEMA_V3 = [
   ) STRICT`,
 ];
 
+/**
+ * Identity retention's lookups (CAN-5721): candidate roots by kind and finish
+ * time, then each tree by its root. New ledgers create them with their
+ * schema; an older schema-3 ledger gets them from its first retention batch,
+ * never at open, since building them over a large ledger takes a while. An
+ * index is not a format change, so older schema-3 builds still open the file.
+ */
+export const OPERATION_LEDGER_RETENTION_INDEXES: readonly {
+  name: string;
+  create: string;
+}[] = [
+  {
+    name: 'operations_by_root',
+    create: `CREATE INDEX IF NOT EXISTS operations_by_root
+      ON operations (root_operation_id)`,
+  },
+  {
+    name: 'operations_roots_by_kind',
+    create: `CREATE INDEX IF NOT EXISTS operations_roots_by_kind
+      ON operations (kind, completed_at, operation_id)
+      WHERE parent_operation_id IS NULL`,
+  },
+];
+
 function closeQuietly(db: DatabaseSync): void {
   try {
     if (db.isOpen) db.close();
@@ -183,7 +207,12 @@ function migrate(db: DatabaseSync): void {
     );
   }
   upgrade(db, () => {
-    for (const statement of [...SCHEMA, ...SCHEMA_V2, ...SCHEMA_V3])
+    for (const statement of [
+      ...SCHEMA,
+      ...SCHEMA_V2,
+      ...SCHEMA_V3,
+      ...OPERATION_LEDGER_RETENTION_INDEXES.map((index) => index.create),
+    ])
       db.exec(statement);
     const insert = db.prepare(
       'INSERT INTO operation_meta (key, value) VALUES (?, ?)',

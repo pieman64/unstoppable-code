@@ -89,9 +89,6 @@ export const CLOUD_AUTH_DEFAULT_LEAD =
 
 const OAUTH_MICROCOPY = 'Opens your browser. Takes about ten seconds.';
 
-const MODE_LINK_CLASS =
-  'focus-ring rounded text-xs fg-secondary underline-offset-2 hover:fg-primary hover:underline disabled:cursor-not-allowed disabled:opacity-60';
-
 /**
  * Vertical rhythm, as three groups: the header (title plus the lead line that
  * supports it), the benefit rows, and the action block (CTA plus microcopy).
@@ -384,7 +381,7 @@ export function CloudAuthPanel({
         data-testid="settings-account-canopy-cloud-oauth"
       >
         {leadSlot}
-        <ul className={`space-y-3 ${isSplash ? 'text-left' : ''}`}>
+        <ul className={`flex flex-col gap-3 ${isSplash ? 'text-left' : ''}`}>
           {displayedBenefits.map((benefit) => {
             const Icon = benefit.icon;
             return (
@@ -404,7 +401,7 @@ export function CloudAuthPanel({
           })}
         </ul>
 
-        <div className={`${isSplash ? 'mt-auto ' : ''}space-y-2`}>
+        <div className={`${isSplash ? 'mt-auto ' : ''}flex flex-col gap-2`}>
           {errorSlot}
           <Button
             ref={ctaRef}
@@ -425,27 +422,27 @@ export function CloudAuthPanel({
           <p className="text-center text-xs fg-secondary">{OAUTH_MICROCOPY}</p>
           {oauthPending ? (
             <div className="flex justify-center">
-              <button
+              <Button
+                variant="ghost"
+                size="compact"
                 ref={oauthCancelRef}
-                type="button"
                 onClick={(): void => void auth.handleCancelOAuthLogin()}
                 data-testid="settings-account-canopy-cloud-oauth-cancel"
-                className={MODE_LINK_CLASS}
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           ) : apiKeyFallbackAvailable ? (
             <div className="flex justify-center">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="compact"
                 onClick={(): void => setMode('api_key')}
                 disabled={busy}
                 data-testid="settings-account-canopy-cloud-mode-api-key"
-                className={MODE_LINK_CLASS}
               >
                 Use an API key instead
-              </button>
+              </Button>
             </div>
           ) : null}
         </div>
@@ -460,12 +457,12 @@ export function CloudAuthPanel({
         data-testid="settings-account-canopy-cloud-api-key"
       >
         <div>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
             onClick={(): void => setMode('oauth')}
             disabled={busy || validating}
             data-testid="settings-account-canopy-cloud-mode-oauth"
-            className={`inline-flex items-center gap-1 ${MODE_LINK_CLASS}`}
           >
             <ChevronRightIcon
               size="sm"
@@ -473,7 +470,7 @@ export function CloudAuthPanel({
               aria-hidden="true"
             />
             Back to sign in
-          </button>
+          </Button>
         </div>
 
         {leadSlot}
@@ -487,7 +484,7 @@ export function CloudAuthPanel({
           inputRef={apiKeyInputRef}
         />
 
-        <div className="mt-auto space-y-2">
+        <div className="flex flex-col mt-auto gap-2">
           {errorSlot}
           <Button
             ref={apiKeySubmitRef}

@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { Readable, Writable } from 'node:stream';
-import { killProcessGroupByPid } from '@canopy/desktop-shared/node/lib/process-kill';
+import {
+  killProcessGroupByPid,
+  signalExitedProcessGroup,
+} from '@canopy/execution-engine/node/lib/process-kill';
 import type {
   ExecutionHostPort,
   ExecutionHostProcess,
@@ -15,6 +18,7 @@ import {
   type ProviderProcess,
   type ProviderProcessRequest,
   type ProviderProcessSpawner,
+  type ProviderProcessStdin,
   type ProviderProcessStopOptions,
 } from '@canopy/desktop-shared/node/provider-process/spawn';
 import {
@@ -45,13 +49,14 @@ export interface ProviderProcessHostClient {
 type Send = (message: ProviderProcessHostRequest) => void;
 
 class ProviderProcessProxy extends EventEmitter implements ProviderProcess {
-  readonly stdin: Writable;
+  readonly stdin: Writable | null;
   readonly stdout: Readable;
   readonly stderr: Readable;
   private childPid: number | undefined;
   private deferredAck = 0;
   private errorEmitted = false;
   private finished = false;
+  private exited = false;
   private stopping: Promise<void> | undefined;
   private markClosed: () => void = () => undefined;
   private readonly closed = new Promise<void>((resolve) => {
@@ -61,9 +66,23 @@ class ProviderProcessProxy extends EventEmitter implements ProviderProcess {
   constructor(
     readonly requestId: string,
     private readonly send: Send,
+    stdin: ProviderProcessStdin | undefined,
   ) {
     super();
-    this.stdin = new Writable({
+    this.stdin = stdin === 'ignore' ? null : this.relayStdin(requestId);
+    this.stdout = new Readable({
+      read: (): void => {
+        if (this.deferredAck <= 0 || this.finished) return;
+        const bytes = this.deferredAck;
+        this.deferredAck = 0;
+        this.trySend({ type: 'stdout-ack', requestId, bytes });
+      },
+    });
+    this.stderr = new Readable({ read: (): void => undefined });
+  }
+
+  private relayStdin(requestId: string): Writable {
+    return new Writable({
       write: (chunk: unknown, _encoding, callback): void => {
         if (!this.finished && Buffer.isBuffer(chunk))
           this.trySend({
@@ -78,15 +97,6 @@ class ProviderProcessProxy extends EventEmitter implements ProviderProcess {
         callback();
       },
     });
-    this.stdout = new Readable({
-      read: (): void => {
-        if (this.deferredAck <= 0 || this.finished) return;
-        const bytes = this.deferredAck;
-        this.deferredAck = 0;
-        this.trySend({ type: 'stdout-ack', requestId, bytes });
-      },
-    });
-    this.stderr = new Readable({ read: (): void => undefined });
   }
 
   get pid(): number | undefined {
@@ -97,6 +107,11 @@ class ProviderProcessProxy extends EventEmitter implements ProviderProcess {
     return this.finished;
   }
 
+  /** The child exited or closed: its pid may be reused, its group may not. */
+  get hasExited(): boolean {
+    return this.exited || this.finished;
+  }
+
   stop(options?: ProviderProcessStopOptions): Promise<void> {
     this.stopping ??= ((): Promise<void> => {
       // Parent closure does not imply group closure: a child that already
@@ -104,9 +119,7 @@ class ProviderProcessProxy extends EventEmitter implements ProviderProcess {
       // longer tracks.
       if (this.finished) {
         if (this.childPid !== undefined)
-          void killProcessGroupByPid(this.childPid, 'SIGKILL').catch(
-            () => undefined,
-          );
+          signalExitedProcessGroup(this.childPid, 'SIGKILL');
       } else
         this.trySend({
           type: 'stop',
@@ -143,15 +156,19 @@ class ProviderProcessProxy extends EventEmitter implements ProviderProcess {
     this.emit('error', new ProviderProcessError(message, code));
   }
 
+  exit(code: number | null, signal: NodeJS.Signals | null): void {
+    if (this.exited || this.finished) return;
+    this.exited = true;
+    this.emit('exit', code, signal);
+  }
+
   close(code: number | null, signal: NodeJS.Signals | null): void {
     if (this.finished) return;
     this.finished = true;
     // A stop that crossed the host's close was dropped there: reap the
     // group the stop promised to end.
     if (this.stopping && this.childPid !== undefined)
-      void killProcessGroupByPid(this.childPid, 'SIGKILL').catch(
-        () => undefined,
-      );
+      signalExitedProcessGroup(this.childPid, 'SIGKILL');
     this.stdout.push(null);
     this.stderr.push(null);
     this.emit('close', code, signal);
@@ -234,6 +251,9 @@ export function createProviderProcessHostClient(
       case 'error':
         proxy.fail(response.message, response.code);
         return;
+      case 'exit':
+        proxy.exit(response.code, response.signal);
+        return;
       case 'close':
         launched.proxies.delete(response.requestId);
         launched.startedGroups.delete(response.requestId);
@@ -245,9 +265,12 @@ export function createProviderProcessHostClient(
   const handleExit = (launched: LaunchedHost, code: number): void => {
     if (host === launched) host = undefined;
     // Children run in their own process groups, outside the host's tree.
-    for (const [requestId, pid] of launched.startedGroups)
-      if (launched.proxies.get(requestId)?.isClosed === false)
-        void killProcessGroupByPid(pid, 'SIGKILL').catch(() => undefined);
+    for (const [requestId, pid] of launched.startedGroups) {
+      const proxy = launched.proxies.get(requestId);
+      if (!proxy || proxy.isClosed) continue;
+      if (proxy.hasExited) signalExitedProcessGroup(pid, 'SIGKILL');
+      else void killProcessGroupByPid(pid, 'SIGKILL').catch(() => undefined);
+    }
     launched.startedGroups.clear();
     const proxies = Array.from(launched.proxies.values());
     launched.proxies.clear();
@@ -285,12 +308,20 @@ export function createProviderProcessHostClient(
   const spawn: ProviderProcessSpawner = (request: ProviderProcessRequest) => {
     const requestId = randomUUID();
     if (!isProviderProcessOwner(request.owner))
-      return new ProviderProcessProxy(requestId, noSend).failSoon(
+      return new ProviderProcessProxy(
+        requestId,
+        noSend,
+        request.stdin,
+      ).failSoon(
         'The provider process owner is invalid.',
         PROVIDER_PROCESS_OWNER_ERROR_CODE,
       );
     if (shuttingDown)
-      return new ProviderProcessProxy(requestId, noSend).failSoon(
+      return new ProviderProcessProxy(
+        requestId,
+        noSend,
+        request.stdin,
+      ).failSoon(
         'The provider process host is not accepting this spawn.',
         HOST_REFUSED_ERROR_CODE,
       );
@@ -298,13 +329,17 @@ export function createProviderProcessHostClient(
     try {
       launched = host ??= startHost();
     } catch {
-      return new ProviderProcessProxy(requestId, noSend).failSoon(
+      return new ProviderProcessProxy(
+        requestId,
+        noSend,
+        request.stdin,
+      ).failSoon(
         hostExitMessage('launch'),
         PROVIDER_PROCESS_HOST_EXIT_ERROR_CODE,
       );
     }
     const send: Send = (message) => launched.process.postMessage(message);
-    const proxy = new ProviderProcessProxy(requestId, send);
+    const proxy = new ProviderProcessProxy(requestId, send, request.stdin);
     try {
       send({
         type: 'spawn',
@@ -314,9 +349,14 @@ export function createProviderProcessHostClient(
         cwd: request.cwd,
         env: environmentOf(request.env),
         owner: { kind: request.owner.kind, id: request.owner.id },
+        ...(request.stdin ? { stdin: request.stdin } : {}),
       });
     } catch {
-      return new ProviderProcessProxy(requestId, noSend).failSoon(
+      return new ProviderProcessProxy(
+        requestId,
+        noSend,
+        request.stdin,
+      ).failSoon(
         hostExitMessage('launch'),
         PROVIDER_PROCESS_HOST_EXIT_ERROR_CODE,
       );

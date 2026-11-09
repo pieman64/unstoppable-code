@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import type { AgentFailureClassification } from '@canopy/desktop-shared/types/agent-failures';
-import type { TransientAgentRetryOptions } from '@canopy/desktop-shared/agent-failures';
+import type { AgentFailureClassification } from '@canopy/execution-engine/types/agent-failures';
+import type { TransientAgentRetryOptions } from '@canopy/execution-engine/agent-failures';
 import type { AccountProxyStatus } from '@canopy/desktop-shared/types/account-proxy';
 import { accountProxyNoUsableAccountsMessage } from '@canopy/desktop-shared/lib/account-proxy';
 import { getAccountProxyStatus } from './service';

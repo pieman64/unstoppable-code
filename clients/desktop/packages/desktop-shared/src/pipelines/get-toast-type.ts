@@ -1,4 +1,4 @@
-import type { ExecutionEvent } from '../types/pipeline';
+import type { ExecutionEvent } from '@canopy/execution-engine/types/pipeline';
 
 export function getToastType(
   event: ExecutionEvent,

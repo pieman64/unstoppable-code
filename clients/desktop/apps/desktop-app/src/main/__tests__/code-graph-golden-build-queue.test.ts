@@ -44,6 +44,7 @@ const mockPriorityCalls: Array<{ pid: number; background: boolean }> = [];
 const mockLeaveBackground: number[] = [];
 
 jest.mock('electron', () => ({
+  app: { isPackaged: false },
   utilityProcess: {
     fork: (): unknown => mockPool.fork(),
   },

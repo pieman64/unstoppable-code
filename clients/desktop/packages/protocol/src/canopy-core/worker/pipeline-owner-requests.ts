@@ -35,6 +35,7 @@ export const WORKER_PIPELINE_OWNER_ACTIONS = [
   'owner.ledger.codexToolAuthorize',
   'owner.ledger.codexToolExecute',
   'owner.ledger.codexToolsDispose',
+  'owner.claude.modAdmission',
 ] as const;
 export type WorkerPipelineOwnerAction =
   (typeof WORKER_PIPELINE_OWNER_ACTIONS)[number];
@@ -46,6 +47,39 @@ const toolJson = canopyJsonValueSchemaWithin(
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
 );
 const toolSpec = canopyJsonValueSchemaWithin(65_536);
+
+/** At most this many Mod admissions, ambient plugins or session Mod ids cross. */
+export const WORKER_PIPELINE_OWNER_MOD_LIST_MAX = 1024;
+const modPluginId = z.string().min(1).max(512);
+const modList = <T extends z.ZodType>(item: T): z.ZodArray<T> =>
+  z.array(item).max(WORKER_PIPELINE_OWNER_MOD_LIST_MAX);
+
+/**
+ * A Claude step's Mod policy and the ambient plugins of its Claude config
+ * folder (CAN-5095): flags, admission records, plugin ids and install paths.
+ * No secret crosses.
+ */
+const ClaudeModAdmissionContextSchema = z.strictObject({
+  enabled: z.boolean(),
+  claudeConfigDir: hostPath.optional(),
+  authority: z.enum(['ok', 'absent', 'unreadable']),
+  admissions: modList(
+    z.strictObject({
+      pluginId: modPluginId,
+      contentDigest: z.string().min(1).max(256),
+      admittedAt: z.string().min(1).max(64),
+    }),
+  ),
+  modsDisabled: z.boolean(),
+  ambientPlugins: modList(
+    z.strictObject({
+      pluginId: modPluginId,
+      installPath: hostPath.nullable(),
+      notLoaded: z.literal(true).optional(),
+    }),
+  ),
+  sessionModIds: modList(modPluginId).optional(),
+});
 
 const routingContext = {
   allowNoNativeAuthFallback: z.boolean().optional(),
@@ -143,6 +177,12 @@ export const WORKER_PIPELINE_OWNER_REQUEST_MEMBERS = [
     action: z.literal('owner.ledger.codexToolsDispose'),
     toolsKey: id,
   }),
+  z.strictObject({
+    action: z.literal('owner.claude.modAdmission'),
+    cwd: hostPath,
+    settingSources: z.array(z.enum(['user', 'project', 'local'])).max(3),
+    claudeConfigDir: hostPath.optional(),
+  }),
 ] as const;
 
 /** What core answers an owner request with, apart from host-local values. */
@@ -212,6 +252,11 @@ export const WorkerPipelineOwnerResultSchema = z.discriminatedUnion('kind', [
     response: toolJson,
   }),
   z.strictObject({ kind: z.literal('ledger.codexToolsDispose') }),
+  z.strictObject({
+    kind: z.literal('claude.modAdmission'),
+    /** Null while Claude Mod admission is off for this app. */
+    context: ClaudeModAdmissionContextSchema.nullable(),
+  }),
 ]);
 export type WorkerPipelineOwnerResult = z.output<
   typeof WorkerPipelineOwnerResultSchema
@@ -236,6 +281,7 @@ export const WORKER_PIPELINE_OWNER_RESULT_KIND: Readonly<
   'owner.ledger.codexToolAuthorize': 'ledger.codexToolAuthorize',
   'owner.ledger.codexToolExecute': 'ledger.codexToolExecute',
   'owner.ledger.codexToolsDispose': 'ledger.codexToolsDispose',
+  'owner.claude.modAdmission': 'claude.modAdmission',
 });
 
 const OWNER_ACTIONS: ReadonlySet<string> = new Set(

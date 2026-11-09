@@ -7,6 +7,7 @@ import type {
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useObservabilityEntriesInterest } from '@/lib/chat-interest';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
+import { Button } from '@canopy/ui-shared/components/Button';
 import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
@@ -405,19 +406,17 @@ export function MetricsChart({
       )}
 
       {mode === 'counts' ? (
-        <ul className="flex flex-wrap items-center justify-center gap-2 pt-1 text-2xs fg-secondary">
+        <ul className="flex flex-wrap items-center justify-center gap-2 pt-1 text-2xs fg-secondary pointer-coarse:gap-y-4">
           {countSeries.map((opt) => {
             const hidden = !visibleSeries.has(opt.value);
             return (
-              <li key={opt.value}>
-                <button
-                  type="button"
+              <li key={opt.value} className={hidden ? 'opacity-40' : undefined}>
+                <Button
+                  variant="ghost"
+                  size="compact"
                   onClick={() => toggleSeries(opt.value)}
                   aria-pressed={!hidden}
                   data-testid={`usage-chart-legend-${spec.id}-${opt.value}`}
-                  className={`inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 transition-colors focus-ring hover:bg-secondary ${
-                    hidden ? 'opacity-40' : ''
-                  }`}
                 >
                   <span
                     aria-hidden="true"
@@ -425,7 +424,7 @@ export function MetricsChart({
                     style={{ backgroundColor: colorForSeries(opt.value) }}
                   />
                   <span>{opt.label}</span>
-                </button>
+                </Button>
               </li>
             );
           })}
@@ -453,22 +452,20 @@ export function MetricsChart({
               data-testid={`usage-chart-distribution-metric-${spec.id}`}
             />
           </div>
-          <ul className="flex flex-wrap items-center gap-2 text-2xs fg-secondary">
+          <ul className="flex flex-wrap items-center gap-2 text-2xs fg-secondary pointer-coarse:gap-y-4">
             {PERCENTILES.map((p) => {
               const hidden = !visiblePercentiles.has(p);
               return (
-                <li key={p}>
-                  <button
-                    type="button"
+                <li key={p} className={hidden ? 'opacity-40' : undefined}>
+                  <Button
+                    variant="ghost"
+                    size="compact"
                     onClick={() => togglePercentile(p)}
                     aria-pressed={!hidden}
                     data-testid={`usage-chart-percentile-${spec.id}-${p}`}
-                    className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors focus-ring hover:bg-secondary ${
-                      hidden ? 'opacity-40' : ''
-                    }`}
                   >
                     <span>{p}</span>
-                  </button>
+                  </Button>
                 </li>
               );
             })}

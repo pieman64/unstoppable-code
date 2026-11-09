@@ -4,7 +4,7 @@ import { interpolateExpression } from './expression-evaluator';
 import type {
   PipelineRunTarget,
   PipelineScalar,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 type ExpressionContext = ReturnType<typeof buildExpressionContext>;
 

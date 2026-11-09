@@ -1,27 +1,18 @@
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/shallow';
+import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 import {
-  Button,
-  EmptyState,
-  ListRow,
-  LoadingSpinner,
-  Notice,
-  NoticeButton,
-  ErrorBanner,
-} from '@canopy/ui-shared/components';
-import { MacbookIcon } from '@canopy/ui-shared/icons/AppIcons';
+  RemoteControlPairing,
+  type RemoteControlPairingAction,
+  type RemoteControlPairingStep,
+} from '@canopy/ui-app/remote-control';
 import type {
   RemoteControlDevice,
   RemoteOutgoingPairing,
 } from '@canopy/desktop-shared/types';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
-import {
-  describeError,
-  formatPairingCode,
-  platformLabel,
-} from './remote-access-copy';
+import { describeError } from './remote-access-copy';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
 
 /** Main keeps discovery alive for about five minutes per request. */
@@ -143,13 +134,19 @@ export function PairComputerDialog({
     openCloudAccountSettings();
   };
 
-  let body: ReactNode;
-  let footer: ReactNode;
+  let step: RemoteControlPairingStep;
+  let actions: readonly RemoteControlPairingAction[];
+  const cancel: RemoteControlPairingAction = {
+    label: 'Cancel',
+    onSelect: close,
+    testId: 'remote-access-pair-cancel',
+  };
   if (phase === 'pairing' && pairing !== null) {
-    ({ body, footer } = renderPairing({
+    ({ step, actions } = pairingStep({
       pairing,
       busy,
-      onCancel: close,
+      cancel,
+      onClose: close,
       onRetry: (): void => {
         const device = lastDeviceRef.current ?? pairing;
         pair(device);
@@ -159,37 +156,38 @@ export function PairComputerDialog({
     }));
   } else if (phase === 'pairing') {
     // Started, but the snapshot with the attempt has not arrived yet.
-    body = (
-      <StatusLine>
-        <LoadingSpinner tone="secondary" decorative />
-        Connecting…
-      </StatusLine>
-    );
-    footer = (
-      <Button variant="outline" size="lg" onClick={close}>
-        Cancel
-      </Button>
-    );
+    step = { kind: 'progress', message: 'Connecting…' };
+    actions = [{ label: 'Cancel', onSelect: close }];
   } else {
-    body = renderChoose({
-      signedIn: state.signedIn,
-      relayUnavailable: state.relayStatus === 'unavailable',
-      discovered,
-      devices: state.discoverable,
-      busy,
-      onPair: pair,
-      onOpenAccounts: openAccounts,
-    });
-    footer = (
-      <Button
-        variant="outline"
-        size="lg"
-        onClick={close}
-        data-testid="remote-access-pair-cancel"
-      >
-        Cancel
-      </Button>
-    );
+    step = state.signedIn
+      ? {
+          kind: 'choose',
+          computers: state.discoverable,
+          searching: !discovered,
+          emptyHint:
+            'On the other computer, open Settings → Remote access and turn on Allow other computers to control this one. Both computers must be signed in to the same account.',
+          relayUnavailable: state.relayStatus === 'unavailable',
+          disabled: busy,
+          onChoose: pair,
+        }
+      : {
+          kind: 'content',
+          content: (
+            <Notice
+              intent="attention"
+              title="Sign in to pair computers"
+              data-testid="remote-access-pair-signed-out"
+              actions={
+                <NoticeButton variant="primary" onClick={openAccounts}>
+                  Open account settings
+                </NoticeButton>
+              }
+            >
+              Both computers must be signed in to the same account.
+            </Notice>
+          ),
+        };
+    actions = [cancel];
   }
 
   return (
@@ -200,269 +198,123 @@ export function PairComputerDialog({
       trapFocus
       dataTestId="remote-access-pair-dialog"
     >
-      <div className="flex flex-col gap-4">
-        {body}
-        <ErrorBanner
-          className=""
-          error={actionError}
-          testId="remote-access-pair-error"
-        />
-        <div className="flex items-center justify-end gap-2">{footer}</div>
-      </div>
+      <RemoteControlPairing
+        presentation="dialog"
+        step={step}
+        actions={actions}
+        error={actionError}
+        testIdPrefix="remote-access-pair"
+      />
     </DialogModal>
   );
 }
 
-function StatusLine({
-  children,
-}: {
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <p
-      role="status"
-      className="flex items-center gap-2 text-s fg-secondary"
-      data-testid="remote-access-pair-status"
-    >
-      {children}
-    </p>
-  );
-}
-
-interface ChooseProps {
-  readonly signedIn: boolean;
-  readonly relayUnavailable: boolean;
-  readonly discovered: boolean;
-  readonly devices: readonly RemoteControlDevice[];
-  readonly busy: boolean;
-  readonly onPair: (device: RemoteControlDevice) => void;
-  readonly onOpenAccounts: () => void;
-}
-
-function renderChoose({
-  signedIn,
-  relayUnavailable,
-  discovered,
-  devices,
-  busy,
-  onPair,
-  onOpenAccounts,
-}: ChooseProps): ReactNode {
-  if (!signedIn) {
-    return (
-      <Notice
-        intent="attention"
-        title="Sign in to pair computers"
-        data-testid="remote-access-pair-signed-out"
-        actions={
-          <NoticeButton variant="primary" onClick={onOpenAccounts}>
-            Open account settings
-          </NoticeButton>
-        }
-      >
-        Both computers must be signed in to the same account.
-      </Notice>
-    );
-  }
-  return (
-    <>
-      {relayUnavailable ? (
-        <Notice intent="attention" title="Can't reach the connection service">
-          Retrying automatically. Check your internet connection.
-        </Notice>
-      ) : null}
-      {devices.length > 0 ? (
-        <>
-          <p className="text-s fg-secondary">
-            Choose the computer you want to control from this one.
-          </p>
-          <ul
-            aria-label="Computers ready to pair"
-            className="-mx-2 flex flex-col gap-px"
-            data-testid="remote-access-pair-list"
-          >
-            {devices.map((device) => (
-              <li key={device.deviceId}>
-                <ListRow
-                  disabled={busy}
-                  onClick={() => onPair(device)}
-                  data-testid={`remote-access-pair-option-${device.deviceId}`}
-                  icon={<MacbookIcon size={16} aria-hidden="true" />}
-                  trailing={platformLabel(device.platform)}
-                >
-                  {device.name}
-                </ListRow>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : discovered ? (
-        <EmptyState
-          testId="remote-access-pair-empty"
-          inset="none"
-          title="No computers ready to pair"
-          subtitle="On the other computer, open Settings → Remote access and turn on Allow other computers to control this one. Both computers must be signed in to the same account."
-        />
-      ) : (
-        <StatusLine>
-          <LoadingSpinner tone="secondary" decorative />
-          Looking for computers…
-        </StatusLine>
-      )}
-    </>
-  );
-}
-
-interface PairingViewProps {
+interface PairingStepInput {
   readonly pairing: RemoteOutgoingPairing;
   readonly busy: boolean;
-  readonly onCancel: () => void;
+  readonly cancel: RemoteControlPairingAction;
+  readonly onClose: () => void;
   readonly onRetry: () => void;
   readonly onBack: () => void;
   readonly onOpen: () => void;
 }
 
-function renderPairing({
+/** The shared flow's step and actions for an attempt main reports. */
+function pairingStep({
   pairing,
   busy,
-  onCancel,
+  cancel,
+  onClose,
   onRetry,
   onBack,
   onOpen,
-}: PairingViewProps): { body: ReactNode; footer: ReactNode } {
-  const cancelButton = (
-    <Button
-      variant="outline"
-      size="lg"
-      onClick={onCancel}
-      data-testid="remote-access-pair-cancel"
-    >
-      Cancel
-    </Button>
-  );
+}: PairingStepInput): {
+  step: RemoteControlPairingStep;
+  actions: readonly RemoteControlPairingAction[];
+} {
   switch (pairing.status) {
     case 'connecting':
       return {
-        body: (
-          <StatusLine>
-            <LoadingSpinner tone="secondary" decorative />
-            Connecting to {pairing.name}…
-          </StatusLine>
-        ),
-        footer: cancelButton,
+        step: { kind: 'progress', message: <>Connecting to {pairing.name}…</> },
+        actions: [cancel],
       };
     case 'awaiting-approval':
       return {
-        body: (
-          <div className="flex flex-col gap-4">
-            <p className="text-s fg-secondary">
+        step: {
+          kind: 'compare',
+          instruction: (
+            <>
               Check that {pairing.name} shows the same code, then select Allow
               on that computer.
-            </p>
-            {pairing.code !== null ? (
-              <p
-                aria-label={`Pairing code ${pairing.code.split('').join(' ')}`}
-                className={`${POSTHOG_REPLAY_BLOCK_CLASS} text-center font-mono text-3xl font-medium tabular-nums fg-primary`}
-                data-testid="remote-access-pair-code"
-              >
-                {formatPairingCode(pairing.code)}
-              </p>
-            ) : null}
-            <StatusLine>
-              <LoadingSpinner tone="secondary" decorative />
-              Waiting for {pairing.name}…
-            </StatusLine>
-          </div>
-        ),
-        footer: cancelButton,
+            </>
+          ),
+          code: pairing.code,
+          waiting: <>Waiting for {pairing.name}…</>,
+        },
+        actions: [cancel],
       };
     case 'approved':
       return {
-        body: (
-          <p
-            role="status"
-            className="text-s fg-primary"
-            data-testid="remote-access-pair-approved"
-          >
-            {pairing.name} is paired. You can open it any time from Computers in
-            the account menu.
-          </p>
-        ),
-        footer: (
-          <>
-            <Button
-              variant="outline"
-              size="lg"
-              onClick={onCancel}
-              data-testid="remote-access-pair-done"
-            >
-              Done
-            </Button>
-            <Button
-              variant="primary"
-              size="lg"
-              onClick={onOpen}
-              data-testid="remote-access-pair-open"
-            >
-              Open {pairing.name}
-            </Button>
-          </>
-        ),
+        step: {
+          kind: 'outcome',
+          message: (
+            <>
+              {pairing.name} is paired. You can open it any time from Computers
+              in the account menu.
+            </>
+          ),
+          testId: 'remote-access-pair-approved',
+        },
+        actions: [
+          {
+            label: 'Done',
+            onSelect: onClose,
+            testId: 'remote-access-pair-done',
+          },
+          {
+            label: <>Open {pairing.name}</>,
+            onSelect: onOpen,
+            primary: true,
+            testId: 'remote-access-pair-open',
+          },
+        ],
       };
     case 'rejected':
       return {
-        body: (
-          <p
-            role="status"
-            className="text-s fg-primary"
-            data-testid="remote-access-pair-rejected"
-          >
-            {pairing.name} declined the request.
-          </p>
-        ),
-        footer: (
-          <>
-            <Button variant="outline" size="lg" onClick={onCancel}>
-              Close
-            </Button>
-            <Button
-              variant="primary"
-              size="lg"
-              onClick={onBack}
-              data-testid="remote-access-pair-back"
-            >
-              Choose another computer
-            </Button>
-          </>
-        ),
+        step: {
+          kind: 'outcome',
+          message: <>{pairing.name} declined the request.</>,
+          testId: 'remote-access-pair-rejected',
+        },
+        actions: [
+          { label: 'Close', onSelect: onClose },
+          {
+            label: 'Choose another computer',
+            onSelect: onBack,
+            primary: true,
+            testId: 'remote-access-pair-back',
+          },
+        ],
       };
     case 'failed':
       return {
-        body: (
-          <ErrorBanner
-            className=""
-            testId="remote-access-pair-failed"
-            error={`Couldn't pair with ${pairing.name}. ${
-              pairing.error ?? 'The connection ended before it finished.'
-            }`}
-          />
-        ),
-        footer: (
-          <>
-            <Button variant="outline" size="lg" onClick={onCancel}>
-              Close
-            </Button>
-            <Button
-              variant="primary"
-              size="lg"
-              disabled={busy}
-              onClick={onRetry}
-              data-testid="remote-access-pair-retry"
-            >
-              Try again
-            </Button>
-          </>
-        ),
+        step: {
+          kind: 'failed',
+          message: `Couldn't pair with ${pairing.name}. ${
+            pairing.error ?? 'The connection ended before it finished.'
+          }`,
+          testId: 'remote-access-pair-failed',
+        },
+        actions: [
+          { label: 'Close', onSelect: onClose },
+          {
+            label: 'Try again',
+            onSelect: onRetry,
+            primary: true,
+            disabled: busy,
+            testId: 'remote-access-pair-retry',
+          },
+        ],
       };
   }
 }

@@ -1,4 +1,4 @@
-import { brandEnvCandidates } from '@canopy/desktop-shared/brand/env';
+import { brandEnvCandidates } from '@canopy/execution-engine/brand/env';
 import { getLoginShellPath } from '../pipelines/config-paths';
 import { isBlockedManagedEnvName } from '@canopy/core-runtime/node/terminal';
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type JSX } from 'react';
-import { Disclosure } from '@canopy/ui-shared/components';
+import { Stack, Disclosure } from '@canopy/ui-shared/components';
 import { ItemListSection, type ActivityListItem } from './ItemListSection';
 
 export interface RepoGroupedEntry {
@@ -63,7 +63,7 @@ export function RepoGroupedItemListSection({
     );
   const grouped = groupByRepo(entries);
   return (
-    <div className="space-y-2" data-testid={`activity-${kind}`}>
+    <Stack gap="inline" data-testid={`activity-${kind}`}>
       {grouped.repoless.length > 0 && (
         <ItemListSection
           emptyLabel={`No ${kind}.`}
@@ -100,6 +100,6 @@ export function RepoGroupedItemListSection({
           </Disclosure>
         );
       })}
-    </div>
+    </Stack>
   );
 }

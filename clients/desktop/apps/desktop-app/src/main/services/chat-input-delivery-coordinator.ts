@@ -1,3 +1,4 @@
+import { assertCoworkChatRootPresent } from '../lib/cowork-folder-guard';
 import type {
   ChatWatcherHeldOutcome,
   WatcherDeliveryIngressCheck,
@@ -1056,6 +1057,7 @@ export class ChatInputDeliveryCoordinator {
         'target_not_ready',
         'The target task is still being set up.',
       );
+    await assertCoworkChatRootPresent(request.projectId, request.worktreeId);
     const attachmentBaseDir = resolveAgentAttachmentsDir(
       request.projectId,
       request.worktreeId,

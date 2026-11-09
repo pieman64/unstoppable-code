@@ -1,3 +1,5 @@
+import type { CoworkFolderMissing } from '@canopy/protocol/canopy-core';
+
 /**
  * Private channels between the controlled computer's main process and the
  * hidden bridge window that replays a controller's IPC calls through the
@@ -23,4 +25,9 @@ export interface RemoteBridgePostMessage {
 
 export type RemoteBridgeResultMessage =
   | { id: number; ok: true; value: unknown }
-  | { id: number; ok: false; message: string };
+  | {
+      id: number;
+      ok: false;
+      message: string;
+      coworkFolderMissing?: CoworkFolderMissing;
+    };

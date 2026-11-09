@@ -13,7 +13,7 @@ import type {
   McpServerIndexEntry,
   McpServersIndexFile,
   McpServerStatusEntry,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   accountMcpRowKey,
   accountMcpConnectionKey,

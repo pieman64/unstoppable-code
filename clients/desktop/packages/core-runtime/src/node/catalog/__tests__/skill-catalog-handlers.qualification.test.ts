@@ -5,6 +5,7 @@ import {
   CORE_CATALOG_SKILL_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_SKILL_QUERY_DEFINITIONS,
   CatalogSkillInstallResultSchema,
+  CatalogSkillUpdatesCheckResultSchema,
   isBoundedCanopyJsonValue,
   type CanopyCallerDescriptor,
   type CatalogSkillDiscoverResult,
@@ -27,7 +28,13 @@ class MemorySkillHost implements CoreSkillCatalogHost {
     update: 0,
     remove: 0,
     read: 0,
+    checkUpdates: 0,
   };
+  updateRows: {
+    sourceId: string;
+    skillName: string;
+    updateAvailable: boolean;
+  }[] = [];
   installError: Error | null = null;
   updateError: Error | null = null;
   removeError: Error | null = null;
@@ -104,7 +111,8 @@ class MemorySkillHost implements CoreSkillCatalogHost {
   checkUpdates(): Promise<
     { sourceId: string; skillName: string; updateAvailable: boolean }[]
   > {
-    return Promise.resolve([]);
+    this.calls.checkUpdates += 1;
+    return Promise.resolve(this.updateRows);
   }
 }
 
@@ -226,6 +234,39 @@ describe('core.catalog.skill handlers (CAN-4124)', () => {
     first.close();
     await expect(install(compose(openOperations()))).resolves.toEqual(result);
     expect(host.calls.install).toBe(1);
+  });
+
+  it('records an updates check over 600 installed skills and replays it after a restart (CAN-5898)', async () => {
+    host.updateRows = Array.from({ length: 600 }, (_, index) => ({
+      sourceId: 'github:o:r',
+      skillName: `a-skill-with-a-long-descriptive-name-from-a-large-source-${index}`,
+      updateAvailable: index % 4 === 0,
+    }));
+    const check = (dispatcher: ReturnType<typeof compose>): Promise<unknown> =>
+      dispatcher.instruction(
+        'core.catalog.skill.updates.check',
+        { _meta: keyed('check') },
+        { caller: writer, metadata: keyed('check') },
+      );
+    const first = openOperations();
+    const result = await check(compose(first));
+    const parsed = CatalogSkillUpdatesCheckResultSchema.parse(result);
+    expect(parsed).toMatchObject({ checkedCount: 600, updateCount: 150 });
+    expect(parsed.updates.length).toBeGreaterThan(0);
+    expect(parsed.updates).toEqual(
+      host.updateRows
+        .filter((row) => row.updateAvailable)
+        .slice(0, parsed.updates.length)
+        .map((row) => ({
+          entryId: `skill:github:o:r/${row.skillName}`,
+          ...row,
+        })),
+    );
+    expect(isBoundedCanopyJsonValue(result)).toBe(true);
+
+    first.close();
+    await expect(check(compose(openOperations()))).resolves.toEqual(result);
+    expect(host.calls.checkUpdates).toBe(1);
   });
 
   it('answers refusals with fixed text and keeps the host error as the cause', async () => {

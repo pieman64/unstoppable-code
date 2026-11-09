@@ -1,4 +1,18 @@
 import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError, type AppError } from '@canopy/protocol/app-errors';
+import {
+  inlineFailure,
+  inlineFailureReason,
+  inputFailure,
+  type InlineFailure,
+} from '@/lib/inline-app-error';
+import { rendererAppErrorDisplayPolicy } from '@/lib/renderer-app-error';
+import { extractIpcErrorMessage } from '@/lib/errors';
+import { DesktopReportThisAction } from '@/components/shared/DesktopReportThisAction';
+import {
   DesktopOrgSharedMultiRepoSetup,
   useSharedMultiRepoRouting,
 } from './DesktopOrgSharedMultiRepoSetup';
@@ -18,21 +32,21 @@ import type {
   ExistingWorktreeJoinWorkspaceGroup,
 } from '@canopy/desktop-shared/types';
 import {
+  Stack,
   CenteredLoadingSpinner,
   ChoiceList,
   ChoiceListRow,
   DelayedLoadingPlaceholder,
   EmptyState,
   Notice,
-  NoticeButton,
   Surface,
+  NoticeButton,
 } from '@canopy/ui-shared/components';
 import { useChatStore } from '@/stores/chatStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { brandText } from '@/lib/brand';
-import { extractIpcErrorMessage } from '@/lib/errors';
 import { useNavigationStore } from '@/stores/navigationStore';
 import {
   isWorkspaceIdInScopingContext,
@@ -49,17 +63,44 @@ import {
   type AddRepositoryPickerMode,
 } from '@canopy/ui-app/code/shell/AddRepositoryDialog';
 
-function combineFailureMessage(cause: unknown, fallback: string): string {
-  const message = extractIpcErrorMessage(cause);
-  if (
-    message ===
-      'Wait for running scripts, such as setup, to finish before adding a repo to this worktree.' ||
-    message ===
-      'Wait for the selected worktree’s running scripts, such as setup, to finish before joining it.'
-  ) {
-    return 'Setup is still running. Try again when it finishes.';
-  }
-  return message === 'Unknown error' ? fallback : message;
+const SETUP_RUNNING_REASONS = new Set([
+  'Wait for running scripts, such as setup, to finish before adding a repo to this worktree.',
+  'Wait for the selected worktree’s running scripts, such as setup, to finish before joining it.',
+]);
+const SETUP_RUNNING_FAILURE: InlineFailure = {
+  error: 'Setup is still running. Try again when it finishes.',
+};
+
+/**
+ * Whether main refused because setup is still running. The reason arrives
+ * inside Electron's IPC wrapper, or as the message of the error main recorded.
+ */
+function isSetupRunning(reason: string | undefined): boolean {
+  return (
+    reason !== undefined &&
+    SETUP_RUNNING_REASONS.has(extractIpcErrorMessage(reason).trim())
+  );
+}
+
+/** A caught combine or join failure, led by the action's own sentence. */
+function combineFailure(appError: AppError, copy: string): InlineFailure {
+  if (isSetupRunning(appError.detail.message)) return SETUP_RUNNING_FAILURE;
+  return inlineFailure(appError, copy);
+}
+
+/** The failure the projects store recorded for a combine that returned none. */
+function storedCombineFailure(
+  failure: InlineFailure | null,
+  copy: string,
+): InlineFailure {
+  if (!failure) return { error: copy };
+  return isSetupRunning(inlineFailureReason(failure))
+    ? SETUP_RUNNING_FAILURE
+    : failure;
+}
+
+function renderReportAction(error: AppError): JSX.Element {
+  return <DesktopReportThisAction error={error} appName={brandText.appName} />;
 }
 
 interface AddRepoToWorktreeModalProps {
@@ -83,7 +124,9 @@ async function showDestinationContext(
 ): Promise<boolean> {
   try {
     return await switchContextForWorkspace(destinationWorkspaceId);
-  } catch {
+  } catch (error) {
+    // The caller explains where the destination lives instead.
+    reportClientAppError(error);
     return false;
   }
 }
@@ -228,7 +271,22 @@ function AddRepoToWorktreeModalContent({
   );
   const [mode, setMode] = useState<AdhocMultiRepoMode>('temporary');
   const [submitting, setSubmitting] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<InlineFailure | null>(null);
+  // Which load failed, so Try again repeats it. Combine and join failures
+  // offer no repeat: a partial combine may not be safe to run again.
+  const [failedLoad, setFailedLoad] = useState<'projects' | 'worktrees' | null>(
+    null,
+  );
+  const showFailure = useCallback(
+    (
+      failure: InlineFailure | null,
+      load: 'projects' | 'worktrees' | null = null,
+    ): void => {
+      setErrorMessage(failure);
+      setFailedLoad(failure ? load : null);
+    },
+    [],
+  );
   const [pickerMode, setPickerMode] =
     useState<AddRepositoryPickerMode>('new-worktrees');
   const [existingGroups, setExistingGroups] = useState<
@@ -321,7 +379,7 @@ function AddRepoToWorktreeModalContent({
 
   const loadWorkspaceOptions = useCallback(async (): Promise<void> => {
     setLoadingOptions(true);
-    setErrorMessage(null);
+    showFailure(null);
     setSelectedWorkspaceIds([]);
     try {
       const response = await window.api.listAdhocMultiRepoJoinOptions({
@@ -332,15 +390,19 @@ function AddRepoToWorktreeModalContent({
     } catch (cause: unknown) {
       if (!mountedRef.current) return;
       setWorkspaceOptions([]);
-      setErrorMessage(
-        cause instanceof Error ? cause.message : 'Failed to load projects.',
-      );
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError) {
+        showFailure(
+          inlineFailure(appError, "Couldn't load projects."),
+          'projects',
+        );
+      }
     } finally {
       if (mountedRef.current) {
         setLoadingOptions(false);
       }
     }
-  }, [sourceWorkspaceId]);
+  }, [showFailure, sourceWorkspaceId]);
 
   useEffect(() => {
     void loadWorkspaceOptions();
@@ -349,7 +411,7 @@ function AddRepoToWorktreeModalContent({
   const loadExistingOptions = useCallback(async (): Promise<void> => {
     const requestId = ++existingRequestIdRef.current;
     setLoadingExisting(true);
-    setErrorMessage(null);
+    showFailure(null);
     setSelectedExisting(null);
     try {
       const response = await window.api.listExistingWorktreeJoinOptions({
@@ -365,27 +427,31 @@ function AddRepoToWorktreeModalContent({
         return;
       }
       setExistingGroups([]);
-      setErrorMessage(
-        cause instanceof Error ? cause.message : 'Failed to load worktrees.',
-      );
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError) {
+        showFailure(
+          inlineFailure(appError, "Couldn't load worktrees."),
+          'worktrees',
+        );
+      }
     } finally {
       if (mountedRef.current && existingRequestIdRef.current === requestId) {
         setLoadingExisting(false);
         setHasLoadedExisting(true);
       }
     }
-  }, [sourceWorkspaceId, sourceWorktreeId]);
+  }, [showFailure, sourceWorkspaceId, sourceWorktreeId]);
 
   // Lazily load the existing-worktree picker the first time it is shown, then
   // keep the result for the modal's lifetime. Switching pills never refetches;
   // the Refresh button is the only way to repopulate.
   const showExistingPicker = useCallback((): void => {
     setPickerMode('existing-worktrees');
-    setErrorMessage(null);
+    showFailure(null);
     if (!hasLoadedExisting && !loadingExisting) {
       void loadExistingOptions();
     }
-  }, [hasLoadedExisting, loadingExisting, loadExistingOptions]);
+  }, [hasLoadedExisting, loadingExisting, loadExistingOptions, showFailure]);
 
   const selectedExistingWarnings = useMemo<string[]>(
     () => (selectedExisting ? getCandidateWarnings(selectedExisting) : []),
@@ -395,10 +461,10 @@ function AddRepoToWorktreeModalContent({
   const handleCombine = useCallback(async (): Promise<void> => {
     if (submitting || updateBlocked) return;
     if (selectedWorkspaceIds.length === 0) {
-      setErrorMessage('Choose at least one project to combine with.');
+      showFailure(inputFailure('Choose at least one project to combine with.'));
       return;
     }
-    setErrorMessage(null);
+    showFailure(null);
     setSubmitting(true);
     try {
       // Flush any pending chat-tab persistence on the source so the migration
@@ -415,9 +481,11 @@ function AddRepoToWorktreeModalContent({
       if (!response) {
         // projectsStore set `worktreeError`; read it directly so we keep the
         // modal-local error area in sync with whatever the backend reported.
-        const worktreeError = useProjectsStore.getState().worktreeError;
-        setErrorMessage(
-          combineFailureMessage(worktreeError, 'Failed to combine projects.'),
+        showFailure(
+          storedCombineFailure(
+            useProjectsStore.getState().worktreeError,
+            "Couldn't combine projects.",
+          ),
         );
         return;
       }
@@ -457,9 +525,9 @@ function AddRepoToWorktreeModalContent({
       );
       onClose();
     } catch (cause: unknown) {
-      setErrorMessage(
-        combineFailureMessage(cause, 'Failed to combine projects.'),
-      );
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError)
+        showFailure(combineFailure(appError, "Couldn't combine projects."));
     } finally {
       setSubmitting(false);
     }
@@ -471,6 +539,7 @@ function AddRepoToWorktreeModalContent({
     onClose,
     selectWorktree,
     selectedWorkspaceIds,
+    showFailure,
     sourceWorkspaceId,
     sourceWorktreeId,
     submitting,
@@ -479,7 +548,7 @@ function AddRepoToWorktreeModalContent({
 
   const handleJoinExisting = useCallback(async (): Promise<void> => {
     if (submitting || updateBlocked || !selectedExisting) return;
-    setErrorMessage(null);
+    showFailure(null);
     setSubmitting(true);
     try {
       // Flush pending chat-tab persistence on both consumed worktrees so the
@@ -498,9 +567,11 @@ function AddRepoToWorktreeModalContent({
         mode: effectiveMode,
       });
       if (!response) {
-        const worktreeError = useProjectsStore.getState().worktreeError;
-        setErrorMessage(
-          combineFailureMessage(worktreeError, 'Failed to join worktree.'),
+        showFailure(
+          storedCombineFailure(
+            useProjectsStore.getState().worktreeError,
+            "Couldn't join the worktree.",
+          ),
         );
         return;
       }
@@ -554,7 +625,9 @@ function AddRepoToWorktreeModalContent({
       );
       onClose();
     } catch (cause: unknown) {
-      setErrorMessage(combineFailureMessage(cause, 'Failed to join worktree.'));
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError)
+        showFailure(combineFailure(appError, "Couldn't join the worktree."));
     } finally {
       setSubmitting(false);
     }
@@ -566,6 +639,7 @@ function AddRepoToWorktreeModalContent({
     onClose,
     selectWorktree,
     selectedExisting,
+    showFailure,
     sourceWorkspaceId,
     sourceWorktreeId,
     submitting,
@@ -610,7 +684,7 @@ function AddRepoToWorktreeModalContent({
           return;
         }
         setPickerMode('new-worktrees');
-        setErrorMessage(null);
+        showFailure(null);
       }}
       newWorktreesDescription={
         <>
@@ -672,11 +746,11 @@ function AddRepoToWorktreeModalContent({
                 intent="attention"
                 data-testid="add-repo-to-worktree-modal-overlap-warnings"
               >
-                <div className="space-y-1">
+                <Stack gap="tight">
                   {selectedExistingWarnings.map((warning) => (
                     <p key={warning}>{warning}</p>
                   ))}
-                </div>
+                </Stack>
               </Notice>
             )}
           </>
@@ -684,9 +758,9 @@ function AddRepoToWorktreeModalContent({
       }}
       selectionAccessory={
         showModeToggle ? (
-          <Surface variant="group" padding="compact">
+          <Surface variant="group" gap="inline" padding="compact">
             <span className="block text-xs fg-secondary">Update mode</span>
-            <ChoiceList kind="radio" aria-label="Update mode" className="mt-2">
+            <ChoiceList className="" kind="radio" aria-label="Update mode">
               <ChoiceListRow
                 kind="radio"
                 selected={mode === 'temporary'}
@@ -694,11 +768,13 @@ function AddRepoToWorktreeModalContent({
                 disabled={submitting}
                 data-testid="add-repo-to-worktree-modal-mode-temporary"
               >
-                <span className="block text-s font-medium">Temporary</span>
-                <span className="mt-1 block text-xs fg-secondary">
-                  Create or reuse a temporary multi-repo project for this
-                  worktree only.
-                </span>
+                <Stack gap="tight">
+                  <span className="block text-s font-medium">Temporary</span>
+                  <span className="block text-xs fg-secondary">
+                    Create or reuse a temporary multi-repo project for this
+                    worktree only.
+                  </span>
+                </Stack>
               </ChoiceListRow>
               <ChoiceListRow
                 kind="radio"
@@ -707,10 +783,14 @@ function AddRepoToWorktreeModalContent({
                 disabled={submitting}
                 data-testid="add-repo-to-worktree-modal-mode-update"
               >
-                <span className="block text-s font-medium">Update project</span>
-                <span className="mt-1 block text-xs fg-secondary">
-                  Add missing repos to this project and this worktree.
-                </span>
+                <Stack gap="tight">
+                  <span className="block text-s font-medium">
+                    Update project
+                  </span>
+                  <span className="block text-xs fg-secondary">
+                    Add missing repos to this project and this worktree.
+                  </span>
+                </Stack>
               </ChoiceListRow>
             </ChoiceList>
           </Surface>
@@ -750,7 +830,17 @@ function AddRepoToWorktreeModalContent({
       }
       submitBlocked={updateBlocked}
       submitting={submitting}
-      errorMessage={errorMessage}
+      errorMessage={errorMessage?.error ?? null}
+      {...(errorMessage?.details === undefined
+        ? {}
+        : { errorDetails: errorMessage.details })}
+      {...(failedLoad === 'projects'
+        ? { onErrorRetry: () => void loadWorkspaceOptions() }
+        : failedLoad === 'worktrees'
+          ? { onErrorRetry: () => void loadExistingOptions() }
+          : {})}
+      errorDisplayPolicy={rendererAppErrorDisplayPolicy}
+      renderErrorReportAction={renderReportAction}
     />
   );
 }

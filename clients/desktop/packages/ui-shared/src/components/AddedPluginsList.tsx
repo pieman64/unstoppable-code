@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import type { JSX, ReactNode } from 'react';
 import { McpServerLogo } from './McpServerLogo';
 import { ActivityItemRow } from './ActivityItemRow';
@@ -24,8 +25,8 @@ export function AddedPluginsList({
   renderIcon?: (item: AddedPluginItem) => ReactNode;
 }): JSX.Element {
   return (
-    <div data-testid="chat-plugins-activity" className="space-y-3">
-      <div className="space-y-1.5">
+    <Stack data-testid="chat-plugins-activity" gap="item">
+      <div className="flex flex-col gap-1.5">
         {items.map((item) => (
           <ActivityItemRow
             key={item.id}
@@ -71,6 +72,6 @@ export function AddedPluginsList({
         ))}
       </div>
       <ErrorBanner className="" error={error} />
-    </div>
+    </Stack>
   );
 }

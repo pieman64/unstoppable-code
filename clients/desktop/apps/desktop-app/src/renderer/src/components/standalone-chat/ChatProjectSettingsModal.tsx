@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  Stack,
   Button,
   Heading,
   InstructionsEditor,
@@ -580,7 +581,7 @@ export function ChatProjectSettingsModal({
         }`}
       >
         {activeTab === 'general' && (
-          <div className="space-y-4">
+          <Stack gap="group">
             <FormField id="chat-project-name" label="Name">
               {(control) => (
                 <TextInput
@@ -630,9 +631,9 @@ export function ChatProjectSettingsModal({
             </FormField>
 
             <Surface variant="group">
-              <div className="px-3 py-3">
+              <div className="flex flex-col px-3 py-3 gap-1">
                 <div className="text-xs font-medium fg-secondary">Created</div>
-                <div className="mt-1 text-s fg-primary">
+                <div className="text-s fg-primary">
                   {new Date(currentProject.createdAt).toLocaleString()}
                 </div>
               </div>
@@ -670,65 +671,72 @@ export function ChatProjectSettingsModal({
               padding="default"
               data-testid="chat-project-settings-retention"
             >
-              <div data-testid="chat-project-settings-retention-card">
-                <Heading level={3} variant="title">
-                  Deletion retention
-                </Heading>
-                <p className="mt-1 text-xs fg-secondary">
-                  {`Deleted chats and legacy archived chats are kept for ${retentionDays} ${retentionDays === 1 ? 'day' : 'days'} before they're removed. Archived work entries are kept until you delete them.`}
-                </p>
-                <div className="mt-3 flex items-center gap-3">
-                  <span
-                    id="chat-project-settings-retention-days-label"
-                    className="text-s fg-primary"
-                  >
-                    Keep deleted chats for
-                  </span>
-                  <div className="w-28">
-                    <TextInput
-                      density="settings"
-                      trailing="days"
-                      aria-labelledby="chat-project-settings-retention-days-label"
-                      type="number"
-                      value={retentionDays}
-                      onChange={(e) =>
-                        setRetentionDays(
-                          Math.max(
-                            1,
-                            Math.min(
-                              MAX_ARCHIVE_RETENTION_DAYS,
-                              parseInt(e.target.value) ||
-                                DEFAULT_ARCHIVE_RETENTION_DAYS,
+              <Stack
+                gap="item"
+                data-testid="chat-project-settings-retention-card"
+              >
+                <Stack gap="tight">
+                  <Heading level={3} variant="title">
+                    Deletion retention
+                  </Heading>
+                  <p className="text-xs fg-secondary">
+                    {`Deleted chats and legacy archived chats are kept for ${retentionDays} ${retentionDays === 1 ? 'day' : 'days'} before they're removed. Archived work entries are kept until you delete them.`}
+                  </p>
+                </Stack>
+                <div className="flex flex-col gap-0">
+                  <div className="flex items-center gap-3">
+                    <span
+                      id="chat-project-settings-retention-days-label"
+                      className="text-s fg-primary"
+                    >
+                      Keep deleted chats for
+                    </span>
+                    <div className="w-28">
+                      <TextInput
+                        density="settings"
+                        trailing="days"
+                        aria-labelledby="chat-project-settings-retention-days-label"
+                        type="number"
+                        value={retentionDays}
+                        onChange={(e) =>
+                          setRetentionDays(
+                            Math.max(
+                              1,
+                              Math.min(
+                                MAX_ARCHIVE_RETENTION_DAYS,
+                                parseInt(e.target.value) ||
+                                  DEFAULT_ARCHIVE_RETENTION_DAYS,
+                              ),
                             ),
-                          ),
-                        )
-                      }
-                      min={1}
-                      max={MAX_ARCHIVE_RETENTION_DAYS}
-                      data-testid="chat-project-settings-retention-days"
-                    />
+                          )
+                        }
+                        min={1}
+                        max={MAX_ARCHIVE_RETENTION_DAYS}
+                        data-testid="chat-project-settings-retention-days"
+                      />
+                    </div>
                   </div>
+                  <AutoArchiveSettingsControl
+                    enabled={autoArchiveEnabled}
+                    days={autoArchiveDays}
+                    maxDays={MAX_ARCHIVE_RETENTION_DAYS}
+                    fallbackDays={DEFAULT_AUTO_ARCHIVE_DAYS}
+                    description="Delete fully idle work entries after a period of inactivity."
+                    toggleTestId="chat-project-settings-auto-archive-toggle"
+                    daysTestId="chat-project-settings-auto-archive-days"
+                    onEnabledChange={setAutoArchiveEnabled}
+                    onDaysChange={setAutoArchiveDays}
+                    daysLabel="days"
+                    textSize="s"
+                  />
                 </div>
-                <AutoArchiveSettingsControl
-                  enabled={autoArchiveEnabled}
-                  days={autoArchiveDays}
-                  maxDays={MAX_ARCHIVE_RETENTION_DAYS}
-                  fallbackDays={DEFAULT_AUTO_ARCHIVE_DAYS}
-                  description="Delete fully idle work entries after a period of inactivity."
-                  toggleTestId="chat-project-settings-auto-archive-toggle"
-                  daysTestId="chat-project-settings-auto-archive-days"
-                  onEnabledChange={setAutoArchiveEnabled}
-                  onDaysChange={setAutoArchiveDays}
-                  daysLabel="days"
-                  textSize="s"
-                />
-              </div>
+              </Stack>
             </Surface>
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'plugins' && (
-          <div className="flex flex-1 flex-col min-h-0 gap-3">
+          <Stack gap="item" className="flex-1 min-h-0">
             <PluginSelectionScopeHelp />
             <div className="flex flex-1 flex-col min-h-0">
               <PluginSelector
@@ -737,7 +745,7 @@ export function ChatProjectSettingsModal({
                 inset={false}
               />
             </div>
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'instructions' && (
@@ -837,15 +845,17 @@ export function ChatProjectSettingsModal({
           ))}
 
         {activeTab === 'danger' && !isDefaultProject && (
-          <Surface variant="outline" padding="default">
-            <Heading level={3} variant="title" tone="destructive">
-              {dangerTabCopy.title}
-            </Heading>
-            <p className="mt-1 text-xs fg-secondary">
-              {dangerTabCopy.description}
-            </p>
+          <Surface variant="outline" gap="group" padding="default">
+            <Stack gap="tight">
+              <Heading level={3} variant="title" tone="destructive">
+                {dangerTabCopy.title}
+              </Heading>
+              <p className="text-xs fg-secondary">
+                {dangerTabCopy.description}
+              </p>
+            </Stack>
 
-            <Surface variant="outline" className="mt-4">
+            <Surface variant="outline" className="">
               <div className="px-3 py-2">
                 <div className="text-s fg-primary">
                   {dangerTabCopy.deletePermanentlyLabel}
@@ -858,15 +868,15 @@ export function ChatProjectSettingsModal({
 
             {!confirmingDelete ? (
               <Button
+                className="self-start"
                 variant="ghost-destructive"
                 size="compact"
                 onClick={() => setConfirmingDelete(true)}
-                className="mt-4"
               >
                 {dangerTabCopy.triggerButtonLabel}
               </Button>
             ) : (
-              <div className="mt-4 flex items-center gap-2">
+              <div className="flex items-center gap-2">
                 <Button
                   variant="destructive"
                   size="compact"
@@ -905,11 +915,15 @@ export function ChatProjectSettingsModal({
           </div>
         )}
 
-      <ErrorBanner
-        error={error}
-        className="mx-6 mb-4"
-        {...(errorDetails ? { details: errorDetails } : {})}
-      />
+      {error && (
+        <div className="shrink-0 px-6 pb-4">
+          <ErrorBanner
+            error={error}
+            className=""
+            {...(errorDetails ? { details: errorDetails } : {})}
+          />
+        </div>
+      )}
     </DialogModal>
   );
 }

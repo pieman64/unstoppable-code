@@ -8,8 +8,8 @@ import {
   AI_CREDITS_ORG_PROJECT_HEADER,
   AI_CREDITS_WORK_OWNER_HEADER,
 } from '@canopy/protocol/llm-gateway';
-import { isSyntacticallyValidModelId } from '../../lib/model-id';
-import { toOpenCodeModelId } from '../../lib/opencode-models';
+import { isSyntacticallyValidModelId } from '@canopy/execution-engine/lib/model-id';
+import { toOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import {
   openCodeCapabilityDigest,
   type OpenCodeInferenceSelection,

@@ -3671,6 +3671,7 @@ export class ChatStateV2Repository {
               'rootTurnInputIds',
               'reducedRootTerminalTurnIds',
               'interruptedTurns',
+              'autoArchiveTurnId',
             ] as const) {
               if (existing[key] === undefined) delete preserved[key];
               else Object.assign(preserved, { [key]: existing[key] });

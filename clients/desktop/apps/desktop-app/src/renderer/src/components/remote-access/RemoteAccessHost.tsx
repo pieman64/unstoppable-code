@@ -8,6 +8,7 @@ import {
   getRemoteControlApi,
   useRemoteControlStore,
 } from '@/stores/remoteControlStore';
+import { useNavigationStore } from '@/stores/navigationStore';
 import { IncomingPairingPrompt } from './IncomingPairingPrompt';
 import { PairComputerDialog } from './PairComputerDialog';
 import { RemotePathPicker } from './RemotePathPicker';
@@ -32,11 +33,15 @@ export function RemoteAccessHost(): JSX.Element {
           : null,
       })),
     );
+  // The Remote Control dialog answers requests itself while it is open.
+  const remoteControlDialogOpen = useNavigationStore(
+    (store) => store.canopyPortalOpen,
+  );
   const api = getRemoteControlApi();
   return (
     <>
       {pairDialogOpen ? <PairComputerDialog onClose={closePairDialog} /> : null}
-      {local && incoming && !pairDialogOpen ? (
+      {local && incoming && !pairDialogOpen && !remoteControlDialogOpen ? (
         <IncomingPairingPrompt key={incoming.pairingId} request={incoming} />
       ) : null}
       {!local && api ? <RemotePathPickerHost api={api} /> : null}

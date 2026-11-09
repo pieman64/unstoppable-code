@@ -1,6 +1,6 @@
 import {
-  API_PIPELINE_TRIGGER_TYPES,
   PIPELINE_EXECUTION_SCOPES,
+  PORTABLE_PIPELINE_TRIGGER_TYPES,
   type PipelineExecutionScope,
   type PipelineTriggerType,
 } from '@canopy/protocol/pipelines';
@@ -55,6 +55,7 @@ export const PIPELINE_TRIGGER_LABELS: Readonly<
   dispatch: 'Dispatch',
   plan_ready: 'Plan ready',
   task_ready: 'Task ready',
+  workflow: 'Workflow',
 };
 
 /** Canonical render order for each filter dimension's options. */
@@ -62,5 +63,8 @@ export const PIPELINE_FILTER_SOURCES: readonly PipelineSourceBadgeKey[] =
   PIPELINE_SOURCE_BADGE_KEYS;
 export const PIPELINE_FILTER_SCOPES: readonly PipelineExecutionScope[] =
   PIPELINE_EXECUTION_SCOPES;
+// The Portal and Customize list only triggers that travel, so they never
+// offer a `workflow` filter that could not match (CAN-5782). Desktop
+// surfaces that can show `workflow` list it themselves.
 export const PIPELINE_FILTER_TRIGGERS: readonly PipelineTriggerType[] =
-  API_PIPELINE_TRIGGER_TYPES;
+  PORTABLE_PIPELINE_TRIGGER_TYPES;

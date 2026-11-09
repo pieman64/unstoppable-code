@@ -20,7 +20,8 @@ export type WorkflowTriggerKind =
   | 'once'
   | 'manual'
   | 'plan-approved'
-  | 'task-ready';
+  | 'task-ready'
+  | 'workflow';
 
 export const WORKFLOW_TRIGGER_KINDS: readonly WorkflowTriggerKind[] = [
   'schedule',
@@ -28,6 +29,7 @@ export const WORKFLOW_TRIGGER_KINDS: readonly WorkflowTriggerKind[] = [
   'manual',
   'plan-approved',
   'task-ready',
+  'workflow',
 ];
 
 export const WORKFLOW_TRIGGER_LABELS: Readonly<
@@ -38,6 +40,7 @@ export const WORKFLOW_TRIGGER_LABELS: Readonly<
   manual: 'Manual',
   'plan-approved': 'Plan approved',
   'task-ready': 'Task ready',
+  workflow: 'Workflow',
 };
 
 /** A step glyph in the name cell's chain. */
@@ -177,7 +180,18 @@ export interface WorkflowLibraryRow {
   readonly changedAt?: number;
   /** `undefined` when the item has no on/off state (no switch is drawn). */
   readonly enabled?: boolean;
+  /**
+   * A workflow with several schedules (CAN-5782): how many are on. It has no
+   * switch of its own; each schedule is switched on its Workflow page.
+   */
+  readonly scheduleCounts?: { readonly on: number; readonly total: number };
   readonly projectId?: string;
+  /**
+   * A workflow with several schedules (CAN-5782): every project they run in,
+   * {@link WORKFLOW_NO_PROJECT} for one that names none. The project filter
+   * and its counts read these instead of `projectId`.
+   */
+  readonly scheduleProjectIds?: readonly string[];
   readonly projectName?: string;
   /** A shared item not yet added: Add replaces the switch and Run. */
   readonly installable?: boolean;
@@ -301,9 +315,12 @@ function matchesStatus(
   }
 }
 
+function rowProjects(row: WorkflowLibraryRow): readonly string[] {
+  return row.scheduleProjectIds ?? [row.projectId ?? WORKFLOW_NO_PROJECT];
+}
+
 function matchesProject(row: WorkflowLibraryRow, project: string): boolean {
-  if (project === WORKFLOW_NO_PROJECT) return row.projectId === undefined;
-  return row.projectId === project;
+  return rowProjects(row).includes(project);
 }
 
 function matchesQuery(row: WorkflowLibraryRow, query: string): boolean {
@@ -365,6 +382,7 @@ export function countLibraryFacets(
     manual: 0,
     'plan-approved': 0,
     'task-ready': 0,
+    workflow: 0,
   };
   const statuses: Record<WorkflowLibraryStatusFilter, number> = {
     on: 0,
@@ -385,8 +403,9 @@ export function countLibraryFacets(
       if (matchesStatus(row, status)) statuses[status] += 1;
     }
     sources[row.source] += 1;
-    const project = row.projectId ?? WORKFLOW_NO_PROJECT;
-    projects[project] = (projects[project] ?? 0) + 1;
+    for (const project of new Set(rowProjects(row))) {
+      projects[project] = (projects[project] ?? 0) + 1;
+    }
   }
   return { triggers, statuses, sources, projects };
 }
@@ -538,11 +557,17 @@ export function describePipelineTriggers(
   if (triggers.includes('task-ready')) {
     events.push(PIPELINE_TRIGGER_PHRASES['task-ready']);
   }
-  if (events.length === 0) return 'Manual';
+  // `workflow` starts from the Workflows page, not an event, so it names
+  // itself beside Manual: `Workflow`, `Manual, Workflow`.
+  const starts = [
+    ...(triggers.includes('manual') ? ['Manual'] : []),
+    ...(triggers.includes('workflow')
+      ? [WORKFLOW_TRIGGER_LABELS.workflow]
+      : []),
+  ].join(', ');
+  if (events.length === 0) return starts || 'Manual';
   const phrase = events.join(' or ');
-  return triggers.includes('manual')
-    ? `Manual, or when ${phrase}`
-    : `When ${phrase}`;
+  return starts ? `${starts}, or when ${phrase}` : `When ${phrase}`;
 }
 
 /**
@@ -556,6 +581,7 @@ export function pipelineTriggerKinds(
   if (types.includes('dispatch')) triggers.push('manual');
   if (types.includes('plan_ready')) triggers.push('plan-approved');
   if (types.includes('task_ready')) triggers.push('task-ready');
+  if (types.includes('workflow')) triggers.push('workflow');
   return triggers.length === 0 ? ['manual'] : triggers;
 }
 
@@ -582,6 +608,7 @@ const TRIGGER_FILTER_PHRASES: Readonly<Record<WorkflowTriggerKind, string>> = {
   manual: 'a manual trigger',
   'plan-approved': 'a plan-approved trigger',
   'task-ready': 'a task-ready trigger',
+  workflow: 'a Workflow trigger',
 };
 
 /**

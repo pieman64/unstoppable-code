@@ -6,7 +6,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import {
   acquirePipelineDetailLease,
   acquirePipelineSummaryInterest,

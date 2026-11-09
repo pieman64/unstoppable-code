@@ -215,6 +215,12 @@ function getBuildOptions(entryPoints) {
         'src',
       ),
       '@canopy/code-graph': join(root, 'packages', 'code-graph', 'src'),
+      '@canopy/execution-engine': join(
+        root,
+        'packages',
+        'execution-engine',
+        'src',
+      ),
       '@canopy/desktop-shared': join(root, 'packages', 'desktop-shared', 'src'),
       '@canopy/ui-shared': join(root, 'packages', 'ui-shared', 'src'),
       '@canopy/brand/current': join(

@@ -8,7 +8,7 @@ import {
   type TranscriptCapture,
 } from '../_lib/agent-transcript';
 import { runWithActionEnvironment } from '../_lib/action-env';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import {
   setOutput,
   setOutputPathOrWriteFile,

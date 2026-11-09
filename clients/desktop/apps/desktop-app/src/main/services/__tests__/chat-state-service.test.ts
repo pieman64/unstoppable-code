@@ -161,14 +161,17 @@ import {
 import { ChatTurnStateHandoff } from '../chat-turn-state-handoff';
 import type { TurnStarted } from '@canopy/protocol/canopy-core';
 import {
+  flushTurnState,
   observeTurn,
   turnEnded,
   turnStarted,
 } from '../../__tests__/helpers/turn-lifecycle-events';
+import { ChatAutoArchiver } from '../chat-auto-archive';
 import {
   createPendingRequest,
   rejectRequest,
 } from '../../mcp/pending-requests';
+import { resetDesktopChatWaitsForTest } from '../../chat-waits/desktop-chat-waits';
 import { TurnAuthPreflightBlockedError } from '../../lib/auth-preflight-error';
 import { OrdinarySteerFallbackError } from '../chat-input-delivery-coordinator';
 import { readDeliveryHistory } from '../chat-input-delivery-history';
@@ -1214,6 +1217,7 @@ describe('chat state service', () => {
   });
 
   beforeEach(() => {
+    resetDesktopChatWaitsForTest({ noClientMode: 'wait' });
     resetWorkspaceTargetExclusionsForTests();
     resetTurnBindingSlotsForTests();
     mockResumePendingObservations.mockReset().mockResolvedValue(undefined);
@@ -3144,6 +3148,170 @@ describe('chat state service', () => {
         'cancelled',
       );
       expect(notices).toHaveLength(1);
+    });
+
+    it('keeps a turn end the handoff has not committed yet when host reconciliation runs', async () => {
+      const { target } = setup();
+      await createChat(target);
+      await prompt(target, 'user-x');
+      await accept(target, 'user-x');
+      // Reduced in memory only; the handoff's fallback timer would commit it.
+      target.observeTurnLifecycle(
+        turnEnded(
+          { ...CHAT, provider: 'claude' },
+          {
+            sequence: ++lifecycleSequence,
+            turnId: 'turn-user-x',
+            atMs: 1_786_104_000_000,
+            userMessageIds: ['user-x'],
+          },
+        ),
+      );
+      Object.defineProperty(target, 'reconcileHostRuntime', {
+        value: true,
+        configurable: true,
+      });
+      await target.getState(SCOPE);
+      Object.defineProperty(target, 'reconcileHostRuntime', {
+        value: false,
+        configurable: true,
+      });
+
+      expect(
+        (await target.getState(SCOPE)).runtimeByChatId['chat-1'],
+      ).not.toMatchObject({ status: 'interrupted' });
+      await expect(target.turnOutcome(turn('user-x'))).resolves.toBe(
+        'completed',
+      );
+      expect(mockRecordInterruptedChats).not.toHaveBeenCalled();
+    });
+
+    it('keeps a turn start observed while host reconciliation records the interrupted turn', async () => {
+      const { target } = setup();
+      await createChat(target);
+      await prompt(target, 'user-x');
+      await accept(target, 'user-x');
+      mockRecordInterruptedChats.mockImplementationOnce(async () => {
+        target.observeTurnLifecycle(
+          turnStarted(
+            { ...CHAT, provider: 'claude' },
+            {
+              sequence: ++lifecycleSequence,
+              turnId: 'turn-user-y',
+              atMs: 1_786_104_000_000,
+              userMessageIds: ['user-y'],
+            },
+          ),
+        );
+      });
+      await restart(target);
+
+      expect(target.getTurnState(CHAT)?.current?.id).toBe('turn-user-y');
+    });
+
+    it('waits for the store while received turn state keeps failing to commit, then reconciles from the committed result', async () => {
+      const diagnostics: Array<
+        Parameters<NonNullable<ChatStateServiceOptions['recordDiagnostic']>>[0]
+      > = [];
+      const { target, repository } = serviceWithRepository({
+        recordDiagnostic: (record) => {
+          diagnostics.push(record);
+        },
+      });
+      jest
+        .spyOn(getChatQueueService(), 'holdsUserMessage')
+        .mockReturnValue(false);
+      await createChat(target);
+      await prompt(target, 'user-x');
+      await accept(target, 'user-x');
+      const transactWith = repository.transactWith.bind(repository);
+      const failing = jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation((scope, build, options) =>
+          options?.mutationId?.startsWith('turn-state-handoff:')
+            ? Promise.reject(new Error('Chat storage is unavailable'))
+            : transactWith(scope, build, options),
+        );
+      target.observeTurnPause({
+        ...CHAT,
+        type: 'PauseOpened',
+        ownerKind: 'approval',
+        ownerId: 'approval-1',
+        atMs: 1_786_104_000_000,
+      });
+      const read = async () => {
+        Object.defineProperty(target, 'reconcileHostRuntime', {
+          value: true,
+          configurable: true,
+        });
+        await target.getState(SCOPE);
+        Object.defineProperty(target, 'reconcileHostRuntime', {
+          value: false,
+          configurable: true,
+        });
+        return (await target.getState(SCOPE)).runtimeByChatId['chat-1'];
+      };
+      const stalled = () =>
+        diagnostics.filter(
+          (record) => record.kind === 'turn_state_commit_stalled',
+        );
+
+      for (let pass = 0; pass < 5; pass += 1)
+        expect(await read()).not.toMatchObject({ status: 'interrupted' });
+      expect(stalled()).toEqual([
+        expect.objectContaining({ ...CHAT, kind: 'turn_state_commit_stalled' }),
+      ]);
+      expect(mockRecordInterruptedChats).not.toHaveBeenCalled();
+
+      failing.mockRestore();
+      expect(await read()).not.toMatchObject({ status: 'interrupted' });
+      const interrupted = await read();
+      expect(interrupted).toMatchObject({ status: 'interrupted' });
+      expect(interrupted?.turn?.lastEnded).toMatchObject({
+        id: 'turn-user-x',
+        terminalReason: 'restart',
+        pauses: [expect.objectContaining({ ownerId: 'approval-1' })],
+      });
+      expect(stalled()).toHaveLength(1);
+    });
+
+    it('resumes queued receipts on the unchanged turn when recording the interrupted chat fails', async () => {
+      const { target } = setup();
+      await createChat(target);
+      await prompt(target, 'user-x');
+      await accept(target, 'user-x');
+      mockRecordInterruptedChats.mockImplementationOnce(async () => {
+        target.observeTurnLifecycle(
+          turnStarted(
+            { ...CHAT, provider: 'claude' },
+            {
+              sequence: ++lifecycleSequence,
+              turnId: 'turn-user-y',
+              atMs: 1_786_104_000_000,
+              userMessageIds: ['user-y'],
+            },
+          ),
+        );
+        throw new Error('Interrupted chats registry is unavailable');
+      });
+      Object.defineProperty(target, 'reconcileHostRuntime', {
+        value: true,
+        configurable: true,
+      });
+      await expect(target.getState(SCOPE)).rejects.toThrow(
+        'Interrupted chats registry is unavailable',
+      );
+      Object.defineProperty(target, 'reconcileHostRuntime', {
+        value: false,
+        configurable: true,
+      });
+
+      expect(target.getTurnState(CHAT)?.current?.id).toBe('turn-user-y');
+      await flushTurnState(target);
+      expect(
+        (await target.getState(SCOPE)).runtimeByChatId['chat-1']?.turn?.current
+          ?.id,
+      ).toBe('turn-user-y');
     });
   });
 
@@ -29574,6 +29742,91 @@ describe('chat state service', () => {
     await send;
   });
 
+  it('a restart clears an auto-archive marker before the resume, so the resumed turn never archives (CAN-6014)', async () => {
+    const { target, repository } = serviceWithRepository();
+    Object.defineProperty(target, 'reconcileHostRuntime', { value: true });
+    await createChat(target);
+    await target.command(
+      envelope('mark-auto-archive', {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { autoArchive: true },
+      }),
+    );
+    await observeTurn(
+      target,
+      turnStarted(
+        { ...SCOPE, chatId: 'chat-1' },
+        { sequence: 9_001, turnId: 'turn-interrupted', atMs: 10 },
+      ),
+    );
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: {
+            ...(await repository.getState(SCOPE)).runtimeByChatId['chat-1'],
+            status: 'streaming',
+            queuedMessageIds: [],
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'interrupted-turn' },
+    );
+    const dispatched: string[] = [];
+    const archiver = new ChatAutoArchiver({
+      onTurnStateCommitted: (listener) => target.onTurnStateCommitted(listener),
+      onUnblocked: () => (): void => undefined,
+      readSnapshot: (scope) => target.getCommittedWatcherSnapshot(scope),
+      closeBlocked: () => false,
+      locked: () => false,
+      dispatchInFlight: () => false,
+      dispatch: (request) => {
+        dispatched.push(request.command.type);
+        return target.command(request);
+      },
+      warn: () => undefined,
+    });
+    archiver.start();
+    try {
+      const reconciled = await target.getState(SCOPE);
+      expect(reconciled.tabsFile.tabs[0]?.autoArchive).toBeUndefined();
+      await observeTurn(
+        target,
+        turnStarted(
+          { ...SCOPE, chatId: 'chat-1' },
+          {
+            sequence: 9_002,
+            turnId: 'turn-resumed',
+            atMs: 20,
+            origin: 'restart',
+          },
+        ),
+      );
+      await observeTurn(
+        target,
+        turnEnded(
+          { ...SCOPE, chatId: 'chat-1' },
+          {
+            sequence: 9_003,
+            turnId: 'turn-resumed',
+            atMs: 30,
+            origin: 'restart',
+          },
+        ),
+      );
+      await archiver.settled();
+      const after = await target.getState(SCOPE);
+      expect(after.archives).toEqual([]);
+      expect(after.tabsFile.tabs.map((tab) => tab.id)).toEqual(['chat-1']);
+      expect(dispatched).not.toContain('chat.archive_tab');
+    } finally {
+      archiver.stop();
+    }
+  });
+
   it.each([
     'streaming',
     'idle',
@@ -33522,6 +33775,23 @@ describe('chat state service', () => {
       chatId: 'chat-1',
       mutationId: 'enable-auto-archive-before-metadata',
       data: { type: 'canopy_set_auto_archive_requested', enabled: true },
+    });
+    // Output makes the turn complete; an empty completion fails it and drops
+    // the marker (CAN-6014).
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'user-auto-archive',
+      mutationId: 'output-before-auto-archive',
+      data: {
+        type: 'assistant',
+        canopy_turn_user_message_id: 'user-auto-archive',
+        message: {
+          id: 'auto-archive-output',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Changed the file' }],
+        },
+      },
     });
     await target.ingestProviderEvent({
       ...SCOPE,

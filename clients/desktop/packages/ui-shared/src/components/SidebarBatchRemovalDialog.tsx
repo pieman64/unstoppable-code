@@ -260,15 +260,16 @@ function ConfirmSummary({
                 </span>
               }
               surfaceClassName="w-72"
-              triggerWrapperClassName="ml-1 align-middle"
+              triggerWrapperClassName="ml-1 inline-flex h-5 items-center align-middle"
             >
-              <button
-                type="button"
+              <Button
+                variant="ghost-quiet"
+                size="sm"
+                iconOnly
                 aria-label={`About restoring these ${unitLabel.plural}`}
-                className="focus-ring inline-flex rounded-full fg-tertiary hover:fg-primary"
               >
                 <InfoIcon size={14} aria-hidden="true" />
-              </button>
+              </Button>
             </RichHoverTooltip>
           </p>
         </>

@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import type { JSX, ReactNode } from 'react';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
@@ -30,39 +31,43 @@ export function StartChatSummary({
       data-testid="start-chat-summary"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p
-            className="font-medium"
-            data-testid="start-chat-summary-destination"
-          >
-            Start chat in{' '}
-            <span className={REPLAY_MASK_CLASS}>{destination}</span>
-          </p>
-          <ol
-            className="mt-1 flex flex-wrap items-center gap-x-1 text-xs fg-secondary"
-            aria-label="Steps"
-            data-testid="start-chat-summary-steps"
-          >
-            {steps.map((step, index) => (
-              // Steps repeat, so position is the only stable identity.
-              <li
-                key={`${step}-${String(index)}`}
-                className="flex items-center gap-1"
-              >
-                {index > 0 ? (
-                  <ChevronRightMediumIcon
-                    size="sm"
-                    aria-hidden="true"
-                    className="fg-quaternary"
-                  />
-                ) : null}
-                {step}
-              </li>
-            ))}
-          </ol>
+        <div className="min-w-0 flex flex-col gap-2">
+          <Stack gap="tight">
+            <p
+              className="font-medium"
+              data-testid="start-chat-summary-destination"
+            >
+              Start chat in{' '}
+              <span className={REPLAY_MASK_CLASS}>{destination}</span>
+            </p>
+
+            <ol
+              className="flex flex-wrap items-center gap-x-1 text-xs fg-secondary"
+              aria-label="Steps"
+              data-testid="start-chat-summary-steps"
+            >
+              {steps.map((step, index) => (
+                // Steps repeat, so position is the only stable identity.
+                <li
+                  key={`${step}-${String(index)}`}
+                  className="flex items-center gap-1"
+                >
+                  {index > 0 ? (
+                    <ChevronRightMediumIcon
+                      size="sm"
+                      aria-hidden="true"
+                      className="fg-quaternary"
+                    />
+                  ) : null}
+                  {step}
+                </li>
+              ))}
+            </ol>
+          </Stack>
+
           {note !== undefined ? (
             <p
-              className="mt-2 text-xs fg-secondary"
+              className="text-xs fg-secondary"
               data-testid="start-chat-summary-note"
             >
               {note}

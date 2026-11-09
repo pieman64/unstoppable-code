@@ -1,5 +1,6 @@
 import { type JSX, useEffect, useState } from 'react';
 import {
+  Stack,
   Button,
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
@@ -149,8 +150,8 @@ export function ReviewSharedPipelineChangeModal({
       ownerDocument={ownerDocument}
       inset="flush"
     >
-      <div className="space-y-4 px-6 pb-4 pt-6">
-        <div>
+      <div className="flex flex-col px-6 pb-4 pt-6 gap-4">
+        <Stack gap="tight">
           <Heading
             level={3}
             variant="section"
@@ -158,14 +159,19 @@ export function ReviewSharedPipelineChangeModal({
           >
             {pipelineDisplayName(activity)}
           </Heading>
-          <p className="mt-1 text-s fg-secondary">
+          <p className="text-s fg-secondary">
             {SHARED_PIPELINE_REVIEW_EXPLANATION}
           </p>
-        </div>
+        </Stack>
 
         {resolveState.status === 'loading' && (
-          <DelayedLoadingPlaceholder slowNote="Still loading workflow…">
-            <CenteredLoadingSpinner className="my-12" />
+          <DelayedLoadingPlaceholder
+            className=""
+            slowNote="Still loading workflow…"
+          >
+            <div className="box-content flex min-h-full flex-1 py-12">
+              <CenteredLoadingSpinner className="" />
+            </div>
           </DelayedLoadingPlaceholder>
         )}
 

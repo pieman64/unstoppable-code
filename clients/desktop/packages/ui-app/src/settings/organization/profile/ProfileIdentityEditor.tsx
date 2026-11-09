@@ -10,11 +10,11 @@ import {
 } from 'react';
 import {
   Button,
-  CopyDetailsButton,
   DISPLAY_AVATAR_SIZE_PX,
   TextInput,
   Heading,
   type DisplayAvatarSize,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { Camera, Pencil } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -115,17 +115,13 @@ export function AvatarEditor({
         </Button>
       )}
       {error && (
-        <>
-          <p
-            className="max-w-48 text-center text-xs fg-destructive"
-            role="alert"
-          >
-            {error.copy}
-          </p>
-          {error.details !== undefined ? (
-            <CopyDetailsButton details={error.details} />
-          ) : null}
-        </>
+        <div className="w-full max-w-48">
+          <ErrorBanner
+            className=""
+            error={error.copy}
+            {...(error.details !== undefined ? { details: error.details } : {})}
+          />
+        </div>
       )}
     </div>
   );
@@ -203,14 +199,15 @@ export function NameEditor({
           <Pencil size={14} />
         </Button>
         {error && (
-          <>
-            <p className="w-full text-xs fg-destructive" role="alert">
-              {error.copy}
-            </p>
-            {error.details !== undefined ? (
-              <CopyDetailsButton details={error.details} />
-            ) : null}
-          </>
+          <div className="w-full">
+            <ErrorBanner
+              className=""
+              error={error.copy}
+              {...(error.details !== undefined
+                ? { details: error.details }
+                : {})}
+            />
+          </div>
         )}
       </div>
     );
@@ -249,14 +246,13 @@ export function NameEditor({
         Cancel
       </Button>
       {error && (
-        <>
-          <p className="w-full text-xs fg-destructive" role="alert">
-            {error.copy}
-          </p>
-          {error.details !== undefined ? (
-            <CopyDetailsButton details={error.details} />
-          ) : null}
-        </>
+        <div className="w-full">
+          <ErrorBanner
+            className=""
+            error={error.copy}
+            {...(error.details !== undefined ? { details: error.details } : {})}
+          />
+        </div>
       )}
     </form>
   );

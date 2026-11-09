@@ -26,7 +26,7 @@ export function MessageAttachments({
   }
 
   return (
-    <div className="mt-1 flex flex-wrap gap-1">
+    <div className="flex flex-wrap gap-1">
       {attachmentPaths.map((filePath) => {
         const filename = getFilenameFromPath(filePath);
         return (

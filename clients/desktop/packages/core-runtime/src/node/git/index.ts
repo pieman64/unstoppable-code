@@ -1,4 +1,5 @@
 export * from './branch-list';
+export * from './head-state';
 export * from './branch-writes';
 export * from './change-set';
 export * from './change-set-patch';
@@ -23,3 +24,13 @@ export * from './worker-git-commit-push';
 export * from './recorded-worker-git-commit-push-host';
 export * from './merge-writes';
 export * from './worker-git-merge';
+export {
+  createWorkerGitLocalMutationHandlers,
+  type WorkerGitLocalMutationName,
+  type WorkerGitLocalMutationPort,
+  type WorkerGitLocalMutationHost,
+  type WorkerGitLocalMutationHandlers,
+} from './worker-git-local-mutations';
+
+export * from './worktree-writes';
+export * from './worker-git-worktree-writes';

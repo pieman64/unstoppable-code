@@ -1,8 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough, type Readable, type Writable } from 'node:stream';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
-import { killProcessGroupByPid } from '../lib/process-kill';
+import {
+  killProcessGroupByPid,
+  signalExitedProcessGroup,
+} from '@canopy/execution-engine/node/lib/process-kill';
 
 /*
  * The spawn seam for provider CLIs (CAN-4118; consumed by the Cursor, Copilot
@@ -24,6 +27,9 @@ export interface ProviderProcessOwner {
   readonly id: string;
 }
 
+/** 'ignore' gives the child no stdin at all, as a null device. */
+export type ProviderProcessStdin = 'pipe' | 'ignore';
+
 export interface ProviderProcessRequest {
   readonly command: string;
   readonly args: readonly string[];
@@ -31,6 +37,8 @@ export interface ProviderProcessRequest {
   /** The child's complete environment; nothing is merged in. */
   readonly env: NodeJS.ProcessEnv;
   readonly owner: ProviderProcessOwner;
+  /** Default 'pipe'. With 'ignore', the returned process has no `stdin`. */
+  readonly stdin?: ProviderProcessStdin;
 }
 
 export interface ProviderProcessStopOptions {
@@ -41,9 +49,19 @@ export interface ProviderProcessStopOptions {
 export interface ProviderProcess {
   /** Undefined until the child has started, and for a child that never started. */
   readonly pid: number | undefined;
-  readonly stdin: Writable;
+  /** Null when the request ignored stdin. */
+  readonly stdin: Writable | null;
   readonly stdout: Readable;
   readonly stderr: Readable;
+  /**
+   * The child process itself exited. Fires at most once, before 'close', and
+   * only for a child that started; 'close' can follow much later while a
+   * descendant still holds the child's output pipes.
+   */
+  once(
+    event: 'exit',
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): this;
   once(
     event: 'close',
     listener: (code: number | null, signal: NodeJS.Signals | null) => void,
@@ -130,14 +148,17 @@ function signalGroup(pid: number | undefined, signal: NodeJS.Signals): void {
 }
 
 class DirectProviderProcess extends EventEmitter implements ProviderProcess {
-  readonly stdin: Writable;
+  readonly stdin: Writable | null;
   readonly stdout: Readable;
   readonly stderr: Readable;
-  private readonly child: ChildProcessWithoutNullStreams | undefined;
+  private readonly child: ChildProcess | undefined;
   private readonly closed: Promise<void>;
   private markClosed: () => void = () => undefined;
   private errorEmitted = false;
   private closeEmitted = false;
+  private exitEmitted = false;
+  /** Node reaped the child: its pid may be reused from here on. */
+  private childExited = false;
   private spawned = false;
   private stopping: Promise<void> | undefined;
 
@@ -148,7 +169,9 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
     });
     if (!isProviderProcessOwner(request.owner)) {
       this.child = undefined;
-      [this.stdin, this.stdout, this.stderr] = placeholderStreams();
+      [this.stdin, this.stdout, this.stderr] = placeholderStreams(
+        request.stdin,
+      );
       this.failLater(
         new ProviderProcessError(
           'The provider process owner is invalid.',
@@ -157,7 +180,7 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
       );
       return;
     }
-    let child: ChildProcessWithoutNullStreams;
+    let child: ChildProcess;
     try {
       child = spawn(request.command, [...request.args], {
         cwd: request.cwd,
@@ -167,23 +190,32 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
         // Electron main is a GUI process on Windows; without this the
         // console-subsystem node.exe flashes a console window each turn.
         windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: [request.stdin ?? 'pipe', 'pipe', 'pipe'],
       });
     } catch (error) {
       this.child = undefined;
-      [this.stdin, this.stdout, this.stderr] = placeholderStreams();
+      [this.stdin, this.stdout, this.stderr] = placeholderStreams(
+        request.stdin,
+      );
       this.failLater(providerProcessErrorFrom(error, request.command));
       return;
     }
+    const { stdin, stdout, stderr } = child;
+    if (!stdout || !stderr)
+      throw new Error('Provider process output is not piped.');
+    this.stdin = stdin;
+    this.stdout = stdout;
+    this.stderr = stderr;
     this.child = child;
-    this.stdin = child.stdin;
-    this.stdout = child.stdout;
-    this.stderr = child.stderr;
     child.once('spawn', () => {
       this.spawned = true;
     });
     child.on('error', (error) => {
       this.emitError(providerProcessErrorFrom(error, request.command));
+    });
+    child.once('exit', (code, signal) => {
+      this.childExited = true;
+      if (this.spawned) this.emitExit(code, signal);
     });
     child.once('close', (code, signal) => {
       if (this.spawned) this.emitClose(code, signal);
@@ -208,7 +240,7 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
       await this.closed;
       return;
     }
-    signalGroup(pid, 'SIGTERM');
+    this.signal(pid, 'SIGTERM');
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -221,9 +253,15 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
       if (timer) clearTimeout(timer);
       // Parent closure does not imply group closure: terminate surviving
       // descendants before reporting the child stopped.
-      signalGroup(pid, 'SIGKILL');
+      this.signal(pid, 'SIGKILL');
     }
     await this.closed;
+  }
+
+  private signal(pid: number, signal: NodeJS.Signals): void {
+    if (this.childExited || this.closeEmitted)
+      signalExitedProcessGroup(pid, signal);
+    else signalGroup(pid, signal);
   }
 
   private failLater(error: ProviderProcessError): void {
@@ -239,6 +277,12 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
     this.emit('error', error);
   }
 
+  private emitExit(code: number | null, signal: NodeJS.Signals | null): void {
+    if (this.exitEmitted || this.closeEmitted) return;
+    this.exitEmitted = true;
+    this.emit('exit', code, signal);
+  }
+
   private emitClose(code: number | null, signal: NodeJS.Signals | null): void {
     if (this.closeEmitted) return;
     this.closeEmitted = true;
@@ -248,9 +292,11 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
 }
 
 /** Streams for a child that never started: stdin discards, outputs are ended. */
-function placeholderStreams(): [Writable, Readable, Readable] {
-  const stdin = new PassThrough();
-  stdin.resume();
+function placeholderStreams(
+  mode: ProviderProcessStdin | undefined,
+): [Writable | null, Readable, Readable] {
+  const stdin = mode === 'ignore' ? null : new PassThrough();
+  stdin?.resume();
   const stdout = new PassThrough();
   stdout.end();
   const stderr = new PassThrough();

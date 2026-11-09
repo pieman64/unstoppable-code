@@ -2,7 +2,7 @@ import type { SpaceNotificationClass } from '@canopy/protocol/space-notification
 import type {
   ExecutionEvent,
   PipelineStatusReasonKind,
-} from '../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { getToastType } from './get-toast-type';
 
 /** Typed pause reasons that need the user: input, sign-in or credentials,

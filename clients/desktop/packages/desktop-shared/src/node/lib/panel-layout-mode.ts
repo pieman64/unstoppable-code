@@ -14,7 +14,7 @@ import {
   type PanelLayoutModeFileV1,
   type WorkspaceLayoutMode,
 } from '../../types';
-import { validateId } from './validation';
+import { validateId } from '@canopy/execution-engine/node/lib/validation';
 
 export const DEFAULT_WORKSPACE_LAYOUT_MODE: WorkspaceLayoutMode = 'advanced';
 export const PANEL_LAYOUT_MODE_FILENAME = 'panel-layout-mode.json';

@@ -42,7 +42,16 @@ import {
 import type { getAppAdvisorWatcherService } from '../app-advisor/watchers';
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
+import { resolveGitHubRepositoryCandidates } from '../lib/github-repository-context';
+import type { LocalWatcherTarget } from '@canopy/desktop-shared/types/local-watchers';
+import type { WatchGitHubItemsInput } from '@canopy/desktop-shared/types/github-watchers';
 import { agentWriteMessageId } from './desktop-write-turns';
+import {
+  createWatcherThroughCore,
+  deleteWatchersThroughCore,
+  listWatchersThroughCore,
+  setupWatchersJson,
+} from '../canopy-tools/watcher-core-client';
 
 type DesktopAgentActionCall = AgentActionCall<CanopyInjectedToolRuntime>;
 
@@ -334,6 +343,14 @@ async function searchWatchers(
       isError: true,
     };
   }
+  return listWatchersThroughCore(destination, input, call.signal);
+}
+
+/** SearchWatchers for one recipient, behind `core.initiatedWork.watcher.list` (CAN-5994). */
+export async function searchWatchersFor(
+  input: SearchWatchersInput,
+  destination: AppAdvisorWatcherDestination,
+): Promise<AgentActionToolResult> {
   // Defer the scheduler-backed service until watcher discovery is requested.
   const { getAppAdvisorWatcherService } =
     await import('../app-advisor/watchers');
@@ -503,6 +520,19 @@ async function setupWatchers(
       isError: true,
     };
   }
+  return createWatcherThroughCore(
+    destination,
+    { kind: 'setup', input: setupWatchersJson(input) },
+    { toolUseId: call.toolUseId, signal: call.signal },
+  );
+}
+
+/** SetupWatchers for one recipient, behind `core.initiatedWork.watcher.create` (CAN-5994). */
+export async function setupWatchersFor(
+  input: SetupWatchersInput<HookTriggerName>,
+  destination: AppAdvisorWatcherDestination,
+  call: { toolUseId?: string; signal?: AbortSignal },
+): Promise<AgentActionToolResult> {
   const watchers: CanonicalChatWatcherSetupInput['watchers'] = [];
   for (const [watcherIndex, watcher] of Array.from(input.watchers.entries())) {
     if (isCanonicalSetupWatcherEntry(watcher)) {
@@ -784,6 +814,16 @@ async function deleteWatchers(
       isError: true,
     };
   }
+  return deleteWatchersThroughCore(destination, input.watcherIds, {
+    signal: call.signal,
+  });
+}
+
+/** DeleteWatchers for one recipient, behind `core.initiatedWork.watcher.delete` (CAN-5994). */
+export async function deleteWatchersFor(
+  input: DeleteWatchersInput,
+  destination: AppAdvisorWatcherDestination,
+): Promise<AgentActionToolResult> {
   // Keep the main-only watcher service lazy so unrelated injected tools do not
   // initialize observer state; the static path remains packageable by Electron.
   const { getAppAdvisorWatcherService } =
@@ -945,3 +985,78 @@ export const desktopChatWatcherPort: AgentChatWatcherPort<CanopyInjectedToolRunt
       return result.results;
     },
   };
+
+/** WatchCommand and ScheduleWakeup for one recipient, behind `core.initiatedWork.watcher.create` (CAN-5994). */
+export async function createLocalWatcherFor(
+  target: LocalWatcherTarget,
+  destination: AppAdvisorWatcherDestination,
+  call: {
+    toolUseId: string;
+    followUpInstruction?: string;
+    signal?: AbortSignal;
+  },
+): Promise<AgentActionToolResult> {
+  try {
+    // Defer the scheduler-backed service because most injected tool calls do
+    // not need its persistence and process-lifecycle initialization graph.
+    const service = await watcherService();
+    const watcher = call.signal
+      ? await service.createLocalWatcher(
+          target,
+          destination,
+          call.toolUseId,
+          call.followUpInstruction,
+          undefined,
+          { signal: call.signal },
+        )
+      : await service.createLocalWatcher(
+          target,
+          destination,
+          call.toolUseId,
+          call.followUpInstruction,
+        );
+    return {
+      text: JSON.stringify({
+        ok: true,
+        watcher,
+        note: destination.delegationId
+          ? 'Watcher registered. End this run when ready; the notification resumes this delegated task.'
+          : 'Watcher registered. End this turn when ready; notification resumes this same chat.',
+      }),
+    };
+  } catch (error) {
+    return {
+      text: error instanceof Error ? error.message : String(error),
+      isError: true,
+    };
+  }
+}
+
+/** WatchGitHubItems for one recipient, behind `core.initiatedWork.watcher.create` (CAN-5994). */
+export async function watchGitHubItemsFor(
+  input: WatchGitHubItemsInput,
+  destination: AppAdvisorWatcherDestination,
+  call: { toolUseId?: string; signal?: AbortSignal; repositoryCwd?: string },
+): Promise<
+  AgentActionToolResult & { failure?: { code: string; message: string } }
+> {
+  const repositoryCandidates = await resolveGitHubRepositoryCandidates({
+    projectId: destination.projectId,
+    worktreeId: destination.worktreeId,
+    ...(call.repositoryCwd ? { cwd: call.repositoryCwd } : {}),
+  });
+  const result = await (
+    await watcherService()
+  ).watchGitHubItems(input, destination, {
+    toolUseId: call.toolUseId,
+    ...(call.signal ? { signal: call.signal } : {}),
+    repositoryCandidates,
+  });
+  return {
+    text: JSON.stringify(result),
+    isError: result.ok !== true,
+    ...(result.ok !== true
+      ? { failure: { code: result.code, message: result.message } }
+      : {}),
+  };
+}

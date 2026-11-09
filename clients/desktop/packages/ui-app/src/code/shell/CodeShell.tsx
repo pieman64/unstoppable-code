@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import type { PortalFileReadPayload } from '@canopy/protocol/portal';
 import type { SlashCommandTriggerCharacter } from '@canopy/ui-rich';
-import { Button } from '@canopy/ui-shared/components';
+import { Surface, Button } from '@canopy/ui-shared/components';
 import { ChatPanel } from '../ChatPanel';
 import type { FileEditorSlot } from '../file/FileViewer';
 import { FindableFileViewer } from '../../find/FindableFileViewer';
@@ -211,16 +211,18 @@ export function CodeShell({
         className="flex h-full min-h-0 flex-col"
         data-testid="code-shell-file"
       >
-        <div className="flex items-center gap-2 border-b px-3 py-1.5">
-          <Button
-            variant="ghost"
-            size="compact"
-            onClick={(): void => setOpenFile(null)}
-            data-testid="code-shell-file-back"
-          >
-            ← Back to chat
-          </Button>
-        </div>
+        <Surface variant="section" boundary="bottom">
+          <div className="flex items-center gap-2 px-3 py-1.5">
+            <Button
+              variant="ghost"
+              size="compact"
+              onClick={(): void => setOpenFile(null)}
+              data-testid="code-shell-file-back"
+            >
+              ← Back to chat
+            </Button>
+          </div>
+        </Surface>
         <FindableFileViewer
           findScope={{ key: openFile.relativePath }}
           request={openFile}

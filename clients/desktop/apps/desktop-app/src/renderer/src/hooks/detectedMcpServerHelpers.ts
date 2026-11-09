@@ -7,7 +7,7 @@
 import type {
   DetectedMcpServerInfo,
   McpHttpAuthTarget,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { mcpRequirementUnknown } from '@canopy/ui-shared/lib/mcp-card-display';
 
 /** Identity and auth route must survive a refresh of an in-flight target. */

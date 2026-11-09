@@ -13,6 +13,7 @@ export * from './lib/delegation-transcript';
 export * from './lib/delegation-card-snapshot';
 export * from './lib/delegation-stream-projection';
 export * from './lib/delegation-live-preview';
+export * from './lib/claude-mods-skipped';
 export * from './lib/transcript-parser';
 export * from './lib/claude-content-normalizers';
 export { claudeLaunchedAgentId } from './lib/claude-agent-id';

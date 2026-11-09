@@ -1,4 +1,7 @@
-import { startRemotePairingTelemetry } from '../lib/desktop-telemetry';
+import {
+  recordRemoteControlTelemetry,
+  startRemotePairingTelemetry,
+} from '../lib/desktop-telemetry';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -35,12 +38,20 @@ import {
   type AppAdvisorWindowOpenRequest,
   type RemoteControlForgetDeviceRequest,
   type RemoteControlGetStateRequest,
+  type RemoteControlInstallIdResult,
+  type RemoteControlPairingEvent,
   type RemoteControlRespondToPairingRequest,
   type RemoteControlState,
   type RemotePathPickerResponse,
 } from '@canopy/desktop-shared/types';
 import { setAccountProxyRemoteSignInProvider } from '../account-proxy/remote-sign-in';
+import { setInterfaceToolAudienceResolver } from '../agents/interface-tool-binding';
 import { requestCanopyCloudJson } from '../canopy-cloud/client';
+import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
+import {
+  readDurablePortalInstallId,
+  readPortalOptInForMigration,
+} from '../portal/portal-state-store';
 import {
   redeliverPendingAppAdvisorAskUserRequests,
   setRemoteAppAdvisorWindowHostResolver,
@@ -107,6 +118,7 @@ import { currentRemoteVersion } from './protocol-version';
 import { RemoteAccessStore } from './remote-access-store';
 import {
   RemoteControlService,
+  type RemotePortalPort,
   type RemoteRelay,
   type RemoteRelayFactoryOptions,
 } from './remote-control-service';
@@ -224,6 +236,11 @@ export function initializeRemoteControl(options: {
     request: AppAdvisorWindowOpenRequest | undefined,
     send: (command: AppAdvisorWindowCommand) => void,
   ) => Promise<unknown>;
+  /**
+   * Portal sessions the single Remote Control opt-in starts and ends,
+   * supplied by the composition root that owns Portal.
+   */
+  portal?: RemotePortalPort;
 }): RemoteControlRuntime {
   if (runtime) return runtime;
   const dataDir = getDataDir();
@@ -285,6 +302,7 @@ export function initializeRemoteControl(options: {
 
   service = new RemoteControlService({
     recordPairing: startRemotePairingTelemetry,
+    recordTelemetry: recordRemoteControlTelemetry,
     store,
     createRelay: (relayOptions: RemoteRelayFactoryOptions): RemoteRelay =>
       new RelayClient({
@@ -341,6 +359,14 @@ export function initializeRemoteControl(options: {
       markAsDownloaded(path, { agentName: BRAND.displayName }),
     openLocalFile: (path: string): Promise<void> =>
       openExternalGuarded(pathToFileURL(path).toString()),
+    dispatchHostedChatCommand: async (
+      request,
+      attribution,
+    ): Promise<unknown> => {
+      const { dispatchHostedChatCommandOnDesktop } =
+        await import('./host/hosted-chat-desktop');
+      return dispatchHostedChatCommandOnDesktop(request, attribution);
+    },
     completeAccountProxySignIn: async (
       controllerDeviceId,
       callback,
@@ -358,6 +384,11 @@ export function initializeRemoteControl(options: {
     windows,
     broadcastState: (state: RemoteControlState): void =>
       sendToAllWindows(IPC_CHANNELS.remoteControlStateChanged, state),
+    broadcastPairingEvent: (event: RemoteControlPairingEvent): void =>
+      sendToAllWindows(IPC_CHANNELS.remoteControlPairingEvent, event),
+    readPortalOptIn: readPortalOptInForMigration,
+    ...(options.portal ? { portal: options.portal } : {}),
+    webOrigin: (): string => new URL(getCanopyCloudBaseUrl()).origin,
     log: (message: string, context?: unknown): void =>
       logMainProcessInfo(message, context),
   });
@@ -402,6 +433,15 @@ export function initializeRemoteControl(options: {
     const controllerDeviceId = chatId ? chatDriver(chatId) : null;
     return controllerDeviceId
       ? activeService.appAdvisorSurfaceForController(controllerDeviceId)
+      : null;
+  });
+  // CAN-5823: a chat driven from a connected controller is served only by
+  // that controller's window leases; otherwise by this computer's own.
+  setInterfaceToolAudienceResolver((chatId) => {
+    const controllerDeviceId = chatDriver(chatId);
+    return controllerDeviceId &&
+      activeService.hostSessionForController(controllerDeviceId)
+      ? controllerDeviceId
       : null;
   });
   setAccountProxyRemoteSignInProvider((sender) => {
@@ -482,6 +522,19 @@ function registerRemoteControlIpc(
       if (typeof allow !== 'boolean') throw new Error('Expected a boolean.');
       return service.setAllowIncoming(allow);
     },
+  );
+  registerIpcHandler(IPC_CHANNELS.remoteControlOpenPairingWindow, () =>
+    service.openPairingWindow(),
+  );
+  registerIpcHandler(IPC_CHANNELS.remoteControlClosePairingWindow, () =>
+    service.closePairingWindow(),
+  );
+  // Tunneled: a controller reads it through its bridge after authorization.
+  registerIpcHandler(
+    IPC_CHANNELS.remoteControlInstallId,
+    async (): Promise<RemoteControlInstallIdResult> => ({
+      installId: await readDurablePortalInstallId(),
+    }),
   );
   registerIpcHandler(
     IPC_CHANNELS.remoteControlStartPairing,

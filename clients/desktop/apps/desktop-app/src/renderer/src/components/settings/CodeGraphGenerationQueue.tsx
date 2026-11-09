@@ -4,7 +4,11 @@ import type {
   CodeGraphIpcError,
   CodeGraphQueueEntry,
 } from '@canopy/desktop-shared/types';
-import { Button, LoadingSpinner, Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  LoadingSpinner,
+  ErrorBanner,
+} from '@canopy/ui-shared/components';
 import { ChevronDown, ChevronUp } from '@canopy/ui-shared/icons/AppIcons';
 import {
   SettingsGroup,
@@ -55,7 +59,7 @@ function entryAccessibleLabel(entry: CodeGraphQueueEntry): string {
  */
 function EntryText({ entry }: { entry: CodeGraphQueueEntry }): JSX.Element {
   return (
-    <div className="min-w-0 flex-1 space-y-0.5">
+    <div className="flex flex-col min-w-0 flex-1 gap-0.5">
       <div className="flex min-w-0 items-baseline gap-2">
         <span className="truncate text-s font-medium fg-primary">
           {entryPrimaryLabel(entry)}
@@ -244,13 +248,11 @@ export function CodeGraphGenerationQueue(): JSX.Element {
       dataTestId="code-graph-generation-queue"
     >
       {error && (
-        <Notice
-          intent="attention"
-          role="alert"
-          data-testid="code-graph-queue-error"
-        >
-          {error}
-        </Notice>
+        <ErrorBanner
+          className=""
+          error={error}
+          testId="code-graph-queue-error"
+        />
       )}
 
       <SettingsGroup

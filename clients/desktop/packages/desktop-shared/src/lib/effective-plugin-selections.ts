@@ -35,7 +35,7 @@ import {
 import type {
   AccountMcpConnection,
   McpHttpAuthPreference,
-} from '../types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { mcpHttpAuthTargetKey } from './mcp-http-auth';
 import { normalizePluginSelections } from './plugin-selections-normalization';
 

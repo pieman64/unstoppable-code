@@ -38,7 +38,10 @@ import {
 } from '@canopy/protocol/canopy-core';
 
 import { KEYED_RECEIPT_RETRY_WINDOW_MS } from '../../../kernel/keyed-receipt';
-import { openOperationLedgerDatabase } from './database';
+import {
+  OPERATION_LEDGER_RETENTION_INDEXES,
+  openOperationLedgerDatabase,
+} from './database';
 import { OperationLedgerError, OperationLedgerRefusedError } from './errors';
 
 /** Worker instructions whose cancelled child keeps the result it reported. */
@@ -52,6 +55,18 @@ const CANCELLED_OUTCOME_KINDS: ReadonlySet<string> = new Set([
 export const OPERATION_LEDGER_COMPACTION_BATCH_SIZE = 100;
 export const OPERATION_LEDGER_COMPACTION_INTERVAL = 100;
 export const OPERATION_LEDGER_EVENTS_PAGE_MAX = 500;
+
+/**
+ * Root kinds whose settled operation trees are deleted after the identity
+ * retention horizon (CAN-5721). A root must be unkeyed and every descendant
+ * keyed only by its parent (`core.delegation:<parent>`), so no receipt a
+ * caller could still replay is removed. Every other row is kept forever,
+ * including hook-chat claims and queued hook work.
+ */
+export const OPERATION_LEDGER_PRUNABLE_ROOT_KINDS: readonly string[] = [
+  'core.helper.run',
+];
+export const OPERATION_LEDGER_IDENTITY_RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
 
 export type OperationNonTerminalStatus = Exclude<
   OperationStatus,
@@ -138,11 +153,21 @@ export interface OperationListPage {
   next: { createdAt: string; operationId: string } | null;
 }
 
+/** What one identity retention batch did; never names an operation. */
+export type OperationLedgerRetentionResult =
+  | { status: 'pruned'; operations: number }
+  | { status: 'indexed'; durationMs: number }
+  | { status: 'failed'; error: unknown };
+
 export interface OperationLedgerOptions {
   openBusyTimeoutMs?: number;
   /** Milliseconds since the epoch. */
   clock?: () => number;
   retryWindowMs?: number;
+  /** At least the retry window; see {@link OPERATION_LEDGER_IDENTITY_RETENTION_MS}. */
+  identityRetentionMs?: number;
+  /** Told after a retention batch deletes rows or fails. */
+  onIdentityRetention?: (result: OperationLedgerRetentionResult) => void;
 }
 
 const SCOPE_COLUMNS = [
@@ -306,11 +331,18 @@ export class OperationLedger {
   /** This process's run; records it runs carry it. */
   readonly runEpoch: string;
   private writesSinceCompaction = 0;
+  /** A retention batch asked for inside a transaction, run once it commits. */
+  private identityRetentionPending = false;
+  private retentionIndexesReady = false;
 
   private constructor(
     private readonly db: DatabaseSync,
     private readonly clock: () => number,
     private readonly retryWindowMs: number,
+    private readonly identityRetentionMs: number,
+    private readonly onIdentityRetention:
+      | ((result: OperationLedgerRetentionResult) => void)
+      | undefined,
   ) {
     this.ledgerId = this.meta('ledger_id');
     this.runEpoch = randomUUID();
@@ -326,10 +358,21 @@ export class OperationLedger {
       throw new RangeError(
         'The operation retry window must be finite and nonnegative.',
       );
+    const identityRetentionMs =
+      options.identityRetentionMs ?? OPERATION_LEDGER_IDENTITY_RETENTION_MS;
+    if (
+      !Number.isFinite(identityRetentionMs) ||
+      identityRetentionMs < retryWindowMs
+    )
+      throw new RangeError(
+        'Operation identity retention must be finite and at least the retry window.',
+      );
     return new OperationLedger(
       openOperationLedgerDatabase(databasePath, options.openBusyTimeoutMs),
       options.clock ?? Date.now,
       retryWindowMs,
+      identityRetentionMs,
+      options.onIdentityRetention,
     );
   }
 
@@ -1169,10 +1212,14 @@ export class OperationLedger {
   /**
    * One bounded batch, at open and every 100 writes: outcomes finished
    * longer ago than the retry window are dropped, and so are their events.
-   * Identities, receipts and terminal states are never removed. Unfinished
-   * work is ineligible.
+   * Receipts and terminal states are kept. Unfinished work is ineligible.
+   *
+   * With `pruneIdentities` (the every-100-writes run, never the one at
+   * open), it also deletes up to one batch of settled trees under
+   * {@link OPERATION_LEDGER_PRUNABLE_ROOT_KINDS} finished longer ago than
+   * the identity retention horizon.
    */
-  compact(): number {
+  compact(options: { pruneIdentities?: boolean } = {}): number {
     const cutoff = new Date(this.clock() - this.retryWindowMs).toISOString();
     const expired = this.transaction(() => {
       const ids = this.db
@@ -1189,7 +1236,144 @@ export class OperationLedger {
       return ids.length;
     });
     this.writesSinceCompaction = 0;
+    if (options.pruneIdentities === true) {
+      if (this.db.isTransaction) this.identityRetentionPending = true;
+      else this.pruneSettledTrees();
+    }
     return expired;
+  }
+
+  /**
+   * Delete whole settled trees whose root kind is prunable, newest row
+   * finished before the horizon. Runs as its own transaction, after the
+   * caller's commits: a failure here never fails that write.
+   */
+  private pruneSettledTrees(): void {
+    if (this.db.isTransaction) return;
+    const kinds = OPERATION_LEDGER_PRUNABLE_ROOT_KINDS;
+    if (kinds.length === 0) return;
+    if (!this.retentionIndexesReady && !this.ensureRetentionIndexes()) return;
+    const cutoff = new Date(
+      this.clock() - this.identityRetentionMs,
+    ).toISOString();
+    const unsettled = UNSETTLED_DELEGATION_STATES;
+    let deleted: number;
+    try {
+      deleted = this.transaction(() => {
+        const roots: string[] = [];
+        for (const kind of kinds) {
+          const limit = OPERATION_LEDGER_COMPACTION_BATCH_SIZE - roots.length;
+          if (limit <= 0) break;
+          roots.push(
+            ...this.db
+              .prepare(
+                `SELECT r.operation_id FROM operations r
+                  WHERE r.parent_operation_id IS NULL
+                    AND r.kind = ?
+                    AND r.completed_at < ?
+                    AND r.idempotency_key IS NULL
+                    AND NOT EXISTS (
+                      SELECT 1 FROM operations d
+                       WHERE d.root_operation_id = r.operation_id
+                         AND (d.status NOT IN ('completed', 'failed', 'cancelled')
+                           OR d.completed_at IS NULL OR d.completed_at >= ?
+                           OR d.outcome_json IS NOT NULL
+                           OR (d.caller IS NOT NULL
+                             AND (d.parent_operation_id IS NULL
+                               OR d.caller != 'core.delegation:' || d.parent_operation_id))))
+                    AND NOT EXISTS (
+                      SELECT 1 FROM operations d
+                        JOIN delegations g ON g.child_operation_id = d.operation_id
+                       WHERE d.root_operation_id = r.operation_id
+                         AND g.state IN (${unsettled.map(() => '?').join(', ')}))
+                  ORDER BY r.completed_at, r.operation_id LIMIT ?`,
+              )
+              .all(kind, cutoff, cutoff, ...unsettled, limit)
+              .map((row) => asText(row.operation_id)),
+          );
+        }
+        if (roots.length === 0) return 0;
+        const rootList = roots.map(() => '?').join(', ');
+        const ids = this.db
+          .prepare(
+            `SELECT operation_id FROM operations
+              WHERE root_operation_id IN (${rootList})`,
+          )
+          .all(...roots)
+          .map((row) => asText(row.operation_id));
+        const list = ids.map(() => '?').join(', ');
+        this.db
+          .prepare(
+            `DELETE FROM delegations
+              WHERE parent_operation_id IN (${list})
+                 OR child_operation_id IN (${list})`,
+          )
+          .run(...ids, ...ids);
+        this.deleteEvents(ids);
+        // Children first: each statement is checked against the foreign keys.
+        let remaining = ids.length;
+        while (remaining > 0) {
+          const removed = Number(
+            this.db
+              .prepare(
+                `DELETE FROM operations
+                  WHERE root_operation_id IN (${rootList})
+                    AND NOT EXISTS (
+                      SELECT 1 FROM operations c
+                       WHERE c.parent_operation_id = operations.operation_id)`,
+              )
+              .run(...roots).changes,
+          );
+          if (removed === 0)
+            throw new OperationLedgerError(
+              'STORAGE_UNAVAILABLE',
+              'A settled operation tree could not be deleted.',
+            );
+          remaining -= removed;
+        }
+        return ids.length;
+      });
+    } catch (error) {
+      this.onIdentityRetention?.({ status: 'failed', error });
+      return;
+    }
+    if (deleted > 0)
+      this.onIdentityRetention?.({ status: 'pruned', operations: deleted });
+  }
+
+  /**
+   * Whether retention's indexes exist. A ledger created before them gets
+   * them here, in a batch that then prunes nothing: retention never scans
+   * the table in their place, and the build stays off the open path.
+   */
+  private ensureRetentionIndexes(): boolean {
+    const missing = OPERATION_LEDGER_RETENTION_INDEXES.filter(
+      (index) =>
+        this.db
+          .prepare(
+            `SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`,
+          )
+          .get(index.name) === undefined,
+    );
+    if (missing.length === 0) {
+      this.retentionIndexesReady = true;
+      return true;
+    }
+    const started = performance.now();
+    try {
+      this.transaction(() => {
+        for (const index of missing) this.db.exec(index.create);
+      });
+    } catch (error) {
+      this.onIdentityRetention?.({ status: 'failed', error });
+      return false;
+    }
+    this.retentionIndexesReady = true;
+    this.onIdentityRetention?.({
+      status: 'indexed',
+      durationMs: Math.round(performance.now() - started),
+    });
+    return false;
   }
 
   /** Drop these finished operations' outcomes and their events. */
@@ -1201,6 +1385,12 @@ export class OperationLedger {
           WHERE operation_id IN (${list})`,
       )
       .run(...ids);
+    this.deleteEvents(ids);
+  }
+
+  /** Delete these operations' events and raise the resumable floor. */
+  private deleteEvents(ids: readonly string[]): void {
+    const list = ids.map(() => '?').join(', ');
     // A cursor below any deleted event would miss it on resume, so the
     // resumable floor is the newest deleted sequence, not the end of a
     // contiguous gap.
@@ -1366,7 +1556,7 @@ export class OperationLedger {
   private afterWrite(): void {
     this.writesSinceCompaction += 1;
     if (this.writesSinceCompaction >= OPERATION_LEDGER_COMPACTION_INTERVAL)
-      this.compact();
+      this.compact({ pruneIdentities: true });
   }
 
   private transaction<T>(run: () => T): T {
@@ -1376,6 +1566,10 @@ export class OperationLedger {
     try {
       const result = run();
       this.db.exec('COMMIT');
+      if (this.identityRetentionPending) {
+        this.identityRetentionPending = false;
+        this.pruneSettledTrees();
+      }
       return result;
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');

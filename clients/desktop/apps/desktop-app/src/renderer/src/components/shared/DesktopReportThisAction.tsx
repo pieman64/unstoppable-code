@@ -1,4 +1,4 @@
-import { useMemo, type ComponentProps, type JSX } from 'react';
+import { useMemo, type ComponentProps, type JSX, type ReactNode } from 'react';
 import type { CanopyClient } from '@canopy/app-core';
 import {
   CanopyClientProvider,
@@ -13,12 +13,24 @@ type Props = ComponentProps<typeof ReportThisAction>;
 export function DesktopReportThisAction(props: Props): JSX.Element {
   return (
     <ReportActionBoundary>
-      <EligibleReportThisAction {...props} />
+      <DesktopReportEligibility>
+        {(eligible): ReactNode =>
+          eligible ? <ReportThisAction {...props} /> : null
+        }
+      </DesktopReportEligibility>
     </ReportActionBoundary>
   );
 }
 
-function EligibleReportThisAction(props: Props): JSX.Element | null {
+/**
+ * Lends its children the account-derived report capability. It reads the
+ * account, so mount it only beside an actual defect.
+ */
+export function DesktopReportEligibility({
+  children,
+}: {
+  children: (eligible: boolean) => ReactNode;
+}): JSX.Element {
   // The same event-driven account check excludes both minted and normalized
   // guests, and fails closed until the first account read settles. Mount it
   // only beside an actual defect, including the root's separate provider.
@@ -39,7 +51,9 @@ function EligibleReportThisAction(props: Props): JSX.Element | null {
   }, [client, connected]);
   return reportClient ? (
     <CanopyClientProvider client={reportClient}>
-      <ReportThisAction {...props} />
+      {children(true)}
     </CanopyClientProvider>
-  ) : null;
+  ) : (
+    <>{children(false)}</>
+  );
 }

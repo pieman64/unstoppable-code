@@ -9,6 +9,13 @@ export const InstalledItemStatusSchema = z.enum([
 ]);
 export type InstalledItemStatus = z.infer<typeof InstalledItemStatusSchema>;
 
+/**
+ * Why a marketplace plugin has no Uninstall. Hosts that can open the owning
+ * marketplace offer that instead of this text.
+ */
+export const INSTALLED_ITEM_MARKETPLACE_OWNED_REASON =
+  'This plugin uses its marketplace source. Remove it through the marketplace instead.';
+
 export const InstalledItemRefSchema = z.discriminatedUnion('kind', [
   z
     .object({

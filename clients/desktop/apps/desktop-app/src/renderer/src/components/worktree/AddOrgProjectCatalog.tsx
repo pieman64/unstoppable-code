@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
 import {
   useOrgProjectsStore,
   useOrgProjectsStoreApi,
@@ -25,8 +27,11 @@ import type {
 import type { SidebarItem } from '@canopy/desktop-shared/types';
 import type { OrgProjectLocalStatus } from '@canopy/ui-app/settings/organization/organization-settings-slots';
 import { openSettingsPathOrWebReported } from '@/lib/navigation/settings-destinations';
+import {
+  inlineFailureText,
+  inlineFailureWithMainSentence,
+} from '@/lib/inline-app-error';
 import { useProjectsStore } from '@/stores/projectsStore';
-import { useGitHubStore } from '@/stores/githubStore';
 import { useLinkedPersonalWorkspacesStore } from '@/stores/linkedPersonalWorkspacesStore';
 import {
   addOrgProjectToComputer,
@@ -50,6 +55,21 @@ import {
 // computer), and an owner's or admin's setup pages (CAN-3984).
 
 type OrganizationContext = Extract<WorkspaceContext, { kind: 'organization' }>;
+
+const SETUP_FAILED = "Couldn't set up the project.";
+
+/**
+ * The catalog's one-line error for a refused setup start: main's own
+ * sentence when it wrote one, otherwise ours; raw text never leads.
+ */
+function setupFailureText(cause: unknown): string {
+  const appError = toAppError(resolveClientAppError(cause));
+  if (!appError) return SETUP_FAILED;
+  return (
+    inlineFailureText(inlineFailureWithMainSentence(appError, SETUP_FAILED)) ??
+    SETUP_FAILED
+  );
+}
 
 interface AddOrgProjectCatalogProps {
   context: OrganizationContext;
@@ -98,6 +118,15 @@ export function AddOrgProjectCatalog({
   );
   const [error, setError] = useState('');
   const [pending, setPending] = useState<string | null>(null);
+  // An Add that settles after this dialog closed must not close the next one,
+  // which shares the same close callback.
+  const mounted = useRef(true);
+  useEffect((): (() => void) => {
+    mounted.current = true;
+    return (): void => {
+      mounted.current = false;
+    };
+  }, []);
   // The folder the member chose for an earlier setup (the setup dialog saves
   // it on Start). Empty until loaded, and when none was ever chosen.
   const [destination, setDestination] = useState('');
@@ -199,9 +228,9 @@ export function AddOrgProjectCatalog({
       project,
       destination: requestedDestination,
       onPending: (busy): void => setPending(busy ? project.id : null),
-      onBeforeSetup: onClose,
       offerGitHubConnect: true,
     }).finally((): void => onAddActivityChange(-1));
+    if (!mounted.current) return;
     if (outcome.kind === 'listing-failed') setError('Failed to add project');
     // Found linked by the fresh check: its row re-renders without Add.
     else if (outcome.kind === 'linked')
@@ -209,8 +238,15 @@ export function AddOrgProjectCatalog({
         ...previous,
         project.id,
       ]);
+    // Setup has a failure to show here, so the dialog stays open for it;
+    // once setup is handed over (its own dialog, or started), it closes.
     else if (outcome.kind === 'setup-failed')
-      useGitHubStore.getState().addToast(outcome.message, 'error');
+      setError(setupFailureText(outcome.cause));
+    else if (
+      outcome.kind === 'setup-requested' ||
+      outcome.kind === 'setup-started'
+    )
+      onClose();
   };
   // Add the handed-over project once, through the same Add as its row, when
   // the row would offer it. Already on this computer, or not addable: nothing.

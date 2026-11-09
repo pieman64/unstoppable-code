@@ -4,11 +4,11 @@ import {
   type PipelinePluginCollectionRunContext,
 } from '@/components/activity/PipelineTriggerModal';
 import type { PipelineWatcherSelection } from '@/components/activity/usePipelineRunWatcher';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import type {
   PipelineExecutionScope,
   ResolvedPipelineExecutionTarget,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { WatcherRecipientGroup } from '@/components/watchers/WatcherRecipientPicker';
 import { usePipelineWorktreeContext } from '@/components/activity/usePipelineWorktreeContext';
 

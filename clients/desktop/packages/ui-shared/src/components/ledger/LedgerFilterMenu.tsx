@@ -1,5 +1,6 @@
 'use client';
 
+import { Dot } from '../Badge';
 import { useRef, useState, type JSX, type ReactNode } from 'react';
 import type {
   LedgerEntryType,
@@ -24,7 +25,6 @@ import {
   LEDGER_ENTRY_TYPE_LABELS,
   LEDGER_STATUS_LABELS,
 } from '../../lib/ledger-display';
-import { SIDEBAR_INDICATOR_BLUE } from '../../lib/operational-status-colors';
 import {
   FloatingPickerMenu,
   PickerMenuOption,
@@ -116,10 +116,10 @@ export function LedgerFilterMenu<Filters extends LedgerViewFilters>({
         hoverSurface
       />
       {active && (
-        <span
-          aria-hidden="true"
+        <Dot
+          tone="filter"
           data-testid="ledger-filter-active-dot"
-          className={`pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full ${SIDEBAR_INDICATOR_BLUE.background}`}
+          className="pointer-events-none absolute right-0.5 top-0.5"
         />
       )}
       <FloatingPickerMenu

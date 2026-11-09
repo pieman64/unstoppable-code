@@ -1,3 +1,4 @@
+import { Count } from '@canopy/ui-shared/components/Badge';
 import { useCallback, useEffect, useState, type JSX } from 'react';
 import { WORKTREE_UNIT_LABEL_PLURAL } from '@canopy/protocol';
 import type { SidebarItem, WorktreeData } from '@canopy/desktop-shared/types';
@@ -16,7 +17,7 @@ import { WorktreeStatusIndicator } from './WorktreeStatusIndicator';
 import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
 import { useDragToScroll } from '@/hooks/useDragToScroll';
 import { EyeOffIcon } from '@canopy/ui-shared/icons';
-import { Disclosure, Surface } from '@canopy/ui-shared/components';
+import { Stack, Disclosure, Surface } from '@canopy/ui-shared/components';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { ProjectIcon } from '../shared/ProjectIcon';
 import {
@@ -242,7 +243,7 @@ export function WorktreeKanbanBoard({
     return (
       <Surface variant="group" size="small" key={wtKey}>
         <div
-          className="cursor-pointer p-1.5"
+          className="flex flex-col gap-1 cursor-pointer p-1.5"
           ref={isSelected ? scrollSelectedIntoView : null}
           data-testid={`worktree-kanban-card-${wtKey}`}
           onClick={(): void =>
@@ -252,7 +253,7 @@ export function WorktreeKanbanBoard({
             onWorktreeDoubleClick?.(project.id, worktree.id)
           }
         >
-          <div className="mb-1 flex items-center justify-between gap-2 px-1">
+          <div className="flex items-center justify-between gap-2 px-1">
             <ProjectChip project={project} />
             <KanbanStatusIndicator
               uiStatus={status}
@@ -314,17 +315,21 @@ export function WorktreeKanbanBoard({
                   {meta.label}
                 </span>
               </div>
-              <span className="rounded-full bg-fg-primary/[0.08] px-1.5 py-0.5 text-3xs font-medium tabular-nums fg-secondary">
-                {visibleCards.length}
-              </span>
+              <Count value={visibleCards.length} />
             </header>
-            <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1.5 py-1.5">
+            <div
+              className={`flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-1.5 pb-1.5 [&>*]:shrink-0 ${visibleCards.length === 0 && hiddenCards.length > 0 ? 'pt-2.5' : 'pt-1.5'}`}
+            >
               {visibleCards.length === 0 && hiddenCards.length === 0 ? (
                 <p className="px-1.5 py-3 text-center text-2xs fg-secondary/70">
                   No worktrees
                 </p>
               ) : (
-                visibleCards.map((card) => renderCard(status, card))
+                visibleCards.length > 0 && (
+                  <Stack gap="tight">
+                    {visibleCards.map((card) => renderCard(status, card))}
+                  </Stack>
+                )
               )}
               {hiddenCards.length > 0 && (
                 <Disclosure
@@ -339,11 +344,11 @@ export function WorktreeKanbanBoard({
                     }))
                   }
                   dataTestId="hidden-worktrees-section"
-                  className="mt-1"
+                  className=""
                 >
-                  <div className="flex flex-col gap-1">
+                  <Stack gap="tight">
                     {hiddenCards.map((card) => renderCard(status, card))}
-                  </div>
+                  </Stack>
                 </Disclosure>
               )}
             </div>

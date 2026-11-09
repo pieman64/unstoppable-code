@@ -1,4 +1,4 @@
-import type { ShellType } from '@canopy/desktop-shared/types/pipeline';
+import type { ShellType } from '@canopy/execution-engine/types/pipeline';
 
 /**
  * Display-ready label for each supported pipeline shell.

@@ -6,7 +6,7 @@ import type {
   PipelineExecutionInitiator,
   PipelineScalar,
   PipelineTriggerType,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { BRAND } from '@canopy/brand/current';
 import type { NormalizedPipeline } from '@canopy/desktop-shared/pipelines/types';
 import type { CanopyEventData, NormalizedJob, JobResult } from './types';

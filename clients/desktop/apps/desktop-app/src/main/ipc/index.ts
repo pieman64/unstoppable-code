@@ -26,6 +26,7 @@ import type {
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import { registerPreferenceHandlers } from './preferences';
+import { registerClaudeModsHandlers } from './claude-mods';
 import { registerInstalledItemHandlers } from './installed-items';
 import { registerProjectHandlers } from './projects';
 import { registerRepoHandlers } from './repos';
@@ -84,6 +85,8 @@ import { getPlanFileSyncService } from '../lib/plan-file-sync';
 import { registerWorktreeSummaryHandlers } from './worktree-summary';
 import { registerGitHubHandlers } from './github';
 import { registerHookHandlers } from './hooks';
+import { registerEditorMenuHandlers } from './editor-menus';
+import { registerWorktreeActivityHandlers } from './worktree-activity';
 import { registerMcpServerHandlers } from './mcp-servers';
 import { registerScriptHandlers } from './scripts';
 import { registerOpenInHandlers } from './open-in';
@@ -145,6 +148,7 @@ import { registerWorkspaceContextHandlers } from './workspace-context';
 import { registerSharedMultiRepoHandlers } from './org-shared-multi-repo';
 import { registerOrgProjectsHandlers } from './org-projects';
 import { registerCloudProjectsHandlers } from './cloud-projects';
+import { registerCloudChatsHandlers } from './cloud-chats';
 import { registerAccountOrganizationSettingsHandlers } from './account-organization-settings';
 import { registerGlobalFocusShortcutHandlers } from './global-focus-shortcut';
 import { registerLaunchAtLoginHandlers } from './launch-at-login';
@@ -232,6 +236,17 @@ export function registerAllIpcHandlers(
     canopyRuntime.dispatcher,
     canopyRuntime.resolveRelaySurface,
   );
+  // The relay's web core authority rides the hosted settings bridge, so the
+  // bridge must end on sign-out, account switch, key change and quit even when
+  // hosted settings never registered (idempotent).
+  let relayBridgeClosed = false;
+  let uninstallRelayBridgeLifecycle: (() => void) | null = null;
+  void import('../canopy-cloud/settings-session')
+    .then(({ installSettingsBridgeLifecycle }) => {
+      if (!relayBridgeClosed)
+        uninstallRelayBridgeLifecycle = installSettingsBridgeLifecycle();
+    })
+    .catch(() => undefined);
   const closeSkillShareNudge = registerSkillShareNudgeHandlers(
     canopyRuntime.resolveCaller,
   );
@@ -271,6 +286,7 @@ export function registerAllIpcHandlers(
       : undefined,
   );
   registerPreferenceHandlers();
+  registerClaudeModsHandlers();
   registerUserEnvironmentHandlers();
   registerActivityPanelHandlers(getMainWindow, canopyRuntime);
   registerPlansHandlers(getMainWindow);
@@ -371,6 +387,8 @@ export function registerAllIpcHandlers(
   registerMcpServerHandlers(getMainWindow);
   registerScriptHandlers(canopyRuntime, accessors);
   registerHookHandlers(getMainWindow, canopyRuntime);
+  registerEditorMenuHandlers(canopyRuntime);
+  registerWorktreeActivityHandlers();
   registerOpenInHandlers();
   registerFilePreviewHandlers(
     canopyRuntime.dispatcher,
@@ -447,6 +465,7 @@ export function registerAllIpcHandlers(
   registerNativeSubagentHandlers();
   registerOrgProjectsHandlers();
   registerCloudProjectsHandlers();
+  registerCloudChatsHandlers(canopyRuntime.resolveRelaySurface);
   registerSharedMultiRepoHandlers(canopyRuntime);
   const closeAccountOrganizationSettings =
     registerAccountOrganizationSettingsHandlers();
@@ -465,6 +484,8 @@ export function registerAllIpcHandlers(
   registerLocalMemoryHandlers();
   return () => {
     closeRendererRelay();
+    relayBridgeClosed = true;
+    uninstallRelayBridgeLifecycle?.();
     closeSkillShareNudge();
     closeSkillSuggestions();
     closeChatStatePush();

@@ -19,7 +19,7 @@ import type {
   TerminalWriteRequest,
 } from '@canopy/protocol/terminal';
 
-import type { BrowserDrawerTabId } from './browser';
+import type { BrowserDrawerTabId } from '@canopy/execution-engine/types/browser';
 
 export type {
   LoadWorktreeTerminalStateRequest,

@@ -1,9 +1,11 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import type { JSX } from 'react';
 import type { PortalPlan } from '@canopy/protocol/portal';
 import { isCursorPlanExecutionUnavailable } from '@canopy/app-core/client';
 import {
+  Stack,
   Button,
   Markdown,
   PlanActionButtonRow,
@@ -118,12 +120,11 @@ function PlanCard({
         )}
         <div className="mt-2 flex items-center gap-3 text-2xs fg-secondary">
           {typeof revision === 'number' && (
-            <span
-              className="shrink-0 rounded-full bg-fg-primary/[0.05] px-1.5 py-0.5 text-3xs font-medium"
+            <Badge
               data-testid={`activity-plan-revision-${plan.localId ?? plan.title}`}
             >
               Rev {revision}
-            </span>
+            </Badge>
           )}
           {plan.status && plan.status !== reviewStatus && (
             <span className="shrink-0">{plan.status}</span>
@@ -158,10 +159,11 @@ export function PlansSection(props: PlansSectionProps): JSX.Element {
   if (props.plans.length === 0) {
     const { onImportPlan } = props;
     return (
-      <div className="space-y-2" data-testid="activity-plans-empty">
+      <Stack gap="inline" data-testid="activity-plans-empty">
         <PlansEmptyMessage canImport={onImportPlan !== undefined} />
         {onImportPlan && (
           <Button
+            className="self-start"
             variant="secondary"
             size="compact"
             data-testid="activity-plans-empty-import"
@@ -170,12 +172,12 @@ export function PlansSection(props: PlansSectionProps): JSX.Element {
             Import plan
           </Button>
         )}
-      </div>
+      </Stack>
     );
   }
   return (
     <div
-      className="max-h-76 space-y-2 overflow-y-auto"
+      className="grid grid-cols-1 content-start max-h-76 overflow-y-auto gap-2"
       data-testid="activity-plans"
     >
       {props.plans.map((plan) => (

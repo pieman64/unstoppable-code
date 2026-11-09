@@ -13,7 +13,7 @@ import {
   ACCOUNT_MCP_TRY_IT_SOURCE_ID,
   type TryItCapability,
 } from '@canopy/protocol/try-it';
-import type { AccountMcpConnectionSummary } from '@canopy/desktop-shared/types/mcp-servers';
+import type { AccountMcpConnectionSummary } from '@canopy/execution-engine/types/mcp-servers';
 import type { TryItSetupAction } from '@canopy/ui-shared/components';
 import {
   useAccountMcpSignIn,

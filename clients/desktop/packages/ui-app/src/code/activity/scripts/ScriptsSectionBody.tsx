@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import {
+  Stack,
   ActivityItemRow,
   AnsiOutput,
   Button,
@@ -452,10 +453,12 @@ export function ScriptsSectionBody({
       // PanelSection (space-y-3); this wrapper must replicate that spacing
       // between them or the rail loses the 12px gaps (CAN-1698 capture
       // evidence).
-      className="space-y-3"
+      className="flex flex-col gap-3"
       data-testid="activity-scripts-body"
     >
-      <div className={compact ? 'space-y-0' : 'space-y-1.5'}>
+      <div
+        className={compact ? 'flex flex-col gap-0' : 'flex flex-col gap-1.5'}
+      >
         {rows.map((row) => {
           if (row.kind === 'entry') {
             return renderEntry(row.entry);
@@ -523,7 +526,9 @@ export function ScriptsSectionBody({
                     <>
                       {compact ? null : <Divider />}
                       <div
-                        className={compact ? 'pl-4' : 'space-y-1 px-2.5 py-2'}
+                        className={
+                          compact ? 'pl-4' : 'flex flex-col gap-1 px-2.5 py-2'
+                        }
                       >
                         {details.map((entry) =>
                           renderEntry(entry, entry.script.displayName),
@@ -542,7 +547,7 @@ export function ScriptsSectionBody({
           });
           const expanded = expandedRepos.has(group.repoId) || running;
           return (
-            <div key={`repo-group-${group.repoId}`}>
+            <Stack gap="tight" key={`repo-group-${group.repoId}`}>
               <button
                 type="button"
                 onClick={(): void =>
@@ -563,18 +568,18 @@ export function ScriptsSectionBody({
                 </span>
               </button>
               {expanded && (
-                <div className="mt-1 space-y-1 pl-4">
+                <div className="pl-4 flex flex-col gap-1">
                   {group.entries.map((entry) =>
                     renderEntry(entry, entry.script.displayName),
                   )}
                 </div>
               )}
-            </div>
+            </Stack>
           );
         })}
       </div>
       {error !== null && (
-        <div className="mt-2.5">
+        <div>
           <Notice intent="destructive" role="none">
             {error}
           </Notice>

@@ -154,16 +154,18 @@ function SkillSuggestionsRows(): JSX.Element {
             data-testid="skill-suggestions-settings-view"
             onClick={() => openModal(true)}
           >
-            {SKILL_SUGGESTION_COPY.viewSuggestions}
-            {count > 0 ? (
-              <span
-                className="ml-1.5 inline-flex"
-                data-testid="skill-suggestions-settings-badge"
-                aria-label={`${String(count)} open`}
-              >
-                <Count value={count} />
-              </span>
-            ) : null}
+            <span className="inline-flex items-center gap-3">
+              {SKILL_SUGGESTION_COPY.viewSuggestions}
+              {count > 0 ? (
+                <span
+                  className="inline-flex"
+                  data-testid="skill-suggestions-settings-badge"
+                  aria-label={`${String(count)} open`}
+                >
+                  <Count value={count} />
+                </span>
+              ) : null}
+            </span>
           </Button>
         }
       />

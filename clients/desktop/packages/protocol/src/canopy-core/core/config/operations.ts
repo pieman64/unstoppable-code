@@ -35,6 +35,22 @@ export const ConfigGetErrorSchema = inherentOperationErrorSchema([
   'core.config.notFound',
 ]);
 
+/** The read-only Git preferences namespace a desktop core serves (CAN-5992). */
+export const CONFIG_GIT_NAMESPACE = 'git';
+
+/** `value` of the `git` namespace: the effective branch, PR and commit settings. */
+export const ConfigGitValueSchema = z.strictObject({
+  branchName: z.strictObject({
+    instructions: z.string(),
+    prefixMode: z.enum(['none', 'github', 'custom']),
+    /** The resolved prefix with its trailing slash, or null when none applies. */
+    prefix: z.string().nullable(),
+  }),
+  pullRequest: z.strictObject({ instructions: z.string() }),
+  commitMessage: z.strictObject({ instructions: z.string() }),
+});
+export type ConfigGitValue = z.output<typeof ConfigGitValueSchema>;
+
 /** Config reads; outside `CORE_QUERY_DEFINITIONS` for the same reason as the catalog's. */
 export const CORE_CONFIG_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
   'core.config.get': defineCanopyQuery({

@@ -1,7 +1,11 @@
-import { isModelHarness } from '@canopy/desktop-shared/model-harnesses';
+import { isModelHarness } from '@canopy/execution-engine/model-harnesses';
 import { supportsChatHarnessChoice } from '@canopy/desktop-shared/lib/chat-model-selection';
 import { ChatPlanReviewApprovalSchema } from '@canopy/protocol/portal';
 import { isCopilotRuntimeAvailable } from '../../copilot/runtime-availability';
+import {
+  chatSettingsRoute,
+  type ChatSettingsChange,
+} from '../../lib/chat-settings-route';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -11,7 +15,6 @@ import {
   requireProviderForModel,
   isTerminalBackedInterfaceMode,
   isThinkingLevel,
-  modelConfigForProviderSupportsFastMode,
   resolveProviderModelConfig,
   resolveKnownModel,
   type AgentProviderType,
@@ -40,7 +43,7 @@ import {
   RETIRED_PLAN_CHAT_MESSAGE,
 } from '@canopy/desktop-shared/lib/retired-chat-scopes';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
-import { mergeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
+import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import {
   PortalChatAttachmentError,
   consumePortalChatAttachments,
@@ -1499,15 +1502,6 @@ async function dispatchCorrelatedChatCommand(
   context.fail(command, result.code, result.error, result.retryable);
 }
 
-/** The providers `core.chat.update`'s `chat.set_model` accepts. */
-const CORE_CHAT_MODEL_PROVIDERS = new Set<string>([
-  'claude',
-  'codex',
-  'ollama',
-  'cursor',
-  'opencode',
-]);
-
 type PortalSettingsCommand = Extract<
   PortalChatComposerSetterCommand,
   { kind: 'model' | 'thinking' | 'plan' | 'fast' }
@@ -1528,12 +1522,12 @@ async function portalSettingsUseCore(
     command.projectId === PIPELINE_EDITOR_PROJECT_ID
   )
     return false;
-  if (command.kind === 'model') {
-    const window = context.getWindow();
-    if (window && !window.isDestroyed()) return false;
-    const provider = getProviderForModel(command.model);
-    if (!provider || !CORE_CHAT_MODEL_PROVIDERS.has(provider)) return false;
-  }
+  const window = context.getWindow();
+  const windowOpen = window !== null && !window.isDestroyed();
+  const change = portalSettingsChange(command);
+  // A model change with a window open needs no snapshot read to refuse.
+  if (chatSettingsRoute(change, undefined, windowOpen).route !== 'core')
+    return false;
   let snapshot: ChatStateSnapshot;
   try {
     snapshot = await queryPortalChatState(context, {
@@ -1546,37 +1540,24 @@ async function portalSettingsUseCore(
   const tab = snapshot.tabsFile.tabs.find(
     (candidate) => candidate.id === command.chatId,
   );
-  if (!tab) return true;
-  // The renderer refuses these tabs, and settles a pending plan exit when plan
-  // mode turns off; neither happens behind core.chat.update.
-  if (tab.kind === 'file' || tab.readOnly === true) return false;
-  if (
-    command.kind === 'plan' &&
-    !command.planMode &&
-    (tab.pendingPlanExit !== undefined ||
-      tab.pendingPlanExitRequestId !== undefined ||
-      (Boolean(tab.trackedPlanId) && tab.trackedPlanReviewStatus === 'pending'))
-  )
-    return false;
-  const provider =
-    tab.providerType ??
-    (tab.model ? getProviderForModel(tab.model) : undefined);
-  // Only Codex tabs take a speed; the renderer ignores it for the others.
-  if (
-    command.kind === 'fast' &&
-    (!provider || !modelConfigForProviderSupportsFastMode(provider))
-  )
-    return false;
-  if (
-    isTerminalBackedInterfaceMode(tab.interfaceMode) &&
-    provider === 'claude'
-  ) {
-    // Without a window the core takes the change and main relaunches the
-    // terminal itself (CAN-5097); with one, visible panes relaunch at once.
-    const window = context.getWindow();
-    if (window && !window.isDestroyed()) return false;
+  // Without a window the core takes a terminal-backed change and main
+  // relaunches the terminal itself (CAN-5097).
+  return chatSettingsRoute(change, tab, windowOpen).route === 'core';
+}
+
+function portalSettingsChange(
+  command: PortalSettingsCommand,
+): ChatSettingsChange {
+  switch (command.kind) {
+    case 'model':
+      return { kind: 'model', model: command.model };
+    case 'plan':
+      return { kind: 'plan', planMode: command.planMode };
+    case 'thinking':
+      return { kind: 'thinking' };
+    case 'fast':
+      return { kind: 'fast' };
   }
-  return true;
 }
 
 function portalSettingsAction(command: PortalSettingsCommand): unknown {
@@ -2239,9 +2220,7 @@ async function createPortalChatTab(
       context.fail(
         command,
         'invalid_payload',
-        seed.noDispatchableModel === 'policy-allowance'
-          ? 'Your organization policy allows no model that can run a new chat.'
-          : 'No model is available for a new chat. Add a billing source, then try again.',
+        remoteCreateTabNoModelMessage(seed.noDispatchableModel),
       );
       return;
     }
@@ -2279,6 +2258,21 @@ async function acceptRemoteCreateTabModel(
   target: { projectId: string; worktreeId: string; chatId: string },
   requested: RemoteCreateTabModel,
 ): Promise<boolean> {
+  const refusal = await remoteCreateTabModelRefusal(target, requested);
+  if (refusal === null) return true;
+  context.fail(command, 'invalid_payload', refusal);
+  return false;
+}
+
+/**
+ * Why a remote client may not create a chat on `requested`: a runtime that is
+ * not connected, or a model the work owner's policy blocks. Null when it may.
+ * Shared by Portal's create and the hosted controller's (CAN-5985).
+ */
+export async function remoteCreateTabModelRefusal(
+  target: { projectId: string; worktreeId: string; chatId: string },
+  requested: RemoteCreateTabModel,
+): Promise<string | null> {
   const provider =
     requested.providerType ?? getProviderForModel(requested.model);
   const harness = getExecutionHarnessForModel(requested.model);
@@ -2286,34 +2280,19 @@ async function acceptRemoteCreateTabModel(
     (provider === 'cursor' || harness === 'cursor') &&
     !(await isCursorRuntimeAvailable())
   ) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'Connect Cursor in the desktop app to use it here.',
-    );
-    return false;
+    return 'Connect Cursor in the desktop app to use it here.';
   }
   if (
     (provider === 'copilot' || harness === 'copilot') &&
     !(await isCopilotRuntimeAvailable())
   ) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'Connect Copilot in the desktop app to use it here.',
-    );
-    return false;
+    return 'Connect Copilot in the desktop app to use it here.';
   }
   if (
     (provider === 'opencode' || harness === 'opencode') &&
     !(await isOpenCodeRuntimeAvailable())
   ) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'Connect OpenCode in the desktop app to use it here.',
-    );
-    return false;
+    return 'Connect OpenCode in the desktop app to use it here.';
   }
   const workOwner = await resolveAiCreditsScopeOwner({
     kind: 'work',
@@ -2322,14 +2301,21 @@ async function acceptRemoteCreateTabModel(
     chatId: target.chatId,
   });
   if (await isModelBlockedByStoredPolicy(requested.model, workOwner)) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'This model is blocked by your organization policy.',
-    );
-    return false;
+    return 'This model is blocked by your organization policy.';
   }
-  return true;
+  return null;
+}
+
+/**
+ * The refusal for a create seed that has no model to run, as Portal's create
+ * reports it: never a modelless tab.
+ */
+export function remoteCreateTabNoModelMessage(
+  missing: 'billing-lane' | 'policy-allowance' | 'both',
+): string {
+  return missing === 'policy-allowance'
+    ? 'Your organization policy allows no model that can run a new chat.'
+    : 'No model is available for a new chat. Add a billing source, then try again.';
 }
 
 /**
@@ -2544,8 +2530,14 @@ async function settlePortalChatQuestion(
     commandId: command.id,
     origin: 'portal',
     port,
-    ...(response.kind === 'answer' && context.origin
-      ? { executionOptions: { agentSent: context.origin } }
+    // A Portal session of the signed-in user answers as a person; an
+    // external agent connected through it answers as an agent.
+    ...(response.kind === 'answer'
+      ? {
+          executionOptions: context.origin
+            ? { agentSent: context.origin }
+            : { answeredByPerson: true },
+        }
       : {}),
     ...(dispatchChatCommand
       ? {

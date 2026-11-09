@@ -33,6 +33,8 @@ export function getDisplayBlockKey(
       return `claude-terminal-sync-warning:${block.timestamp}:${index}`;
     case 'account_proxy_switch':
       return `account-proxy-switch:${block.sourceEventId ?? `${block.timestamp}:${index}`}`;
+    case 'claude_mods_skipped':
+      return `claude-mods-skipped:${block.sourceEventId ?? `${block.timestamp}:${index}`}`;
     case 'pending_setup_info':
       return `pending-setup:${block.timestamp}:${index}`;
     case 'rebase_resolution_info':

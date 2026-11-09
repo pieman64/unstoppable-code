@@ -25,7 +25,7 @@ import {
   normalizeUserEnvironmentEntries,
   validateEnvironmentConfigUpdate,
 } from '@canopy/desktop-shared/lib/user-environment';
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import {
   getSecretStoragePolicy,
   getEnvironmentValueWritePolicy,

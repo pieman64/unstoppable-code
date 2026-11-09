@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { StartMcpOAuthLoginRequest } from '@canopy/desktop-shared/types/mcp-servers';
+import type { StartMcpOAuthLoginRequest } from '@canopy/execution-engine/types/mcp-servers';
 
 /** An explicit marketplace connection. Passive status reads never start auth. */
 export function useMarketplaceOAuth(): {

@@ -15,14 +15,14 @@ import {
   AccountMcpConnectionError,
   type AccountMcpConnectionErrorCode,
   type AccountMcpConnectionErrorDetails,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import type {
   AccountMcpConnectionSummary,
   AccountMcpSecretSource,
   McpServerIndexEntry,
   StartAccountMcpConnectionRequest,
-} from '@canopy/desktop-shared/types/mcp-servers';
-import type { SecretValueInput } from '@canopy/desktop-shared/types/stored-secrets';
+} from '@canopy/execution-engine/types/mcp-servers';
+import type { SecretValueInput } from '@canopy/execution-engine/types/stored-secrets';
 
 interface PendingConnection {
   /** Settles after cancellation rollback and owned-key release. */

@@ -30,7 +30,7 @@ export function SidebarMoreRow({
       type="button"
       className={`focus-ring group/sidebar-item relative flex ${
         touchTarget ? 'min-h-11' : 'h-8'
-      } w-full cursor-default items-center gap-1.5 rounded-row px-1.5 py-0 text-left text-s font-normal fg-secondary hover:bg-subtle`}
+      } w-full items-center gap-1.5 rounded-row px-1.5 py-0 text-left text-s font-normal fg-secondary hover:bg-subtle`}
       aria-expanded={expanded}
       aria-label={ariaLabel}
       data-testid={testId}

@@ -2,7 +2,10 @@ import type {
   ConnectedExecutionHostChannel,
   ExecutionHostChannel,
 } from '@canopy/desktop-shared/node/execution-host/channel';
-import { killProcessGroupByPid } from '@canopy/desktop-shared/node/lib/process-kill';
+import {
+  killProcessGroupByPid,
+  signalExitedProcessGroup,
+} from '@canopy/execution-engine/node/lib/process-kill';
 import {
   spawnProviderProcessDirect,
   type ProviderProcess,
@@ -41,6 +44,8 @@ export interface ProviderProcessHostHandle {
 interface HostedChild {
   readonly child: ProviderProcess;
   readonly owner: ProviderProcessOwner;
+  /** Set once the child exited: its pid may be reused, its group may not. */
+  exited: boolean;
   credit: number;
   /** Set once the child is being stopped: stdout drains without credit. */
   draining: boolean;
@@ -91,10 +96,12 @@ export function startProviderProcessHost(
       cwd: request.cwd,
       env: request.env,
       owner: request.owner,
+      ...(request.stdin ? { stdin: request.stdin } : {}),
     });
     const hosted: HostedChild = {
       child,
       owner: request.owner,
+      exited: false,
       credit: PROVIDER_PROCESS_STDOUT_WINDOW_BYTES,
       draining: false,
       stdoutTruncated: false,
@@ -103,7 +110,7 @@ export function startProviderProcessHost(
     };
     tracked.set(requestId, hosted);
     // An exited child's stdin is closed; its close reports the end.
-    child.stdin.on('error', () => undefined);
+    child.stdin?.on('error', () => undefined);
     child.stdout.on('data', (chunk: Buffer) => {
       // A stopping child keeps being read so its pipe can end, but nothing
       // past the credit window is relayed, and relayed stdout stays a prefix.
@@ -147,6 +154,10 @@ export function startProviderProcessHost(
         ...(error.code === undefined ? {} : { code: error.code }),
       });
     });
+    child.once('exit', (code, signal) => {
+      hosted.exited = true;
+      post({ type: 'exit', requestId, code, signal });
+    });
     child.once('close', (code, signal) => {
       tracked.delete(requestId);
       post({ type: 'close', requestId, code, signal });
@@ -170,8 +181,9 @@ export function startProviderProcessHost(
       // for it, so every tracked group is killed now.
       for (const hosted of tracked.values()) {
         const pid = hosted.child.pid;
-        if (pid !== undefined)
-          void killProcessGroupByPid(pid, 'SIGKILL').catch(() => undefined);
+        if (pid === undefined) continue;
+        if (hosted.exited) signalExitedProcessGroup(pid, 'SIGKILL');
+        else void killProcessGroupByPid(pid, 'SIGKILL').catch(() => undefined);
       }
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -207,13 +219,13 @@ export function startProviderProcessHost(
     switch (request.type) {
       case 'stdin':
         try {
-          child.stdin.write(Buffer.from(request.dataBase64, 'base64'));
+          child.stdin?.write(Buffer.from(request.dataBase64, 'base64'));
         } catch {
           // As above: the close reports the end.
         }
         return;
       case 'stdin-end':
-        child.stdin.end();
+        child.stdin?.end();
         return;
       case 'stdout-ack':
         hosted.credit = Math.min(

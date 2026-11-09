@@ -99,10 +99,12 @@ export async function runGit(
   args: string[],
   cwd?: string,
   signal?: AbortSignal,
+  timeoutMs?: number,
 ): Promise<string> {
   const pending = execFileAsync(getGitExecutableCommand(process.env), args, {
     cwd,
     signal,
+    timeout: timeoutMs,
     maxBuffer: 1024 * 1024 * 8,
     // Ignored off Windows; a platform read here would be a new
     // platform-boundary site.
@@ -620,6 +622,11 @@ function normalizeWorktreeHealthIssue(
       .map((entry) => normalizeWorktreeHealthRepoIssue(entry))
       .filter((entry): entry is WorktreeHealthRepoIssue => entry !== null);
     issue.repoIssues = repoIssues;
+  }
+  if (value.failureReason === 'source-no-commits') {
+    issue.failureReason = value.failureReason;
+    if (typeof value.sourceRepoId === 'string')
+      issue.sourceRepoId = value.sourceRepoId;
   }
   return issue;
 }

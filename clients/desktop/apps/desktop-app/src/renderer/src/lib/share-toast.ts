@@ -1,5 +1,6 @@
 import type { ShareToast } from '@canopy/ui-app/sharing';
-import { useGitHubStore, type ToastMeta } from '@/stores/githubStore';
+import { useGitHubStore } from '@/stores/githubStore';
+import type { ToastMeta } from '@/stores/toastStore';
 
 /**
  * Posts a share toast. A share dialog closes on success, so this toast is the

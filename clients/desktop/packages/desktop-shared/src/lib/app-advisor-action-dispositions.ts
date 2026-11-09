@@ -18,6 +18,7 @@ export const APP_ADVISOR_ACTION_GRANTS = Object.freeze([
   'core.integration.write',
   'core.ledger.write',
   'core.memory.write',
+  'core.operation.cancel',
   'core.pipeline.write',
   'core.remoteAccess.write',
   'core.script.write',
@@ -38,6 +39,10 @@ export type AppAdvisorCoreExecutor =
   | 'code-graph'
   | 'browser'
   | 'delegation-read'
+  | 'delegation-control'
+  | 'pipeline-execution'
+  | 'catalog'
+  | 'file-tree'
   | 'project-bot'
   | 'message-control'
   | 'send'
@@ -45,6 +50,7 @@ export type AppAdvisorCoreExecutor =
   | 'chat-creation'
   | 'advisor-chat'
   | 'worktree-scripts'
+  | 'worktree-actions'
   | 'repository-owner'
   | 'automation'
   | 'resource';
@@ -69,6 +75,12 @@ export type AppAdvisorActionDisposition =
       readonly composite?: true;
       /** worktree-chat.open_tab: with a chatId the action is pure presentation (D12). */
       readonly presentationWhenChatId?: true;
+      /**
+       * CAN-5999 D3: when the core route's guard fails, main presents the
+       * action through the main window's lease, which applies it in the
+       * window; with no lease the action is refused with the guard's reason.
+       */
+      readonly presentationWhenGuarded?: true;
     }
   | { readonly kind: 'presentation' }
   | {
@@ -113,27 +125,39 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'agents.create': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'catalog',
     grants: Object.freeze(['core.catalog.write'] as const),
+    revision: 'none',
   }),
   'agents.delete': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'catalog',
     grants: Object.freeze(['core.catalog.write'] as const),
+    revision: 'none',
   }),
   'agents.delete_shared': Object.freeze({
     kind: 'legacy',
     access: 'write',
     grants: Object.freeze(['core.sharing.write'] as const),
   }),
-  'agents.get': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'agents.get': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'catalog',
+  }),
   'agents.import_shared': Object.freeze({
     kind: 'legacy',
     access: 'write',
     grants: Object.freeze(['core.sharing.write'] as const),
   }),
-  'agents.list': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'agents.list': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'catalog',
+  }),
   'agents.list_shared': Object.freeze({ kind: 'legacy', access: 'read' }),
   'agents.open_manager': Object.freeze({ kind: 'presentation' }),
   'agents.publish_public_share': Object.freeze({
@@ -147,9 +171,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.sharing.write'] as const),
   }),
   'agents.update': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'catalog',
     grants: Object.freeze(['core.catalog.write'] as const),
+    revision: 'none',
   }),
   'app_advisor.close': Object.freeze({ kind: 'presentation' }),
   'app_advisor.open': Object.freeze({ kind: 'presentation' }),
@@ -670,14 +696,18 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   }),
   'code_review.open': Object.freeze({ kind: 'presentation' }),
   'collections.create': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'catalog',
     grants: Object.freeze(['core.catalog.write'] as const),
+    revision: 'none',
   }),
   'collections.delete': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'catalog',
     grants: Object.freeze(['core.catalog.write'] as const),
+    revision: 'none',
   }),
   'collections.delete_shared': Object.freeze({
     kind: 'legacy',
@@ -689,7 +719,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'write',
     grants: Object.freeze(['core.sharing.write'] as const),
   }),
-  'collections.list': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'collections.list': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'catalog',
+  }),
   'collections.list_shared': Object.freeze({ kind: 'legacy', access: 'read' }),
   'collections.open_manager': Object.freeze({ kind: 'presentation' }),
   'collections.share': Object.freeze({
@@ -698,9 +732,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.sharing.write'] as const),
   }),
   'collections.update': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'catalog',
     grants: Object.freeze(['core.catalog.write'] as const),
+    revision: 'none',
   }),
   'collections.update_shared': Object.freeze({
     kind: 'legacy',
@@ -717,21 +753,29 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'write',
     grants: Object.freeze(['core.integration.write'] as const),
   }),
-  'delegation.read_changes': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'delegation.read_changes': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'delegation-read',
+  }),
   'delegation.roots': Object.freeze({
     kind: 'core',
     access: 'read',
     executor: 'delegation-read',
   }),
   'delegation.stop': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
-    grants: Object.freeze(['core.chat.write'] as const),
+    executor: 'delegation-control',
+    grants: Object.freeze(['core.operation.cancel'] as const),
+    revision: 'none',
   }),
   'delegation.stop_all': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
-    grants: Object.freeze(['core.chat.write'] as const),
+    executor: 'delegation-control',
+    grants: Object.freeze(['core.operation.cancel'] as const),
+    revision: 'none',
   }),
   'delegation.transcript': Object.freeze({
     kind: 'core',
@@ -761,39 +805,45 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'file-tree.copy': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'file-tree',
     grants: Object.freeze(['worker.filesystem.write'] as const),
+    revision: 'none',
   }),
   'file-tree.create_directory': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'file-tree',
     grants: Object.freeze(['worker.filesystem.write'] as const),
+    revision: 'none',
   }),
   'file-tree.create_file': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'file-tree',
     grants: Object.freeze(['worker.filesystem.write'] as const),
+    revision: 'none',
   }),
   'file-tree.delete': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'file-tree',
     grants: Object.freeze(['worker.filesystem.write'] as const),
+    revision: 'none',
   }),
   'file-tree.move': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'file-tree',
     grants: Object.freeze(['worker.filesystem.write'] as const),
+    revision: 'none',
   }),
   'file-tree.set_search': Object.freeze({ kind: 'presentation' }),
   'file.open': Object.freeze({ kind: 'presentation' }),
   'file.preview_search_close': Object.freeze({ kind: 'presentation' }),
   'file.preview_search_open': Object.freeze({ kind: 'presentation' }),
-  'file.save_active': Object.freeze({
-    kind: 'legacy',
-    access: 'write',
-    grants: Object.freeze(['worker.filesystem.write'] as const),
-  }),
+  'file.save_active': Object.freeze({ kind: 'presentation' }),
   'file.send_selection_to_chat': Object.freeze({ kind: 'presentation' }),
   'github.resolve_base_branch_alignment': Object.freeze({
     kind: 'legacy',
@@ -807,14 +857,18 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   }),
   'home.set_execution_harness': Object.freeze({ kind: 'presentation' }),
   'hook.pause': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.worktree.write'] as const),
+    revision: 'none',
   }),
   'hook.resume': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.worktree.write'] as const),
+    revision: 'none',
   }),
   'installed_items.list_status': Object.freeze({
     kind: 'core',
@@ -925,7 +979,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'write',
     grants: Object.freeze(['core.workspace.write'] as const),
   }),
-  'org_project.list': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'org_project.list': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
+  }),
   'org_project.open_move_to_organization': Object.freeze({
     kind: 'presentation',
   }),
@@ -955,24 +1013,29 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.chat.write'] as const),
   }),
   'pipeline-assistant-chat.get_last_agent_response': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'transcript-read',
   }),
   'pipeline-assistant-chat.get_last_user_message': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'transcript-read',
   }),
   'pipeline-assistant-chat.list_plugins': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
   'pipeline-assistant-chat.list_tabs': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
   'pipeline-assistant-chat.read_history': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'transcript-read',
   }),
   'pipeline-assistant-chat.send_message': Object.freeze({
     kind: 'legacy',
@@ -980,25 +1043,35 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.chat.write'] as const),
   }),
   'pipeline-assistant-chat.set_model': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
+    presentationWhenGuarded: true,
   }),
   'pipeline-assistant-chat.set_plugin_selections': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
   }),
   'pipeline-assistant-chat.set_thinking_level': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
+    presentationWhenGuarded: true,
   }),
   'pipeline-assistant-chat.switch_tab': Object.freeze({ kind: 'presentation' }),
   'pipeline-assistant-chat.update_plugin_selection': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
   }),
   'pipeline.create': Object.freeze({
     kind: 'core',
@@ -1008,9 +1081,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'pipeline.debug_run': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
-    grants: Object.freeze(['core.pipeline.write'] as const),
+    executor: 'pipeline-execution',
+    grants: Object.freeze(['core.chat.write', 'core.worktree.write'] as const),
+    revision: 'none',
   }),
   'pipeline.delete': Object.freeze({
     kind: 'core',
@@ -1051,12 +1126,14 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'read',
   }),
   'pipeline.execution_read_plan': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'pipeline-execution',
   }),
   'pipeline.execution_read_report': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'pipeline-execution',
   }),
   'pipeline.execution_resume': Object.freeze({
     kind: 'legacy',
@@ -1074,19 +1151,25 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.pipeline.write'] as const),
   }),
   'pipeline.execution_send_plan_to_chat': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
-    grants: Object.freeze(['core.pipeline.write'] as const),
+    executor: 'pipeline-execution',
+    grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
   }),
   'pipeline.execution_send_report_to_chat': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
-    grants: Object.freeze(['core.pipeline.write'] as const),
+    executor: 'pipeline-execution',
+    grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
   }),
   'pipeline.execution_start_over': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'pipeline-execution',
     grants: Object.freeze(['core.pipeline.write'] as const),
+    revision: 'none',
   }),
   'pipeline.get': Object.freeze({ kind: 'legacy', access: 'read' }),
   'pipeline.list': Object.freeze({ kind: 'legacy', access: 'read' }),
@@ -1100,11 +1183,7 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.pipeline.write'] as const),
     revision: 'none',
   }),
-  'pipeline.save': Object.freeze({
-    kind: 'legacy',
-    access: 'write',
-    grants: Object.freeze(['core.pipeline.write'] as const),
-  }),
+  'pipeline.save': Object.freeze({ kind: 'presentation' }),
   'pipeline.set_enabled': Object.freeze({
     kind: 'core',
     access: 'write',
@@ -1139,31 +1218,39 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.sharing.write'] as const),
   }),
   'plugins.list_marketplaces': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'catalog',
   }),
   'plugins.open_entry_detail': Object.freeze({ kind: 'presentation' }),
   'plugins.open_management': Object.freeze({ kind: 'presentation' }),
   'plugins.open_marketplaces': Object.freeze({ kind: 'presentation' }),
   'plugins.open_mcp_browse': Object.freeze({ kind: 'presentation' }),
   'plugins.refresh_marketplace': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'catalog',
     grants: Object.freeze(['core.catalog.write'] as const),
+    revision: 'none',
   }),
   'plugins.remove_marketplace': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'catalog',
     grants: Object.freeze(['core.catalog.write'] as const),
+    revision: 'none',
   }),
   'preferences.get_global_plugin_selections': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'catalog',
   }),
   'preferences.set_global_plugin_selections': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'catalog',
     grants: Object.freeze(['core.catalog.write'] as const),
+    revision: 'none',
   }),
   'projects.create_task': Object.freeze({
     kind: 'core',
@@ -1389,41 +1476,62 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   }),
   'sharing.open_dialog': Object.freeze({ kind: 'presentation' }),
   'sidebar.item_groups.create': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.workspace.write'] as const),
+    revision: 'none',
   }),
-  'sidebar.item_groups.list': Object.freeze({ kind: 'legacy', access: 'read' }),
-  'sidebar.item_groups.list_items': Object.freeze({
-    kind: 'legacy',
+  'sidebar.item_groups.list': Object.freeze({
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
+  }),
+  'sidebar.item_groups.list_items': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
   }),
   'sidebar.item_groups.move_group': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.workspace.write'] as const),
+    revision: 'none',
   }),
   'sidebar.item_groups.move_item': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.workspace.write'] as const),
+    revision: 'none',
   }),
   'sidebar.item_groups.set_item': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.workspace.write'] as const),
+    revision: 'none',
   }),
   'sidebar.item_groups.ungroup': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.workspace.write'] as const),
+    revision: 'none',
   }),
   'sidebar.item_groups.update': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.workspace.write'] as const),
+    revision: 'none',
   }),
-  'skill_suggestions.list': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'skill_suggestions.list': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'catalog',
+  }),
   'skill_suggestions.open': Object.freeze({ kind: 'presentation' }),
   'skills.create_custom': Object.freeze({
     kind: 'core',
@@ -1458,7 +1566,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'read',
     executor: 'resource',
   }),
-  'skills.list_marketplace': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'skills.list_marketplace': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'catalog',
+  }),
   'skills.list_shared': Object.freeze({
     kind: 'core',
     access: 'read',
@@ -1517,53 +1629,69 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.chat.write'] as const),
   }),
   'standalone-chat.get_attachment': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
   'standalone-chat.get_last_agent_response': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'transcript-read',
   }),
   'standalone-chat.get_last_user_message': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'transcript-read',
   }),
-  'standalone-chat.get_note': Object.freeze({ kind: 'legacy', access: 'read' }),
-  'standalone-chat.get_prompt': Object.freeze({
-    kind: 'legacy',
+  'standalone-chat.get_note': Object.freeze({
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
+  }),
+  'standalone-chat.get_prompt': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
   }),
   'standalone-chat.get_settings': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
   'standalone-chat.list_attachments': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
   'standalone-chat.list_chats': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
   'standalone-chat.list_notes': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
   'standalone-chat.list_plugins': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
   'standalone-chat.list_projects': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
   'standalone-chat.list_prompts': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
   'standalone-chat.read_history': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'transcript-read',
   }),
   'standalone-chat.rename_work_entry': Object.freeze({
     kind: 'legacy',
@@ -1578,26 +1706,36 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'standalone-chat.set_model': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
+    presentationWhenGuarded: true,
   }),
   'standalone-chat.set_plugin_selections': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
   }),
   'standalone-chat.set_thinking_level': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
+    presentationWhenGuarded: true,
   }),
   'standalone-chat.switch_chat': Object.freeze({ kind: 'presentation' }),
   'standalone-chat.switch_project': Object.freeze({ kind: 'presentation' }),
   'standalone-chat.update_plugin_selection': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
   }),
   'standalone-chat.update_settings': Object.freeze({
     kind: 'legacy',
@@ -1606,20 +1744,32 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   }),
   'terminal.close': Object.freeze({ kind: 'presentation' }),
   'terminal.open': Object.freeze({ kind: 'presentation' }),
-  'tracked-plan.get': Object.freeze({ kind: 'legacy', access: 'read' }),
-  'tracked-plan.get_comment_thread': Object.freeze({
-    kind: 'legacy',
+  'tracked-plan.get': Object.freeze({
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
+  }),
+  'tracked-plan.get_comment_thread': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
   }),
   'tracked-plan.import': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.workspace.write'] as const),
+    revision: 'none',
   }),
-  'tracked-plan.list': Object.freeze({ kind: 'legacy', access: 'read' }),
-  'tracked-plan.list_comment_threads': Object.freeze({
-    kind: 'legacy',
+  'tracked-plan.list': Object.freeze({
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
+  }),
+  'tracked-plan.list_comment_threads': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
   }),
   'tracked-plan.open_explore': Object.freeze({ kind: 'presentation' }),
   'usage.control_resume_queue': Object.freeze({
@@ -1661,18 +1811,36 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'read',
     executor: 'repository-owner',
   }),
-  'workspace.get_settings': Object.freeze({ kind: 'legacy', access: 'read' }),
-  'workspace.get_start_page': Object.freeze({ kind: 'legacy', access: 'read' }),
-  'workspace.list': Object.freeze({ kind: 'legacy', access: 'read' }),
-  'workspace.list_existing_worktree_join_options': Object.freeze({
-    kind: 'legacy',
+  'workspace.get_settings': Object.freeze({
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
+  }),
+  'workspace.get_start_page': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
+  }),
+  'workspace.list': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
+  }),
+  'workspace.list_existing_worktree_join_options': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
   }),
   'workspace.list_join_options': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
-  'workspace.list_worktrees': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'workspace.list_worktrees': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
+  }),
   'workspace.open_add_dialog': Object.freeze({ kind: 'presentation' }),
   'workspace.open_clone_progress': Object.freeze({ kind: 'presentation' }),
   'workspace.promote_temporary': Object.freeze({
@@ -1680,7 +1848,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'write',
     grants: Object.freeze(['core.workspace.write'] as const),
   }),
-  'workspace.read_readiness': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'workspace.read_readiness': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
+  }),
   'workspace.remove_repo': Object.freeze({
     kind: 'legacy',
     access: 'write',
@@ -1704,22 +1876,29 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   'workspace_context.switch': Object.freeze({ kind: 'presentation' }),
   'worktree-chat.dismiss_state_notice': Object.freeze({ kind: 'presentation' }),
   'worktree-chat.get_last_agent_response': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'transcript-read',
   }),
   'worktree-chat.get_last_user_message': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'transcript-read',
   }),
   'worktree-chat.list_background_processes': Object.freeze({
     kind: 'legacy',
     access: 'read',
   }),
   'worktree-chat.list_plugins': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'worktree-actions',
   }),
-  'worktree-chat.list_tabs': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'worktree-chat.list_tabs': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
+  }),
   'worktree-chat.open_archives': Object.freeze({ kind: 'presentation' }),
   'worktree-chat.open_tab': Object.freeze({
     kind: 'core',
@@ -1731,8 +1910,9 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     presentationWhenChatId: true,
   }),
   'worktree-chat.read_history': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'transcript-read',
   }),
   'worktree-chat.retry_state_refresh': Object.freeze({ kind: 'presentation' }),
   'worktree-chat.run_chat_action': Object.freeze({
@@ -1755,9 +1935,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'worktree-chat.set_fast_mode': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
   }),
   'worktree-chat.set_interface_mode': Object.freeze({
     kind: 'legacy',
@@ -1765,29 +1947,42 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.chat.write'] as const),
   }),
   'worktree-chat.set_model': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
+    presentationWhenGuarded: true,
   }),
   'worktree-chat.set_plan_mode': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
+    presentationWhenGuarded: true,
   }),
   'worktree-chat.set_plugin_selections': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
   }),
   'worktree-chat.set_speed': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
   }),
   'worktree-chat.set_thinking_level': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
+    presentationWhenGuarded: true,
   }),
   'worktree-chat.steer_queued_message': Object.freeze({
     kind: 'core',
@@ -1803,9 +1998,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   }),
   'worktree-chat.switch_tab': Object.freeze({ kind: 'presentation' }),
   'worktree-chat.update_plugin_selection': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.chat.write'] as const),
+    revision: 'none',
   }),
   'worktree.add_existing_worktree': Object.freeze({
     kind: 'legacy',
@@ -1817,20 +2014,18 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'write',
     grants: Object.freeze(['core.worktree.write'] as const),
   }),
-  'worktree.archive': Object.freeze({
-    kind: 'legacy',
-    access: 'write',
-    grants: Object.freeze(['core.worktree.write'] as const),
-  }),
+  'worktree.archive': Object.freeze({ kind: 'presentation' }),
   'worktree.cancel_git_action': Object.freeze({
     kind: 'legacy',
     access: 'write',
     grants: Object.freeze(['worker.git.write'] as const),
   }),
   'worktree.create': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.worktree.write'] as const),
+    revision: 'none',
   }),
   'worktree.create_from': Object.freeze({
     kind: 'legacy',
@@ -1842,7 +2037,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'write',
     grants: Object.freeze(['core.worktree.write'] as const),
   }),
-  'worktree.get_settings': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'worktree.get_settings': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'worktree-actions',
+  }),
   'worktree.list_git_actions': Object.freeze({
     kind: 'legacy',
     access: 'read',
@@ -1853,9 +2052,7 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     executor: 'worktree-scripts',
   }),
   'worktree.resolve_branch_from_confirmation': Object.freeze({
-    kind: 'legacy',
-    access: 'write',
-    grants: Object.freeze(['core.worktree.write'] as const),
+    kind: 'presentation',
   }),
   'worktree.run_git_action': Object.freeze({
     kind: 'legacy',
@@ -1871,9 +2068,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   }),
   'worktree.select': Object.freeze({ kind: 'presentation' }),
   'worktree.set_base_branch': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.worktree.write'] as const),
+    revision: 'none',
   }),
   'worktree.set_notification_level': Object.freeze({
     kind: 'legacy',
@@ -1886,24 +2085,32 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.worktree.write'] as const),
   }),
   'worktree.start_ci_check_fix': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.worktree.write'] as const),
+    revision: 'none',
   }),
   'worktree.start_merge_conflict_resolution': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.worktree.write'] as const),
+    revision: 'none',
   }),
   'worktree.start_pr_comment_triage': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.worktree.write'] as const),
+    revision: 'none',
   }),
   'worktree.update_settings': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'worktree-actions',
     grants: Object.freeze(['core.worktree.write'] as const),
+    revision: 'none',
   }),
 });
 
@@ -1919,6 +2126,19 @@ export function appAdvisorActionDisposition(
 }
 
 /** The 81 presentation types (D8); the renderer refuses any other type arriving on ui.app_advisor.present. */
+/** Core writes the main window's lease may apply when their guard fails (CAN-5999 D3). */
+export const APP_ADVISOR_GUARDED_PRESENTATION_ACTION_TYPES: ReadonlySet<string> =
+  new Set(
+    Object.entries(APP_ADVISOR_ACTION_DISPOSITIONS)
+      .filter(
+        ([, disposition]) =>
+          disposition.kind === 'core' &&
+          disposition.access === 'write' &&
+          disposition.presentationWhenGuarded === true,
+      )
+      .map(([type]) => type),
+  );
+
 export const APP_ADVISOR_PRESENTATION_ACTION_TYPES: ReadonlySet<string> =
   new Set(
     Object.entries(APP_ADVISOR_ACTION_DISPOSITIONS)

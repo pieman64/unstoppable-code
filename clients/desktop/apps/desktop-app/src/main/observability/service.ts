@@ -27,13 +27,13 @@ import {
 import { dirname, join } from 'node:path';
 import { BRAND } from '@canopy/brand/current';
 import type { CodeGraphBuildTimings } from '@canopy/desktop-shared/types/code-graph';
-import type { BrowserDownloadSource } from '@canopy/desktop-shared/types/browser';
+import type { BrowserDownloadSource } from '@canopy/execution-engine/types/browser';
 import type { CodeGraphReadFailure } from '@canopy/desktop-shared/types/code-graph-tools';
 import { sanitizeAppDiagnosticRecord } from './app-diagnostic-privacy';
 import type {
   RendererDiagnosticsSummary,
   RemotePushSummary,
-} from '@canopy/desktop-shared/types/observability';
+} from '@canopy/execution-engine/types/observability';
 import {
   TURN_DISPATCH_PHASES,
   type TurnDispatchPhase,
@@ -43,13 +43,17 @@ import {
   ChatTurnFailureEvidence,
   type ChatTurnFailure,
 } from './chat-turn-failure';
-import { CANOPY_ACCOUNT_PROXY_SWITCH_EVENT_TYPE } from '@canopy/agent-transcript/types';
+import {
+  CANOPY_ACCOUNT_PROXY_SWITCH_EVENT_TYPE,
+  CANOPY_CLAUDE_MODS_SKIPPED_EVENT_TYPE,
+} from '@canopy/agent-transcript/types';
 import {
   labelForPlanKey,
   MAX_TELEMETRY_TURN_DURATION_MS,
   normalizePlanKey,
   subscriptionLabelForPlanType,
 } from '@canopy/protocol/telemetry';
+import type { AgentAuditInterfaceToolCall } from '@canopy/protocol/observability';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
@@ -122,7 +126,7 @@ import {
   normalizeRetainedAccountSnapshot,
   pruneRetainedAccountSnapshots,
 } from '@canopy/desktop-shared/lib/account-usage-snapshots';
-import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   classifyUsageFetchErrorMessage,
   classifyUsageFetchHttpStatus,
@@ -290,6 +294,10 @@ import type {
 } from './types';
 
 const RECENT_ENTRY_LIMIT = 200;
+/** CAN-5828: interface tool call provenance kept per audit entry. */
+const INTERFACE_TOOL_CALLS_PER_ENTRY = 64;
+/** Delivered calls awaiting settlement whose entry is remembered. */
+const INTERFACE_TOOL_CALL_BINDINGS = 1_024;
 const CANONICAL_DURATION_EVENT_TYPES: ReadonlySet<AgentAuditEventType> =
   new Set(['worktree_chat', 'standalone_chat', 'worktree_plan_chat']);
 
@@ -1603,6 +1611,11 @@ export interface SessionDiagnosticRecord {
      * chat and invariant; ids and counts only.
      */
     | 'turn_state_invariant_violation'
+    /**
+     * Host reconciliation is waiting on a chat whose received turn state
+     * keeps failing to commit. Once per stall; ids only.
+     */
+    | 'turn_state_commit_stalled'
     | 'chat_queue_gate_stale'
     | 'chat_queue_drain_declined'
     | 'chat_wait_phase'
@@ -3314,6 +3327,8 @@ export class ObservabilityService {
     (event: AgentObservabilityUpdateEvent) => void
   >();
   private readonly openEntries = new Map<string, OpenAuditEntry>();
+  /** CAN-5828: the audit entry each delivered interface tool call belongs to. */
+  private readonly interfaceToolCallEntryIds = new Map<string, string>();
   /** Canonical turn state, not raw items, decides undispatched turns' entries. */
   private turnStateAudit = false;
   /** Each chat's autonomous turns awaiting their first root output. */
@@ -5539,6 +5554,13 @@ export class ObservabilityService {
       return;
     }
 
+    // Keep actual Claude launch skips in sidecar replays without recording
+    // plugin paths or admission digests.
+    if (data.type === CANOPY_CLAUDE_MODS_SKIPPED_EVENT_TYPE) {
+      this.appendTranscriptRecord(key, data);
+      return;
+    }
+
     if (provider === 'claude' && data.type === 'rate_limit_event') {
       this.observeClaudeRateLimitEvent(key, data);
       return;
@@ -6714,6 +6736,42 @@ export class ObservabilityService {
       durationMs: turn.durationMs,
       pausedMs: turn.pausedMs,
     });
+  }
+
+  noteInterfaceToolCallDelivered(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    callId: string,
+  ): void {
+    const openEntry = this.openEntries.get(
+      `chat:${projectId}/${worktreeId}/${chatId}`,
+    );
+    if (!openEntry) return;
+    const bound = this.interfaceToolCallEntryIds;
+    if (bound.size >= INTERFACE_TOOL_CALL_BINDINGS) {
+      const oldest = bound.keys().next();
+      if (!oldest.done) bound.delete(oldest.value);
+    }
+    bound.set(callId, openEntry.entry.id);
+  }
+
+  recordInterfaceToolCall(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    call: AgentAuditInterfaceToolCall,
+  ): void {
+    const entryId = this.interfaceToolCallEntryIds.get(call.callId);
+    this.interfaceToolCallEntryIds.delete(call.callId);
+    const openEntry = this.openEntries.get(
+      `chat:${projectId}/${worktreeId}/${chatId}`,
+    );
+    // Only the entry that was open when the call was delivered records it;
+    // a later turn of the chat never does, even one started in the same ms.
+    if (!openEntry || openEntry.entry.id !== entryId) return;
+    const calls = (openEntry.entry.interfaceToolCalls ??= []);
+    if (calls.length < INTERFACE_TOOL_CALLS_PER_ENTRY) calls.push({ ...call });
   }
 
   seedTranscript(key: string, options: TranscriptSeedOptions): void {

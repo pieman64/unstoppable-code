@@ -42,7 +42,7 @@ import { ThinkingSpinner } from '../ThinkingSpinner';
 export const DELEGATED_AGENT_WAITING_ON_PARENT_LABEL = 'Waiting for the parent';
 
 const DELEGATION_METADATA_CLASSNAME =
-  'space-y-2 px-2.5 py-2 text-3xs inset-ring-[length:var(--border-hairline)] inset-ring-line-base';
+  'flex flex-col gap-2 px-2.5 py-2 text-3xs inset-ring-[length:var(--border-hairline)] inset-ring-line-base';
 
 export interface DelegatedAgentCardProps {
   snapshot: AgentDelegationSnapshot;
@@ -106,13 +106,14 @@ function DelegatedAgentChanges({
     );
   if (state.kind !== 'loaded')
     return (
-      <div className="space-y-1">
+      <div className="flex flex-col gap-1">
         {state.kind === 'failed' && (
           <p>
             <StatusLabel>{DELEGATED_AGENT_CHANGES_FAILED_LABEL}</StatusLabel>
           </p>
         )}
         <Button
+          className="self-start"
           variant="link"
           data-testid="delegated-agent-show-changes"
           onClick={read}
@@ -127,7 +128,7 @@ function DelegatedAgentChanges({
   return (
     <div
       data-testid="delegated-agent-changes"
-      className="space-y-1 fg-secondary"
+      className="flex flex-col gap-1 fg-secondary"
     >
       {files.length ? null : <p>{DELEGATED_AGENT_NO_CHANGES_LABEL}</p>}
       {files.map((file) => (
@@ -149,7 +150,7 @@ function DelegatedAgentChanges({
       {omittedFiles ? (
         <p>{delegatedAgentChangesShownLabel(files.length)}</p>
       ) : null}
-      <Button variant="link" onClick={read}>
+      <Button className="self-start" variant="link" onClick={read}>
         {DELEGATED_AGENT_REFRESH_CHANGES_LABEL}
       </Button>
     </div>

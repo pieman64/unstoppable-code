@@ -6,7 +6,7 @@ import type {
   PipelinePreferenceLocator,
   PipelinePauseResponse,
   PipelineScalar,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   AgentModelConfig,
   AppAdvisorWatcherDestination,
@@ -22,8 +22,8 @@ import type {
   PipelineQueueEvent,
   QueuedPipelineExecutionEntry,
   RetryMatrixJobRequest,
-} from '@canopy/desktop-shared/types/pipeline';
-import { decodeMatrixIpcErrorMessage } from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
+import { decodeMatrixIpcErrorMessage } from '@canopy/execution-engine/types/pipeline';
 import {
   isPipelineExecutionLeased,
   isPipelineExecutionRetainedByInterest,

@@ -20,6 +20,12 @@ import type {
   PlatformUnixSocketAddress as SocketAddress,
 } from '@canopy/core-runtime';
 import { createPlatformPathServices } from '../paths';
+import {
+  EndpointAliasError,
+  ensureSocketAlias,
+  socketAlias,
+  socketAliasTargetPresent,
+} from './alias';
 import { MAX_BYTES, byteStream } from './stream';
 import {
   openSecurePipe,
@@ -27,6 +33,7 @@ import {
   type WindowsPipeSecurity,
 } from './windows-pipe';
 
+export { EndpointAliasError } from './alias';
 export {
   evaluatePipeDescriptor,
   loadWindowsPipeSecurity,
@@ -42,6 +49,10 @@ export interface PlatformEndpointServiceOptions {
    * DACL grants Everyone read, so Windows binds refuse without it.
    */
   readonly namedPipeSecurity?: WindowsPipeSecurity;
+  /** The user a long data root's socket alias belongs to; the process's by default. */
+  readonly getuid?: () => number | undefined;
+  /** Test seam: where per-user alias directories live; `/private/tmp` or `/tmp` by default. */
+  readonly socketAliasRoot?: string;
 }
 
 function code(error: unknown): string | undefined {
@@ -251,9 +262,10 @@ export function createPlatformEndpointServices(
   const bindPipe = (target: PipeAddress): Promise<BindResult<PipeAddress>> =>
     new Promise((resolve) => resolve(openPipe(target)));
   async function bindSocket(target: SocketAddress): Promise<SocketBindResult> {
+    await reach(target);
     // Node unlinks its bind path on close; keep that path separate from discovery.
-    const temporary = {
-      ...target,
+    const temporary: SocketAddress = {
+      kind: 'unix-socket',
       path: host.join(
         host.dirname(target.path),
         `.${randomBytes(6).toString('hex')}`,
@@ -273,10 +285,16 @@ export function createPlatformEndpointServices(
           return current;
         },
         async (): Promise<void> => {
+          if (!publishedIdentity) return;
+          // A removed alias is recreated; one that is no longer private keeps the socket.
           if (
-            publishedIdentity &&
-            (await verifyIdentity(target, publishedIdentity)) === 'match'
+            !(await reach(target).then(
+              () => true,
+              () => false,
+            ))
           )
+            return;
+          if ((await verifyIdentity(target, publishedIdentity)) === 'match')
             await unlink(target.path);
         },
       );
@@ -292,7 +310,18 @@ export function createPlatformEndpointServices(
       throw error;
     }
   }
-  function address({ dataRoot, endpointName }: AddressRequest): string {
+  const getuid =
+    options.getuid ?? ((): number | undefined => process.getuid?.());
+  /** Both the socket and its bind sibling must fit the platform's limit. */
+  const fits = (directory: string, target: string): boolean =>
+    Math.max(
+      Buffer.byteLength(target),
+      Buffer.byteLength(host.join(directory, '.000000000000')),
+    ) <= (os === 'darwin' ? 103 : 107);
+  function address({ dataRoot, endpointName }: AddressRequest): {
+    readonly path: string;
+    readonly alias?: SocketAddress['alias'];
+  } {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(endpointName))
       throw new Error('Invalid endpoint name.');
     const directory = runtime({ dataRoot });
@@ -303,24 +332,41 @@ export function createPlatformEndpointServices(
       const hash = createHash('sha256')
         .update(host.resolve(dataRoot))
         .digest('hex');
-      return `\\\\.\\pipe\\canopy-${hash}-${endpointName}`;
+      return { path: `\\\\.\\pipe\\canopy-${hash}-${endpointName}` };
     }
     const target = host.join(directory, `${endpointName}.sock`);
-    if (
-      Math.max(
-        Buffer.byteLength(target),
-        Buffer.byteLength(host.join(directory, '.000000000000')),
-      ) > (os === 'darwin' ? 103 : 107)
-    )
-      throw new Error('Socket path too long.');
-    return target;
+    if (fits(directory, target)) return { path: target };
+    const uid = getuid();
+    if (uid === undefined) throw new Error('Socket path too long.');
+    const alias = socketAlias(
+      os,
+      dataRoot,
+      directory,
+      uid,
+      options.socketAliasRoot,
+    );
+    const aliased = host.join(alias.link, `${endpointName}.sock`);
+    if (!fits(alias.link, aliased)) throw new Error('Socket path too long.');
+    return { path: aliased, alias };
   }
+  /** Every use of an aliased address re-checks the alias first (CAN-5694). */
+  async function reach(target: SocketAddress): Promise<void> {
+    if (!target.alias) return;
+    const uid = getuid();
+    if (uid === undefined)
+      throw new EndpointAliasError('Endpoint alias directory is not private.');
+    await ensureSocketAlias(target.alias, uid);
+  }
+  /** A long root without its runtime directory cannot hold a socket yet. */
+  const unreachable = async (target: SocketAddress): Promise<boolean> =>
+    target.alias !== undefined &&
+    !(await socketAliasTargetPresent(target.alias));
   if (os === 'win32') {
     const services: PipeServices = {
       semantics: 'first-instance-pipe',
       address: (request): PipeAddress => ({
         kind: 'named-pipe',
-        path: address(request),
+        path: address(request).path,
       }),
       bind: bindPipe,
       probe: async (target) => {
@@ -336,22 +382,43 @@ export function createPlatformEndpointServices(
     semantics: 'filesystem-socket',
     address: (request): SocketAddress => ({
       kind: 'unix-socket',
-      path: address(request),
+      ...address(request),
     }),
     bind: bindSocket,
-    probe,
-    verifyIdentity,
+    prepare: reach,
+    probe: async (target) => {
+      if (await unreachable(target)) return { state: 'absent' };
+      await reach(target);
+      return probe(target);
+    },
+    verifyIdentity: async (target, expected) => {
+      if (await unreachable(target)) return 'absent';
+      await reach(target);
+      return verifyIdentity(target, expected);
+    },
     unlinkStale: async ({ address: target, expected, claim }) => {
+      const owned = ((): SocketAddress | undefined => {
+        try {
+          const endpointName = host
+            .basename(target.path)
+            .replace(/\.sock$/, '');
+          return {
+            kind: 'unix-socket',
+            ...address({ dataRoot: claim.dataRoot, endpointName }),
+          };
+        } catch {
+          return undefined;
+        }
+      })();
       if (
         !options.validateStartupClaim ||
-        target.path !==
-          host.join(
-            runtime({ dataRoot: claim.dataRoot }),
-            host.basename(target.path),
-          ) ||
+        owned === undefined ||
+        target.path !== owned.path ||
         !(await options.validateStartupClaim(claim))
       )
         return 'changed';
+      if (await unreachable(owned)) return 'absent';
+      await reach(owned);
       const check = await verifyIdentity(target, expected);
       if (check !== 'match') return check;
       try {

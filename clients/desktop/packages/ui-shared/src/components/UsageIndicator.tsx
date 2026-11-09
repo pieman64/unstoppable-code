@@ -23,16 +23,17 @@ import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { InlineTextSkeleton } from './InlineTextSkeleton';
 import { Button } from './Button';
 
+import { DisclosureChevron } from './Disclosure';
 import { UsageMeter, formatUsagePercent } from './usage-indicator-meter';
 export { USAGE_TOUCH_FLOOR_CLASS } from './usage-indicator-meter';
 import {
-  UsageDisclosureChevron,
   UsageTextAction,
   USAGE_DISCLOSURE_ROW_CLASS,
   USAGE_DISCLOSURE_INK_CLASS,
 } from './UsageIndicatorActions';
 export {
   UsageActionRow,
+  UsageExpandableRow,
   UsageDisclosureChevron,
   UsageSectionHeader,
   UsageTextAction,
@@ -411,7 +412,9 @@ function AccountCardHeader({
           // chevron; 8px apart, as the chevron's glyph sits inset in its box.
           <span className={`flex shrink-0 items-center gap-2 ${quiet}`}>
             {mini}
-            {open !== undefined && <UsageDisclosureChevron open={open} />}
+            {open !== undefined && (
+              <DisclosureChevron direction={open ? 'up' : 'down'} animated />
+            )}
           </span>
         )}
       </span>

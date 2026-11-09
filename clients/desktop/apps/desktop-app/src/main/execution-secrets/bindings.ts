@@ -1,4 +1,4 @@
-import { brandEnvName } from '@canopy/desktop-shared/brand/env';
+import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import { resolveLinearToken } from '../lib/linear-auth';
 import {
   EXECUTION_SECRET_BINDINGS_MAX,

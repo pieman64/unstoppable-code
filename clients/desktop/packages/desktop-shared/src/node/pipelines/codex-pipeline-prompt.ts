@@ -2,7 +2,7 @@ import { stepTimedOutMessage } from '@canopy/desktop-shared/node/pipelines/step-
 import {
   classifyAgentFailure,
   classifyRetryableCodexTransportFailure,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 import {
   classifyCodexTransportError,
   codexTurnOutcomeError,
@@ -18,7 +18,7 @@ import {
 } from '@canopy/desktop-shared/node/codex-runtime';
 import type { CodexHostToolPolicy } from '@canopy/desktop-shared/node/codex-runtime/thread-handle';
 import type { DynamicToolSpec } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolSpec';
-import { resolveCodexMockAppServerOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import { resolveCodexMockAppServerOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   appendCodexSchemaInstruction,
   buildCodexPrompt,
@@ -31,14 +31,14 @@ import {
 import {
   mapThinkingToReasoningEffort,
   type CodexConfig,
-} from '@canopy/desktop-shared/lib/codex-model-config';
-import { buildPipelineGlobalInstructionsBlock } from '@canopy/desktop-shared/lib/global-instructions';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+} from '@canopy/execution-engine/lib/codex-model-config';
+import { buildPipelineGlobalInstructionsBlock } from '@canopy/execution-engine/lib/global-instructions';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import { buildCodexPipelineThreadConfig } from '@canopy/desktop-shared/node/pipelines/codex-preferences';
 import {
   codexNativeMemoryThreadConfig,
   localMemoryEnabledFromEnv,
-} from '@canopy/desktop-shared/node/lib/native-memory';
+} from '@canopy/execution-engine/node/lib/native-memory';
 import type { CodexSelectedCapabilityRoot } from '@canopy/desktop-shared/types';
 import type {
   CodexPromptRunnerRequest,

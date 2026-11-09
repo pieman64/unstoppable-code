@@ -12,7 +12,7 @@ import type {
   ImportSharedAgentRequest,
   ImportSharedAgentResponse,
   SaveAgentModelRequest,
-} from '@canopy/desktop-shared/types/agent-models';
+} from '@canopy/execution-engine/types/agent-models';
 import { extractIpcErrorMessage } from '@/lib/errors';
 
 /**

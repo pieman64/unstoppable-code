@@ -16,7 +16,10 @@ export function InstalledEntryStatusSection({
   entry,
   onUninstalled,
   headerOwnsRemoval = false,
+  onManageSource,
 }: {
+  /** Opens the marketplace that owns this item. */
+  onManageSource?: () => void;
   entry: Pick<UnifiedPluginEntry, 'state' | 'ref' | 'name' | 'integration'>;
   /** Leaves the detail once the item is gone. */
   onUninstalled: () => void;
@@ -48,6 +51,7 @@ export function InstalledEntryStatusSection({
       onSetStatus={controller.setStatus}
       onUninstall={headerOwnsRemoval ? undefined : controller.uninstall}
       onUninstalled={onUninstalled}
+      onManageSource={onManageSource}
       testId="plugins-entry-detail-status"
     />
   );

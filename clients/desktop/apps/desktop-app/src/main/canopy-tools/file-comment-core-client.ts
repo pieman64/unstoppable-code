@@ -7,10 +7,8 @@ import type {
   FileAnnotationDocument,
   ReviewCommentThread,
 } from '@canopy/desktop-shared/types';
-import {
-  getActiveDesktopRuntime,
-  type DesktopCanopyDispatcher,
-} from '../canopy-runtime/desktop-runtime';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { activeAgentCoreOperations } from './active-agent-core-operations';
 import {
   annotationCaller,
   createHostAnnotationProjection,
@@ -83,7 +81,7 @@ function isOperationThreadId(threadId: string): boolean {
 
 export async function readFileCommentThreads(
   request: { projectId: string; worktreeId: string; threadId?: string },
-  dispatcher: AnnotationDispatcher = getActiveDesktopRuntime(),
+  dispatcher: AnnotationDispatcher = activeAgentCoreOperations('annotation'),
 ): Promise<ReadFileCommentThreadsResult> {
   const scope = {
     projectId: request.projectId,
@@ -136,7 +134,7 @@ export async function respondToFileComment(
     body: string;
     resolve: boolean;
   },
-  dispatcher: AnnotationDispatcher = getActiveDesktopRuntime(),
+  dispatcher: AnnotationDispatcher = activeAgentCoreOperations('annotation'),
 ): Promise<RespondToFileCommentResult> {
   const notFound: RespondToFileCommentResult = {
     ok: false,

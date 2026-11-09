@@ -49,7 +49,7 @@ function lifecycleWith(options: {
   const presence = presenceDouble(options.attached);
   const lifecycle = new ChatWaitLifecycle({
     presence,
-    ...(options.noClientMode ? { noClientMode: options.noClientMode } : {}),
+    noClientMode: options.noClientMode ?? 'wait',
   });
   const log: string[] = [];
   lifecycle.observe(recordingObserver(log));
@@ -269,7 +269,7 @@ describe('ChatWaitLifecycle', () => {
     expect(presence.calls).toBe(1);
   });
 
-  it('the shipped mode is wait', () => {
-    expect(CHAT_WAIT_NO_CLIENT_MODE).toBe('wait');
+  it('the shipped mode is fail', () => {
+    expect(CHAT_WAIT_NO_CLIENT_MODE).toBe('fail');
   });
 });

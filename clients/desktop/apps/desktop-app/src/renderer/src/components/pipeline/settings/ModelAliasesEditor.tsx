@@ -4,7 +4,7 @@ import type {
   PipelineInlineModelAliasDefaults,
   PipelineModelAlias,
   PipelinePluginCollection,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { getModelDisplayName } from '@canopy/desktop-shared/types';
 import { ModelPicker } from '@/components/chat/ModelPicker';
 import { useAgentsStore } from '@/stores/agentsStore';
@@ -13,7 +13,7 @@ import { TextField } from '../shared/TextField';
 import { TextAreaField } from '../shared/TextAreaField';
 import { SelectField } from '../shared/SelectField';
 import { Tooltip } from '@canopy/ui-shared';
-import { Button, Surface } from '@canopy/ui-shared/components';
+import { Stack, Button, Surface } from '@canopy/ui-shared/components';
 import {
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
@@ -182,13 +182,15 @@ function ModelAliasItem({
           onClick={() => setExpanded((v) => !v)}
           className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5 text-left hover:bg-fg-primary/[0.04]"
         >
-          <AppCatalogChevronRightMediumIcon
-            size="sm"
-            className={`mt-1 shrink-0 fg-secondary transition-transform ${
-              expanded ? 'rotate-90' : ''
-            }`}
-            aria-hidden="true"
-          />
+          <span className="flex h-5 shrink-0 items-center">
+            <AppCatalogChevronRightMediumIcon
+              size="sm"
+              className={`shrink-0 fg-secondary transition-transform ${
+                expanded ? 'rotate-90' : ''
+              }`}
+              aria-hidden="true"
+            />
+          </span>
           <div className="min-w-0 flex-1">
             <div className="truncate text-s font-medium fg-primary">
               {alias.name || alias.id}
@@ -215,7 +217,7 @@ function ModelAliasItem({
       </div>
 
       {expanded && (
-        <div className="border-t p-3 space-y-3">
+        <div className="flex flex-col border-t p-3 gap-3">
           <FormField
             label="ID"
             error={idError}
@@ -260,7 +262,7 @@ function ModelAliasItem({
             />
           </FormField>
 
-          <div className="space-y-2">
+          <Stack gap="inline">
             <FormField
               label="Defaults"
               htmlFor={`model-alias-${alias.id}-mode`}
@@ -294,7 +296,7 @@ function ModelAliasItem({
             )}
 
             {mode === 'inline' && (
-              <div className="space-y-3 pt-1">
+              <div className="flex flex-col pt-1 gap-3">
                 <FormField label="Base model">
                   <Surface variant="inset" size="small">
                     <div className="flex items-center px-2 py-1.5">
@@ -344,7 +346,7 @@ function ModelAliasItem({
             )}
 
             {mode === 'agent' && (
-              <div className="space-y-3 pt-1">
+              <div className="flex flex-col pt-1 gap-3">
                 <FormField
                   label="Agent"
                   hint="Uses the agent base model, instructions, and plugins at run time."
@@ -373,7 +375,7 @@ function ModelAliasItem({
                 </FormField>
               </div>
             )}
-          </div>
+          </Stack>
         </div>
       )}
     </Surface>
@@ -421,7 +423,7 @@ export function ModelAliasesEditor({
   }
 
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       {aliases.length === 0 ? (
         <p className="text-xs fg-secondary italic">
           No model aliases defined. Add one so agent steps can reuse model
@@ -442,10 +444,10 @@ export function ModelAliasesEditor({
       )}
 
       {!readonly && (
-        <Button size="compact" onClick={addAlias}>
+        <Button className="self-start" size="compact" onClick={addAlias}>
           Add model alias
         </Button>
       )}
-    </div>
+    </Stack>
   );
 }

@@ -1,3 +1,8 @@
+import {
+  CoworkFolderMissingSchema,
+  readCoworkFolderMissing,
+  type CoworkFolderMissing,
+} from '@canopy/protocol/canopy-core';
 import { z } from 'zod';
 import type { SecureSession, SessionCloseReason } from './session-manager';
 
@@ -22,7 +27,11 @@ const FailureSchema = z.object({
   kind: z.literal('response'),
   id: z.number().int().nonnegative(),
   ok: z.literal(false),
-  error: z.object({ message: z.string(), code: z.string().optional() }),
+  error: z.object({
+    message: z.string(),
+    code: z.string().optional(),
+    coworkFolderMissing: CoworkFolderMissingSchema.optional(),
+  }),
 });
 const EventSchema = z.object({
   kind: z.literal('event'),
@@ -45,6 +54,7 @@ export class RpcRemoteError extends Error {
   constructor(
     message: string,
     readonly code: string | undefined,
+    readonly coworkFolderMissing?: CoworkFolderMissing,
   ) {
     super(message);
     this.name = 'RpcRemoteError';
@@ -243,7 +253,14 @@ export class RpcPeer {
           pending.resolve(message.value);
         } else {
           pending.reject(
-            new RpcRemoteError(message.error.message, message.error.code),
+            Object.assign(
+              new RpcRemoteError(
+                message.error.message,
+                message.error.code,
+                message.error.coworkFolderMissing,
+              ),
+              message.error.coworkFolderMissing,
+            ),
           );
         }
         return;
@@ -270,11 +287,16 @@ export class RpcPeer {
       const message =
         error instanceof Error ? error.message : 'Remote request failed.';
       const code = errorCode(error);
+      const coworkFolderMissing = readCoworkFolderMissing(error);
       this.session.sendMessage({
         kind: 'response',
         id,
         ok: false,
-        error: code === undefined ? { message } : { message, code },
+        error: {
+          message,
+          ...(code === undefined ? {} : { code }),
+          ...(coworkFolderMissing ? { coworkFolderMissing } : {}),
+        },
       });
     }
   }

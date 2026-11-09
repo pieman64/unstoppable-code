@@ -19,7 +19,7 @@ import type {
   PipelineExecutionScope,
   PipelineInfo,
   PipelineTriggerType,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { pipelineSupportsExecutionScope } from './pipelineExecutionScope';
 
 export type PipelineTriggerSourceFilter =

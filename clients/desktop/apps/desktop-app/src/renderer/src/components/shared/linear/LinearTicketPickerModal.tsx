@@ -1,3 +1,4 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import { useEffect, useRef, useState, type JSX } from 'react';
 import type { LinearTicketSearchResult } from '@canopy/desktop-shared/types';
 import {
@@ -132,9 +133,9 @@ export function LinearTicketPickerModal({
               <>
                 <PickerMenuOptionContent>
                   <span className="flex min-w-0 items-center gap-2">
-                    <span className="shrink-0 rounded bg-fg-primary/[0.08] px-1.5 py-0.5 font-mono text-2xs fg-primary">
-                      {ticket.identifier}
-                    </span>
+                    <Badge>
+                      <span className="font-mono">{ticket.identifier}</span>
+                    </Badge>
                     <PickerMenuOptionLabel className="min-w-0 flex-1">
                       <WordBoundaryTruncatedText
                         text={ticket.title}

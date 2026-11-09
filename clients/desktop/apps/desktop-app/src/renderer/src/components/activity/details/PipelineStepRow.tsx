@@ -2,7 +2,7 @@ import { memo, useEffect, useRef, useState, type JSX } from 'react';
 import type {
   NormalizedStep,
   StepResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { MATRIX_JOB_ID_PREFIX } from '@canopy/desktop-shared/pipelines/matrix';
 import { isStepDefaultExpanded } from '@/lib/pipelineDetailsView';
 import type { SelectedStepSource } from '@/lib/pipelineAttemptTimeline';

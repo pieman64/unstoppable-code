@@ -1,3 +1,13 @@
+import { revealCoworkFolderLocation } from '../lib/cowork-folder-location';
+import { shell } from 'electron';
+import type {
+  CoworkFolderStatus,
+  CoworkUnstartedSend,
+} from '@canopy/protocol/canopy-core';
+import {
+  assertCoworkWorkspaceRootPresent,
+  withCoworkWrite,
+} from '../lib/cowork-folder-guard';
 import type { ShareOperationResult } from '@canopy/protocol/sharing';
 import {
   toShareOperationResult,
@@ -116,7 +126,7 @@ import {
 import type {
   PipelinePackageAnalysisSummary,
   PipelinePackageReadiness,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 function isRemoteNotFound(error: unknown): boolean {
   return (
@@ -127,7 +137,7 @@ function isRemoteNotFound(error: unknown): boolean {
   );
 }
 
-async function listChatProjects(): Promise<ChatProjectListResponse> {
+export async function listChatProjects(): Promise<ChatProjectListResponse> {
   return { projects: await listCoworkWorkspacesAsChatProjects() };
 }
 
@@ -250,7 +260,7 @@ async function deleteChatProject(
   });
 }
 
-async function loadChatProjectClaudeMd(
+export async function loadChatProjectClaudeMd(
   projectId: string,
 ): Promise<ChatProjectClaudeMdResponse> {
   await requireChatProject(projectId, false);
@@ -263,9 +273,9 @@ async function saveChatProjectClaudeMd(
 ): Promise<SaveChatProjectClaudeMdResult> {
   const project = await requireChatProject(req.projectId, false);
   const workspaceId = resolveCoworkWorkspaceId(project.id);
-  return saveChatProjectInstructions(
-    getCoworkWorkspaceRootDir(workspaceId),
-    req,
+  await assertCoworkWorkspaceRootPresent(workspaceId);
+  return withCoworkWrite(workspaceId, () =>
+    saveChatProjectInstructions(getCoworkWorkspaceRootDir(workspaceId), req),
   );
 }
 
@@ -438,9 +448,40 @@ async function revokeChatProjectTemplateShare(
 }
 
 export function registerChatProjectHandlers(runtime: {
-  dispatcher: Pick<DesktopCanopyDispatcher, 'instruction'>;
+  dispatcher: Pick<DesktopCanopyDispatcher, 'instruction' | 'query'>;
   resolveCaller: DesktopIpcCallerResolver;
 }): void {
+  registerIpcHandler<[CoworkUnstartedSend], void>(
+    IPC_CHANNELS.chatProjectRollbackUnstartedSend,
+    async (event, req) => {
+      const caller = runtime.resolveCaller(event);
+      await runtime.dispatcher.instruction(
+        'core.workspace.cowork.send.rollback',
+        req,
+        { caller: { ...caller, grants: ['core.workspace.write'] } },
+      );
+    },
+  );
+  registerIpcHandler<[{ projectId: string }], CoworkFolderStatus>(
+    IPC_CHANNELS.chatProjectCheckFolder,
+    async (event, req) => {
+      validateId(req.projectId, 'projectId');
+      const caller = runtime.resolveCaller(event);
+      return runtime.dispatcher.query(
+        'core.workspace.cowork.folder.check',
+        { workspaceId: req.projectId },
+        {
+          caller: { ...caller, grants: ['core.workspace.read'] },
+        },
+      );
+    },
+  );
+  registerIpcHandler<[{ projectId: string }], void>(
+    IPC_CHANNELS.chatProjectRevealFolderLocation,
+    async (_event, req) =>
+      revealCoworkFolderLocation(req.projectId, (path) => shell.openPath(path)),
+  );
+
   registerIpcHandler<[], ChatProjectListResponse>(
     IPC_CHANNELS.chatProjectList,
     async () => serializeChatProjectOperation(listChatProjects),

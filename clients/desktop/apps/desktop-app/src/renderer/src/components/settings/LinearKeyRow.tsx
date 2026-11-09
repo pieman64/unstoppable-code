@@ -1,4 +1,4 @@
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import { SecureStorageNotice } from '@/components/auth/SecureStorageNotice';
 import { unknownSecureStorageFailure } from '@/lib/secureStorageNotice';
 import {

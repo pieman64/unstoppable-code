@@ -24,7 +24,7 @@ import {
 import type {
   PipelinePauseCheckpoint,
   PipelineScalar,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { PipelineLogViewMode } from '@/lib/pipelineExecutionDetail';
 
 /** Unsent answers per pause checkpoint id, then per field key. */

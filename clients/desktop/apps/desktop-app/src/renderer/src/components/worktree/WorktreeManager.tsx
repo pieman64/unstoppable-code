@@ -1,5 +1,11 @@
 import { Button } from '@canopy/ui-shared/components';
 import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError, type AppError } from '@canopy/protocol/app-errors';
+import { inlineFailure, inlineFailureText } from '@/lib/inline-app-error';
+import {
   lazy,
   Suspense,
   useCallback,
@@ -28,7 +34,6 @@ import { TaskReadyPipelineModal } from './TaskReadyPipelineModal';
 import { useWatcherRecipientGroups } from '@/components/watchers/useWatcherRecipientGroups';
 import type { PipelineWatcherSelection } from '@/components/activity/usePipelineRunWatcher';
 import { TeardownFailureDialog } from './TeardownFailureDialog';
-import { WorktreeErrorNotice } from './WorktreeErrorNotice';
 import { WorktreeKanbanBoard } from './WorktreeKanbanBoard';
 import {
   computeWorktreeUiStatus,
@@ -79,7 +84,7 @@ import type {
   PipelineModelAliasPreference,
   PipelinePluginCollectionPreference,
   PipelinePreferenceLocator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { TaskIcon } from '@canopy/ui-shared/icons';
 import {
   PlusIcon as AppCatalogPlusIcon,
@@ -186,6 +191,16 @@ interface PipelinePluginCollectionContext {
 }
 const SELECTED_WORKTREE_POLL_INTERVAL_MS = 10_000;
 const GLOBAL_DIFF_STATS_POLL_INTERVAL_MS = 30_000;
+
+/**
+ * A failed archive or delete, started from a worktree row (the sidebar, the
+ * board or the teardown dialog), in the worktree error notice alongside
+ * create, repair and join failures. The notice sits over whichever page is
+ * open, so a sidebar archive that fails on Home still shows there.
+ */
+function showWorktreeLifecycleFailure(appError: AppError, copy: string): void {
+  useProjectsStore.setState({ worktreeError: inlineFailure(appError, copy) });
+}
 export function WorktreeManager(): JSX.Element {
   useScriptEventSubscriptions();
   useHookEventSubscriptions();
@@ -865,8 +880,9 @@ export function WorktreeManager(): JSX.Element {
       const next = !prev;
       void window.api
         .savePreferences({ kanbanChatPanelVisible: next })
-        .catch(() => {
-          // Silently ignore save failures — local state still applies.
+        .catch((error: unknown) => {
+          // Local state still applies; the failure is only recorded.
+          reportClientAppError(error);
         });
       return next;
     });
@@ -888,8 +904,8 @@ export function WorktreeManager(): JSX.Element {
     try {
       await requestChangedFilesRefresh(wt.projectId, wt.worktreeId);
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to refresh changed files:', error);
+      // A background refresh: the next one retries.
+      reportClientAppError(error);
     }
   }, []);
 
@@ -954,8 +970,8 @@ export function WorktreeManager(): JSX.Element {
           };
         }
       } catch (error) {
-        // eslint-disable-next-line no-console
-        console.error('Failed to load preferences:', error);
+        // Startup continues with the default layout.
+        reportClientAppError(error);
       }
 
       if (!canceled) {
@@ -1109,8 +1125,9 @@ export function WorktreeManager(): JSX.Element {
           }
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         // Leave failed keys unhydrated so a later workspace snapshot retries.
+        reportClientAppError(error);
       })
       .finally(() => {
         for (const worktree of newlySeenWorktrees) {
@@ -1326,9 +1343,11 @@ export function WorktreeManager(): JSX.Element {
     [],
   );
 
+  // Reads the selection at call time: a stable identity keeps this callback,
+  // held by a window listener, from pinning an old render and its projects.
   const handleOpenSettingsTab = useCallback(
     (tab: 'scripts' | 'hooks' | 'environment'): void => {
-      const wt = selectedWorktree;
+      const wt = useChatStore.getState().selectedWorktree;
       if (!wt) return;
       setSettingsContext({
         workspaceId: wt.projectId,
@@ -1336,7 +1355,7 @@ export function WorktreeManager(): JSX.Element {
         worktreeId: wt.worktreeId,
       });
     },
-    [selectedWorktree],
+    [],
   );
 
   useEffect(() => {
@@ -1445,7 +1464,11 @@ export function WorktreeManager(): JSX.Element {
       worktreeId: string,
       options?: ArchiveWorktreeOptions,
     ): Promise<void> => {
-      const project = projects.find((p) => p.id === projectId);
+      // Read at call time, not captured, so this callback keeps a stable
+      // identity and never pins an old projects list (see handleOpenSettingsTab).
+      const project = useProjectsStore
+        .getState()
+        .projects.find((p) => p.id === projectId);
       const worktree =
         project && project.type !== 'cowork'
           ? project.worktrees.find((wt) => wt.id === worktreeId)
@@ -1479,13 +1502,11 @@ export function WorktreeManager(): JSX.Element {
           })
         )
           return;
-        useGitHubStore
-          .getState()
-          .addToast(
-            err instanceof Error ? err.message : 'Failed to archive worktree',
-            'error',
-            undefined,
-            { projectId, worktreeId },
+        const appError = toAppError(resolveClientAppError(err));
+        if (appError)
+          showWorktreeLifecycleFailure(
+            appError,
+            "Couldn't archive the worktree.",
           );
         return;
       }
@@ -1496,7 +1517,7 @@ export function WorktreeManager(): JSX.Element {
         refreshReferenceRepos: wasMerged,
       });
     },
-    [archiveWorktree, projects],
+    [archiveWorktree],
   );
   // A discard offer's Retry runs the latest request, not this render's.
   const requestArchiveWorktreeRef = useRef(requestArchiveWorktree);
@@ -1535,13 +1556,11 @@ export function WorktreeManager(): JSX.Element {
             })
           )
             return;
-          useGitHubStore
-            .getState()
-            .addToast(
-              err instanceof Error ? err.message : 'Failed to delete worktree',
-              'error',
-              undefined,
-              { projectId, worktreeId },
+          const appError = toAppError(resolveClientAppError(err));
+          if (appError)
+            showWorktreeLifecycleFailure(
+              appError,
+              "Couldn't delete the worktree.",
             );
         });
     },
@@ -1735,7 +1754,7 @@ export function WorktreeManager(): JSX.Element {
           );
         if (!created) {
           setTaskPipelineRunning(false);
-          setTaskPipelineRunError('Failed to create worktree');
+          setTaskPipelineRunError("Couldn't create the worktree.");
           return;
         }
 
@@ -1804,9 +1823,15 @@ export function WorktreeManager(): JSX.Element {
         setTaskWatcherSelection(null);
       } catch (err: unknown) {
         setTaskPipelineRunning(false);
-        setTaskPipelineRunError(
-          err instanceof Error ? err.message : 'Failed to execute workflow',
-        );
+        const appError = toAppError(resolveClientAppError(err));
+        // The modal's run error is text: our sentence leads, and a
+        // classified failure shows its catalog title.
+        if (appError)
+          setTaskPipelineRunError(
+            inlineFailureText(
+              inlineFailure(appError, "Couldn't start the workflow."),
+            ),
+          );
       }
     },
     [taskReadyPipelineCtx, taskWatcherSelection],
@@ -1902,6 +1927,7 @@ export function WorktreeManager(): JSX.Element {
       {settingsWorkspace && (
         <LazyLoadErrorBoundary
           label="Project settings"
+          message="Couldn't load project settings."
           onClose={() => setSettingsContext(null)}
           onRetry={retrySettingsLazyModals}
           resetKey={settingsLazyBoundaryKey}
@@ -1930,6 +1956,7 @@ export function WorktreeManager(): JSX.Element {
       {settingsProject && (
         <LazyLoadErrorBoundary
           label="Project settings"
+          message="Couldn't load project settings."
           onClose={() => setSettingsContext(null)}
           onRetry={retrySettingsLazyModals}
           resetKey={settingsLazyBoundaryKey}
@@ -1962,6 +1989,7 @@ export function WorktreeManager(): JSX.Element {
       {settingsCowork && settingsChatProject && (
         <LazyLoadErrorBoundary
           label="Cowork project settings"
+          message="Couldn't load Cowork project settings."
           onClose={() => setSettingsContext(null)}
           onRetry={retrySettingsLazyModals}
           resetKey={settingsLazyBoundaryKey}
@@ -2006,7 +2034,14 @@ export function WorktreeManager(): JSX.Element {
               .catch((err: unknown) => {
                 if (err instanceof TeardownFailedError) {
                   setTeardownError(err);
+                  return;
                 }
+                const appError = toAppError(resolveClientAppError(err));
+                if (appError)
+                  showWorktreeLifecycleFailure(
+                    appError,
+                    "Couldn't archive the worktree.",
+                  );
               })
               .finally(() => setIsTeardownRetrying(false));
           }}
@@ -2071,7 +2106,6 @@ export function WorktreeManager(): JSX.Element {
 
   return (
     <div className="relative h-full">
-      <WorktreeErrorNotice />
       {showEmptyState ? (
         <Suspense fallback={null}>
           <HomeSurface variant="embedded" />
@@ -2252,10 +2286,13 @@ export function WorktreeManager(): JSX.Element {
                                     destinationWorktreeId: created.id,
                                   });
                                 } catch (error: unknown) {
+                                  // The branch exists; it just opens
+                                  // without the source's tabs.
                                   reportRendererConsoleError(
                                     'Failed to carry open tabs to branched worktree',
                                     { error },
                                   );
+                                  reportClientAppError(error);
                                 } finally {
                                   finishPendingFork();
                                   useChatStore

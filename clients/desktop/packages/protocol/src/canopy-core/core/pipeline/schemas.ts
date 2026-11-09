@@ -25,6 +25,7 @@ export const PIPELINE_DEFINITION_TRIGGER_TYPES = [
   'dispatch',
   'plan_ready',
   'task_ready',
+  'workflow',
 ] as const;
 
 /** One mebibyte, the largest document a definition operation accepts. */

@@ -4,7 +4,7 @@ import {
   getDesktopPostHogSession,
   getDesktopPostHogEmailDomain,
 } from '@canopy/desktop-instrumentation/electron/main';
-import type { PostHogSessionState } from '@canopy/desktop-shared/types/observability';
+import type { PostHogSessionState } from '@canopy/execution-engine/types/observability';
 import {
   CORE_OBSERVABILITY_GRANTS,
   ObservabilityAuditTranscriptGetParamsSchema,
@@ -36,6 +36,7 @@ import {
 import { getObservabilityService } from '../observability';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { getStablePostHogAnonymousKey } from '../lib/anonymous-id';
+import { getUsageDataPolicy } from '../lib/usage-data-policy';
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { sendToAllWindows, sendToWindow } from '../lib/window-send';
@@ -410,6 +411,15 @@ export function registerObservabilityHandlers(
   registerIpcHandler(IPC_CHANNELS.observabilityGetPostHogSession, () =>
     getDesktopPostHogSession(),
   );
+  registerIpcHandler(IPC_CHANNELS.observabilityGetUsageDataPolicy, () =>
+    getUsageDataPolicy().getUsageDataPolicySnapshot(),
+  );
+  getUsageDataPolicy().subscribe((snapshot): void => {
+    sendToAllWindows(
+      IPC_CHANNELS.observabilityUsageDataPolicyChanged,
+      snapshot,
+    );
+  });
   registerIpcHandler(IPC_CHANNELS.observabilityGetPostHogEmailDomain, () =>
     getDesktopPostHogEmailDomain(),
   );

@@ -13,6 +13,7 @@ import {
   type AgentArtifactReceiptV1,
 } from '@canopy/protocol/agent-artifacts';
 import { isDelegatedAgentCallBlock } from '../lib/delegation-transcript';
+import { isClaudeModsSkippedBlock } from '../lib/claude-mods-skipped';
 import { admittedResultCall } from '../lib/admitted-result-call';
 import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
 import {
@@ -115,6 +116,8 @@ export interface PortalChatProjectionLimits {
    * and the publish path, which shares a chat with others, never does.
    */
   includeAccountProxySwitches?: boolean;
+  /** Explicitly include this notice; shared-container publish calls leave it off. */
+  includeClaudeModsSkipped?: boolean;
 }
 
 /**
@@ -789,6 +792,26 @@ export function persistedParts(
             ...(block.previousAtLimit === true
               ? { previousAtLimit: true }
               : {}),
+          },
+        },
+      ];
+    }
+    if (block.type === 'claude_mods_skipped') {
+      if (
+        limits.includeClaudeModsSkipped !== true ||
+        !isClaudeModsSkippedBlock(block)
+      ) {
+        return [];
+      }
+      return [
+        {
+          kind: 'mods_skipped',
+          data: {
+            occurredAt: block.timestamp,
+            mods: block.mods.slice(0, 50).map((mod) => ({
+              pluginId: truncateText(mod.pluginId, partTextMaxChars),
+              reason: mod.reason,
+            })),
           },
         },
       ];

@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState, type JSX, type RefObject } from 'react';
-import { Notice, Heading } from '@canopy/ui-shared/components';
+import { ErrorBanner, Heading } from '@canopy/ui-shared/components';
 import { SettingsConfirmDialog, useSettingsBrand } from '../host';
 import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
 import type { GitHubCloudConnectionDto } from '@canopy/protocol/settings/account-github';
@@ -209,15 +209,12 @@ function DisconnectDialog({
       message={
         <div className="flex flex-col gap-3">
           <p>{DISCONNECT_MESSAGE}</p>
-          {disconnectFailure ? (
-            <Notice
-              data-testid="github-cloud-disconnect-error"
-              intent="destructive"
-            >
-              {/* Fixed local copy from the controller, never server text. */}
-              {disconnectFailure.message}
-            </Notice>
-          ) : null}
+          {/* Fixed local copy from the controller, never server text. */}
+          <ErrorBanner
+            className=""
+            error={disconnectFailure?.message}
+            testId="github-cloud-disconnect-error"
+          />
         </div>
       }
       confirmLabel="Disconnect"

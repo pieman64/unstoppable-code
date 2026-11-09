@@ -34,7 +34,7 @@ import {
   getStructuredHelperQueryErrorUsage,
   runCodexStructuredHelperQuery,
 } from '@canopy/desktop-shared/lib/structured-helper-query';
-import type { HelperUsage } from '@canopy/desktop-shared/lib/helper-usage';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import {
   codexStructuredHelperRunner,

@@ -30,10 +30,7 @@ import {
 } from '../../lib/agent-visual-html';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { DownloadIcon, ExternalIcon } from '../../icons/AppIcons';
-import {
-  BUBBLE_ACTION_BADGE_CLASS,
-  BUBBLE_ACTION_GLYPH_PX,
-} from '../bubble-badge';
+import { BUBBLE_ACTION_GLYPH_PX } from '../bubble-badge';
 import { Button } from '../Button';
 import { Tooltip } from '../Tooltip';
 import {
@@ -764,28 +761,32 @@ export function AgentVisualFrame(
         {/* A window that cannot show the visual has no use for its panel. */}
         {props.onExpand && props.variant === 'inline' && !unavailable ? (
           <Tooltip label="Open in Chat visuals">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
+              iconOnly
+              touchArea="contained"
               data-testid={props.testIds.expandButton}
               aria-label="Open in Chat visuals"
               onClick={(): void => props.onExpand?.()}
-              className={BUBBLE_ACTION_BADGE_CLASS}
             >
               <ExternalIcon {...glyph} />
-            </button>
+            </Button>
           </Tooltip>
         ) : null}
         {props.onSave ? (
           <Tooltip label="Save as HTML">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
+              iconOnly
+              touchArea="contained"
               data-testid={props.testIds.saveButton}
               aria-label="Save as HTML"
               onClick={(): void => props.onSave?.()}
-              className={BUBBLE_ACTION_BADGE_CLASS}
             >
               <DownloadIcon {...glyph} />
-            </button>
+            </Button>
           </Tooltip>
         ) : null}
       </div>

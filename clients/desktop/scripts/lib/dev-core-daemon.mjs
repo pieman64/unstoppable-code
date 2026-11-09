@@ -79,6 +79,7 @@ export function coreDaemonFacts({
     arch,
     identity: { ...identity },
     releaseFlavor: daemonReleaseFlavor(env),
+    secureStorageLayout: 'nested-v1',
   };
 }
 

@@ -74,11 +74,21 @@ async function withInstructionsTab(files, body, { managed = false } = {}) {
 
 async function openProjectInstructions(window, workspaceId) {
   const rowTestId = `sidebar-cowork-project-${workspaceId}`;
-  await window.getByTestId(`${rowTestId}-header`).hover();
-  await window.getByTestId(`${rowTestId}-settings`).click();
+  const header = window.getByTestId(`${rowTestId}-header`);
+  const settings = window.getByTestId(`${rowTestId}-settings`);
   const dialog = window
     .locator('[role="dialog"]')
     .filter({ has: window.locator('#chat-project-settings-title') });
+  // The settings strip takes pointer events only while the row is :hover-ed;
+  // a re-render under a stationary pointer drops that until the next move, so
+  // re-hover and retry the pair (as closePanelTab does, CAN-2436). A click
+  // can land and open the dialog yet still time out, after which the dialog's
+  // scrim covers the row, so stop retrying once the dialog is open.
+  await expect(async () => {
+    if (await dialog.isVisible()) return;
+    await header.hover({ timeout: 2_000 });
+    await settings.click({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
   await expect(dialog).toBeVisible();
   await dialog.getByRole('tab', { name: 'Instructions', exact: true }).click();
   const editor = dialog.getByTestId('chat-project-instructions-editor');

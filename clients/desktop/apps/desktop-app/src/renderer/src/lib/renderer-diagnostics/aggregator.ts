@@ -22,7 +22,7 @@ import {
   type RendererDiagnosticsSummary,
   type RendererLongFrame,
   type RendererLongFrameScript,
-} from '@canopy/desktop-shared/types/observability';
+} from '@canopy/execution-engine/types/observability';
 
 /** Length of one diagnostic window. */
 export const RENDERER_DIAGNOSTICS_WINDOW_MS = 30_000;

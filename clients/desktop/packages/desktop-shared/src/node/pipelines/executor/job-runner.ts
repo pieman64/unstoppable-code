@@ -1,4 +1,4 @@
-import type { ResourceContextInput } from '../../../lib/resource-context-policy';
+import type { ResourceContextInput } from '@canopy/execution-engine/lib/resource-context-policy';
 import type { ChildPipelineAuthorization } from './child-pipeline-resolver';
 import {
   buildExpressionAssets,
@@ -60,12 +60,12 @@ import type {
   PipelinePackageCapabilityOverlay,
   PipelinePackageBinding,
   PipelineAssetExecutionContext,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   AgentModelConfig,
   UsageInitiationSource,
 } from '@canopy/desktop-shared/types';
-import { setBrandEnv } from '../../../brand/env';
+import { setBrandEnv } from '@canopy/execution-engine/brand/env';
 import { filterPipelinePackageOverlayForStep } from '../package-runtime';
 import { recordedLedgerAgentSession } from './pipeline-ledger';
 

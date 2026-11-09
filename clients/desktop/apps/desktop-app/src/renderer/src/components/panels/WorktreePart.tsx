@@ -28,6 +28,7 @@ import { AuxPanelWindow } from '@/components/panels/AuxPanelWindow';
 import { PanelContentRoot } from '@/components/panels/PanelContentRoot';
 import { PanelGridSurface } from '@/components/panels/PanelGridSurface';
 import { ForkedContainerNotice } from '@/components/shared-containers/ForkedContainerNotice';
+import { WorktreeGitActionError } from '@/components/github/WorktreeGitActionError';
 import { useWorktreeScriptActions } from '@/components/panels/useWorktreeScriptActions';
 
 /** Where a forked worktree's focus request lands (CAN-4782). */
@@ -128,6 +129,9 @@ export function WorktreePart({
         viewModeReady={viewModeReady}
         pinnedActions={pinnedActions}
       />
+      {/* A failed git or PR action sits under the bar, never inside its
+          46px frame. */}
+      <WorktreeGitActionError projectId={projectId} worktreeId={worktreeId} />
       <ForkedContainerNotice
         projectId={projectId}
         worktreeId={worktreeId}
@@ -137,7 +141,6 @@ export function WorktreePart({
         projectId={projectId}
         worktreeId={worktreeId}
         hostState={hostState}
-        archivedChatsAccessory={false}
       />
       {auxWindowHosts}
     </section>

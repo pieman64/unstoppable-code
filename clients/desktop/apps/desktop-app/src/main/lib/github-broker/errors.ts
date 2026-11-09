@@ -1,3 +1,5 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { validRetryAt } from '@canopy/desktop-shared/node/lib/app-error-classification';
 import type { GitHubHeaders } from './rate-limit';
 
 export type GitHubBrokerErrorCode =
@@ -38,6 +40,15 @@ export class GitHubBrokerError extends Error {
     super(message);
     this.name = 'GitHubBrokerError';
     this.code = code;
+    if (code === 'not_authenticated')
+      classifyError(this, 'external.sign_in_required');
+    if (code === 'network') classifyError(this, 'external.offline');
+    if (code === 'server_error' || code === 'timeout')
+      classifyError(this, 'external.service_unavailable');
+    if (code === 'rate_limited')
+      classifyError(this, 'external.rate_limited', {
+        retryAt: validRetryAt(options.retryAt),
+      });
     this.retriable = options.retriable ?? false;
     this.status = options.status;
     if (options.cause !== undefined) {

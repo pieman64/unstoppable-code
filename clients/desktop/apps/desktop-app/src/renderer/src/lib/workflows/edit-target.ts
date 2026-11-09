@@ -1,4 +1,7 @@
-import type { WorkflowEditSection } from '@canopy/desktop-shared/types';
+import type {
+  ScheduledActivity,
+  WorkflowEditSection,
+} from '@canopy/desktop-shared/types';
 import type { PipelineDocumentLocator } from '@/lib/pipelineDocument';
 import type { PipelineEditDeepLink } from '@/stores/navigationStore';
 
@@ -33,7 +36,15 @@ export interface WorkflowEditTargetCommon {
  */
 export type WorkflowEditTarget =
   | (WorkflowEditTargetCommon &
-      PipelineEditDeepLink & { kind: 'pipeline'; draftKey?: string })
+      PipelineEditDeepLink & {
+        kind: 'pipeline';
+        draftKey?: string;
+        /**
+         * A workflow page's schedule to expand on its Trigger section
+         * (CAN-5782). Not part of the item's identity.
+         */
+        focusScheduleId?: string;
+      })
   | (WorkflowEditTargetCommon & { kind: 'automation'; activityId: string })
   | (WorkflowEditTargetCommon & {
       kind: 'automation-draft';
@@ -163,5 +174,49 @@ export function pipelineEditLinkFromLocator(
     ...(locator.sharedRemoteId !== undefined
       ? { sharedRemoteId: locator.sharedRemoteId }
       : {}),
+  };
+}
+
+/**
+ * The Workflow page that edits a schedule (CAN-5782): the user pipeline a
+ * workflow schedule runs, when that page can edit everything about the
+ * record. A schedule whose action names where it runs in its run values
+ * (a `global` target) qualifies; one bound to a project or task keeps the
+ * Automation page until the Workflow page has a per-schedule Where it runs.
+ */
+export function workflowPageIdForActivity(
+  activity: Pick<
+    ScheduledActivity,
+    'action' | 'ownedPipeline' | 'workflowSchedule'
+  >,
+): string | undefined {
+  if (activity.workflowSchedule === undefined) return undefined;
+  const stored = activity.ownedPipeline?.storedAction ?? activity.action;
+  if (stored.type !== 'worktree_pipeline') return undefined;
+  if (stored.target?.kind !== 'global') return undefined;
+  return activity.workflowSchedule.pipelineId;
+}
+
+/**
+ * Where an automation edit target for this record opens instead (CAN-5782):
+ * its Workflow page, on the Trigger section with the schedule expanded, or
+ * on Runs when Runs was asked for. `undefined` keeps the Automation page.
+ */
+export function workflowEditTargetForActivity(
+  activity: Pick<
+    ScheduledActivity,
+    'id' | 'action' | 'ownedPipeline' | 'workflowSchedule'
+  >,
+  link: Pick<WorkflowEditTargetCommon, 'section' | 'returnTo'> = {},
+): Extract<WorkflowEditTarget, { kind: 'pipeline' }> | undefined {
+  const pipelineId = workflowPageIdForActivity(activity);
+  if (pipelineId === undefined) return undefined;
+  return {
+    kind: 'pipeline',
+    pipelineId,
+    source: 'user',
+    section: link.section === 'runs' ? 'runs' : 'trigger',
+    focusScheduleId: activity.id,
+    ...(link.returnTo !== undefined ? { returnTo: link.returnTo } : {}),
   };
 }

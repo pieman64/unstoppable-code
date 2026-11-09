@@ -341,7 +341,8 @@ export async function getScopedPluginShareSnapshot(
   externalId: string,
 ): Promise<PublicPluginShareSnapshot> {
   const detail = await getSharedPlugin(externalId);
-  requireScopedShare(detail.shareScope);
+  const shareScope = detail.shareScope;
+  requireScopedShare(shareScope);
   return {
     entity: 'plugin',
     externalId: detail.externalId,
@@ -351,6 +352,17 @@ export async function getScopedPluginShareSnapshot(
     refKey: detail.refKey,
     marketplaceOrigin: detail.marketplaceOrigin,
     authorUsername: null,
+    // Older servers sent a team owner without its organization; the review
+    // falls back rather than describe provenance it cannot read.
+    ...(isResourceOwner(detail.owner)
+      ? {
+          sharedBy: {
+            name: detail.createdBy.name,
+            owner: detail.owner,
+            shareScope,
+          },
+        }
+      : {}),
     updatedAt: detail.updatedAt,
   };
 }

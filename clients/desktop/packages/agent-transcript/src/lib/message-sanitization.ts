@@ -6,6 +6,7 @@ const NON_EMPTY_NON_TEXT_BLOCKS = new Set<PersistedChatBlock['type']>([
   'compaction_info',
   'claude_terminal_sync_warning',
   'account_proxy_switch',
+  'claude_mods_skipped',
 ]);
 
 const CLAUDE_LOCAL_COMMAND_TAG_PATTERN =

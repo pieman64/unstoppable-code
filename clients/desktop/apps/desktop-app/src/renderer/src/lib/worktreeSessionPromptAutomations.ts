@@ -1,5 +1,6 @@
 import {
   APP_ADVISOR_PROJECT_ID,
+  type AutomationAction,
   type ChatAttachmentPromptContext,
   type FileReference,
   type ScheduledActivity,
@@ -30,6 +31,11 @@ export interface ScheduledQueuedMessage {
   scheduleKind: 'one_time' | 'cron';
   /** Five-field cron expression; present only when `scheduleKind` is `cron`. */
   scheduleExpression?: string;
+  /**
+   * CAN-5782: read-only in chat. Other schedules share the workflow this
+   * message's automation runs, so it is edited on that Workflow page.
+   */
+  workflowPipelineId?: string;
 }
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -124,6 +130,18 @@ export function getScheduledMessagesForChat(args: {
  * target chat tab. Used by the sidebar worktree row indicator/popover.
  */
 
+/**
+ * The session prompt an activity sends, if it sends one. A converted
+ * automation whose workflow other schedules share keeps it as
+ * `ownedPipeline.chatAction` (CAN-5782).
+ */
+function sessionPromptAction(
+  activity: ScheduledActivity,
+): Extract<AutomationAction, { type: 'worktree_session_prompt' }> | undefined {
+  const action = activity.ownedPipeline?.chatAction ?? activity.action;
+  return action.type === 'worktree_session_prompt' ? action : undefined;
+}
+
 /** The `getScheduledMessagesForWorktree`/`hasScheduledMessagesForWorktree` match rule, shared so the two never drift. */
 function matchesWorktreeSessionPromptSchedule(
   activity: ScheduledActivity,
@@ -131,8 +149,8 @@ function matchesWorktreeSessionPromptSchedule(
   worktreeId: string,
 ): boolean {
   if (!activity.enabled) return false;
-  const action = activity.action;
-  if (action.type !== 'worktree_session_prompt') return false;
+  const action = sessionPromptAction(activity);
+  if (action === undefined) return false;
   if (action.workspaceId !== workspaceId) return false;
   // App Advisor chats are entry-keyed but persisted automations stay
   // entry-agnostic (legacy rows carry the read-only `global` slot, and
@@ -186,33 +204,37 @@ export function getScheduledMessagesForWorktree(args: {
     return left.id.localeCompare(right.id);
   });
 
-  return matches.map((activity) => {
-    const action = activity.action;
-    // Narrow for TypeScript — the filter guarantees this variant.
-    if (action.type !== 'worktree_session_prompt') {
-      throw new Error('Unexpected non-session action after filtering.');
-    }
-    return {
-      automationId: activity.id,
-      activityName: activity.name,
-      chatId: action.chatId,
-      ...(action.chatTitle ? { chatTitle: action.chatTitle } : {}),
-      text: action.prompt,
-      ...(action.fileReferences
-        ? { fileReferences: action.fileReferences }
-        : {}),
-      ...(action.attachmentPaths
-        ? { attachmentPaths: action.attachmentPaths }
-        : {}),
-      ...(action.attachmentPromptContexts
-        ? { attachmentPromptContexts: action.attachmentPromptContexts }
-        : {}),
-      ...(action.inputMode ? { inputMode: action.inputMode } : {}),
-      scheduledAt: activity.nextRunAt ?? '',
-      scheduleKind: activity.schedule.kind,
-      ...(activity.schedule.kind === 'cron'
-        ? { scheduleExpression: activity.schedule.expression }
-        : {}),
-    };
+  return matches.flatMap((activity): ScheduledQueuedMessage[] => {
+    const action = sessionPromptAction(activity);
+    // The filter guarantees a session prompt.
+    if (action === undefined) return [];
+    const { ownedPipeline } = activity;
+    return [
+      {
+        automationId: activity.id,
+        activityName: activity.name,
+        chatId: action.chatId,
+        ...(action.chatTitle ? { chatTitle: action.chatTitle } : {}),
+        text: action.prompt,
+        ...(action.fileReferences
+          ? { fileReferences: action.fileReferences }
+          : {}),
+        ...(action.attachmentPaths
+          ? { attachmentPaths: action.attachmentPaths }
+          : {}),
+        ...(action.attachmentPromptContexts
+          ? { attachmentPromptContexts: action.attachmentPromptContexts }
+          : {}),
+        ...(action.inputMode ? { inputMode: action.inputMode } : {}),
+        scheduledAt: activity.nextRunAt ?? '',
+        scheduleKind: activity.schedule.kind,
+        ...(activity.schedule.kind === 'cron'
+          ? { scheduleExpression: activity.schedule.expression }
+          : {}),
+        ...(ownedPipeline !== undefined && !ownedPipeline.chatEditable
+          ? { workflowPipelineId: ownedPipeline.pipelineId }
+          : {}),
+      },
+    ];
   });
 }

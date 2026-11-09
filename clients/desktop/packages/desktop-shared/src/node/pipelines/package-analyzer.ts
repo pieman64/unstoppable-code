@@ -15,7 +15,7 @@ import type {
   PipelineInputValue,
   RepoLocalInvocableEntry,
   RepoLocalInvocableIndex,
-} from '../../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   InvocableInventoryCache,
   InvocableInventoryEntry,
@@ -50,7 +50,7 @@ import { getShareablePluginRefKey } from '../../plugin-refs';
 import {
   containsSecretMaterial,
   SECRET_ASSIGNMENT_KEYS_SOURCE,
-} from '../../lib/redaction';
+} from '@canopy/execution-engine/lib/redaction';
 import { hashPipelinePackageYaml } from './package-contract';
 import { assignStepIds } from '../../pipelines/normalize-pipeline';
 import {

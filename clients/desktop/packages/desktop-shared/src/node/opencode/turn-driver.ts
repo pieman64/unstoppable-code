@@ -20,7 +20,11 @@ import {
   prepareOpenCodeInferenceRoute,
   assertOpenCodeInferenceBinding,
 } from './inference-route';
-import { readOpenCodeToolCatalog, openCodePromptUsage } from './runtime-api';
+import {
+  readOpenCodeToolCatalog,
+  openCodePromptUsage,
+  readOpenCodeConnectionDigest,
+} from './runtime-api';
 import { openCodeMcpNativeKey } from './mcp-tool-identity';
 import { openCodeToolDisplay } from './tool-display';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
@@ -29,7 +33,7 @@ import type {
   McpServer,
   SessionConfigOption,
 } from '@agentclientprotocol/sdk';
-import { openCodeModelsFromConfig } from '../../lib/opencode-models';
+import { openCodeModelsFromConfig } from '@canopy/execution-engine/lib/opencode-models';
 import { CursorEventProjection } from '../cursor/events';
 import {
   startOpenCodeRuntime,
@@ -173,6 +177,12 @@ export async function runOpenCodeTurn(
       }
     }
     if (previous) {
+      // Legacy native snapshots never recorded a connection. Do not silently
+      // attach their private history to whichever account happens to be active.
+      if (!inference && previous.version === 1)
+        throw new OpenCodeRequestError(
+          "Couldn't verify the connection used by this saved OpenCode session. Start a new chat.",
+        );
       try {
         assertOpenCodeInferenceBinding(
           previous,
@@ -415,6 +425,31 @@ export async function runOpenCodeTurn(
         throw new OpenCodeRequestError(message);
     }
     const owned = runtime;
+    const connectionDigest = async (): Promise<string> => {
+      try {
+        return await readOpenCodeConnectionDigest(
+          (pathname) => owned.readMetadata(pathname),
+          request.rawModelId,
+        );
+      } catch (error) {
+        // Stop during the read is a cancellation, not an admission refusal.
+        request.signal.throwIfAborted();
+        if (error instanceof Error)
+          throw new OpenCodeRequestError(error.message);
+        throw error;
+      }
+    };
+    const nativeConnectionDigest = inference
+      ? undefined
+      : await connectionDigest();
+    // The digest covers the provider too, so selecting another provider's
+    // model is refused the same way as switching that provider's account.
+    const connectionChanged = (): OpenCodeRequestError =>
+      new OpenCodeRequestError(
+        "Couldn't continue this chat because its OpenCode provider or connection changed. Switch back to the earlier model and connection, or start a new chat.",
+      );
+    if (previous && previous.nativeConnectionDigest !== nativeConnectionDigest)
+      throw connectionChanged();
     const nativeTools = await readOpenCodeToolCatalog(
       () => owned.readMetadata('/tools'),
       (request.mcpSnapshot ?? []).flatMap((server) =>
@@ -434,6 +469,7 @@ export async function runOpenCodeTurn(
       },
       contextDigest: openCodeCapabilityDigest(request.capabilityContext),
       providerSettingsDigest: runtime.providerSettingsDigest,
+      ...(nativeConnectionDigest ? { nativeConnectionDigest } : {}),
       ...(inference ? { inferenceRouteDigest: inference.identityDigest } : {}),
       ...(inference?.selection
         ? { inferenceSelection: inference.selection }
@@ -525,6 +561,13 @@ export async function runOpenCodeTurn(
         'OpenCode attachments and instructions exceed the message size limit. Send fewer or smaller files.',
       );
     await host.beforePrompt?.();
+    // Host preparation can wait for approvals. Check again after that wait;
+    // interactive capability announcements never authorize an account switch.
+    if (
+      nativeConnectionDigest &&
+      nativeConnectionDigest !== (await connectionDigest())
+    )
+      throw connectionChanged();
     request.signal.throwIfAborted();
     submittingPrompt = true;
     const response = await client.prompt(

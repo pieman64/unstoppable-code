@@ -19,6 +19,7 @@ import {
   Fact,
   FactList,
   Heading,
+  Stack,
 } from '@canopy/ui-shared/components';
 import {
   formatCardLabel,
@@ -375,18 +376,18 @@ function PlanCard({
       >
         <div className={SETTINGS_CARD_GROUP_CLASS}>
           <div className="flex items-start gap-3">
-            <div className="min-w-0 flex-1">
+            <Stack gap="tight" className="min-w-0 flex-1">
               <Heading level={2} variant="section">
                 Subscription plan
               </Heading>
               {loading ? (
                 <BillingCardBodySkeleton body="plan" />
               ) : (
-                <p className="mt-1 text-s fg-secondary">
+                <p className="text-s fg-secondary">
                   No plan details available.
                 </p>
               )}
-            </div>
+            </Stack>
           </div>
         </div>
       </section>
@@ -494,101 +495,109 @@ function PlanCard({
       <div className={SETTINGS_CARD_GROUP_CLASS}>
         <div className="flex items-start gap-3">
           <div className="flex min-w-0 flex-1 items-stretch justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <Heading level={2} variant="section">
-                  Subscription plan
-                </Heading>
-                <PlanPill
-                  planDisplayName={planName}
-                  dataTestId="team-billing-plan-pill"
-                />
-                {trialActive && summary.trial ? (
-                  <TrialBadge
-                    endsAt={summary.trial.endsAt}
-                    dataTestId="team-billing-trial-chip"
-                  />
-                ) : null}
-              </div>
-
-              {lapseSentence !== null ? (
-                <p
-                  className="mt-1 text-s fg-secondary"
-                  data-testid="team-billing-trial-ended-notice"
-                >
-                  {lapseSentence}
-                </p>
-              ) : (
-                <p className="mt-1 text-s fg-secondary">
-                  {trialActive &&
-                  summary.paymentMethod === null &&
-                  isOwner &&
-                  paymentsAvailable
-                    ? `You're on a free trial — nothing's due yet. Upgrade to ${upgradePlanName} to lock in your team's access.`
-                    : "Your team's plan, seats, and next payment."}
-                </p>
-              )}
-
-              <FactList
-                layout="stacked"
-                columns={2}
-                size="s"
-                rowGap="2"
-                columnGap="2"
-                labelTone="secondary"
-                placement="mt-4"
-              >
-                {complimentary ? (
-                  <>
-                    {seatCount !== null && seatCount > 0 ? (
-                      <Fact label="Seats" dataTestId="team-billing-seats">
-                        {seatCount} seat{seatCount === 1 ? '' : 's'}
-                      </Fact>
+            <Stack gap="item" className="min-w-0">
+              <Stack gap="group">
+                <Stack gap="tight">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Heading level={2} variant="section">
+                      Subscription plan
+                    </Heading>
+                    <PlanPill
+                      planDisplayName={planName}
+                      dataTestId="team-billing-plan-pill"
+                    />
+                    {trialActive && summary.trial ? (
+                      <TrialBadge
+                        endsAt={summary.trial.endsAt}
+                        dataTestId="team-billing-trial-chip"
+                      />
                     ) : null}
-                    <Fact label="Price" dataTestId="team-billing-complimentary">
-                      Complimentary
+                  </div>
+
+                  {lapseSentence !== null ? (
+                    <p
+                      className="text-s fg-secondary"
+                      data-testid="team-billing-trial-ended-notice"
+                    >
+                      {lapseSentence}
+                    </p>
+                  ) : (
+                    <p className="text-s fg-secondary">
+                      {trialActive &&
+                      summary.paymentMethod === null &&
+                      isOwner &&
+                      paymentsAvailable
+                        ? `You're on a free trial — nothing's due yet. Upgrade to ${upgradePlanName} to lock in your team's access.`
+                        : "Your team's plan, seats, and next payment."}
+                    </p>
+                  )}
+                </Stack>
+
+                <FactList
+                  layout="stacked"
+                  columns={2}
+                  size="s"
+                  rowGap="2"
+                  columnGap="2"
+                  labelTone="secondary"
+                >
+                  {complimentary ? (
+                    <>
+                      {seatCount !== null && seatCount > 0 ? (
+                        <Fact label="Seats" dataTestId="team-billing-seats">
+                          {seatCount} seat{seatCount === 1 ? '' : 's'}
+                        </Fact>
+                      ) : null}
+                      <Fact
+                        label="Price"
+                        dataTestId="team-billing-complimentary"
+                      >
+                        Complimentary
+                      </Fact>
+                    </>
+                  ) : null}
+                  {!complimentary && seatCount !== null && perSeat !== null ? (
+                    <Fact label="Seats">
+                      {seatCount} seat{seatCount === 1 ? '' : 's'} ×{' '}
+                      {formatUsd(perSeat)}
                     </Fact>
-                  </>
-                ) : null}
-                {!complimentary && seatCount !== null && perSeat !== null ? (
-                  <Fact label="Seats">
-                    {seatCount} seat{seatCount === 1 ? '' : 's'} ×{' '}
-                    {formatUsd(perSeat)}
-                  </Fact>
-                ) : null}
-                {!complimentary && summary.nextBillingAmountUsd !== null ? (
-                  <Fact label={trialActive ? 'Monthly cost' : 'Next charge'}>
-                    {formatUsd(summary.nextBillingAmountUsd)}
-                  </Fact>
-                ) : null}
-                {/* A pending cancellation REPLACES the next-billing row: there is
+                  ) : null}
+                  {!complimentary && summary.nextBillingAmountUsd !== null ? (
+                    <Fact label={trialActive ? 'Monthly cost' : 'Next charge'}>
+                      {formatUsd(summary.nextBillingAmountUsd)}
+                    </Fact>
+                  ) : null}
+                  {/* A pending cancellation REPLACES the next-billing row: there is
                   no next charge, and a silently-canceling plan that still
                   advertises a billing date is the single most common
                   cancellation support ticket. During a trial the countdown pill
                   conveys the timing, so the plain "Next billing date" is hidden
                   and the amount above reads as the monthly cost. */}
-                {pendingCancellation !== null ? (
-                  <Fact
-                    label={pendingCancellationLapsed ? 'Status' : 'Cancels on'}
-                    valueTone="secondary"
-                    dataTestId="team-billing-cancels-on"
-                  >
-                    {pendingCancellationLapsed
-                      ? 'Canceling'
-                      : formatPlanDate(pendingCancellation.effectiveAt)}
-                  </Fact>
-                ) : !trialActive &&
-                  !complimentary &&
-                  summary.nextBillingDate !== null ? (
-                  <Fact label="Next billing date">
-                    {formatPlanDate(summary.nextBillingDate)}
-                  </Fact>
-                ) : null}
-              </FactList>
+                  {pendingCancellation !== null ? (
+                    <Fact
+                      label={
+                        pendingCancellationLapsed ? 'Status' : 'Cancels on'
+                      }
+                      valueTone="secondary"
+                      dataTestId="team-billing-cancels-on"
+                    >
+                      {pendingCancellationLapsed
+                        ? 'Canceling'
+                        : formatPlanDate(pendingCancellation.effectiveAt)}
+                    </Fact>
+                  ) : !trialActive &&
+                    !complimentary &&
+                    summary.nextBillingDate !== null ? (
+                    <Fact label="Next billing date">
+                      {formatPlanDate(summary.nextBillingDate)}
+                    </Fact>
+                  ) : null}
+                </FactList>
+              </Stack>
 
               {pendingCancellation !== null ? (
                 <p
-                  className="mt-3 text-xs fg-secondary"
+                  className="text-xs fg-secondary"
                   data-testid="team-billing-pending-cancel-notice"
                 >
                   {pendingCancellationLapsed
@@ -600,7 +609,7 @@ function PlanCard({
               ) : null}
 
               {summary.coverageNotes.length > 0 ? (
-                <ul className="mt-3 flex flex-col gap-1">
+                <ul className="flex flex-col gap-1">
                   {summary.coverageNotes.map((note, index) => (
                     <li key={index} className="text-xs fg-secondary">
                       {note}
@@ -608,7 +617,7 @@ function PlanCard({
                   ))}
                 </ul>
               ) : null}
-            </div>
+            </Stack>
 
             {/* The menu pins to the TOP of this column and the CTA to the bottom
               (`mt-auto`), so they sit at opposite corners instead of side by

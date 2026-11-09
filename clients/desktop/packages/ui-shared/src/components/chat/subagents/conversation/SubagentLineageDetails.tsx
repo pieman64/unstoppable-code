@@ -1,3 +1,4 @@
+import { Button } from '../../../Button';
 import type { JSX } from 'react';
 import { type SubagentNode, type SubagentTree } from '@canopy/agent-transcript';
 import { ChatIcon, ChevronRightIcon } from '../../../../icons/AppIcons';
@@ -41,16 +42,19 @@ function LineageButton({
       style={{ paddingInlineStart: depth * 12 }}
     >
       <SubagentStatusGlyph status={node.status} size={10} />
-      <button
-        type="button"
-        className="min-w-0 truncate text-left fg-secondary hover:fg-primary hover:underline"
+      <Button
+        variant="link"
+        className="min-w-0"
         onClick={onClick}
         data-testid={`subagent-chat-lineage-${node.id}`}
       >
-        <span className={REPLAY_MASK_CLASS} title={node.title}>
+        <span
+          className={`${REPLAY_MASK_CLASS} block truncate`}
+          title={node.title}
+        >
           {node.title}
         </span>
-      </button>
+      </Button>
       <span className="shrink-0 fg-tertiary">{subagentStatusDetail(node)}</span>
     </li>
   );
@@ -90,9 +94,9 @@ export function SubagentLineageDetails({
           style={{ paddingInlineStart: 0 }}
         >
           <ChatIcon size={12} aria-hidden />
-          <button
-            type="button"
-            className="min-w-0 truncate text-left fg-secondary hover:fg-primary hover:underline"
+          <Button
+            variant="link"
+            className="min-w-0"
             onClick={(): void =>
               onOpenLineage({
                 kind: 'root',
@@ -102,10 +106,13 @@ export function SubagentLineageDetails({
             }
             data-testid={`subagent-chat-lineage-${tree.root.id}`}
           >
-            <span className={REPLAY_MASK_CLASS} title={tree.root.title}>
+            <span
+              className={`${REPLAY_MASK_CLASS} block truncate`}
+              title={tree.root.title}
+            >
               {tree.root.title}
             </span>
-          </button>
+          </Button>
         </li>
         {ancestors.map((ancestor, index) => (
           <LineageButton

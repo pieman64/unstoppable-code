@@ -64,6 +64,7 @@ export interface CanopyDaemonLaunchOptions<T> {
   /** Bounds each cleanup that outlives a failed launch; defaults to 5000 ms. */
   readonly cleanupTimeoutMs?: number;
   readonly protocolVersions?: readonly number[];
+  readonly secureStorageLayout?: string;
   readonly platform?: NodeJS.Platform;
   readonly signal?: AbortSignal;
 }
@@ -285,6 +286,7 @@ export async function attachOrStartCanopyDaemon<T>(
               source,
               supervisor,
               protocolVersions: config.versions,
+              secureStorageLayout: options.secureStorageLayout,
               signal,
             }),
           typed('Core discovery failed.'),

@@ -37,7 +37,7 @@ import type {
   PipelinePluginCollectionPreference,
   PipelinePluginDefault,
   Step,
-} from '../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { getPipelinePluginDefaultKey } from '../pipelines/plugin-collections';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import type { ConfiguredPromptReference } from '@canopy/protocol/configured-prompt-references';
@@ -183,12 +183,16 @@ const EXPRESSION = '${{';
  */
 const ESCAPED_EXPRESSION = "${{ '${{' }}";
 
-/** Text a create step interpolates to `text`, exactly. */
-function escapeExpressions(text: string): string {
+/**
+ * Text a create step interpolates to `text`, exactly. The step editor's
+ * sidebar group picker writes a group this way too (CAN-5782).
+ */
+export function escapeExpressions(text: string): string {
   return text.split(EXPRESSION).join(ESCAPED_EXPRESSION);
 }
 
-function unescapeExpressions(text: string): string {
+/** The text an escaped create step input stands for. */
+export function unescapeExpressions(text: string): string {
   return text.split(ESCAPED_EXPRESSION).join(EXPRESSION);
 }
 

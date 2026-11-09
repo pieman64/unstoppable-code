@@ -1,4 +1,4 @@
-import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import { RENDERER_SCHEME_ORIGIN } from '@canopy/desktop-shared/lib/renderer-scheme';
 import type { DesktopInstrumentationContext } from './types';
 import { RENDERER_SOURCEMAP_MINIFIED_PATH_PREFIX } from './config';

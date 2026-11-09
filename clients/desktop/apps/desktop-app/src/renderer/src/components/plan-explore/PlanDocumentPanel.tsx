@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -689,45 +690,47 @@ function PlanDocumentPanelImpl({
                 author={toReviewAuthor(comment)}
                 timestamp={comment.createdAt}
               >
-                <TextArea
-                  aria-label="Comment"
-                  value={editingComment.body}
-                  onChange={(e): void =>
-                    setEditingComment({
-                      threadId: thread.id,
-                      commentId: comment.id,
-                      body: e.target.value,
-                    })
-                  }
-                  onKeyDown={(e): void => {
-                    if (e.key === 'Escape') {
-                      e.preventDefault();
-                      cancelEditingComment();
-                      return;
+                <Stack gap="tight">
+                  <TextArea
+                    aria-label="Comment"
+                    value={editingComment.body}
+                    onChange={(e): void =>
+                      setEditingComment({
+                        threadId: thread.id,
+                        commentId: comment.id,
+                        body: e.target.value,
+                      })
                     }
-                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                      e.preventDefault();
-                      saveEditingComment();
-                    }
-                  }}
-                  rows={3}
-                  autoFocus
-                  data-testid={`plan-comment-edit-input-${comment.id}`}
-                />
-                <div className="mt-1 flex items-center justify-end gap-1.5">
-                  <Button size="compact" onClick={cancelEditingComment}>
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="primary"
-                    size="compact"
-                    onClick={saveEditingComment}
-                    disabled={editingComment.body.trim().length === 0}
-                    data-testid={`plan-comment-edit-save-${comment.id}`}
-                  >
-                    Save
-                  </Button>
-                </div>
+                    onKeyDown={(e): void => {
+                      if (e.key === 'Escape') {
+                        e.preventDefault();
+                        cancelEditingComment();
+                        return;
+                      }
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        saveEditingComment();
+                      }
+                    }}
+                    rows={3}
+                    autoFocus
+                    data-testid={`plan-comment-edit-input-${comment.id}`}
+                  />
+                  <div className="flex items-center justify-end gap-1.5">
+                    <Button size="compact" onClick={cancelEditingComment}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="compact"
+                      onClick={saveEditingComment}
+                      disabled={editingComment.body.trim().length === 0}
+                      data-testid={`plan-comment-edit-save-${comment.id}`}
+                    >
+                      Save
+                    </Button>
+                  </div>
+                </Stack>
               </PlanReviewComment>
             );
           }

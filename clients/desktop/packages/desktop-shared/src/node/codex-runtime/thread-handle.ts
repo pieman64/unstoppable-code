@@ -1,5 +1,5 @@
-import type { CodexTransportErrorDetail } from '../../agent-failures/codex-transport-failure';
-import type { HelperUsage } from '../../lib/helper-usage';
+import type { CodexTransportErrorDetail } from '@canopy/execution-engine/agent-failures/codex-transport-failure';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import type { JsonValue } from './generated/serde_json/JsonValue';
 import type { TurnStartParams } from './generated/v2/TurnStartParams';
 import type { UserInput } from './generated/v2/UserInput';

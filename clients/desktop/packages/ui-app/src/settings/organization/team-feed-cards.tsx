@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import {
   createContext,
   memo,
@@ -13,6 +14,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  Stack,
   BusyLabel,
   Button,
   DelayedLoadingPlaceholder,
@@ -440,17 +442,12 @@ function CopyPermalinkButton({
   );
 }
 
-/** A small inline metric chip, e.g. "+120 / -8". */
-function MetaChip({ children }: { children: ReactNode }): JSX.Element {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-md bg-secondary px-1.5 py-0.5 text-xs font-medium fg-primary">
-      {children}
-    </span>
-  );
-}
-
 function MetaRow({ children }: { children: ReactNode }): JSX.Element {
-  return <div className="mt-2 flex flex-wrap gap-1.5">{children}</div>;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs fg-secondary">
+      {children}
+    </div>
+  );
 }
 
 // Resolve the destination for a merged-PR plan chip. A shared plan takes
@@ -503,13 +500,13 @@ function PrOpenedCard({
         <p className="mt-0.5 truncate font-mono text-xs">{item.branchName}</p>
       )}
       <MetaRow>
-        <MetaChip>checks: {item.checkStatus}</MetaChip>
-        <MetaChip>review: {item.reviewStatus}</MetaChip>
-        {item.hasConflicts && <MetaChip>conflicts</MetaChip>}
+        <Badge>checks: {item.checkStatus}</Badge>
+        <Badge>review: {item.reviewStatus}</Badge>
+        {item.hasConflicts && <Badge>conflicts</Badge>}
         {item.commentCount > 0 && (
-          <MetaChip>
+          <span>
             {item.commentCount} comment{item.commentCount === 1 ? '' : 's'}
-          </MetaChip>
+          </span>
         )}
       </MetaRow>
       {item.summary && <p className="mt-2">{item.summary}</p>}
@@ -547,34 +544,34 @@ function PrMergedCard({
       )}
       <MetaRow>
         {(item.additions !== null || item.deletions !== null) && (
-          <MetaChip>
+          <span className="inline-flex gap-1">
             <span className="fg-success">+{item.additions ?? 0}</span>
             <span className="fg-destructive">−{item.deletions ?? 0}</span>
-          </MetaChip>
+          </span>
         )}
         {item.changedFiles !== null && (
-          <MetaChip>
+          <span>
             {item.changedFiles} file{item.changedFiles === 1 ? '' : 's'}
-          </MetaChip>
+          </span>
         )}
-        {cost && <MetaChip>{cost}</MetaChip>}
-        {tokens && <MetaChip>{tokens} tokens</MetaChip>}
+        {cost && <span>{cost}</span>}
+        {tokens && <span>{tokens} tokens</span>}
         {item.models.map((m) => (
-          <MetaChip key={m}>{m}</MetaChip>
+          <span key={m}>{m}</span>
         ))}
         {item.planTitle &&
           (planHref ? (
             <SettingsLink href={planHref} className="hover:underline">
-              <MetaChip>
+              <span className="inline-flex min-w-0">
                 <span className="max-w-64 truncate">
                   plan: {item.planTitle}
                 </span>
-              </MetaChip>
+              </span>
             </SettingsLink>
           ) : (
-            <MetaChip>
+            <span className="inline-flex min-w-0">
               <span className="max-w-64 truncate">plan: {item.planTitle}</span>
-            </MetaChip>
+            </span>
           ))}
       </MetaRow>
       {item.runUrl && (
@@ -615,10 +612,8 @@ function PlanApprovedCard({
       <p className="font-medium fg-primary">{item.title}</p>
       {(item.reviewStatus || item.planVersion !== null) && (
         <MetaRow>
-          {item.reviewStatus && <MetaChip>{item.reviewStatus}</MetaChip>}
-          {item.planVersion !== null && (
-            <MetaChip>v{item.planVersion}</MetaChip>
-          )}
+          {item.reviewStatus && <Badge>{item.reviewStatus}</Badge>}
+          {item.planVersion !== null && <span>v{item.planVersion}</span>}
         </MetaRow>
       )}
     </FeedCardShell>
@@ -671,7 +666,7 @@ function PlanUpdatedCard({
       <p className="font-medium fg-primary">{item.title}</p>
       {item.remoteRevisionNumber !== null && (
         <MetaRow>
-          <MetaChip>revision {item.remoteRevisionNumber}</MetaChip>
+          <span>revision {item.remoteRevisionNumber}</span>
         </MetaRow>
       )}
     </FeedCardShell>
@@ -700,17 +695,17 @@ function RunSharedCard({
     >
       <p className="font-medium fg-primary">{item.title}</p>
       <MetaRow>
-        <MetaChip>
+        <span>
           {item.turnCount} turn{item.turnCount === 1 ? '' : 's'}
-        </MetaChip>
-        <MetaChip>{item.status}</MetaChip>
+        </span>
+        <Badge>{item.status}</Badge>
         {item.toolUseCount > 0 && (
-          <MetaChip>
+          <span>
             {item.toolUseCount} tool call{item.toolUseCount === 1 ? '' : 's'}
-          </MetaChip>
+          </span>
         )}
-        {item.model && <MetaChip>{item.model}</MetaChip>}
-        {cost && <MetaChip>{cost}</MetaChip>}
+        {item.model && <span>{item.model}</span>}
+        {cost && <span>{cost}</span>}
       </MetaRow>
     </FeedCardShell>
   );
@@ -971,8 +966,9 @@ function WorktreeSummaryHistory({
   }, [client, status, nextCursor, orgId, itemId]);
 
   return (
-    <div className="mt-2">
+    <Stack gap="inline" className="mt-2">
       <Button
+        className="self-start"
         type="button"
         variant="secondary"
         size="compact"
@@ -985,10 +981,7 @@ function WorktreeSummaryHistory({
         {open ? 'Hide history' : 'History'}
       </Button>
       {open && (
-        <div
-          data-testid="feed-summary-history-panel"
-          className="mt-2 border-l pl-3"
-        >
+        <div data-testid="feed-summary-history-panel" className="border-l pl-3">
           {status === 'loading' && (
             <DelayedLoadingPlaceholder>
               <Skeleton
@@ -1031,7 +1024,7 @@ function WorktreeSummaryHistory({
           )}
         </div>
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -1052,17 +1045,17 @@ function AgentSessionCard({
       title="ran an agent session"
     >
       <MetaRow>
-        <MetaChip>
+        <span>
           {item.turnCount} turn{item.turnCount === 1 ? '' : 's'}
-        </MetaChip>
-        <MetaChip>{item.latestStatus}</MetaChip>
+        </span>
+        <Badge>{item.latestStatus}</Badge>
         {item.toolUseCount !== null && (
-          <MetaChip>
+          <span>
             {item.toolUseCount} tool call{item.toolUseCount === 1 ? '' : 's'}
-          </MetaChip>
+          </span>
         )}
-        {item.latestModel && <MetaChip>{item.latestModel}</MetaChip>}
-        {cost && <MetaChip>{cost}</MetaChip>}
+        {item.latestModel && <span>{item.latestModel}</span>}
+        {cost && <span>{cost}</span>}
       </MetaRow>
     </FeedCardShell>
   );
@@ -1090,20 +1083,20 @@ function PipelineRunCard({
       }
     >
       <MetaRow>
-        <MetaChip>{item.status}</MetaChip>
-        {duration && <MetaChip>{duration}</MetaChip>}
+        <Badge>{item.status}</Badge>
+        {duration && <span>{duration}</span>}
         {item.stepCount !== null && (
-          <MetaChip>
+          <span>
             {item.stepCount} step{item.stepCount === 1 ? '' : 's'}
-          </MetaChip>
+          </span>
         )}
         {item.agentStepCount !== null && item.agentStepCount > 0 && (
-          <MetaChip>{item.agentStepCount} agent</MetaChip>
+          <span>{item.agentStepCount} agent</span>
         )}
         {item.retryCount !== null && item.retryCount > 0 && (
-          <MetaChip>
+          <span>
             {item.retryCount} retr{item.retryCount === 1 ? 'y' : 'ies'}
-          </MetaChip>
+          </span>
         )}
       </MetaRow>
     </FeedCardShell>
@@ -1132,8 +1125,8 @@ function RunFailedCard({
       }
     >
       <MetaRow>
-        <MetaChip>{item.status}</MetaChip>
-        {item.model && <MetaChip>{item.model}</MetaChip>}
+        <Badge>{item.status}</Badge>
+        {item.model && <span>{item.model}</span>}
       </MetaRow>
     </FeedCardShell>
   );

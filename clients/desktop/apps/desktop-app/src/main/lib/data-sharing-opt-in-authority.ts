@@ -1,5 +1,5 @@
 import type { DataSharingOptInRefusal } from '@canopy/desktop-shared/types';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import {
   resolveTelemetryEnforcementByOrganization,
   type TelemetryEnforcement,

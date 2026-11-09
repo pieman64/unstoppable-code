@@ -178,7 +178,7 @@ describe('daemon code-graph restart cleanup (CAN-5719)', () => {
     mockFeatureEnabled.mockReturnValue(true);
   });
 
-  it.each(['win32', 'unknown'])(
+  it.each(['freebsd', 'unknown'])(
     'does not start a session on unsupported host %s for an unremembered worktree',
     async (platform) => {
       mockPlatform.mockImplementation(() => {
@@ -224,7 +224,7 @@ describe('daemon code-graph restart cleanup (CAN-5719)', () => {
     },
   );
 
-  it.each(['darwin', 'linux'])(
+  it.each(['darwin', 'linux', 'win32'])(
     'drains an unremembered worktree after restart on %s without Labs or graph preferences',
     async (platform) => {
       mockPlatform.mockReturnValue(platform);
@@ -249,7 +249,7 @@ describe('daemon code-graph restart cleanup (CAN-5719)', () => {
   it('still drains remembered daemon work on an unsupported host', async () => {
     const { instructions } = daemon(() => Promise.resolve({ canceled: 0 }));
     await buildCodeGraphInDaemon({ ...SCOPE, worktreeId: 'remembered' });
-    mockPlatform.mockReturnValue('win32');
+    mockPlatform.mockReturnValue('freebsd');
     await drainDaemonCodeGraphWorktree('project', 'remembered');
     expect(instructions[1]).toEqual([
       'worker.codeGraph.builds.cancel',
@@ -286,7 +286,7 @@ describe('daemon code-graph restart cleanup (CAN-5719)', () => {
       drainDaemonCodeGraphWorktree('project', 'failing'),
     ).resolves.toBeUndefined();
     expect(mockWarn).toHaveBeenCalledTimes(1);
-    mockPlatform.mockReturnValue('win32');
+    mockPlatform.mockReturnValue('freebsd');
     const retry = daemon(() => Promise.resolve({ canceled: 0 }));
     await drainDaemonCodeGraphWorktree('project', 'failing');
     expect(retry.instructions).toEqual([
@@ -537,8 +537,8 @@ describe('default code-graph dispatcher route (CAN-5719)', () => {
           enabled: true,
         }),
       ).rejects.toMatchObject({
-        code: 'invalid_payload',
-        message: 'Unknown experiment.',
+        name: 'CanopyIpcAppError',
+        cause: { code: 'invalid_payload', message: 'Unknown experiment.' },
       });
       const instructions: string[] = [];
       const queries: string[] = [];
@@ -606,13 +606,13 @@ describe('default code-graph dispatcher route (CAN-5719)', () => {
     }
   });
 
-  it.each(['foreign', 'bridge', 'destroyed', 'windows', 'latched'])(
+  it.each(['foreign', 'bridge', 'destroyed', 'unsupported', 'latched'])(
     'keeps %s IPC on the local dispatcher',
     async (excluded) => {
       if (excluded === 'bridge') mockBridge.mockReturnValue(true);
       if (excluded === 'destroyed')
         jest.spyOn(main, 'isDestroyed').mockReturnValue(true);
-      if (excluded === 'windows') mockPlatform.mockReturnValue('win32');
+      if (excluded === 'unsupported') mockPlatform.mockReturnValue('freebsd');
       if (excluded === 'latched') mockLatched.mockReturnValue(true);
       const window = excluded === 'foreign' ? foreign : main;
       await expect(
@@ -783,7 +783,7 @@ describe('default code-graph dispatcher route (CAN-5719)', () => {
   });
 
   it.each([
-    ['win32', { localWindow: true }, false],
+    ['freebsd', { localWindow: true }, false],
     ['unknown', { localWindow: true }, false],
     ['darwin', { localWindow: false }, false],
     ['darwin', undefined, false],

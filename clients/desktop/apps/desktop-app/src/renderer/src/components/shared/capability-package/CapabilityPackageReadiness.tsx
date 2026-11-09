@@ -1,3 +1,4 @@
+import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
 import { useCallback, useState, type JSX } from 'react';
 import {
   formatPipelinePackageSteps,
@@ -10,8 +11,13 @@ import {
   PIPELINE_PACKAGE_SETUP_HEADING,
 } from '@canopy/ui-shared/lib/pipeline-package-display';
 import { Button } from '@/components/shared/Button';
-import type { PipelinePackageReadiness as PipelinePackageReadinessData } from '@canopy/desktop-shared/types/pipeline';
-import { Heading, StatusLabel, Surface } from '@canopy/ui-shared/components';
+import type { PipelinePackageReadiness as PipelinePackageReadinessData } from '@canopy/execution-engine/types/pipeline';
+import {
+  Stack,
+  Heading,
+  StatusLabel,
+  Surface,
+} from '@canopy/ui-shared/components';
 
 /**
  * Local readiness of a pipeline's packaged content, shown before Run
@@ -33,13 +39,13 @@ const STATUS_LABELS: Record<
   unknown: 'Unknown',
 };
 
-const STATUS_CLASSES: Record<
+const STATUS_TONES: Record<
   PipelinePackageReadinessData['requirements'][number]['status'],
-  string
+  BadgeTone
 > = {
-  available: 'bg-info-subtle fg-info',
-  missing: 'bg-destructive-subtle fg-destructive',
-  unknown: 'bg-warning-subtle fg-warning',
+  available: 'info',
+  missing: 'danger',
+  unknown: 'warning',
 };
 
 interface CapabilityPackageReadinessProps {
@@ -106,20 +112,25 @@ export function CapabilityPackageReadiness({
     <Surface
       as="section"
       variant="inset"
-      className="mb-4"
+      className=""
       data-testid="pipeline-trigger-modal-package-readiness"
       data-status={readiness.status}
     >
-      <div className="px-3 py-2.5">
+      <div className="flex flex-col gap-3 px-3 py-2.5">
         {includedResources.length > 0 && (
-          <div data-testid="capability-package-included-resources">
-            <Heading level={3} variant="title">
-              {PIPELINE_PACKAGE_INCLUDED_HEADING}
-            </Heading>
-            <p className="mt-1 text-xs fg-secondary">
-              {`These capabilities are included with this ${subjectNoun}.`}
-            </p>
-            <ul className="mt-2 space-y-1">
+          <Stack
+            gap="inline"
+            data-testid="capability-package-included-resources"
+          >
+            <Stack gap="tight">
+              <Heading level={3} variant="title">
+                {PIPELINE_PACKAGE_INCLUDED_HEADING}
+              </Heading>
+              <p className="text-xs fg-secondary">
+                {`These capabilities are included with this ${subjectNoun}.`}
+              </p>
+            </Stack>
+            <ul className="flex flex-col gap-1">
               {includedResources.map((resource) => (
                 <li key={resource.id} className="text-xs fg-primary">
                   {resource.displayName}
@@ -139,39 +150,41 @@ export function CapabilityPackageReadiness({
                 </li>
               ))}
             </ul>
-          </div>
+          </Stack>
         )}
         {showReadinessReview && (
-          <div className={includedResources.length > 0 ? 'mt-3' : undefined}>
-            <div className="flex items-center justify-between gap-2">
-              <Heading level={3} variant="title">
-                {PIPELINE_PACKAGE_SETUP_HEADING}
-              </Heading>
-              <Button
-                variant="secondary"
-                size="compact"
-                onClick={focusSection}
-                aria-expanded={expanded}
-                data-testid="pipeline-trigger-modal-review-setup"
-              >
-                Review setup
-              </Button>
-            </div>
-            <p className="mt-1 text-xs fg-secondary">{setupNote}</p>
-            {readiness.status === 'invalid' && (
-              <p className="mt-1 text-xs">
-                <StatusLabel>{invalidLabel}</StatusLabel>
-              </p>
-            )}
-            {isDefinitionOnly && (
-              <p
-                className="mt-1 text-xs fg-warning"
-                data-testid="pipeline-trigger-modal-definition-only-note"
-              >
-                {`This ${subjectNoun} was installed from a definition-only share, so its required dependencies are not included.`}
-              </p>
-            )}
-            <ul className="mt-2 space-y-1">
+          <Stack gap="inline">
+            <Stack gap="tight">
+              <div className="flex items-center justify-between gap-2">
+                <Heading level={3} variant="title">
+                  {PIPELINE_PACKAGE_SETUP_HEADING}
+                </Heading>
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  onClick={focusSection}
+                  aria-expanded={expanded}
+                  data-testid="pipeline-trigger-modal-review-setup"
+                >
+                  Review setup
+                </Button>
+              </div>
+              <p className="text-xs fg-secondary">{setupNote}</p>
+              {readiness.status === 'invalid' && (
+                <p className="text-xs">
+                  <StatusLabel>{invalidLabel}</StatusLabel>
+                </p>
+              )}
+              {isDefinitionOnly && (
+                <p
+                  className="text-xs fg-warning"
+                  data-testid="pipeline-trigger-modal-definition-only-note"
+                >
+                  {`This ${subjectNoun} was installed from a definition-only share, so its required dependencies are not included.`}
+                </p>
+              )}
+            </Stack>
+            <ul className="flex flex-col gap-1">
               {(expanded || showAvailableRequirements
                 ? readiness.requirements
                 : actionable
@@ -186,11 +199,9 @@ export function CapabilityPackageReadiness({
                   <span className="fg-secondary">
                     {pipelinePackageRequirementKindLabel(requirement.kind)}
                   </span>
-                  <span
-                    className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-3xs font-medium ${STATUS_CLASSES[requirement.status]}`}
-                  >
+                  <Badge tone={STATUS_TONES[requirement.status]}>
                     {STATUS_LABELS[requirement.status]}
-                  </span>
+                  </Badge>
                   <span className="w-full fg-secondary">
                     {requirement.status === 'unknown'
                       ? UNKNOWN_NOTE
@@ -204,25 +215,20 @@ export function CapabilityPackageReadiness({
                 </li>
               ))}
             </ul>
-          </div>
+          </Stack>
         )}
 
         {publisherNotes.length > 0 && (
-          <div
-            className={
-              showReadinessReview || includedResources.length > 0
-                ? 'mt-3'
-                : undefined
-            }
-            data-testid="pipeline-package-publisher-notes"
-          >
-            <Heading level={3} variant="title">
-              {PIPELINE_PACKAGE_NOT_INCLUDED_HEADING}
-            </Heading>
-            <p className="mt-1 text-xs fg-secondary">
-              {PIPELINE_PACKAGE_PUBLISHER_NOTE}
-            </p>
-            <ul className="mt-2 space-y-1">
+          <Stack gap="inline" data-testid="pipeline-package-publisher-notes">
+            <Stack gap="tight">
+              <Heading level={3} variant="title">
+                {PIPELINE_PACKAGE_NOT_INCLUDED_HEADING}
+              </Heading>
+              <p className="text-xs fg-secondary">
+                {PIPELINE_PACKAGE_PUBLISHER_NOTE}
+              </p>
+            </Stack>
+            <ul className="flex flex-col gap-1">
               {publisherNotes.map((note) => (
                 <li key={note.id} className="text-xs">
                   <span className="fg-primary">{note.label}</span>
@@ -234,7 +240,7 @@ export function CapabilityPackageReadiness({
                 </li>
               ))}
             </ul>
-          </div>
+          </Stack>
         )}
       </div>
     </Surface>

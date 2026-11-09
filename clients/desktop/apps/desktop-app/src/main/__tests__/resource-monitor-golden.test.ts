@@ -1,6 +1,7 @@
 import type * as NodeOs from 'node:os';
 import type * as CorePlatform from '@canopy/core-platform';
 import type { ProcessTableOperations } from '@canopy/core-platform';
+import type { CoreExecutionStatus } from '@canopy/protocol/canopy-core';
 import linuxTerminalProc from './fixtures/linux-terminal-proc.json';
 
 // Golden capture (CAN-4135): the snapshots, admission refusals, diagnostics
@@ -89,6 +90,26 @@ jest.mock('../codex/runtime-service', () => ({
       getResourceSnapshots: (): unknown[] => [],
       suspendIdleWorkersForMemoryPressure: (): number => 0,
     }),
+  }),
+}));
+
+const mockDaemon: {
+  status: CoreExecutionStatus | null;
+  listeners: Set<(status: CoreExecutionStatus | null) => void>;
+} = { status: null, listeners: new Set() };
+
+jest.mock('../canopy-runtime/daemon-execution-status', () => ({
+  getDaemonExecutionStatus: (): unknown => ({
+    current: (): CoreExecutionStatus | null => mockDaemon.status,
+    subscribe: (
+      listener: (status: CoreExecutionStatus | null) => void,
+    ): (() => void) => {
+      mockDaemon.listeners.add(listener);
+      return (): void => {
+        mockDaemon.listeners.delete(listener);
+      };
+    },
+    reattach: (): void => undefined,
   }),
 }));
 
@@ -246,6 +267,8 @@ describe('resource monitor golden (CAN-4135)', () => {
 
   afterEach(() => {
     for (const id of reserved.splice(0)) releaseExecutionReservation(id);
+    mockDaemon.status = null;
+    mockDaemon.listeners.clear();
     for (const key of Object.keys(mockLinuxOperations)) {
       Reflect.deleteProperty(mockLinuxOperations, key);
     }
@@ -604,6 +627,92 @@ describe('resource monitor golden (CAN-4135)', () => {
     service.reservePipelineExecutionStart().release();
     (await service.reserveChatTurnStart()).release();
     service.dispose();
+  });
+
+  it('counts a daemon this app did not launch toward the memory guard (CAN-5695)', async () => {
+    const restore = setPlatform('darwin');
+    limits({
+      memoryPressureWarningThresholdBytes: 100 * MIB,
+      memoryPressureCriticalThresholdBytes: 200 * MIB,
+      memoryPressureGuardEnabled: true,
+    });
+    processTables([`${APP} 1 ${APP} 1.0 1024 /Applications/Canopy.app\n`]);
+    getAppMetricsMock.mockReturnValue([appMetric(150)]);
+    const service = new ResourceMonitorService();
+    service.start(() => null);
+    expect((await service.sampleNow()).guards.pipelines.blocked).toBe(false);
+
+    // A daemon the CLI started: outside Electron's process tree.
+    const daemonStatus = (sampledAt: string): CoreExecutionStatus => ({
+      sampledAt,
+      cpuPercent: 1,
+      memoryRssBytes: 100 * MIB,
+      processCount: 1,
+      pressure: {
+        level: 'ok',
+        reasons: [],
+        warningMemoryBytes: 2048 * MIB,
+        criticalMemoryBytes: 4096 * MIB,
+      },
+      groups: [
+        {
+          id: 'app',
+          label: 'Background service',
+          cpuPercent: 1,
+          memoryRssBytes: 100 * MIB,
+          processCount: 1,
+          items: [
+            {
+              id: 'core-daemon',
+              kind: 'other',
+              groupId: 'app',
+              label: 'canopy-daemon',
+              pid: 9_000,
+              cpuPercent: 1,
+              memoryRssBytes: 100 * MIB,
+              processCount: 1,
+              status: 'running',
+            },
+          ],
+        },
+      ],
+      families: {
+        pipeline: { active: 0, pending: 0, maxActive: null, blocked: false },
+        script: { active: 0, pending: 0, maxActive: null, blocked: false },
+        terminal: { active: 1, pending: 0, maxActive: null, blocked: false },
+        codeGraph: { active: 0, pending: 0, maxActive: null, blocked: false },
+      },
+      memoryGuardBlocked: false,
+    });
+    const publish = (status: CoreExecutionStatus | null): void => {
+      mockDaemon.status = status;
+      for (const listener of mockDaemon.listeners) listener(status);
+    };
+
+    publish(daemonStatus(new Date().toISOString()));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(service.getSnapshot().pressure.level).toBe('critical');
+    expect(service.getSnapshot().guards.pipelines.blocked).toBe(true);
+    expect(service.getSnapshot().guards.chatTurns.blocked).toBe(true);
+    expect(() => service.reservePipelineExecutionStart()).toThrow(
+      'Canopy is under high memory pressure. Stop an active chat or workflow execution before starting another workflow.',
+    );
+    await expect(service.reserveChatTurnStart()).rejects.toThrow(
+      'Canopy is under high memory pressure. Wait for active work to finish before starting another chat.',
+    );
+    expect((await service.sampleNow()).guards.pipelines.blocked).toBe(true);
+
+    // Unreachable or dropped: admission reads this app's own accounting.
+    publish(null);
+    service.reservePipelineExecutionStart().release();
+    (await service.reserveChatTurnStart()).release();
+
+    // A stale status (the daemon went idle) is left out too.
+    publish(daemonStatus(new Date(Date.now() - 60_000).toISOString()));
+    service.reservePipelineExecutionStart().release();
+    expect((await service.sampleNow()).guards.pipelines.blocked).toBe(false);
+    service.dispose();
+    restore();
   });
 
   it('counts chat turns and pending chat starts against the chat cap', async () => {

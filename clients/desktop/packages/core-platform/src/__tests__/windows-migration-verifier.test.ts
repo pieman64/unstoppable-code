@@ -9,6 +9,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { setTimeout } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import {
   createWindowsMigrationVerifier,
@@ -199,9 +200,14 @@ suite(
       }
       launches.clear();
       for (const dir of directories)
-        await rm(dir, { recursive: true, force: true });
+        await rm(dir, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 200,
+        });
       directories.clear();
-    });
+    }, 30000);
 
     it('verifies native signed images in both orientations, with lossless identity and channel-confined receipts', async () => {
       const { channel, child } = await launch();
@@ -442,8 +448,33 @@ suite(
       } finally {
         image.close();
       }
-      await rename(executable, executable + '.replaced');
-    });
+      // The pin closes synchronously; image teardown or scanners can still hold the file.
+      const started = performance.now();
+      const deadline = started + 2000;
+      let attempts = 0;
+      for (;;) {
+        try {
+          attempts++;
+          await rename(executable, executable + '.replaced');
+          break;
+        } catch (error) {
+          if (
+            typeof error !== 'object' ||
+            error === null ||
+            !('code' in error) ||
+            typeof error.code !== 'string' ||
+            !['EBUSY', 'EPERM', 'EACCES'].includes(error.code)
+          )
+            throw error;
+          if (performance.now() >= deadline)
+            throw new Error(
+              `Post-close executable rename still blocked after ${Math.round(performance.now() - started)} ms (${attempts} attempts, ${error.code})`,
+              { cause: error },
+            );
+          await setTimeout(50);
+        }
+      }
+    }, 30000);
 
     it('refuses a runnable unsigned image even with matching injected package/digest metadata', async () => {
       const dir = await mkdtemp(path.join(tmpdir(), 'w2-unsigned-'));

@@ -1,6 +1,7 @@
+import { ensureWorkspaceWriteDirectory } from './cowork-folder-guard';
 import { createHash } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
-import { lstat, mkdir, open, readlink, stat } from 'node:fs/promises';
+import { lstat, open, readlink, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   instructionFileErrorCode,
@@ -281,7 +282,7 @@ export async function saveChatProjectInstructions(
     // Invalidates even a partial/no-op attempt; callers must reload before retry.
     epochs.set(root, (epochs.get(root) ?? 0) + 1);
     try {
-      await mkdir(root, { recursive: true });
+      await ensureWorkspaceWriteDirectory(root);
       await writeObservedFile(
         root,
         fileName,

@@ -234,6 +234,13 @@ jest.mock('../copilot/connection', () => ({
     mockCopilotRuntime(options),
   assertCopilotConnectionGeneration: (): void => undefined,
 }));
+jest.mock('../agent-runs/copilot-worker-runtime', () => ({
+  getCopilotWorkerRuntime: (): Record<string, unknown> => ({
+    openSessionRuntime: (_entry: string, options: unknown): unknown =>
+      mockCopilotRuntime(options),
+    acknowledgeToolResult: (): boolean => false,
+  }),
+}));
 jest.mock('@canopy/desktop-shared/node/copilot/turn-driver', () => ({
   runCopilotTurn: (
     options: CopilotTurnOptions,
@@ -680,10 +687,14 @@ async function cursorDelivery(
   const terminal = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  const handle = await runner.start(runRequest, ({ event }) => {
-    if (event.type === 'terminal') finish();
-    return Promise.resolve();
-  });
+  const handle = await runInAgentWorker(
+    { kind: 'subagent', runId: 'golden-cursor' },
+    () =>
+      runner.start(runRequest, ({ event }) => {
+        if (event.type === 'terminal') finish();
+        return Promise.resolve();
+      }),
+  );
   await terminal;
   await runner.close(handle);
   if (!delivery) throw new Error('Cursor adapter did not deliver output');

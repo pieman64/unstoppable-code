@@ -15,12 +15,12 @@ import { isJsonObject } from '@canopy/core-runtime/node/w5/file-store';
 import type { WorkspaceCreationDiagnostics } from '@canopy/core-runtime/node/w5/commit-log/reservation-diagnostics';
 import { getCanopyDataDir } from '../../canopy-paths';
 import type { ArchiveWorktreeResponse } from '../../types';
-import { withStorageAdmission } from '../lib/storage-admission';
+import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import {
   lockCheckout,
   updateCliWorktreeList,
 } from '../lib/worktree-create-records';
-import { validateId } from '../lib/validation';
+import { validateId } from '@canopy/execution-engine/node/lib/validation';
 import { removeGitWorktree } from '../lib/worktree-create-effects';
 import { removePersistedWorktreeDataDirectory } from '../lib/worktree-data-cleanup';
 import { BrowserProfileRepository } from '../browser-profiles/repository';

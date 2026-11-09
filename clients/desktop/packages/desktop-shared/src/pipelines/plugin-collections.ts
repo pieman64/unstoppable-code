@@ -20,7 +20,7 @@ import type {
   Pipeline,
   PipelinePluginDefault,
   PipelinePreferenceLocator,
-} from '../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 /**
  * One capability reference declared by a pipeline's `plugin_collections`,

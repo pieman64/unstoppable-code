@@ -317,11 +317,13 @@ body[data-app-advisor-floating] {
 [data-window-layout='inset'] [data-testid='app-main-shell'],
 [data-window-layout='inset'] [data-testid='worktree-part'],
 [data-window-layout='inset'] [data-testid='page-chat'] > section,
+[data-window-layout='inset'] [data-testid='app-advisor-content'],
 [data-window-layout='inset'] [data-testid='worktree-top-bar'] {
   background-color: transparent;
 }
 
-[data-window-layout='inset'] [data-testid='cowork-top-bar'] {
+[data-window-layout='inset'] [data-testid='cowork-top-bar'],
+[data-window-layout='inset'] [data-testid='app-advisor-top-bar'] {
   border-bottom-color: transparent;
   background-color: transparent;
 }
@@ -520,9 +522,10 @@ body[data-app-advisor-floating] {
   border-radius: 9999px;
 }
 
-/* The worktree page clips its panel grid at the sidebar edge, where the
- * left card sits flush: clip with a margin instead, so that card's edge line
- * and shadow show on its left like on its other sides. Nothing scrolls here;
+/* The worktree, Cowork and Orchestrator pages clip their panel grid at the
+ * sidebar edge and under the top bar, which the grid reaches half a gap past:
+ * clip with a margin instead, so the cards' edge lines and shadows show on
+ * their left and top like on their other sides. Nothing scrolls here;
  * the panels lay out inside the grid. Kanban keeps scrolling: its board and
  * chat stack in a narrow window and need the room. */
 [data-window-layout='inset']
@@ -531,7 +534,11 @@ body[data-app-advisor-floating] {
   ),
 [data-window-layout='inset']
   main[data-main-frame='split']:not(:has([data-testid='worktree-kanban-board']))
-  [data-testid='worktree-part']:has([data-testid='panel-grid-root']) {
+  :is(
+    [data-testid='worktree-part'],
+    [data-testid='page-chat'] > section,
+    [data-testid='app-advisor-content']
+  ):has([data-testid='panel-grid-root']) {
   overflow: clip;
   overflow-clip-margin: 4px;
 }
@@ -558,9 +565,11 @@ body[data-app-advisor-floating] {
 [data-window-layout='inset']
   main[data-main-frame='split']:not(
     :has(
-      :is([data-testid='worktree-top-bar'], [data-testid='cowork-top-bar']):not(
-        [data-main-page-hidden] *
-      )
+      :is(
+        [data-testid='worktree-top-bar'],
+        [data-testid='cowork-top-bar'],
+        [data-testid='app-advisor-top-bar']
+      ):not([data-main-page-hidden] *)
     )
   ) {
   --bg-base: var(--bg-primary);
@@ -718,9 +727,11 @@ body[data-app-advisor-floating] {
 [data-window-layout='inset']
   main[data-main-frame='split']:not(
     :has(
-      :is([data-testid='worktree-top-bar'], [data-testid='cowork-top-bar']):not(
-        [data-main-page-hidden] *
-      )
+      :is(
+        [data-testid='worktree-top-bar'],
+        [data-testid='cowork-top-bar'],
+        [data-testid='app-advisor-top-bar']
+      ):not([data-main-page-hidden] *)
     )
   ) {
   margin-top: 46px;

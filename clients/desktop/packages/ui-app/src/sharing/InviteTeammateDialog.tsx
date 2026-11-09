@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  Stack,
   Button,
   DialogFormField,
   DialogModal,
@@ -309,7 +310,7 @@ export function InviteTeammateDialog({
       maxWidth="md"
       onClose={onClose}
     >
-      <div className="space-y-4 px-6 py-4">
+      <div className="flex flex-col gap-4 px-6 py-4">
         <p className="text-s fg-secondary">
           Teammates you invite can read this chat, send prompts, and stop
           running turns. Their prompts run and bill under your account.
@@ -357,7 +358,7 @@ export function InviteTeammateDialog({
           </p>
         )}
 
-        <div className="space-y-3">
+        <Stack gap="item">
           <SearchField
             value={query}
             placeholder="Search teammates"
@@ -384,7 +385,7 @@ export function InviteTeammateDialog({
           )}
           {!membersLoading && !membersError && (
             <div
-              className="max-h-40 space-y-1 overflow-y-auto"
+              className="max-h-40 overflow-y-auto grid grid-cols-1 content-start gap-1"
               role="listbox"
               aria-label="Teammates"
             >
@@ -422,11 +423,11 @@ export function InviteTeammateDialog({
               })}
             </div>
           )}
-        </div>
+        </Stack>
 
-        <div>
-          <Divider className="mb-4" />
-          <div className="space-y-2">
+        <div className="flex flex-col gap-4">
+          <Divider />
+          <div className="flex flex-col gap-2">
             <p className="text-s font-medium fg-primary">People with access</p>
             {recipientsLoading && (
               <p className="text-s fg-secondary">Loading people…</p>

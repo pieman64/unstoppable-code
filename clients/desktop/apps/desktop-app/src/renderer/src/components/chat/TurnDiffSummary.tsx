@@ -210,7 +210,7 @@ const FileCard = memo(function FileCard({
       onMouseEnter={onMouseEnter}
       onMouseMove={onMouseMove}
       onMouseLeave={onMouseLeave}
-      className="min-w-0 cursor-default rounded-md border bg-fg-primary/[0.02] px-2 py-1.5 text-left text-xs transition-colors hover:bg-fg-primary/[0.04]"
+      className="flex flex-col gap-1 min-w-0 cursor-default rounded-md border bg-fg-primary/[0.02] px-2 py-1.5 text-left text-xs transition-colors hover:bg-fg-primary/[0.04]"
       // The hover diff popover already surfaces the full path; the native
       // title only doubled it (CAN-2799).
       aria-label={file.path}
@@ -220,15 +220,13 @@ const FileCard = memo(function FileCard({
           {renderStatusIcon(file.status)}
         </span>
         <span className="min-w-0 flex-1 truncate fg-primary">{baseName}</span>
-        <span className="shrink-0 font-medium tabular-nums">
+        <span className="inline-flex gap-1 shrink-0 font-medium tabular-nums">
           <span className="fg-success">+{file.insertions}</span>
-          <span className="ml-1 fg-destructive">-{file.deletions}</span>
+          <span className="fg-destructive">-{file.deletions}</span>
         </span>
       </div>
       {file.repoName && (
-        <div className="mt-1 truncate text-3xs fg-secondary">
-          {file.repoName}
-        </div>
+        <div className="truncate text-3xs fg-secondary">{file.repoName}</div>
       )}
     </button>
   );

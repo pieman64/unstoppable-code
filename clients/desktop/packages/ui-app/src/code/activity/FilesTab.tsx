@@ -47,6 +47,7 @@ import {
   TextInput,
   ErrorBanner,
   Notice,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import {
   isCoworkWorkspaceFileRoot,
@@ -316,6 +317,7 @@ export function FilesTab({
     setRootGroupState({ ...rootGroupState, expanded });
   };
   const managedRootsGroupId = useId();
+  const editorErrorId = useId();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const editorInputRef = useRef<HTMLInputElement>(null);
   const submittingRef = useRef(false);
@@ -650,6 +652,10 @@ export function FilesTab({
                 editor.mode === 'rename' ? 'New name' : 'File or folder name'
               }
               data-testid="files-tree-inline-editor"
+              aria-invalid={editorError !== null || undefined}
+              aria-describedby={
+                editorError !== null ? editorErrorId : undefined
+              }
               data-parent-path={editor.parentDir}
               value={editor.value}
               disabled={mutations?.busy}
@@ -679,9 +685,9 @@ export function FilesTab({
           </div>
         </div>
         {editorError !== null && (
-          <div role="alert" className="text-xs fg-destructive">
+          <FieldError id={editorErrorId} announce>
             {editorError}
-          </div>
+          </FieldError>
         )}
       </div>
     );

@@ -9,26 +9,29 @@ import {
   getEnhancedEnv,
   getRtkManagedEnv,
 } from '../../pipelines/config-paths';
-import { classifyAgentFailure } from '../../agent-failures';
+import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import { hasAnySelections } from '../../types';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { getRawOpenCodeModelId } from '../../lib/opencode-models';
+import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import {
   redactNormalizedPreservingFormat,
   redactSerializedJsonLine,
   redactStructuredValue,
-} from '../../lib/redaction';
+} from '@canopy/execution-engine/lib/redaction';
 import { validateAgainstSchema } from '../../lib/ajv-schema-validator';
 import {
   appendCodexSchemaInstruction,
   buildCodexStructuredOutputRetryPrompt,
   CODEX_STRUCTURED_OUTPUT_RETRY_ATTEMPTS,
 } from '../../builtin-actions/agent-prompt/logic';
-import { buildPipelineGlobalInstructionsBlock } from '../../lib/global-instructions';
-import { getBrandEnv } from '../../brand/env';
-import { mergeHelperUsage, type HelperUsage } from '../../lib/helper-usage';
+import { buildPipelineGlobalInstructionsBlock } from '@canopy/execution-engine/lib/global-instructions';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
+import {
+  mergeHelperUsage,
+  type HelperUsage,
+} from '@canopy/execution-engine/lib/helper-usage';
 import {
   runOpenCodeTurn,
   type OpenCodeTurnRequest,
@@ -39,7 +42,7 @@ import type {
   OpenCodeToolInput,
 } from '../opencode/runtime';
 import { headlessOpenCodeDecision } from '../opencode/headless-policy';
-import { extractProposedPlan } from '../../codex-plan-mode';
+import { extractProposedPlan } from '@canopy/execution-engine/codex-plan-mode';
 import { getPipelineExecutionOpenCodeSessionsDir } from '../lib/paths';
 import {
   createSetupWithdrawal,

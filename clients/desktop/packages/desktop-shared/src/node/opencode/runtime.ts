@@ -256,10 +256,12 @@ export async function startOpenCodeRuntime(
     });
     options.signal.addEventListener('abort', abort, { once: true });
     options.signal.throwIfAborted();
+    const { stdin } = child;
+    if (!stdin) throw new Error('The OpenCode ACP child has no stdin.');
     client = await connectAcp({
       transport: {
         input: Readable.toWeb(child.stdout),
-        output: Writable.toWeb(child.stdin),
+        output: Writable.toWeb(stdin),
         close: () => {
           void stopProcess().catch(() => undefined);
         },

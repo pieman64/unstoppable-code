@@ -1,4 +1,8 @@
 import {
+  ensureWorkspaceWriteDirectory,
+  withWorkspaceDirectoryWrite,
+} from '../../lib/cowork-folder-guard';
+import {
   chmod,
   lstat,
   mkdir,
@@ -7,12 +11,12 @@ import {
   rmdir,
   writeFile,
 } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { AnySharedContainerRevisionLayout } from '@canopy/protocol/shared-containers';
 import { MAX_SHARED_CONTAINER_ARTIFACT_BYTES } from '@canopy/protocol/shared-containers';
 import { writeChatTabsFile } from '../../lib/chat-tabs';
 import { ensureUniqueDestination } from '../../lib/unique-destination';
-import { resolveAgentAttachmentsDir } from '../../lib/agent-attachments';
+import { prepareAgentAttachmentsDir } from '../../lib/agent-attachments';
 import { getSharedContainerReader } from '../read/reader';
 import type { SharedContainerReplicaStore } from '../replica/store';
 import {
@@ -30,7 +34,7 @@ export async function resolveSafeForkDestination(
   const safe = validateMaterializedRelativePath(relative);
   const segments = safe.split('/');
   let current = root;
-  await mkdir(root, { recursive: true, mode: 0o700 });
+  await ensureWorkspaceWriteDirectory(root, 0o700);
   for (const segment of segments.slice(0, -1)) {
     current = join(current, segment);
     try {
@@ -81,10 +85,12 @@ export async function writeForkFileFromReplica(options: {
     options.source,
     MAX_SHARED_CONTAINER_ARTIFACT_BYTES,
   );
-  await writeFile(target, bytes, {
-    flag: 'wx',
-    mode: options.executable ? 0o700 : 0o600,
-  });
+  await withWorkspaceDirectoryWrite(dirname(target), () =>
+    writeFile(target, bytes, {
+      flag: 'wx',
+      mode: options.executable ? 0o700 : 0o600,
+    }),
+  );
   options.rollback?.defer(() => rm(target, { force: true }));
   await chmod(target, options.executable ? 0o700 : 0o600);
   return target;
@@ -98,11 +104,12 @@ export async function copyForkAttachments(options: {
   worktreeId: string;
   rollback: SharedContainerForkRollback;
 }): Promise<Map<string, string>> {
-  const destinationDir = resolveAgentAttachmentsDir(
+  const destinationDir = await prepareAgentAttachmentsDir(
     options.projectId,
     options.worktreeId,
+    0o700,
   );
-  await mkdir(destinationDir, { recursive: true, mode: 0o700 });
+  await ensureWorkspaceWriteDirectory(destinationDir, 0o700);
   const resolved = new Map<string, string>();
   for (const [reference, attachment] of Object.entries(
     options.layout.attachmentPaths,
@@ -127,7 +134,9 @@ export async function copyForkAttachments(options: {
       ),
       MAX_SHARED_CONTAINER_ARTIFACT_BYTES,
     );
-    await writeFile(target, bytes, { flag: 'wx', mode: 0o600 });
+    await withWorkspaceDirectoryWrite(destinationDir, () =>
+      writeFile(target, bytes, { flag: 'wx', mode: 0o600 }),
+    );
     options.rollback.defer(() => rm(target, { force: true }));
     resolved.set(reference, target);
     resolved.set(attachment.artifactId, target);

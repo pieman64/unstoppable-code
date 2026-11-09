@@ -1,5 +1,6 @@
 'use client';
 
+import { Dot, type DotTone } from '@canopy/ui-shared/components/Badge';
 import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import { DisplayAvatar, FloatingMenu } from '@canopy/ui-shared/components';
 import { PersonIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -34,8 +35,8 @@ const IDENTITY_TONE_CLASS_NAMES: Record<SidebarAccountIdentityTone, string> = {
 };
 
 export interface SidebarAccountAttention {
-  /** Tone class for the dot over the avatar (e.g. `bg-warning`). */
-  readonly dotClassName: string;
+  /** Tone of the dot over the avatar. */
+  readonly dotTone: DotTone;
   /** Appended to the trigger's accessible label. */
   readonly label: string;
 }
@@ -236,12 +237,12 @@ export function SidebarAccountRow({
                 />
               )}
               {identity.signedIn && attention ? (
-                <span
+                <Dot
+                  tone={attention.dotTone}
                   data-testid={
                     testIds?.attentionDot ?? 'sidebar-account-attention-dot'
                   }
-                  aria-hidden="true"
-                  className={`pointer-events-none absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full ${attention.dotClassName}`}
+                  className="pointer-events-none absolute -right-0.5 -top-0.5"
                 />
               ) : null}
             </span>

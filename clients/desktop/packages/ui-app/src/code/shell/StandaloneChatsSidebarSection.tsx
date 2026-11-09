@@ -21,8 +21,8 @@ import {
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuDivider,
-  SIDEBAR_ROW_TRAILING_CELL_CLASSNAME,
   SidebarMoreRow,
+  SidebarToggleRow,
   StandaloneChatRow,
   WorkEntryRow,
   WorktreeActionMenuItems,
@@ -35,10 +35,7 @@ import {
   type SpaceNotificationMenuState,
   type WorkEntryRowMenuContext,
 } from '@canopy/ui-shared/components';
-import {
-  ChevronDownMediumIcon,
-  ListChecks,
-} from '@canopy/ui-shared/icons/AppIcons';
+import { ListChecks } from '@canopy/ui-shared/icons/AppIcons';
 import {
   CHATS_HEADER_SELECTOR,
   CHATS_HEADER_STUCK_ATTR,
@@ -753,7 +750,7 @@ export function StandaloneChatsSidebarSection({
       // while the Projects header below stays seated one header-height down
       // and leaves a hole with rows showing through. The 1px gap this wrapper
       // used to carry moves onto the row list (`mt-px`).
-      className={isChatsSection ? 'contents' : 'space-y-1'}
+      className={isChatsSection ? 'contents' : 'flex flex-col gap-1'}
       data-testid={testIds?.root}
       // A folder is a workspace root for the rail's sticky-seat sync (the
       // desktop cowork row marks its own root the same way); the Chats
@@ -1035,44 +1032,23 @@ export function StandaloneChatsSidebarSection({
                 />
               </div>
             ) : (
-              // Desktop's disclosure, in its vocabulary: a chevron that points
-              // right while the tail is hidden, and the count in the same
-              // trailing slot the workspace rows use so every number in the
-              // sidebar sits on one right edge.
-              <button
-                type="button"
-                className="focus-ring flex h-7 w-full items-center gap-1.5 rounded-row px-1.5 text-left text-s font-normal fg-tertiary hover:bg-subtle hover:fg-primary"
-                data-testid={testIds?.sectionShowAll}
-                aria-expanded={showAllChats}
-                aria-label={
+              <SidebarToggleRow
+                label={showAllChats ? 'Show fewer' : 'Show all'}
+                expanded={showAllChats}
+                onToggle={(): void => setShowAllChats((shown) => !shown)}
+                ariaLabel={
                   showAllChats
                     ? `Show fewer ${CHAT_UNIT_LABEL_PLURAL.toLowerCase()}`
                     : `Show all ${listedCount} ${CHAT_UNIT_LABEL_PLURAL.toLowerCase()}`
                 }
-                onClick={(): void => setShowAllChats((shown) => !shown)}
-              >
-                <span className="w-5 shrink-0" aria-hidden="true" />
-                <span className="inline-flex min-w-0 items-center gap-1">
-                  <span className="truncate">
-                    {showAllChats ? 'Show fewer' : 'Show all'}
-                  </span>
-                  <ChevronDownMediumIcon
-                    size="sm"
-                    className={`shrink-0 ${showAllChats ? '' : '-rotate-90'}`}
-                    aria-hidden="true"
-                  />
-                </span>
-                <span
-                  className={SIDEBAR_ROW_TRAILING_CELL_CLASSNAME}
-                  data-testid={
-                    testIds?.sectionShowAll
-                      ? `${testIds.sectionShowAll}-count`
-                      : undefined
-                  }
-                >
-                  {listedCount}
-                </span>
-              </button>
+                count={listedCount}
+                testId={testIds?.sectionShowAll}
+                countTestId={
+                  testIds?.sectionShowAll
+                    ? `${testIds.sectionShowAll}-count`
+                    : undefined
+                }
+              />
             ))}
         </SidebarList>
       )}

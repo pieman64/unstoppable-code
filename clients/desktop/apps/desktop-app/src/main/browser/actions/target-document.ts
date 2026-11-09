@@ -1,4 +1,4 @@
-import type { BrowserJavaScriptDialog } from '@canopy/desktop-shared/types/browser';
+import type { BrowserJavaScriptDialog } from '@canopy/execution-engine/types/browser';
 import type { NodeIdentity, RegisteredFrame } from '../frames/frame-registry';
 
 /** Two URLs of the same document: equal but for the fragment. */

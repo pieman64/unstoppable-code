@@ -11,7 +11,7 @@ import type {
 import {
   DEFAULT_CODEX_SPEED,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import { extname } from 'node:path';
 import { assertAutoRoutingCodexSpeed } from '../codex/speed-policy';
 

@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
 import type { PersistedChatBlock } from '../../types';
-import { OverlapMatcher } from '../../lib/overlap-matcher';
+import { OverlapMatcher } from '@canopy/execution-engine/lib/overlap-matcher';
 import {
   normalizeSingleLine,
   redactNormalizedPreservingFormat,
   redactStructuredValue,
   withJsonEscapedVariants,
-} from '../../lib/redaction';
+} from '@canopy/execution-engine/lib/redaction';
 import { cursorToolDisplay, cursorToolOutputIsError } from './tool-display';
 
 // Edit completions can include both full file snapshots. Leave room for

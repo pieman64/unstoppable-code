@@ -128,7 +128,29 @@ children detach. The launcher owns stdio and `unref()`. `childEnvironment` selec
 home, temp and application-directory inputs through an allowlist and builds PATH
 from explicit absolute directories plus system directories. Inherited PATH,
 credentials, loaders and locale are omitted; invalid paths or conflicting
-Windows key casing fail closed.
+Windows key casing fail closed except for the optional discovery hints below.
+
+Windows also copies optional `ProgramFiles`, `ProgramFiles(x86)` and
+`CANOPY_GIT_EXECUTABLE` for Git selection. Program Files roots must be qualified
+absolute paths. The override is preserved as supplied, including relative and
+space-padded values, so selection can report its presence even when rejected.
+All three exclude C0 controls and DEL; missing, empty, control-containing or
+conflicting case variants are omitted without blocking startup. Values are
+never additions to PATH. The Windows Git selector trims the override and
+rejects relative/device paths before file/version probes and requires a
+`git.exe` basename before version probes. Rejection bookkeeping can still stat
+absolute candidates with other basenames; no override resolves through PATH.
+Invalid overrides fall back to discovery. No other Git settings or host PATH
+entries are inherited; macOS and Linux keep their existing allowlists.
+
+This narrow allowlist is shared by all daemon hosts and becomes the startup
+snapshot for the daemon and its inherited subprocess environments. The inputs
+remain host-supplied hints, not trusted executable identities: Git selection
+still validates the candidate name, file and version, and prefers a saved
+choice. No shell evaluation, filesystem probe or preference mutation occurs
+while building the environment. Semicolons stay in individual values, never
+in the generated PATH. User-PATH-only discovery is not forwarded; see the
+[CAN-5920 inventory debt](../../docs/planning/2026-07-31-desktop-core-daemon/artifacts/behavior-inventory/CAN-5920-windows-daemon-git-environment.yaml).
 
 `killProcessTree` requires an owned, unreaped child (a group leader on POSIX).
 It sends group TERM/KILL without bare-PID fallback, or forced `taskkill /t /f`.
@@ -409,8 +431,10 @@ computer awake, and when it lets go) is the core `WakeLockPolicy` in
   requests are `unavailable`; the Windows daemon does not stage the addon
   yet (CAN-5091).
 
-The daemon's closure gate refuses power requests once sealed. The in-process
-desktop composition supplies Electron `powerSaveBlocker` behind the same port.
+The daemon's closure gate refuses power requests once sealed. The daemon
+requests power for its running workflows while the keep-awake preference is
+on (CAN-5872, `apps/core-daemon/src/wake-lock.ts`). The in-process desktop
+composition supplies Electron `powerSaveBlocker` behind the same port.
 `power.test.ts` covers the adapters over fakes; `power-native.test.ts` checks
 the real backend on the host: the `pmset` assertion on darwin, including after
 a SIGKILLed host, `systemd-inhibit --list` on linux when logind grants the

@@ -24,7 +24,7 @@ import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useWorktreeChatRenderState } from '@/stores/chatStore';
 import { resolveTabProviderType } from '@/stores/chat/tab-utils';
-import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
+import { EmptyState } from '@canopy/ui-shared/components';
 import { UsageUpdatedLine } from '@canopy/ui-shared';
 import {
   ProviderUsageCard,
@@ -277,8 +277,10 @@ export const UsagePanel = memo(function UsagePanel({
         />
         <InterruptedSessionsNotice />
         {cards.length === 0 && !showOpenCode ? (
-          <LoadingPlaceholder
-            label={
+          <EmptyState
+            tone="quiet"
+            titleWeight="normal"
+            title={
               noActiveChat
                 ? 'This panel follows the active chat. Open or focus a chat with account usage to see it here.'
                 : 'No provider usage is available yet.'

@@ -63,10 +63,10 @@ export function WatcherFollowUpButton({
         aria-label="Follow-up instruction"
         data-testid={`${dataTestId}-popover`}
       >
-        <div className="electron-no-drag">
+        <div className="electron-no-drag flex flex-col gap-1.5">
           <div
             id={`${dataTestId}-label`}
-            className="mb-1.5 text-3xs font-semibold fg-secondary"
+            className="text-3xs font-semibold fg-secondary"
           >
             Follow-up instruction
           </div>

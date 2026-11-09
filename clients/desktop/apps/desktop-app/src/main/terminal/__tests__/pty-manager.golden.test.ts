@@ -43,7 +43,7 @@ import type * as ChildProcessModule from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as ConfigPathsModule from '@canopy/desktop-shared/pipelines/config-paths';
-import type * as PathLookupModule from '@canopy/desktop-shared/node/lib/path-lookup';
+import type * as PathLookupModule from '@canopy/execution-engine/node/lib/path-lookup';
 import type * as MainConfigPathsModule from '../../pipelines/config-paths';
 import type * as LoggingModule from '../../lib/main-process-logging';
 import type * as ResolveWorktreeModule from '../../lib/resolve-worktree';
@@ -207,9 +207,9 @@ jest.mock('@canopy/desktop-shared/pipelines/config-paths', () => {
   };
 });
 
-jest.mock('@canopy/desktop-shared/node/lib/path-lookup', () => {
+jest.mock('@canopy/execution-engine/node/lib/path-lookup', () => {
   const actual = jest.requireActual<typeof PathLookupModule>(
-    '@canopy/desktop-shared/node/lib/path-lookup',
+    '@canopy/execution-engine/node/lib/path-lookup',
   );
   const { goldenHost } = jest.requireActual<typeof GoldenHostModule>(
     './golden/terminal-golden-host',

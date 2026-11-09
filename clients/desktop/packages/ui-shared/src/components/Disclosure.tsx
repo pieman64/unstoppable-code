@@ -10,9 +10,11 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  ChevronDownIcon,
   ChevronDownMediumIcon,
   ChevronRightMediumIcon,
 } from '../icons/AppIcons';
+import { Button, isAriaDisabled, swallowUnavailableClick } from './Button';
 
 /**
  * - `inline`: a quiet text toggle with the body under it (Advanced, Setup
@@ -377,5 +379,203 @@ export function NativeDisclosure({
         {children}
       </div>
     </details>
+  );
+}
+
+export type DisclosureChevronDirection = 'right' | 'down' | 'up';
+
+const CHEVRON_DIRECTION_CLASS: Readonly<
+  Record<DisclosureChevronDirection, string>
+> = {
+  right: '-rotate-90',
+  down: '',
+  up: 'rotate-180',
+};
+
+export interface DisclosureChevronProps {
+  /**
+   * Where it points. A hidden body that opens under its toggle reads `right`
+   * then `down`; a detached body beside a value or action reads `down` then
+   * `up`.
+   */
+  readonly direction: DisclosureChevronDirection;
+  /** `xs` is the 12px small glyph, for a toggle swapped in for a 12px icon. */
+  readonly size?: 'xs' | 'md';
+  /** Turns over 150ms instead of snapping. */
+  readonly animated?: boolean;
+  readonly dataTestId?: string;
+}
+
+/** The chevron of a `DisclosureToggle`, placed by the row that holds it. */
+export function DisclosureChevron({
+  direction,
+  size = 'md',
+  animated = false,
+  dataTestId,
+}: DisclosureChevronProps): JSX.Element {
+  const className = `${animated ? CHEVRON_CLASS : 'shrink-0'} ${CHEVRON_DIRECTION_CLASS[direction]}`;
+  return size === 'xs' ? (
+    <ChevronDownIcon
+      size="xs"
+      aria-hidden="true"
+      data-testid={dataTestId}
+      className={className}
+    />
+  ) : (
+    <ChevronDownMediumIcon
+      size="md"
+      aria-hidden="true"
+      data-testid={dataTestId}
+      className={className}
+    />
+  );
+}
+
+/**
+ * The toggle's frame where `Disclosure`'s own layout does not fit: the body
+ * sits apart from the toggle, or the toggle is a row in a list.
+ *
+ * - `section-chats`, `section-workspaces`: a sidebar section header, lit by
+ *   the header around it.
+ * - `sidebar-group`: a sidebar item group's header.
+ * - `sidebar-row`: a row at the foot of a sidebar list.
+ * - `tree`: the 16px chevron column of a tree row.
+ * - `tree-icon`: a row's icon that turns into the chevron on hover.
+ * - `row`: a label and a value on one line, with the body further down.
+ * - `summary`, `summary-wrapping`: a card's title row, whose hit area
+ *   stretches over the card; `summary-wrapping` gives the row to its actions
+ *   below 32rem.
+ */
+export type DisclosureToggleVariant =
+  | 'section-chats'
+  | 'section-workspaces'
+  | 'sidebar-group'
+  | 'sidebar-row'
+  | 'tree'
+  | 'tree-icon'
+  | 'row'
+  | 'summary'
+  | 'summary-wrapping';
+
+const SECTION_TOGGLE_CLASS =
+  'focus-ring flex min-w-0 flex-1 items-center gap-1 rounded px-1 text-left text-s font-normal fg-quaternary transition-colors hover:fg-secondary';
+
+const SUMMARY_TOGGLE_CLASS =
+  "focus-ring focus-ring-stretched before:absolute before:inset-0 before:rounded-lg before:content-[''] flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left text-s pointer-coarse:min-h-11";
+
+const DISCLOSURE_TOGGLE_CLASS: Readonly<
+  Record<DisclosureToggleVariant, string>
+> = {
+  'section-chats': `${SECTION_TOGGLE_CLASS} group-hover/chats:fg-secondary group-focus-within/chats:fg-secondary`,
+  'section-workspaces': `${SECTION_TOGGLE_CLASS} group-hover/workspaces:fg-secondary group-focus-within/workspaces:fg-secondary`,
+  'sidebar-group':
+    'focus-ring flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded text-left text-s font-normal fg-quaternary hover:fg-secondary group-focus-within/sidebar-item:fg-secondary pointer-coarse:h-11',
+  'sidebar-row':
+    'focus-ring flex h-7 w-full items-center gap-1.5 rounded-row px-1.5 text-left text-s font-normal fg-tertiary hover:bg-subtle hover:fg-primary',
+  tree: 'focus-ring pointer-coarse:min-h-11 pointer-coarse:min-w-11 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm fg-secondary hover:fg-primary',
+  'tree-icon':
+    'focus-ring pointer-coarse:min-h-11 pointer-coarse:min-w-11 flex rounded-sm fg-tertiary hover:fg-primary',
+  row: 'group focus-ring flex items-center justify-between gap-3 rounded-sm text-left text-xs pointer-coarse:min-h-11 pointer-coarse:min-w-11',
+  summary: SUMMARY_TOGGLE_CLASS,
+  'summary-wrapping': `${SUMMARY_TOGGLE_CLASS} basis-full @min-[32rem]/turn-files:basis-0`,
+};
+
+const SECTION_HEIGHT_CLASS = 'h-8';
+const TOUCH_SECTION_HEIGHT_CLASS = 'min-h-11';
+
+export interface DisclosureToggleProps extends Omit<
+  ButtonHTMLAttributes<HTMLButtonElement>,
+  'className' | 'style' | 'type' | 'aria-expanded' | 'aria-controls'
+> {
+  readonly variant: DisclosureToggleVariant;
+  /**
+   * Whether the body shows. `undefined` while the control is briefly not a
+   * disclosure, so it announces no state it won't change.
+   */
+  readonly open: boolean | undefined;
+  /** The body's id, when it is in the DOM. */
+  readonly bodyId?: string;
+  /** Raises a section header to the 44px touch minimum. */
+  readonly touchTarget?: boolean;
+  readonly children: ReactNode;
+}
+
+/**
+ * The button of a disclosure whose body lives apart from it. It owns the
+ * toggle's semantics and frame; the host owns the open state, the body and
+ * what sits in the row. Use `Disclosure` whenever the body can follow the
+ * toggle.
+ */
+export const DisclosureToggle = forwardRef<
+  HTMLButtonElement,
+  DisclosureToggleProps
+>(function DisclosureToggle(
+  { variant, open, bodyId, touchTarget = false, children, ...buttonProps },
+  ref,
+) {
+  const unavailable =
+    buttonProps.disabled === true ||
+    isAriaDisabled(buttonProps['aria-disabled']);
+  const sectionHeight =
+    variant === 'section-chats' || variant === 'section-workspaces'
+      ? ` ${touchTarget ? TOUCH_SECTION_HEIGHT_CLASS : SECTION_HEIGHT_CLASS}`
+      : '';
+  return (
+    <button
+      {...buttonProps}
+      ref={ref}
+      type="button"
+      aria-expanded={open}
+      aria-controls={bodyId}
+      onClick={
+        unavailable
+          ? (event): void => {
+              swallowUnavailableClick(event);
+              event.stopPropagation();
+            }
+          : buttonProps.onClick
+      }
+      className={`${DISCLOSURE_TOGGLE_CLASS[variant]}${sectionHeight} disabled:cursor-not-allowed disabled:opacity-60 disabled:bg-transparent aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:bg-transparent`}
+    >
+      {children}
+    </button>
+  );
+});
+
+export interface DisclosureButtonProps {
+  /** Whether the list shows. */
+  readonly open: boolean;
+  readonly onToggle: () => void;
+  /** The list's summary while it is hidden, such as `3 globs enabled`. */
+  readonly closedLabel: string;
+  readonly openLabel: string;
+  readonly dataTestId?: string;
+}
+
+/**
+ * Shows or hides a list from the control slot of the list's header row, as a
+ * compact button that says what it will do.
+ */
+export function DisclosureButton({
+  open,
+  onToggle,
+  closedLabel,
+  openLabel,
+  dataTestId,
+}: DisclosureButtonProps): JSX.Element {
+  return (
+    <Button
+      size="compact"
+      variant="secondary"
+      onClick={onToggle}
+      aria-expanded={open}
+      data-testid={dataTestId}
+    >
+      {open ? openLabel : closedLabel}
+      <ChevronDownIcon
+        size="sm"
+        className={`shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+      />
+    </Button>
   );
 }

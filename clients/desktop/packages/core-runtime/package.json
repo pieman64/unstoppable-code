@@ -17,6 +17,8 @@
     "./node": "./src/node/index.ts",
     "./node/relocation": "./src/node/relocation/index.ts",
     "./node/build-identity": "./src/node/build-identity.ts",
+    "./node/build-storage-startup": "./src/node/build-storage-startup.ts",
+    "./node/storage-path-observation": "./src/node/storage-path-observation.ts",
     "./node/secure-data-dir": "./src/node/secure-data-dir.ts",
     "./node/annotations": "./src/node/annotations/index.ts",
     "./node/git": "./src/node/git/index.ts",
@@ -38,6 +40,7 @@
     "./node/agent/deferred-tools": "./src/node/agent/deferred-tools/index.ts",
     "./node/agent/providers": "./src/node/agent/providers/index.ts",
     "./node/agent/waits": "./src/node/agent/waits/index.ts",
+    "./node/agent/approvals": "./src/node/agent/approvals/index.ts",
     "./node/catalog": "./src/node/catalog/index.ts",
     "./node/w5/commit-log": "./src/node/w5/commit-log/index.ts",
     "./node/w5/commit-log/data-root": "./src/node/w5/commit-log/data-root.ts",
@@ -51,6 +54,7 @@
     "./node/vault": "./src/node/vault/index.ts",
     "./node/identifiers": "./src/node/identifiers.ts",
     "./node/workspace/core-workspace-read-snapshots": "./src/node/workspace/core-workspace-read-snapshots.ts",
+    "./node/workspace/cowork-folder": "./src/node/workspace/cowork-folder.ts",
     "./node/workspace/instruction-files": "./src/node/workspace/instruction-files.ts",
     "./node/workspace/workspace-instructions": "./src/node/workspace/workspace-instructions.ts",
     "./node/workspace/workspace-item-ids": "./src/node/workspace/workspace-item-ids.ts",
@@ -100,7 +104,10 @@
     "./node/execution-secrets": "./src/node/execution-secrets/index.ts",
     "./node/mcp-auth": "./src/node/mcp-auth/index.ts",
     "./node/initiated-work": "./src/node/initiated-work/index.ts",
-    "./node/internal-root-migration": "./src/node/internal-root-migration.ts"
+    "./node/internal-root-migration": "./src/node/internal-root-migration.ts",
+    "./node/internal-root-journal": "./src/node/internal-root-journal.ts",
+    "./node/internal-root-source": "./src/node/internal-root-source.ts",
+    "./node/internal-root-repairs": "./src/node/internal-root-repairs.ts"
   },
   "dependencies": {
     "@canopy/core-transport": "workspace:*",

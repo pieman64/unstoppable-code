@@ -295,7 +295,6 @@ export async function routeAppAdvisorAction(
             ? { expectedUiRevision: call.expectedUiRevision }
             : {}),
           destination: runtime.watcherDestination,
-          remoteFallbackSurfaces: runtime.appAdvisorSurfaces,
           boundTools:
             call.context?.interfaceTools ??
             (await runtime.boundInterfaceTools()),

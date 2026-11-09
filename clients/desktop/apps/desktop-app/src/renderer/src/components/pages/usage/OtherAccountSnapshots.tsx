@@ -117,7 +117,7 @@ export function OtherAccountSnapshotsPanel({
   const capturedLabel = new Date(selected.capturedAt).toLocaleString();
 
   return (
-    <div className={`space-y-3 ${className}`}>
+    <div className={`flex flex-col gap-3 ${className}`}>
       <p className="text-xs fg-secondary">
         Usage snapshots collected from recently used accounts where reset
         windows are still relevant.
@@ -161,7 +161,7 @@ export function OtherAccountSnapshotsPanel({
         </div>
       )}
 
-      <div className="space-y-1.5">
+      <div className="flex flex-col gap-1.5">
         <UsageRowList>
           {cards.map((card) => (
             <UsageWindowRow
@@ -203,7 +203,7 @@ export function OtherAccountSnapshots({
   }
 
   return (
-    <div className="mt-1.5">
+    <div className="mt-1.5 flex flex-col items-start gap-1.5">
       <Button
         variant="ghost"
         size="compact"
@@ -226,7 +226,7 @@ export function OtherAccountSnapshots({
           provider={provider}
           snapshots={relevant}
           nowMs={nowMs}
-          className="mt-1.5"
+          className="w-full"
         />
       )}
     </div>

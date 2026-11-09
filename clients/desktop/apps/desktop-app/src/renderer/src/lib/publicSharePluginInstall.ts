@@ -180,6 +180,9 @@ function findCodexPlugin(
   return marketplace && plugin ? { marketplace, plugin } : null;
 }
 
+/** Whether installing a shared ref ran an install or found it in place. */
+export type SharedPluginInstallOutcome = 'installed' | 'already-available';
+
 /**
  * Install a pinned portable plugin ref without accepting source URLs from the
  * share. GitHub refs register only their normalized owner/repo marketplace;
@@ -188,8 +191,21 @@ function findCodexPlugin(
 export async function installSharedPluginRef(
   ref: ShareablePluginRef,
 ): Promise<SharedPluginInstallTarget> {
+  return (await installSharedPluginRefWithOutcome(ref)).target;
+}
+
+/**
+ * {@link installSharedPluginRef}, also saying whether anything was installed
+ * so the install review can say when nothing ran (CAN-5017).
+ */
+export async function installSharedPluginRefWithOutcome(
+  ref: ShareablePluginRef,
+): Promise<{
+  target: SharedPluginInstallTarget;
+  outcome: SharedPluginInstallOutcome;
+}> {
   const existing = await findInstalledSharedPluginTarget(ref);
-  if (existing) return existing;
+  if (existing) return { target: existing, outcome: 'already-available' };
 
   if (ref.type === 'skill') {
     if (ref.source.type !== 'github') {
@@ -205,7 +221,7 @@ export async function installSharedPluginRef(
     if (!installed) {
       throw new Error('The shared skill was not found after installation.');
     }
-    return installed;
+    return { target: installed, outcome: 'installed' };
   }
 
   if (ref.type === 'codex_plugin') {
@@ -214,7 +230,9 @@ export async function installSharedPluginRef(
     if (!found) {
       throw new Error('This Codex plugin is not available in this version.');
     }
-    if (pluginNeedsInstall(found.plugin)) {
+    // Read before installing: afterwards the plugin no longer needs it.
+    const needsInstall = pluginNeedsInstall(found.plugin);
+    if (needsInstall) {
       const source = found.plugin.externalSource;
       const sourceUrl =
         typeof source === 'string' ? source : (source?.url ?? '');
@@ -236,11 +254,14 @@ export async function installSharedPluginRef(
         );
       }
     }
-    return pluginInstallTarget(
-      found.marketplace.id,
-      found.plugin.name,
-      cache?.marketplaces,
-    );
+    return {
+      target: pluginInstallTarget(
+        found.marketplace.id,
+        found.plugin.name,
+        cache?.marketplaces,
+      ),
+      outcome: needsInstall ? 'installed' : 'already-available',
+    };
   }
 
   if (ref.marketplace.type === 'builtin') {
@@ -279,11 +300,14 @@ export async function installSharedPluginRef(
         );
       }
     }
-    return pluginInstallTarget(
-      found.marketplace.id,
-      found.plugin.name,
-      cache.marketplaces,
-    );
+    return {
+      target: pluginInstallTarget(
+        found.marketplace.id,
+        found.plugin.name,
+        cache.marketplaces,
+      ),
+      outcome: missing.length > 0 ? 'installed' : 'already-available',
+    };
   }
 
   const imported = await importSharedMarketplacePlugin(
@@ -291,9 +315,12 @@ export async function installSharedPluginRef(
     ref.plugin_name,
   );
   const cache = (await loadPluginCache(true)) ?? (await loadPluginCache(false));
-  return pluginInstallTarget(
-    imported.marketplaceId,
-    imported.pluginName,
-    cache?.marketplaces,
-  );
+  return {
+    target: pluginInstallTarget(
+      imported.marketplaceId,
+      imported.pluginName,
+      cache?.marketplaces,
+    ),
+    outcome: imported.installed ? 'installed' : 'already-available',
+  };
 }

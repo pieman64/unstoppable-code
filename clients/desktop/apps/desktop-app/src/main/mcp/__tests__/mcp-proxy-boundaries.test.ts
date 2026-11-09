@@ -94,7 +94,6 @@ describe('MCP proxy boundaries (CAN-4125)', () => {
         'electron',
         '../lib/window-send',
         '../canopy-tools/show-files-runtime',
-        '../canopy-tools/show-visual-host',
         './agent-mcp-connections',
       ])
         expect(imported).not.toContain(forbidden);
@@ -104,7 +103,6 @@ describe('MCP proxy boundaries (CAN-4125)', () => {
         'requestShowFiles',
         'mainWindowOnlyToolSurfaces',
         'sendToWindow',
-        'createShowVisualHost',
       ])
         expect(names).not.toContain(forbidden);
     }
@@ -115,6 +113,11 @@ describe('MCP proxy boundaries (CAN-4125)', () => {
     const imported = imports.map(({ specifier }) => specifier);
     expect(imported).not.toContain('./agent-mcp-connections');
     expect(imported.filter((s) => s.startsWith('../plugins/'))).toEqual([]);
+    // ShowVisual stages through core.chat.visual.stage, not the port (CAN-5996).
+    expect(imported).not.toContain('../canopy-tools/show-visual-host');
+    expect(imports.flatMap((entry) => entry.names)).not.toContain(
+      'createShowVisualHost',
+    );
     for (const entry of imports)
       if (entry.specifier === './canopy-tool-router')
         expect(entry.typeOnly).toBe(true);

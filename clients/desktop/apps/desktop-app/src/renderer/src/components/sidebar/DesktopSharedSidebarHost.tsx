@@ -1,3 +1,4 @@
+import { inlineFailureText } from '@/lib/inline-app-error';
 import { SidebarChatsSectionMenuItems } from '@canopy/ui-shared/components';
 import {
   noteChatIntent,
@@ -66,7 +67,6 @@ import {
 } from '@canopy/ui-shared';
 import { openArchivedOverviewSurface } from '@/lib/archivedContainerNavigation';
 import { useNavigationStore } from '@/stores/navigationStore';
-import { resolveNavigationTarget } from '@/lib/navigation/page-availability';
 import { useDesktopPendingProjects } from './desktopPendingProjects';
 import { SidebarProjectsSkeleton } from './SidebarProjectsSkeleton';
 import { useHomeComposerStore } from '@/stores/homeComposerStore';
@@ -124,6 +124,8 @@ import {
   isWorktreeLaunchActiveInIndex,
   resolveWorktreeLaunchEntry,
   runWorktreeLaunch,
+  stopWorktreeScripts,
+  worktreesWithStoppableScripts,
 } from '@/components/worktree/worktree-launch';
 import { WorktreeLaunchIdSlot } from '@/components/worktree/WorktreeLaunchStopControl';
 import type { ScriptEntry } from '@/components/activity/script-utils';
@@ -179,6 +181,7 @@ import {
 import { useCanopyProjectIdentityAvailable } from '@/hooks/useCanopyCloudConnected';
 import { openNewCoworkTaskFromSidebar } from '@/lib/openNewCoworkTaskFromSidebar';
 import { SidebarCoworkWorkspaceRow } from './SidebarCoworkWorkspaceRow';
+import { CloudCoworkSidebarRows } from '@/cloud-chats/CloudCoworkSidebarRows';
 import { StickyWorkspaceControls } from './SidebarWorkspacesSection';
 import {
   SidebarPinMenuItem,
@@ -1482,6 +1485,15 @@ export function DesktopSharedSidebarHost({
   const activeScriptRuns = useScriptsStore(
     useShallow((state) => indexActiveScriptRuns(state.runs)),
   );
+  // Worktrees whose menu offers Stop running scripts: a run still running,
+  // not one already stopping.
+  const stoppableScriptWorktreeKeys = useScriptsStore(
+    useShallow((state) => worktreesWithStoppableScripts(state.runs)),
+  );
+  const stoppableScriptWorktrees = useMemo(
+    () => new Set(stoppableScriptWorktreeKeys),
+    [stoppableScriptWorktreeKeys],
+  );
   // Every code worktree's launch script, resolved once per project or script
   // change rather than per row per render (the legacy adapter memoized each
   // row's the same way).
@@ -1747,6 +1759,7 @@ export function DesktopSharedSidebarHost({
           )}
         </OrgProjectPlaceholderSection>
       )}
+      <CloudCoworkSidebarRows />
       <SharedContainerSidebarSection
         expanded={sharedWithMeExpanded}
         onExpandedChange={setSharedWithMeExpanded}
@@ -2023,6 +2036,12 @@ export function DesktopSharedSidebarHost({
           if (!launchEntry || isLaunchRunning(workspaceId, worktreeId)) return;
           runWorktreeLaunch(workspaceId, worktreeId, launchEntry);
         }}
+        hasRunningScripts={(worktreeId, workspaceId) =>
+          stoppableScriptWorktrees.has(worktreeKey(workspaceId, worktreeId))
+        }
+        onStopRunningScripts={(workspaceId, worktreeId) => {
+          void stopWorktreeScripts(workspaceId, worktreeId);
+        }}
         renderWorktreeIdSlot={({ workspace, worktree, pinnedSurface }) =>
           contextMenuWorkspaceIds.has(workspace.localId) ? (
             <WorktreeLaunchIdSlot
@@ -2191,11 +2210,11 @@ export function DesktopSharedSidebarHost({
         }}
         onGroupError={(_workspaceId, error): void => {
           const navigation = useNavigationStore.getState();
-          const visiblePage = resolveNavigationTarget(navigation.activePage);
           const archive = useArchivedContainersStore.getState();
           const shared = useSharedContainerReplicasStore.getState();
-          // Match the page and overlays that can cover WorktreeErrorNotice
-          // inside MainPage; a covered notice cannot own the visible failure.
+          // WorktreeErrorNotice sits over every page in the main frame; only
+          // the overlays that cover that frame can hide it, and a covered
+          // notice cannot own the visible failure.
           const archiveCoversNotice = [archive.viewer, archive.overview].some(
             (entry) =>
               entry !== null &&
@@ -2204,8 +2223,8 @@ export function DesktopSharedSidebarHost({
           );
           if (
             error instanceof WorktreeCreationNoticeError &&
-            useProjectsStore.getState().worktreeError === error.message &&
-            (visiblePage === 'main' || visiblePage === 'kanban') &&
+            inlineFailureText(useProjectsStore.getState().worktreeError) ===
+              error.message &&
             !navigation.settingsOpen &&
             !useSidebarPageHandoffStore.getState().coversMainShell &&
             !archiveCoversNotice &&
@@ -2237,7 +2256,9 @@ export function DesktopSharedSidebarHost({
           )
             return { status: 'pending' };
           if (!created) {
-            const error = useProjectsStore.getState().worktreeError;
+            const error = inlineFailureText(
+              useProjectsStore.getState().worktreeError,
+            );
             if (error && summarizeCommandFailure(error).summary !== '')
               throw new WorktreeCreationNoticeError(error);
             throw new Error('Worktree could not be created. Try again.');

@@ -1,6 +1,6 @@
 // Renderer-side reads of the canonical three-state Codex speed. The shared
 // semantics (speed is the source of truth, `fastMode` is its derived
-// projection) live in `@canopy/desktop-shared/lib/codex-speed`; these helpers
+// projection) live in `@canopy/execution-engine/lib/codex-speed`; these helpers
 // only adapt them to runtime chat tabs and persisted tab records.
 import {
   DEFAULT_CODEX_SPEED,
@@ -8,7 +8,7 @@ import {
   isCodexSpeed,
   readCodexSpeedRecord,
   type CodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import type {
   AgentModelConfig,
   ResolvedAgentModelConfig,

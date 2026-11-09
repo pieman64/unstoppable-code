@@ -1,3 +1,7 @@
+import {
+  ensureWorkspaceWriteDirectory,
+  assertCoworkWorkspaceRootPresent,
+} from './cowork-folder-guard';
 /**
  * Shared resolver for the attachments directory agents and chat surfaces
  * read/write for a given chat target. One rule everywhere:
@@ -23,6 +27,7 @@ import {
 } from './paths';
 import { resolveCoworkWorkspaceId } from './cowork-migration-map';
 import {
+  STANDALONE_CHAT_PROJECT_ID,
   APP_ADVISOR_PROJECT_ID,
   type WorkspaceAttachmentItem,
 } from '@canopy/desktop-shared/types';
@@ -37,7 +42,11 @@ export function resolveAgentAttachmentsDir(
   }
   if (isCoworkWorkspace(projectId)) {
     return getCoworkManagedSubdir(
-      getCoworkWorkspaceRootDir(resolveCoworkWorkspaceId(projectId)),
+      getCoworkWorkspaceRootDir(
+        resolveCoworkWorkspaceId(
+          projectId === STANDALONE_CHAT_PROJECT_ID ? worktreeId : projectId,
+        ),
+      ),
       'attachments',
     );
   }
@@ -80,4 +89,19 @@ export async function listAttachmentsInDir(
   return items
     .filter((item): item is WorkspaceAttachmentItem => item !== null)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** Async write preparation; the pure resolver above is only an address. */
+export async function prepareAgentAttachmentsDir(
+  projectId: string,
+  worktreeId: string,
+  mode?: number,
+): Promise<string> {
+  if (isCoworkWorkspace(projectId))
+    await assertCoworkWorkspaceRootPresent(
+      projectId === STANDALONE_CHAT_PROJECT_ID ? worktreeId : projectId,
+    );
+  const dir = resolveAgentAttachmentsDir(projectId, worktreeId);
+  await ensureWorkspaceWriteDirectory(dir, mode);
+  return dir;
 }

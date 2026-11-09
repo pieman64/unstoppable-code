@@ -15,7 +15,7 @@ import {
   listWorkspaceWorktreeRepoEntries,
   type WorktreeRepoEntry,
 } from './worktree-repo-entries';
-import { restoreToSnapshot } from './git';
+import { restoreSnapshotThroughWorker } from '../canopy-runtime/worker-git-local-mutations-dispatch';
 import {
   captureWorkingTreeSha,
   diffTreeObjects,
@@ -273,7 +273,7 @@ export async function resetChatToPoint(
   for (let index = 0; index < repoTargets.length; index += 1) {
     const target = repoTargets[index];
     try {
-      await restoreToSnapshot(target.repoPath, {
+      await restoreSnapshotThroughWorker(target.repoPath, {
         treeSha: target.ref.startTree,
         ...(target.ref.startHeadCommitSha
           ? { headCommitSha: target.ref.startHeadCommitSha }

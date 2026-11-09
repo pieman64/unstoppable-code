@@ -1,5 +1,11 @@
+import {
+  assertCoworkChatRootPresent,
+  assertCoworkWorkspaceRootPresent,
+} from '../lib/cowork-folder-guard';
 import { isDeepStrictEqual } from 'node:util';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { ownedPipelineToChatAction } from '@canopy/desktop-shared/lib/chat-automation-conversion';
+import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { getSharedPipelineForExecutionContext } from '../pipelines/canopy-server-client';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
 import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
@@ -11,7 +17,7 @@ import {
   pipelineContextResources,
   localPipelineContextResources,
 } from '@canopy/desktop-shared/node/background-execution-context';
-import type { ResourceContextDecision } from '@canopy/desktop-shared/lib/resource-context-policy';
+import type { ResourceContextDecision } from '@canopy/execution-engine/lib/resource-context-policy';
 import {
   resourceContextEnabled,
   resourceContextSnapshot,
@@ -113,7 +119,7 @@ import {
   type LaneCredentialScope,
 } from '../lib/default-model-lane-resolver';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
-import { getTriggerTypes } from '@canopy/desktop-shared/types/pipeline';
+import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import { getPersistedClaudeChatInterfaceMode } from '../lib/claude-tui-chats';
 import {
   getNextCronRun,
@@ -238,10 +244,29 @@ import type {
   PipelinePreferenceLocator,
   PipelineModelAliasPreference,
   PipelinePluginCollectionPreference,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { lastChatSendRunResult } from './pipeline-run-chat-sends';
-import { deleteOwnedPipeline } from './owned-pipeline';
+import {
+  deleteOwnedPipeline,
+  ownedChatPipelineState,
+  ownedPipelineId,
+} from './owned-pipeline';
+import {
+  WORKFLOW_DELETE_FAILED,
+  WORKFLOW_DELETE_RUNNING,
+  WORKFLOW_RELEASE_FAILED,
+  addedScheduleRefusal,
+  isSharedByOtherSchedules,
+  isWorkflowPagePipeline,
+  keepLastScheduleValues,
+  keptWorkflowPipeline,
+  markSharedWorkflowPage,
+  pipelineSchedules,
+  releaseOwnedPipeline,
+  scheduledUserPipelineId,
+  type OwnedPipelineRelease,
+} from './workflow-schedules';
 import {
   repinConvertedPackageInstall,
   verifyOwnedPipelinePackage,
@@ -432,6 +457,15 @@ function missedOccurrenceRunId(
   return `missed-${digest}`;
 }
 
+/** A pipeline action's run values; `undefined` for any other action. */
+function scheduleInputsOf(
+  action: AutomationAction,
+): Record<string, string> | undefined {
+  return action.type === 'worktree_pipeline'
+    ? (action.inputs ?? {})
+    : undefined;
+}
+
 /** Facts main records from a trusted caller, never from a request body. */
 export interface AutomationTrustedWrite {
   agentAuthor?: PipelineAgentAuthor | null;
@@ -461,6 +495,13 @@ export interface AutomationTrustedUpdate extends AutomationTrustedWrite {
    * refused or the activity isn't stored.
    */
   regeneratesOwnedPipeline?: () => Promise<OwnedPipelineReplacement>;
+  /**
+   * CAN-5782: releases the pipeline an owner leaves while other records run
+   * it. It runs inside the queued mutation after every refusal, just before
+   * the write, so a refused update changes no ownership; `restore` puts the
+   * marker back when the write fails.
+   */
+  releasesOwnedPipeline?: OwnedPipelineRelease;
 }
 
 /** A trusted create:the write's facts, an agent sender and its guard. */
@@ -1748,6 +1789,15 @@ export class AutomationsService {
     return contextSnapshot(file);
   }
 
+  /**
+   * Every stored activity, whatever context is selected: main's ownership
+   * facts (CAN-5782) count schedules in every context. Never shown as is.
+   */
+  async allActivities(): Promise<ScheduledActivity[]> {
+    const file = await this.ensureFile();
+    return file.activities.map(cloneActivity);
+  }
+
   /** Read activity visibility using a trusted caller's owner context. */
   async listForContext(
     context: WorkspaceContext,
@@ -1995,6 +2045,61 @@ export class AutomationsService {
       validateAutomationActionForWrite(activity.action) ??
       this.targetCompatibilityRefusal(activity, activity.executionContext)
     );
+  }
+
+  /**
+   * CAN-5782: a workflow schedule saves a global `worktree_pipeline`, whose
+   * check reads only the pipeline and its owner. Where it runs is in its
+   * inputs: checked here as the chat action they stand for would be, or, for
+   * a pipeline that doesn't convert back, input by input, so a stale task or
+   * chat is refused at Save instead of failing every run.
+   */
+  private async workflowScheduleDestinationRefusal(
+    activity: ScheduledActivity,
+    activities: readonly ScheduledActivity[],
+  ): Promise<string | null> {
+    const { action } = activity;
+    const pipelineId = scheduledUserPipelineId(activity);
+    if (
+      action.type !== 'worktree_pipeline' ||
+      pipelineId === undefined ||
+      !isWorkflowPagePipeline(activities, pipelineId)
+    )
+      return null;
+    const stored = pipelineStore.getStoredPipelineBySource('user', pipelineId);
+    // A pipeline that can't be read fails its runs with its own error.
+    if (!stored.success || !stored.data) return null;
+    const inputs = action.inputs ?? {};
+    const chat = ownedPipelineToChatAction(
+      stored.data.content,
+      inputs,
+      isCoworkWorkspace,
+      ownedChatPipelineState(action, pipelineId),
+    );
+    if (chat) return this.nativeTargetRefusal({ ...activity, action: chat });
+    const projectId = inputs.project_id;
+    if (!projectId) return null;
+    const { items } = await readAllSidebarItems();
+    const workspace = items.find((item) => item.id === projectId);
+    if (!workspace)
+      return 'Choose an accessible project in the automation editor.';
+    const taskId = inputs.task_id;
+    if (!taskId) return null;
+    try {
+      await this.assertPipelineDestinationExists(workspace, {
+        kind: 'task',
+        workspaceId: projectId,
+        taskId,
+      });
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    const chatId = inputs.chat_id;
+    if (!chatId || workspace.type === 'cowork') return null;
+    const tabs = await readChatTabsFile(projectId, taskId);
+    return tabs.tabs.some((tab) => tab.id === chatId)
+      ? null
+      : 'Choose an existing chat in the automation editor.';
   }
 
   private async targetCompatibilityRefusal(
@@ -2599,6 +2704,13 @@ export class AutomationsService {
     return this.enqueueMutation(async () => {
       if (trusted.authorize && !(await trusted.authorize()))
         return { ok: false, error: 'Automation creation was not authorized.' };
+      if (request.action.type === 'standalone_prompt')
+        await assertCoworkWorkspaceRootPresent(request.action.chatProjectId);
+      if (request.action.type === 'worktree_session_prompt')
+        await assertCoworkChatRootPresent(
+          request.action.workspaceId,
+          request.action.worktreeId,
+        );
       const releaseTarget =
         request.enabled === false
           ? (): void => undefined
@@ -2678,6 +2790,23 @@ export class AutomationsService {
             return { ok: false, error: globalOwner.error };
           activity.executionContext = globalOwner.context ?? 'personal';
         }
+        // CAN-5782: a single-schedule workflow page takes no second schedule.
+        const scheduledPipeline = scheduledUserPipelineId(activity);
+        const addedRefusal =
+          scheduledPipeline === undefined
+            ? undefined
+            : addedScheduleRefusal(
+                file.activities,
+                undefined,
+                scheduledPipeline,
+              );
+        if (addedRefusal) return { ok: false, error: addedRefusal };
+        const destinationRefusal =
+          await this.workflowScheduleDestinationRefusal(
+            activity,
+            file.activities,
+          );
+        if (destinationRefusal) return { ok: false, error: destinationRefusal };
         const targetRefusal = await this.targetCompatibilityRefusal(activity);
         if (targetRefusal) return { ok: false, error: targetRefusal };
         // Every automation gets an owner while organization projects are on,
@@ -2716,6 +2845,8 @@ export class AutomationsService {
         activity.nextRunAt = nextRunForEnabledActivity(activity, file, now);
         file.activities.push(activity);
         await this.persistAndNotify(file);
+        if (scheduledPipeline !== undefined)
+          markSharedWorkflowPage(file.activities, scheduledPipeline);
         registerAutomationInstall(activity);
         return { ok: true, activity: cloneActivity(activity), created: true };
       } finally {
@@ -2827,6 +2958,24 @@ export class AutomationsService {
       const normalizedRequestedAction = request.action
         ? normalizeAutomationAction(request.action)
         : undefined;
+      // CAN-5782: retargeting onto a single-schedule workflow page that
+      // already has a schedule is refused, as a create is.
+      const retargetedPipeline =
+        normalizedRequestedAction === undefined
+          ? undefined
+          : scheduledUserPipelineId({ action: normalizedRequestedAction });
+      const startsTargeting =
+        retargetedPipeline !== scheduledUserPipelineId(activity)
+          ? retargetedPipeline
+          : undefined;
+      if (startsTargeting !== undefined) {
+        const refusal = addedScheduleRefusal(
+          file.activities,
+          activity.id,
+          startsTargeting,
+        );
+        if (refusal) return { ok: false, error: refusal };
+      }
       const effectiveAction = normalizedRequestedAction ?? activity.action;
       const sharedUpdateRebinds =
         request.installedFrom !== undefined &&
@@ -2836,6 +2985,21 @@ export class AutomationsService {
       const candidate = cloneActivity(activity);
       candidate.action = effectiveAction;
       candidate.enabled = effectiveEnabled;
+      // CAN-5782: a schedule whose run values change is checked where they
+      // now point.
+      if (
+        normalizedRequestedAction !== undefined &&
+        !isDeepStrictEqual(
+          scheduleInputsOf(normalizedRequestedAction),
+          scheduleInputsOf(activity.action),
+        )
+      ) {
+        const refusal = await this.workflowScheduleDestinationRefusal(
+          candidate,
+          file.activities,
+        );
+        if (refusal) return { ok: false, error: refusal };
+      }
       // A pipeline with no project keeps the owner it was saved with, also
       // when it is converted from a project destination.
       const effectiveGlobal = isGlobalPipelineAutomationAction(effectiveAction);
@@ -2990,6 +3154,12 @@ export class AutomationsService {
             return { ok: false, error: refusal };
           }
         }
+        // CAN-5782: nothing can refuse the update past here.
+        if (
+          trusted.releasesOwnedPipeline &&
+          !trusted.releasesOwnedPipeline.release()
+        )
+          return { ok: false, error: WORKFLOW_RELEASE_FAILED };
         // What the cache goes back to when the write below fails.
         const stored = cloneActivity(activity);
         // Only after the refusal: a refused update records nothing.
@@ -3078,9 +3248,12 @@ export class AutomationsService {
           // stored one, so a caller reading the list sees it didn't land.
           const index = file.activities.indexOf(activity);
           if (index !== -1) file.activities[index] = stored;
+          trusted.releasesOwnedPipeline?.restore();
           throw error;
         }
         regeneration.written = true;
+        if (startsTargeting !== undefined)
+          markSharedWorkflowPage(file.activities, startsTargeting);
         this.surfaces?.onChange?.(await contextSnapshot(file));
         if (request.installedFrom !== undefined) {
           // Applying a shared update re-registers the new hash.
@@ -3128,6 +3301,28 @@ export class AutomationsService {
         if (!current || !(await authorize(cloneActivity(current))))
           return { ok: false, error: 'Activity not found.' };
       }
+      // CAN-5782: Delete on a workflow page's Library row removes the whole
+      // workflow in this one mutation, so no run starts and no schedule
+      // changes between its parts.
+      const requested = file.activities.find(
+        (entry) => entry.id === request.id,
+      );
+      const workflowPipelineId =
+        request.workflow === true && requested !== undefined
+          ? scheduledUserPipelineId(requested)
+          : undefined;
+      if (
+        requested !== undefined &&
+        workflowPipelineId !== undefined &&
+        isWorkflowPagePipeline(file.activities, workflowPipelineId)
+      )
+        return await this.deleteWorkflowPage(
+          file,
+          requested,
+          workflowPipelineId,
+          authorize,
+          callerContext,
+        );
       if (isActivityRunning(file, request.id)) {
         return {
           ok: false,
@@ -3140,29 +3335,126 @@ export class AutomationsService {
       );
       if (index === -1) return { ok: false, error: 'Activity not found.' };
       await assertAutomationContext(file.activities[index], callerContext);
+      // CAN-5782: Remove on a workflow page's last schedule may keep its
+      // pipeline, unless its package binding or agent grant can't outlive
+      // the record.
+      const keep = keptWorkflowPipeline(
+        file.activities,
+        file.activities[index],
+        request.keepPipeline === true,
+      );
+      if (keep?.refusal) return { ok: false, error: keep.refusal };
+      // CAN-5782: a pipeline that stays is released before its owner goes,
+      // so its hiding facts are durable first; one that didn't persist
+      // refuses the delete.
+      const target = file.activities[index];
+      const owned = ownedPipelineId(target);
+      if (
+        owned !== undefined &&
+        (keep !== undefined ||
+          isSharedByOtherSchedules(file.activities, target, owned)) &&
+        !releaseOwnedPipeline(target, owned, keep?.lastScheduleValues)
+      )
+        return { ok: false, error: WORKFLOW_RELEASE_FAILED };
+      // The last schedule's values, on a page it didn't own, persist before
+      // the record that holds them goes.
+      if (
+        keep !== undefined &&
+        owned === undefined &&
+        !keepLastScheduleValues(keep.pipelineId, keep.lastScheduleValues)
+      )
+        return { ok: false, error: WORKFLOW_RELEASE_FAILED };
       const [activity] = file.activities.splice(index, 1);
       this.enabledIntentRevisions.delete(activity.id);
       file.recentRuns = file.recentRuns.filter(
         (run) => run.activityId !== request.id,
       );
       await this.persistAndNotify(file);
-      unregisterAutomationInstall(activity.id, activity.installedFrom);
-      await removeAutomationCapabilityPackageInstall(request.id).catch(
-        () => undefined,
-      );
-      await this.archive.deleteActivityArchive(request.id).catch((error) => {
-        // The activity deletion is already durable. Keep an orphaned archive
-        // rather than turning a cleanup failure into history loss; startup
-        // retention maintenance can safely age its records out.
-        logMainProcessError(
-          'Failed to delete orphaned automation run archive',
-          error,
-        );
-      });
-      // A converted chat automation's own pipeline goes with it (CAN-4551).
+      await this.cleanUpDeletedActivity(activity);
+      // A converted chat automation's own pipeline goes with it (CAN-4551),
+      // unless another schedule runs it or Remove keeps it (CAN-5782).
+      // Released above when it stays; otherwise deleted with its owner.
       await deleteOwnedPipeline(activity);
       return { ok: true, activity: cloneActivity(activity) };
     });
+  }
+
+  /** What a deleted record leaves behind once its deletion is durable. */
+  private async cleanUpDeletedActivity(
+    activity: ScheduledActivity,
+  ): Promise<void> {
+    unregisterAutomationInstall(activity.id, activity.installedFrom);
+    await removeAutomationCapabilityPackageInstall(activity.id).catch(
+      () => undefined,
+    );
+    await this.archive.deleteActivityArchive(activity.id).catch((error) => {
+      // The activity deletion is already durable. Keep an orphaned archive
+      // rather than turning a cleanup failure into history loss; startup
+      // retention maintenance can safely age its records out.
+      logMainProcessError(
+        'Failed to delete orphaned automation run archive',
+        error,
+      );
+    });
+  }
+
+  /**
+   * Deletes a workflow page (CAN-5782), inside the caller's mutation: every
+   * schedule that runs `pipelineId`, and the pipeline. A schedule the caller
+   * can't reach, or one that is running, refuses it before anything
+   * changes. The pipeline goes first, so a refusal there leaves the
+   * schedules as they were; once it is gone, the schedules go too.
+   */
+  private async deleteWorkflowPage(
+    file: AutomationsFile,
+    requested: ScheduledActivity,
+    pipelineId: string,
+    authorize: ((activity: ScheduledActivity) => Promise<boolean>) | undefined,
+    callerContext: WorkspaceContext | undefined,
+  ): Promise<AutomationMutationResponse> {
+    const schedules = pipelineSchedules(file.activities, pipelineId);
+    for (const schedule of schedules) {
+      if (authorize && !(await authorize(cloneActivity(schedule))))
+        return { ok: false, error: 'Activity not found.' };
+      await assertAutomationContext(schedule, callerContext);
+    }
+    if (schedules.some((schedule) => isActivityRunning(file, schedule.id)))
+      return { ok: false, error: WORKFLOW_DELETE_RUNNING };
+    const [{ deleteUserPipeline }, { AUTOMATION_PIPELINE_CALLER }] =
+      await Promise.all([
+        import('../canopy-runtime/pipeline-definition-dispatch'),
+        import('./chat-automation-conversion'),
+      ]);
+    const deleted = await deleteUserPipeline(
+      pipelineId,
+      null,
+      AUTOMATION_PIPELINE_CALLER,
+    );
+    if (!deleted.success) {
+      logMainProcessError('Failed to delete a workflow page', {
+        operation: 'delete-workflow-page',
+      });
+      // A delete that committed before a cleanup step failed is still a
+      // delete: its schedules go too, rather than run a missing pipeline.
+      if (pipelineStore.getStoredPipelineBySource('user', pipelineId).success)
+        return { ok: false, error: WORKFLOW_DELETE_FAILED };
+    }
+    const ids = new Set(schedules.map((schedule) => schedule.id));
+    const { activities, recentRuns } = file;
+    file.activities = activities.filter((entry) => !ids.has(entry.id));
+    file.recentRuns = recentRuns.filter((run) => !ids.has(run.activityId));
+    try {
+      await this.persistAndNotify(file);
+    } catch (error) {
+      // Memory follows disk, which still has the schedules.
+      file.activities = activities;
+      file.recentRuns = recentRuns;
+      throw error;
+    }
+    for (const id of ids) this.enabledIntentRevisions.delete(id);
+    for (const schedule of schedules)
+      await this.cleanUpDeletedActivity(schedule);
+    return { ok: true, activity: cloneActivity(requested) };
   }
 
   /**
@@ -4526,6 +4818,7 @@ export class AutomationsService {
         };
       }
       case 'standalone_prompt': {
+        await assertCoworkWorkspaceRootPresent(action.chatProjectId);
         if (!this.surfaces) {
           throw new Error('Automations service is not configured.');
         }

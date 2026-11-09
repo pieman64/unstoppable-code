@@ -25,6 +25,7 @@ import {
   GOLDEN_INVALID_PIPELINE_YAML,
 } from '@canopy/desktop-shared/node/pipelines/__tests__/golden-fixtures';
 import {
+  deleteStoredPipeline,
   getStoredPipelineText,
   listStoredPipelines,
 } from '@canopy/desktop-shared/pipelines/store';
@@ -381,5 +382,36 @@ describe('core pipeline definitions on the desktop', () => {
       diagnostics: [{ code: 'core.pipeline.definitionInvalid' }],
     });
     expect(listStoredPipelines().data?.length).toBe(before);
+  });
+
+  it('summarizes a workflow pipeline with its workflow trigger (CAN-5782)', async () => {
+    const id = await world.saveUserPipeline(
+      [
+        'pipeline:',
+        '  name: Golden core workflow',
+        '  on:',
+        '    workflow:',
+        '      inputs:',
+        '        topic: { type: string }',
+        '  jobs:',
+        '    run:',
+        '      steps:',
+        '        - run: echo workflow',
+        '',
+      ].join('\n'),
+      'pipeline:core-workflow',
+    );
+    try {
+      const result = await dispatcher().query(
+        'core.pipeline.definition.list',
+        { scope },
+        { caller },
+      );
+      expect(
+        result.items.find((item) => item.definitionId === id)?.triggerTypes,
+      ).toEqual(['workflow']);
+    } finally {
+      deleteStoredPipeline(id);
+    }
   });
 });

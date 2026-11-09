@@ -5,12 +5,12 @@ import {
   CHAT_TRANSIENT_RETRY_MAX_ATTEMPTS,
   classifyAgentFailure,
   isRetryableCodexTransportFailureEvent,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 import {
   computeUsageLimitResumePrompt,
   USAGE_LIMIT_RESUME_CONTINUE_PROMPT,
   type UsageLimitResumePrompt,
-} from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+} from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import {
   IPC_CHANNELS,
   PIPELINE_EDITOR_PROJECT_ID,

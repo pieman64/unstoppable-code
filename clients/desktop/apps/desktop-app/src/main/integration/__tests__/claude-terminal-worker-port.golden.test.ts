@@ -18,6 +18,7 @@ import { DESKTOP_INTEGRATION_TOKEN_ENV_VAR } from '@canopy/desktop-shared/lib/de
 import type { CanopyWorktreeSessionRoute } from '../../mcp/http-proxy-service';
 import type * as RoutedWorkerTerminalModule from '../../terminal/routed-worker-terminal';
 import type * as RecordingTerminalEngineModule from './helpers/recording-terminal-engine';
+import type * as DaemonTerminalRouteModule from '../../terminal/daemon-terminal-route';
 import type { RecordingTerminalEngine } from './helpers/recording-terminal-engine';
 
 type MockTabsFile = {
@@ -99,16 +100,7 @@ const mockReadChatTabsFile = jest.fn<Promise<MockTabsFile>, [string, string]>(
   () => Promise.resolve({ tabs: [{ id: 'chat' }] }),
 );
 const mockGetInitialChatTitlePrompt = jest.fn(
-  async (): Promise<string | null> => {
-    const { tabs } = await mockReadChatTabsFile('p', 'w');
-    const tab = tabs.find((candidate) => candidate.id === 'chat');
-    return !tab ||
-      tab.description ||
-      tab.customTitle ||
-      tab.automaticTitleState === 'closed'
-      ? null
-      : 'summarize me';
-  },
+  (): Promise<string | null> => Promise.resolve(null),
 );
 const mockEnsureStarted = jest.fn<Promise<void>, [number?]>(() =>
   Promise.resolve(),
@@ -392,25 +384,11 @@ jest.mock('../../lib/chat-tabs', () => ({
   },
 }));
 
-// Set to the store's product-default projection to simulate unreadable authority.
-const mockUnreadableAuthorityPreferences: Record<string, unknown> | null = null;
 jest.mock('../../lib/preferences-store', () => ({
-  readPreferencesFileDetailed: async (options?: {
-    includeServed?: boolean;
-  }): Promise<{
+  readPreferencesFileDetailed: async (): Promise<{
     preferences: Awaited<ReturnType<typeof mockReadPreferencesFile>>;
-    authority: 'ok' | 'unreadable';
-    served?: Awaited<ReturnType<typeof mockReadPreferencesFile>>;
-  }> => {
-    const served = await mockReadPreferencesFile();
-    if (!mockUnreadableAuthorityPreferences)
-      return { preferences: served, authority: 'ok' };
-    return {
-      preferences: mockUnreadableAuthorityPreferences,
-      authority: 'unreadable',
-      ...(options?.includeServed === true ? { served } : {}),
-    };
-  },
+    authority: 'ok';
+  }> => ({ preferences: await mockReadPreferencesFile(), authority: 'ok' }),
   // Not degraded: approval resolution fails closed when this is non-null.
   peekPreferencesLoadError: (): null => null,
   get readPreferencesFile(): typeof mockReadPreferencesFile {
@@ -588,13 +566,34 @@ jest.mock('../../terminal/persistence', () => ({
     markTerminalExited: (): void => undefined,
   },
 }));
+jest.mock('../../terminal/daemon-terminal-route', () => ({
+  ...jest.requireActual<typeof DaemonTerminalRouteModule>(
+    '../../terminal/daemon-terminal-route',
+  ),
+  selectDaemonManagedTerminalTarget: jest.fn(() => Promise.resolve(null)),
+  sweepOrphanedDaemonManagedTerminals: jest.fn(() => Promise.resolve()),
+}));
 
 import { getBundledClaudeBinaryPath } from '../../pipelines/config-paths';
 import { DefaultClaudeTerminalSessionService } from '../../integration/claude-terminal-session-service';
+import { getRegisteredResumeHandler } from '../../deferred-tools/reload-coordinator';
 
 const mockEngine = jest.requireMock<{ mockEngine: RecordingTerminalEngine }>(
   '../../terminal/worker-terminal',
 ).mockEngine;
+const mockSelectDaemonManagedTerminalTarget = jest.mocked(
+  jest.requireMock<typeof DaemonTerminalRouteModule>(
+    '../../terminal/daemon-terminal-route',
+  ).selectDaemonManagedTerminalTarget,
+);
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
 
 const TARGET = { projectId: 'p', worktreeId: 'w', chatId: 'chat-1' };
 const LAUNCH = { ...TARGET, cols: 80, rows: 24 };
@@ -731,6 +730,128 @@ describe('Claude Code terminal mode on the worker.terminal port (CAN-5097)', () 
       response.sessionKey,
     );
   });
+  it('output that arrived before the launch resumed is marked as first output', async () => {
+    const replayText = jest
+      .spyOn(mockEngine, 'replayText')
+      .mockImplementation((id) => (id === 'terminal-1' ? 'x' : ''));
+    const service = createService();
+    try {
+      await service.launch(LAUNCH);
+    } finally {
+      replayText.mockRestore();
+    }
+
+    expect(typeof service.getState('p', 'w', 'chat-1')?.firstOutputAt).toBe(
+      'number',
+    );
+    expect(
+      mockRecordSessionDiagnostic.mock.calls.filter(
+        ([diagnostic]) => diagnostic.kind === 'claude_terminal_first_output',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('a terminal gone before the launch resumed ends the runtime as exited', async () => {
+    const get = jest.spyOn(mockEngine, 'get').mockReturnValue(null);
+    let response: Awaited<
+      ReturnType<DefaultClaudeTerminalSessionService['launch']>
+    >;
+    try {
+      response = await createService().launch(LAUNCH);
+    } finally {
+      get.mockRestore();
+    }
+
+    expect(response.state.turnState).toBe('exited');
+    expect(mockUnregisterCanopyWorktreeSessionRoute).toHaveBeenCalledWith(
+      response.sessionKey,
+    );
+  });
+
+  it('a launch cleaned up while its terminal started kills that terminal', async () => {
+    const target = deferred<null>();
+    mockSelectDaemonManagedTerminalTarget.mockImplementationOnce(
+      () => target.promise,
+    );
+    const service = createService();
+    const launching = service.launch(LAUNCH);
+    const outcome = launching.then(
+      () => 'resolved',
+      (error: unknown) => (error instanceof Error ? error.message : 'rejected'),
+    );
+    while (mockSelectDaemonManagedTerminalTarget.mock.calls.length === 0)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+    // A plan toggle tears the runtime down at once; cleanup waits for the launch.
+    await service.setPlanMode('p', 'w', 'chat-1', true);
+    target.resolve(null);
+
+    await expect(outcome).resolves.toBe(
+      'Terminal launch was superseded while its terminal started.',
+    );
+    expect(mockEngine.kills).toContainEqual([
+      'terminal-1',
+      { signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL },
+    ]);
+  });
+  it('a hook received while a placed terminal started keeps its turn running (review fix)', async () => {
+    const target = deferred<null>();
+    mockSelectDaemonManagedTerminalTarget.mockImplementationOnce(
+      () => target.promise,
+    );
+    const service = createService();
+    const launching = service.launch(LAUNCH);
+    while (mockSelectDaemonManagedTerminalTarget.mock.calls.length === 0)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    const sessionKey =
+      mockRegisterCanopyWorktreeSessionRoute.mock.calls[0]?.[0]?.sessionKey ??
+      '';
+
+    // A daemon-placed CLI can submit its first prompt before the create resolves.
+    await service.markHookState({
+      sessionKey,
+      hookEventName: 'UserPromptSubmit',
+      hookPayload: { prompt: 'initial prompt' },
+    });
+    target.resolve(null);
+    await launching;
+
+    expect(service.getState('p', 'w', 'chat-1')?.turnState).toBe('running');
+  });
+  it('a placed terminal that starts while cleanup persists its exit is killed (review fix)', async () => {
+    const target = deferred<null>();
+    mockSelectDaemonManagedTerminalTarget.mockImplementationOnce(
+      () => target.promise,
+    );
+    const service = createService();
+    const launching = service.launch(LAUNCH);
+    const outcome = launching.then(
+      () => 'resolved',
+      (error: unknown) => (error instanceof Error ? error.message : 'rejected'),
+    );
+    while (mockSelectDaemonManagedTerminalTarget.mock.calls.length === 0)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+    // Hold the teardown's exit-state write, so the record stays registered as exited.
+    const persisted = deferred<undefined>();
+    mockWriteChatTabsFile.mockImplementationOnce(() => persisted.promise);
+    const toggling = service.setPlanMode('p', 'w', 'chat-1', true);
+    while (service.getState('p', 'w', 'chat-1')?.turnState !== 'exited')
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    target.resolve(null);
+    for (let i = 0; i < 5; i += 1)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    persisted.resolve(undefined);
+    await toggling;
+
+    await expect(outcome).resolves.toBe(
+      'Terminal launch was superseded while its terminal started.',
+    );
+    expect(mockEngine.kills).toContainEqual([
+      'terminal-1',
+      { signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL },
+    ]);
+  });
   it('a settings restart tears down only an idle live terminal', async () => {
     const idle = createService();
     await idle.launch(LAUNCH);
@@ -767,5 +888,23 @@ describe('Claude Code terminal mode on the worker.terminal port (CAN-5097)', () 
     expect(mockBuildClaudeTerminalLaunchConfig).toHaveBeenCalledWith(
       expect.objectContaining({ thinkingLevel: 'low' }),
     );
+  });
+  it('a Remote Control launch stays in process across a deferred-tools reload (review fix)', async () => {
+    await createService().launch(LAUNCH, { fromRemoteBridge: true });
+    await getRegisteredResumeHandler(TARGET)?.({
+      scope: TARGET,
+      requestId: 'reload-1',
+      toolCallId: 'tool-1',
+      userMessageId: 'user-1',
+      continuationText: 'Continue.',
+      enabledResources: [],
+      signal: new AbortController().signal,
+    });
+
+    expect(
+      mockSelectDaemonManagedTerminalTarget.mock.calls.map(
+        ([request]) => request.fromRemoteBridge,
+      ),
+    ).toEqual([true, true]);
   });
 });

@@ -66,6 +66,7 @@ export * from './delegated-agent-copy';
 export * from './CompactionInfoBlock';
 export * from './AccountProxySwitchLine';
 export * from './DeferredAccountProxySwitchPart';
+export * from './ClaudeModsSkippedNotice';
 export * from './SteeringTitle';
 export * from './SteeringRequestTitle';
 export { normalizeCommandReadToolBlock } from '@canopy/agent-transcript/lib/command-read-display';

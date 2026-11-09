@@ -28,6 +28,10 @@ const LOADERS: Partial<
     (await import('./claude-worker-runtime')).getClaudeWorkerRuntime(),
   codex: async () =>
     (await import('./codex-worker-runtime')).getCodexWorkerRuntime(),
+  copilot: async () =>
+    (await import('./copilot-worker-runtime')).getCopilotWorkerRuntime(),
+  cursor: async () =>
+    (await import('./cursor-worker-runtime')).getCursorWorkerRuntime(),
   opencode: async () =>
     (await import('./opencode-worker-runtime')).getOpenCodeWorkerRuntime(),
 };

@@ -16,7 +16,7 @@ import {
 } from '@/stores/claudeTerminalStore';
 import { useCancelRunningChatShortcut } from './useCancelRunningChatShortcut';
 import type { ClaudeTerminalLaunchRequest } from '@canopy/desktop-shared/types';
-import { Button, LoadingSpinner } from '@canopy/ui-shared/components';
+import { Surface, Button, LoadingSpinner } from '@canopy/ui-shared/components';
 
 const COPY_STARTING = 'Starting Claude Code…';
 const COPY_LAUNCH_FAILED =
@@ -308,15 +308,16 @@ export function ClaudeCodeTerminalExperience({
         // over the pane until the PTY produces output so the user never
         // stares at a blank screen; the pane stays mounted underneath so it
         // attaches and sizes the PTY correctly while hidden.
-        <div
+        <Surface
           data-testid="claude-code-experience-booting"
-          className="absolute inset-0 z-10 flex items-center justify-center bg-base"
+          variant="pane"
+          className="absolute inset-0 z-10 flex items-center justify-center"
         >
           <div className="flex items-center gap-2 text-s fg-secondary">
             <LoadingSpinner tone="secondary" sizePx={12} decorative />
             <span>{COPY_STARTING}</span>
           </div>
-        </div>
+        </Surface>
       ) : null}
     </div>
   );

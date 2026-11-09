@@ -2,7 +2,12 @@
 
 import { execFile } from 'node:child_process';
 import { spawn } from 'node:child_process';
-import { appendFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +18,7 @@ const SUPERVISED_EXECUTABLE_ENV = 'CANOPY_E2E_SUPERVISED_EXECUTABLE';
 const SUPERVISED_PID_FILE_ENV = 'CANOPY_E2E_SUPERVISED_PID_FILE';
 const SUPERVISED_GROUPS_FILE_ENV = 'CANOPY_E2E_SUPERVISED_GROUPS_FILE';
 const SUPERVISED_RUN_NONCE_ENV = 'CANOPY_E2E_SUPERVISED_RUN_NONCE';
+export const SUPERVISED_RETAIN_FILE_ENV = 'CANOPY_E2E_SUPERVISED_RETAIN_FILE';
 const SUPERVISOR_OWNER_PID_ENV = 'CANOPY_E2E_OWNER_PID';
 const PROCESS_TREE_REFRESH_MS_ENV = 'CANOPY_E2E_TREE_REFRESH_MS';
 const WATCHDOG_ARG = '--canopy-process-tree-watchdog';
@@ -1150,6 +1156,127 @@ export function posixProcessGroupIsOwned(group, rows) {
     group.members instanceof Map ? group.members : new Map(group.members ?? []);
   return rows.some(
     (row) => row.pgid === group.pgid && members.get(row.pid) === row.startTime,
+  );
+}
+
+/**
+ * The daemon a spec keeps across an app quit (CAN-5862), from the retain
+ * record `closeCanopy` writes before it quits the app. `null` when there is
+ * no record or it is not this launch's: a record that can't be trusted
+ * retains nothing.
+ */
+export function readRetainedRoot(retainFile, runNonce, readFile) {
+  if (!retainFile || !runNonce) return null;
+  const identity = (value) =>
+    Number.isInteger(value?.pid) &&
+    value.pid > 1 &&
+    typeof value.startTime === 'string' &&
+    value.startTime
+      ? { pid: value.pid, startTime: value.startTime }
+      : null;
+  try {
+    const record = JSON.parse(String(readFile(retainFile, 'utf8')));
+    const root = identity(record);
+    if (record?.v !== 1 || record.nonce !== runNonce || !root) return null;
+    // The test worker that retained it; without one the tree has no owner.
+    return { ...root, controller: identity(record.controller) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After the app exits, keep a retained daemon's tree only for as long as the
+ * test worker that retained it lives, then reap it (CAN-5862): a worker that
+ * is killed or crashes before its cleanup can't leak the daemon into later
+ * tests. The watchdog runs this once it has ended the rest of the tree.
+ * Resolves once the retained tree is gone: `none` with no record, `gone`
+ * when the worker's cleanup ended it, `reaped` when this did.
+ */
+export async function holdRetainedTree({
+  retainFile,
+  runNonce,
+  readFile = readFileSync,
+  listProcesses = listPosixProcesses,
+  killTree = killProcessTree,
+  delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  pollIntervalMs = 1_000,
+  maxListFailures = 30,
+  // Retained processes the tree owner already identified (PID to start
+  // time), so one the daemon left behind before the first snapshot counts.
+  known: seed = new Map(),
+} = {}) {
+  const root = readRetainedRoot(retainFile, runNonce, readFile);
+  if (!root) return 'none';
+  const known = new Map(seed);
+  let failures = 0;
+  for (;;) {
+    let rows;
+    try {
+      rows = await listProcesses();
+      failures = 0;
+    } catch {
+      // Without snapshots nothing can be revalidated; leave the tree alone.
+      if ((failures += 1) >= maxListFailures) return 'unverified';
+      await delay(pollIntervalMs);
+      continue;
+    }
+    const tree = retainedTreeRows(rows, root, known);
+    if (tree.length === 0) return 'gone';
+    const controller = root.controller
+      ? rows.find((row) => row.pid === root.controller.pid)
+      : undefined;
+    if (!controller || controller.startTime !== root.controller.startTime) {
+      const groups = new Set(tree.map((row) => row.pgid));
+      for (const pgid of groups) if (pgid > 1) await killTree(pgid, 'SIGKILL');
+      return 'reaped';
+    }
+    await delay(pollIntervalMs);
+  }
+}
+
+/**
+ * The retained root and every process below it, when the root is still the
+ * process the record names. The daemon, its pipeline host and each step run
+ * in their own process groups, all below the daemon.
+ */
+export function retainedProcessPids(rows, root) {
+  if (!root) return new Set();
+  const row = rows.find((candidate) => candidate.pid === root.pid);
+  if (!row || row.startTime !== root.startTime) return new Set();
+  return new Set(processTreePids(rows, root.pid));
+}
+
+/**
+ * Every process of a retained tree: the processes below the root while it
+ * lives, every process the tree held before (by PID and start time), and
+ * their descendants. A pipeline host or step that outlives the daemon is
+ * reparented away from it, so `known`, which this updates in place, keeps
+ * it in the tree.
+ */
+export function retainedTreeRows(rows, root, known = new Map()) {
+  const selected = retainedProcessPids(rows, root);
+  for (const row of rows)
+    if (known.get(row.pid) === row.startTime) selected.add(row.pid);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows)
+      if (selected.has(row.parentPid) && !selected.has(row.pid)) {
+        selected.add(row.pid);
+        changed = true;
+      }
+  }
+  const tree = rows.filter((row) => selected.has(row.pid));
+  for (const row of tree) known.set(row.pid, row.startTime);
+  return tree;
+}
+
+/** Whether a tracked group has a current member in the retained tree. */
+export function groupIsRetained(group, rows, retained) {
+  return (
+    retained.size > 0 &&
+    rows.some((row) => row.pgid === group.pgid && retained.has(row.pid))
   );
 }
 
@@ -3009,6 +3136,10 @@ export function createPosixProcessTreeOwner(child, options = {}) {
   const trackedGroupsFile = options.trackedGroupsFile;
   const runNonce = options.runNonce;
   const writeSidecar = options.writeFileAtomically ?? writeFileAtomically;
+  const retainFile = options.retainFile;
+  const readRetainFile = options.readFile ?? readFileSync;
+  const retainedRoot = () =>
+    readRetainedRoot(retainFile, runNonce, readRetainFile);
   const trackedGroups = new Map([
     [
       child.pid,
@@ -3020,6 +3151,8 @@ export function createPosixProcessTreeOwner(child, options = {}) {
     ],
   ]);
   const retiredPgids = new Set();
+  // Members of the groups spared as retained (CAN-5862), by start time.
+  const retainedMembers = new Map();
   let rootStart;
   let inFlightRefresh;
   let sidecarInitialized = false;
@@ -3147,10 +3280,30 @@ export function createPosixProcessTreeOwner(child, options = {}) {
   );
   const isAlive = async () => {
     await initialized;
+    const root = retainedRoot();
+    if (root) {
+      try {
+        const rows = await listProcesses();
+        const retained = retainedProcessPids(rows, root);
+        let alive = false;
+        for (const group of trackedGroups.values()) {
+          if (groupIsRetained(group, rows, retained)) {
+            // Kept for the watchdog's hold, which may see the daemon gone.
+            rememberCurrentMembers(group, rows);
+            for (const [pid, startTime] of group.members)
+              retainedMembers.set(pid, startTime);
+          } else if (groupExists(group.pgid)) alive = true;
+        }
+        return alive;
+      } catch {
+        // Without a snapshot, count every group, the retained one included.
+      }
+    }
     return Array.from(trackedGroups.keys()).some(groupExists);
   };
   const killTrackedTree = async (_rootPid, signal) => {
     await initialized;
+    const root = retainedRoot();
     const candidates = Array.from(trackedGroups.values()).reverse();
     for (const candidate of candidates) {
       let rows;
@@ -3162,6 +3315,15 @@ export function createPosixProcessTreeOwner(child, options = {}) {
       const current = trackedGroups.get(candidate.pgid);
       if (current !== candidate || !posixProcessGroupIsOwned(candidate, rows)) {
         if (current === candidate) retireGroup(candidate.pgid);
+        continue;
+      }
+      // A daemon the spec keeps across the quit (CAN-5862) is the spec's to
+      // kill, with killRetainedDaemons or the exit guard in launchCanopy.mjs.
+      if (groupIsRetained(candidate, rows, retainedProcessPids(rows, root))) {
+        rememberCurrentMembers(candidate, rows);
+        for (const [pid, startTime] of candidate.members)
+          retainedMembers.set(pid, startTime);
+        retireGroup(candidate.pgid);
         continue;
       }
       await killTree(candidate.pgid, signal);
@@ -3177,6 +3339,7 @@ export function createPosixProcessTreeOwner(child, options = {}) {
     {
       ready: initialized,
       refresh,
+      retainedMembers: () => new Map(retainedMembers),
       async initializeSidecar() {
         if (!trackedGroupsFile || !runNonce) return;
         if (!(await initialized)) {
@@ -3703,6 +3866,8 @@ async function runWatchdog(args) {
     rootLifecycle: 'external-pid',
     trackedGroupsFile,
     runNonce,
+    // Inherited from the supervisor that spawned this watchdog.
+    retainFile: process.env[SUPERVISED_RETAIN_FILE_ENV],
     ...(record
       ? {
           observeRefresh: (snapshot) => record('ownership-refresh', snapshot),
@@ -3733,6 +3898,12 @@ async function runWatchdog(args) {
         record?.('owner-stop', { outcome: 'entered' });
         await owner.stop();
         record?.('owner-stop', { outcome: 'fulfilled' });
+        if (process.platform !== 'win32')
+          await holdRetainedTree({
+            retainFile: process.env[SUPERVISED_RETAIN_FILE_ENV],
+            runNonce,
+            ...(owner.retainedMembers && { known: owner.retainedMembers() }),
+          });
       } catch (error) {
         exitCode = 1;
         record?.('owner-stop', {
@@ -3855,6 +4026,7 @@ async function runSupervisor(args) {
   const supervisedPidFile = process.env[SUPERVISED_PID_FILE_ENV];
   const supervisedGroupsFile = process.env[SUPERVISED_GROUPS_FILE_ENV];
   const supervisedRunNonce = process.env[SUPERVISED_RUN_NONCE_ENV];
+  const supervisedRetainFile = process.env[SUPERVISED_RETAIN_FILE_ENV];
   const useWindowsLaunchGate = process.platform === 'win32';
   const ownerPid = resolveSupervisorOwnerPid(
     process.env[SUPERVISOR_OWNER_PID_ENV],
@@ -3864,6 +4036,7 @@ async function runSupervisor(args) {
   delete childEnv[SUPERVISED_PID_FILE_ENV];
   delete childEnv[SUPERVISED_GROUPS_FILE_ENV];
   delete childEnv[SUPERVISED_RUN_NONCE_ENV];
+  delete childEnv[SUPERVISED_RETAIN_FILE_ENV];
   delete childEnv[SUPERVISOR_OWNER_PID_ENV];
   delete childEnv.CANOPY_E2E_SUPERVISOR_INHERITED_STDIO_FIXTURE;
   if (admissionEmission) delete childEnv[WINDOWS_ADMISSION_EMISSION_ENV];
@@ -3926,6 +4099,7 @@ async function runSupervisor(args) {
     useWindowsLaunchGate,
     trackedGroupsFile: supervisedGroupsFile,
     runNonce: supervisedRunNonce,
+    retainFile: supervisedRetainFile,
     ...(admissionEmission?.status === 'ready' ? { admissionEmission } : {}),
     ...(useWindowsLaunchGate ? { onCleanupSnapshot: acknowledgeRelease } : {}),
     ...(record

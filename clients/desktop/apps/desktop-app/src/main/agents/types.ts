@@ -21,10 +21,10 @@ import type {
   ClaudeForkToolResult,
   CodexSpeed,
 } from '@canopy/desktop-shared/types';
-import type { CodexContextWindowSetting } from '@canopy/desktop-shared/lib/codex-context-window';
+import type { CodexContextWindowSetting } from '@canopy/execution-engine/lib/codex-context-window';
 import type { AppAdvisorToolRuntime } from '../app-advisor/runtime';
 import type { PipelineEditorToolRuntime } from '../pipeline-editor/runtime';
-import type { PipelinePackageCapabilityOverlay } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/types/pipeline';
 
 export interface AgentSessionOptions {
   cwd: string;

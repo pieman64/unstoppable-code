@@ -1,6 +1,6 @@
 import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { brandEnvName, getBrandEnv } from '../../brand/env';
+import { brandEnvName, getBrandEnv } from '@canopy/execution-engine/brand/env';
 
 let resolvedRunDir: string | null = null;
 

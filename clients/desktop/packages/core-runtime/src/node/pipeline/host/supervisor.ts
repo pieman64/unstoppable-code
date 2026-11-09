@@ -1,4 +1,5 @@
 import {
+  isWorkerPipelineOwnerAction,
   WorkerPipelineExecutionSchema,
   WorkerPipelineRecoveryCheckpointResultSchema,
   WorkerPipelineRecoverySweepResultSchema,
@@ -8,12 +9,15 @@ import {
   type WorkerPipelineExecution,
   type WorkerPipelineExecutionStartParams,
   type WorkerPipelineHostLaunch,
+  type WorkerPipelineHostRequest,
   type WorkerPipelineRecoveryCheckpointResult,
   type WorkerPipelineRecoverySweepParams,
   type WorkerPipelineRecoverySweepResult,
 } from '@canopy/protocol/canopy-core';
 
 import type { RedeemedExecutionSecrets } from '../../execution-secrets';
+import { PipelineHostUnavailableError } from '../execution/host-requests';
+import type { PipelineOwnerChannel } from '../execution/owner-channel';
 import {
   PipelineDrainTimeoutError,
   isTerminalPipelineExecution,
@@ -21,10 +25,13 @@ import {
   pipelineExecutionNotFoundError,
   pipelineHostLostError,
   pipelineHostUnavailableError,
+  pipelineLaunchRefusedError,
   pipelineLaunchUnavailableError,
   pipelineModelStepsUnsupportedError,
+  pipelineOwnerUnavailableError,
   pipelineStartFailedError,
   type PipelineControlRequest,
+  type PipelineExecutionNotification,
   type PipelineExecutionObserver,
   type PipelineExecutionWorker,
 } from '../execution/worker-pipelines';
@@ -34,7 +41,9 @@ import {
   type PipelineHostLaunch,
   type PipelineHostMessage,
   type PipelineHostRequest,
+  type PipelineHostLauncherCommand,
   type PipelineHostRequestMessage,
+  type PipelineHostSettlement,
 } from './protocol';
 
 /** A launched pipeline host, as the execution host port reports it. */
@@ -49,7 +58,11 @@ export interface PipelineHostSupervisorOptions {
   /** Starts a new pipeline host process. Throws when it cannot. */
   readonly launch: () => PipelineHostProcess;
   /** Sent as each new host's first request. */
-  readonly configure: { readonly dataRoot: string };
+  readonly configure: {
+    readonly dataRoot: string;
+    /** The daemon's own command, for the host's Codex runtime (CAN-5095 D18). */
+    readonly codexMcpLauncher?: PipelineHostLauncherCommand;
+  };
   /**
    * Verifies a start's host-local launch and resolves it for the host.
    * Throws {@link pipelineLaunchRefusedError}.
@@ -75,6 +88,15 @@ export interface PipelineHostSupervisorOptions {
     readonly code: number;
     readonly lost: number;
   }) => void;
+  /** The daemon's owner channel (CAN-5771). Without it, host requests answer unavailable and owner-bound starts are refused. */
+  readonly owner?: Pick<
+    PipelineOwnerChannel,
+    'broker' | 'ownerSubscribed' | 'onOwnerChange'
+  >;
+  /** How long a host request waits for an owner subscriber. Default 10_000. */
+  readonly ownerWaitMs?: number;
+  /** How long the owner may be gone before owner-bound runs pause. Default 10_000. */
+  readonly ownerAbsentPauseMs?: number;
 }
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -83,6 +105,12 @@ const IDLE_STOP_MS = 5_000;
 const EXIT_GRACE_MS = 5_000;
 // A drain waits up to 10 s for the run to stop inside the host.
 const CANCEL_EXTRA_MS = 10_000;
+const OWNER_WAIT_MS = 10_000;
+/** Notifications kept for a run no stream follows yet (CAN-5868). */
+const UNDELIVERED_NOTIFICATIONS_MAX = 32;
+/** How long they are kept once the run pauses or ends. */
+const UNDELIVERED_NOTIFICATIONS_TTL_MS = 60_000;
+const OWNER_ABSENT_PAUSE_MS = 10_000;
 
 /** Why a host request failed; the host's own message is never kept. */
 class HostRequestFailure extends Error {
@@ -114,6 +142,11 @@ interface LiveHost {
   /** Executions that paused or ended while their start was still pending. */
   readonly settledEarly: Set<string>;
   readonly exitWaiters: Array<() => void>;
+  /** Host requests this host raised that wait on the owner, by request id (CAN-5771). */
+  readonly hostCalls: Map<
+    string,
+    { readonly executionId: string; readonly abort: AbortController }
+  >;
   expectedExit: boolean;
   exited: boolean;
   idleTimer?: ReturnType<typeof setTimeout>;
@@ -150,9 +183,32 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
 
   private readonly releases = new Map<string, () => void>();
 
+  /** Notifications no observer received, until a stream takes them (CAN-5868). */
+  private readonly undelivered = new Map<
+    string,
+    {
+      readonly items: PipelineExecutionNotification[];
+      expiry?: ReturnType<typeof setTimeout>;
+    }
+  >();
+
   private readonly starts = new Map<string, Promise<WorkerPipelineExecution>>();
 
-  public constructor(private readonly options: PipelineHostSupervisorOptions) {}
+  /** Executions started with `ownerBound` that have not paused or ended (CAN-5771). */
+  private readonly ownerBound = new Set<string>();
+
+  private ownerAbsentTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** The owner has been gone past the pause deadline and has not returned. */
+  private ownerGone = false;
+
+  private readonly offOwnerChange: (() => void) | undefined;
+
+  public constructor(private readonly options: PipelineHostSupervisorOptions) {
+    this.offOwnerChange = options.owner?.onOwnerChange((subscribed) =>
+      this.ownerChanged(subscribed),
+    );
+  }
 
   /** Starts the host if none runs. Throws {@link pipelineHostUnavailableError}. */
   public async ready(): Promise<void> {
@@ -192,6 +248,9 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       pipelineLaunch: WorkerPipelineHostLaunch;
     },
   ): Promise<WorkerPipelineExecution> {
+    const ownerBound = execution.pipelineLaunch.ownerBound === true;
+    if (ownerBound && this.options.owner?.ownerSubscribed() !== true)
+      throw pipelineOwnerUnavailableError();
     const start = await this.options.resolveLaunch(params, execution);
     const host = await this.liveHost();
     if (signal.aborted)
@@ -217,6 +276,11 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     // A run can settle in the same tick its start answers.
     if (!host.exited && !settledEarly && !isSettled(projection)) {
       host.executions.add(executionId);
+      if (ownerBound) {
+        this.ownerBound.add(executionId);
+        // The owner went past the deadline while this start was pending.
+        if (this.ownerGone) void this.pauseOwnerBound();
+      }
       const release = this.options.holdExecution?.(executionId);
       if (release) this.releases.set(executionId, release);
     }
@@ -238,6 +302,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       if (error instanceof HostRequestFailure) {
         if (error.code === 'model_steps')
           throw pipelineModelStepsUnsupportedError();
+        if (error.code === 'host_steps') throw pipelineLaunchRefusedError();
         if (error.reason === 'exited') throw pipelineHostLostError();
         if (error.reason === 'timeout') {
           // A host that stops answering is faulted; its exit runs the loss path.
@@ -291,7 +356,10 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         { op: 'get', executionId },
         this.requestTimeoutMs,
       );
-    } catch {
+    } catch (error) {
+      // A host that exits under the request is lost, as during a start.
+      if (error instanceof HostRequestFailure && error.reason === 'exited')
+        throw pipelineHostLostError();
       throw pipelineHostUnavailableError();
     }
     if (value === null) return null;
@@ -406,7 +474,12 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
   public async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.offOwnerChange?.();
+    if (this.ownerAbsentTimer !== undefined)
+      clearTimeout(this.ownerAbsentTimer);
+    this.ownerAbsentTimer = undefined;
     const host = this.host;
+    if (host) this.abortHostCalls(host);
     if (host && !host.exited) {
       this.clearIdle(host);
       try {
@@ -424,6 +497,9 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     this.host = null;
     for (const release of this.releases.values()) release();
     this.releases.clear();
+    for (const kept of this.undelivered.values())
+      if (kept.expiry !== undefined) clearTimeout(kept.expiry);
+    this.undelivered.clear();
   }
 
   private get requestTimeoutMs(): number {
@@ -455,6 +531,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       pendingStarts: new Set(),
       settledEarly: new Set(),
       exitWaiters: [],
+      hostCalls: new Map(),
       expectedExit: false,
       exited: false,
     };
@@ -463,7 +540,13 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     try {
       await this.send(
         host,
-        { op: 'configure', dataRoot: this.options.configure.dataRoot },
+        {
+          op: 'configure',
+          dataRoot: this.options.configure.dataRoot,
+          ...(this.options.configure.codexMcpLauncher && {
+            codexMcpLauncher: this.options.configure.codexMcpLauncher,
+          }),
+        },
         this.requestTimeoutMs,
       );
     } catch {
@@ -529,6 +612,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         for (const observer of [...(host.observers.get(executionId) ?? [])])
           observer.onExecution(event, execution);
         if (!isSettled(execution)) return;
+        this.expireUndelivered(executionId);
         if (host.executions.delete(executionId))
           this.releaseExecution(executionId);
         else if (host.pendingStarts.has(executionId))
@@ -536,9 +620,20 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         return;
       }
       case 'output': {
-        const { executionId, jobId, stepId, stream, text } = message;
+        const { executionId, ...output } = message;
         for (const observer of [...(host.observers.get(executionId) ?? [])])
-          observer.onOutput({ jobId, stepId, stream, text });
+          observer.onOutput(output);
+        return;
+      }
+      case 'notification': {
+        const { executionId, stepId, title, body } = message;
+        let delivered = false;
+        for (const observer of [...(host.observers.get(executionId) ?? [])])
+          if (observer.onNotification?.({ stepId, title, body }) === true)
+            delivered = true;
+        // A run can notify before a stream can take it; keep it for the next one.
+        if (!delivered)
+          this.keepUndelivered(executionId, { stepId, title, body });
         return;
       }
       case 'process':
@@ -546,10 +641,178 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
           host.processGroups.set(message.id, message.processGroupId);
         else host.processGroups.delete(message.id);
         return;
+      case 'hostRequest':
+        void this.relayHostRequest(host, message.request);
+        return;
+      case 'hostRequestWithdrawn': {
+        const call = host.hostCalls.get(message.requestId);
+        if (call?.executionId === message.executionId) call.abort.abort();
+        return;
+      }
     }
   }
 
+  /**
+   * Raises one host step on the owner channel and answers the host with its
+   * settlement (CAN-5771). Nothing here logs or keeps the request.
+   */
+  private async relayHostRequest(
+    host: LiveHost,
+    request: WorkerPipelineHostRequest,
+  ): Promise<void> {
+    const { requestId, executionId } = request;
+    // A request can arrive in the same read as its start's answer.
+    if (
+      !(
+        host.executions.has(executionId) || host.pendingStarts.has(executionId)
+      ) ||
+      host.hostCalls.has(requestId)
+    )
+      return;
+    const abort = new AbortController();
+    host.hostCalls.set(requestId, { executionId, abort });
+    try {
+      const settlement = await this.settleHostRequest(request, abort.signal);
+      if (settlement && !abort.signal.aborted)
+        await this.send(
+          host,
+          { op: 'hostSettled', requestId, settlement },
+          this.requestTimeoutMs,
+        ).catch(() => undefined);
+    } finally {
+      if (host.hostCalls.get(requestId)?.abort === abort)
+        host.hostCalls.delete(requestId);
+    }
+  }
+
+  /** The owner's settlement, `unavailable` without one, or null when withdrawn. */
+  private async settleHostRequest(
+    request: WorkerPipelineHostRequest,
+    signal: AbortSignal,
+  ): Promise<PipelineHostSettlement | null> {
+    const owner = this.options.owner;
+    if (!owner) return { kind: 'unavailable' };
+    const present = await this.waitForOwner(owner, signal);
+    if (signal.aborted) return null;
+    if (!present) return { kind: 'unavailable' };
+    try {
+      // A model step's owner request (CAN-5095) takes the owner's answer and values as they are.
+      if (isWorkerPipelineOwnerAction(request.request.action))
+        return {
+          kind: 'owner',
+          settlement: await owner.broker.raiseOwner(request, signal),
+        };
+      const answer = await owner.broker.raiseHostStep(request, signal);
+      return {
+        kind: 'settled',
+        result: answer.result,
+        values: answer.values ?? null,
+      };
+    } catch (error) {
+      if (error instanceof PipelineHostUnavailableError)
+        return { kind: 'unavailable' };
+      return null;
+    }
+  }
+
+  /** Whether an owner subscribed within the wait; false on timeout or abort. */
+  private waitForOwner(
+    owner: Pick<PipelineOwnerChannel, 'ownerSubscribed' | 'onOwnerChange'>,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (owner.ownerSubscribed()) return Promise.resolve(true);
+    if (signal.aborted) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const done = (present: boolean): void => {
+        clearTimeout(timer);
+        off();
+        signal.removeEventListener('abort', aborted);
+        resolve(present);
+      };
+      const aborted = (): void => done(false);
+      const timer = setTimeout(
+        () => done(false),
+        this.options.ownerWaitMs ?? OWNER_WAIT_MS,
+      );
+      const off = owner.onOwnerChange((subscribed) => {
+        if (subscribed) done(true);
+      });
+      signal.addEventListener('abort', aborted, { once: true });
+    });
+  }
+
+  /** Every waiting host call ends; the broker withdraws each from the owner. */
+  private abortHostCalls(host: LiveHost): void {
+    for (const call of host.hostCalls.values()) call.abort.abort();
+    host.hostCalls.clear();
+  }
+
+  /** Owner-bound runs pause once the owner has been gone a while (CAN-5771). */
+  private ownerChanged(subscribed: boolean): void {
+    if (subscribed) {
+      this.ownerGone = false;
+      if (this.ownerAbsentTimer !== undefined)
+        clearTimeout(this.ownerAbsentTimer);
+      this.ownerAbsentTimer = undefined;
+      return;
+    }
+    if (this.stopped || this.ownerAbsentTimer !== undefined) return;
+    const timer = setTimeout(() => {
+      this.ownerAbsentTimer = undefined;
+      this.ownerGone = true;
+      void this.pauseOwnerBound();
+    }, this.options.ownerAbsentPauseMs ?? OWNER_ABSENT_PAUSE_MS);
+    timer.unref?.();
+    this.ownerAbsentTimer = timer;
+  }
+
+  private async pauseOwnerBound(): Promise<void> {
+    const host = this.host;
+    if (!host || host.exited || this.ownerBound.size === 0) return;
+    await this.send(
+      host,
+      { op: 'pause', executionIds: [...this.ownerBound] },
+      this.options.checkpointTimeoutMs ?? CHECKPOINT_TIMEOUT_MS,
+    ).catch(() => undefined);
+  }
+
+  /** Takes the notifications no stream has received yet for `executionId`. */
+  public takeNotifications(
+    executionId: string,
+  ): readonly PipelineExecutionNotification[] {
+    const kept = this.undelivered.get(executionId);
+    if (!kept) return [];
+    this.undelivered.delete(executionId);
+    if (kept.expiry !== undefined) clearTimeout(kept.expiry);
+    return kept.items;
+  }
+
+  private keepUndelivered(
+    executionId: string,
+    notification: PipelineExecutionNotification,
+  ): void {
+    let kept = this.undelivered.get(executionId);
+    if (!kept) {
+      kept = { items: [] };
+      this.undelivered.set(executionId, kept);
+    }
+    if (kept.items.length < UNDELIVERED_NOTIFICATIONS_MAX)
+      kept.items.push(notification);
+  }
+
+  private expireUndelivered(executionId: string): void {
+    const kept = this.undelivered.get(executionId);
+    if (!kept || kept.expiry !== undefined) return;
+    const expiry = setTimeout(() => {
+      if (this.undelivered.get(executionId) === kept)
+        this.undelivered.delete(executionId);
+    }, UNDELIVERED_NOTIFICATIONS_TTL_MS);
+    expiry.unref?.();
+    kept.expiry = expiry;
+  }
+
   private releaseExecution(executionId: string): void {
+    this.ownerBound.delete(executionId);
     const release = this.releases.get(executionId);
     this.releases.delete(executionId);
     release?.();
@@ -608,6 +871,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
   private ended(host: LiveHost, code: number): void {
     if (host.exited) return;
     host.exited = true;
+    this.abortHostCalls(host);
     this.clearIdle(host);
     if (this.host === host) this.host = null;
     for (const pending of host.pending.values()) {
@@ -626,8 +890,10 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     }
     host.processGroups.clear();
     host.observers.clear();
-    for (const executionId of host.executions)
+    for (const executionId of host.executions) {
       this.releaseExecution(executionId);
+      this.expireUndelivered(executionId);
+    }
     host.executions.clear();
     for (const resolve of host.exitWaiters.splice(0)) resolve();
   }

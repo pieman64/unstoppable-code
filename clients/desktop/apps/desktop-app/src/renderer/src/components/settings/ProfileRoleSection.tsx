@@ -164,7 +164,7 @@ export function ProfileRoleSection(): JSX.Element {
       dataTestId="settings-profile-role"
       description={
         loadError ? (
-          <span className="fg-destructive">Could not load your roles.</span>
+          <ErrorBanner className="" error="Could not load your roles." />
         ) : !loaded ? (
           <SettingsDescriptionLoading dataTestId="settings-profile-role-loading" />
         ) : roles.length > 0 ? (
@@ -278,10 +278,12 @@ export function ProfileRoleSection(): JSX.Element {
             </DialogFormField>
           </div>
           {saveError ? (
-            <ErrorBanner
-              className="mx-6 mb-6"
-              error="Could not save your roles. Please try again."
-            />
+            <div className="px-6 pb-6">
+              <ErrorBanner
+                className=""
+                error="Could not save your roles. Please try again."
+              />
+            </div>
           ) : null}
         </DialogModal>
       ) : null}

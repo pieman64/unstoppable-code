@@ -165,9 +165,10 @@ function QuotaGroup({
           </ProviderUsageAccountRow>
         </>
       }
+      separateFooter
       footer={
         entry.error ? (
-          <p role="status" className="mt-1.5 px-0.5 text-xs fg-secondary">
+          <p role="status" className="px-0.5 text-xs fg-secondary">
             {entry.error.message}
           </p>
         ) : null

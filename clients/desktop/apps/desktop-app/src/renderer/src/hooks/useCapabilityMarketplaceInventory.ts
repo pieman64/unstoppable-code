@@ -10,7 +10,7 @@ import type {
   CustomizeInventoryState,
   UnifiedLocalAutomationInput,
 } from '@canopy/ui-app/capability';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import type {
   CollectionIndexEntry,
   SharedCollectionSummary,
@@ -19,7 +19,7 @@ import type { SharedSkillSummary } from '@canopy/desktop-shared/types/skills';
 import type {
   AgentModelDefinition,
   SharedAgentSummary,
-} from '@canopy/desktop-shared/types/agent-models';
+} from '@canopy/execution-engine/types/agent-models';
 import type { UnifiedLocalAgentInput } from '@canopy/protocol/unified-entry';
 import { marketplaceLocalAgentInputs } from '@/lib/marketplaceAgents';
 import { useAgentsStore } from '@/stores/agentsStore';

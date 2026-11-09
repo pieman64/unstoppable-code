@@ -1,7 +1,4 @@
-import type {
-  StageVisualDocument,
-  VisualStagingSidecar,
-} from '../lib/chat-visual-contracts';
+import type { StageVisualDocument } from '../lib/chat-visual-contracts';
 import type { z } from 'zod/v4';
 import type { showVisualSchema } from './definitions';
 import type {
@@ -25,7 +22,7 @@ export interface ShowVisualHost {
   scope: { projectId: string; worktreeId: string };
   chatId: string;
   cwd: string;
-  stageVisual(document: StageVisualDocument): Promise<VisualStagingSidecar>;
+  stageVisual(document: StageVisualDocument): Promise<unknown>;
   measureVisual?(
     prepared: PreparedVisual,
     options: Omit<VisualMeasureRequest, 'prepared' | 'appearance'>,

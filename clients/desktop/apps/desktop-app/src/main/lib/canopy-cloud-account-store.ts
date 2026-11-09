@@ -19,6 +19,14 @@ import {
   normalizeOrgBillingStates,
 } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
+import {
+  isCanopyCloudSessionExpired,
+  isCanopyCloudSessionProbeSuperseded,
+  isCurrentCanopyCloudSessionProbe,
+  recordCanopyCloudSessionProbe,
+  resetCanopyCloudSessionCredential,
+  type CanopyCloudSessionProbe,
+} from '../canopy-cloud/session-status';
 import type {
   CanopyCloudAccountPublicState,
   CanopyCloudAccountReadStatus,
@@ -219,6 +227,8 @@ function cloneEnforcedSettings(
               supportedThinkingLevels: [...model.supportedThinkingLevels],
             })),
           };
+        case 'usage-data':
+          return { ...policy, prohibited: { ...policy.prohibited } };
       }
     }),
   }));
@@ -696,7 +706,13 @@ export async function loadCanopyCloudAccountPublicState(): Promise<CanopyCloudAc
 
 async function persistCanopyCloudAccount(
   entry: CanopyCloudAccountEntry,
-  { notify = true }: { notify?: boolean } = {},
+  {
+    notify = true,
+    replaceCredential = false,
+  }: {
+    notify?: boolean;
+    replaceCredential?: boolean;
+  } = {},
 ): Promise<CanopyCloudAccountEntry> {
   assertCanopyCloudStorageAvailable();
 
@@ -715,6 +731,7 @@ async function persistCanopyCloudAccount(
     () => undefined,
   );
   writeCache(normalized, backend);
+  if (replaceCredential) resetCanopyCloudSessionCredential();
   const persisted = cloneEntry(normalized);
   if (!persisted) {
     throw new Error(`Invalid ${CLOUD_DISPLAY_NAME} account entry.`);
@@ -786,6 +803,23 @@ async function loadCanopyCloudAccountForGuard(): Promise<CanopyCloudAccountEntry
   return result.entry;
 }
 
+/** Record only definitive results about the credential still stored now. */
+export async function applyCanopyCloudSessionProbeResult(
+  expected: CanopyCloudAccountEntry,
+  probe: CanopyCloudSessionProbe,
+  outcome: 'accepted' | 'rejected',
+): Promise<void> {
+  await withAccountSaveLock(async (): Promise<void> => {
+    if (!isCurrentCanopyCloudSessionProbe(probe)) return;
+    const read = await readCanopyCloudAccountWithStatus();
+    if (read.status !== 'ok') return;
+    const current = read.entry;
+    if (!current || !matchesExpectedAccountTransition(current, expected))
+      return;
+    recordCanopyCloudSessionProbe(probe, current, outcome);
+  });
+}
+
 function matchesExpectedAccountTransition(
   current: CanopyCloudAccountEntry | null,
   expected: CanopyCloudAccountEntry | null,
@@ -823,7 +857,7 @@ export async function saveCanopyCloudAccount(
       }
     }
     const persist = (): Promise<CanopyCloudAccountEntry> =>
-      persistCanopyCloudAccount(entry);
+      persistCanopyCloudAccount(entry, { replaceCredential: true });
     if (hasCanopyCloudIdentityChanged(currentAccount, entry)) {
       return withIdentityTransition
         ? withIdentityTransition(persist)
@@ -869,13 +903,17 @@ export async function saveCanopyCloudAccountIfUnchanged(
   entry: CanopyCloudAccountEntry,
   expectedAccount: CanopyCloudAccountEntry,
   withMatchedTransition?: CanopyCloudAccountTransition<CanopyCloudAccountEntry>,
+  sessionProbe?: CanopyCloudSessionProbe,
 ): Promise<
   | { status: 'saved'; entry: CanopyCloudAccountEntry }
   | { status: 'superseded'; account: CanopyCloudAccountEntry | null }
 > {
   return withAccountSaveLock(async () => {
     const currentAccount = await loadCanopyCloudAccountForGuard();
-    if (!matchesExpectedAccountTransition(currentAccount, expectedAccount)) {
+    if (
+      (sessionProbe && isCanopyCloudSessionProbeSuperseded(sessionProbe)) ||
+      !matchesExpectedAccountTransition(currentAccount, expectedAccount)
+    ) {
       return { status: 'superseded', account: currentAccount };
     }
     const notify = differsBeyondUpdatedAt(entry, currentAccount);
@@ -924,7 +962,7 @@ export async function saveManualCanopyCloudAccount(
       return { status: 'superseded', account: previousAccount };
     }
     const persist = (): Promise<CanopyCloudAccountEntry> =>
-      persistCanopyCloudAccount(entry);
+      persistCanopyCloudAccount(entry, { replaceCredential: true });
     const identityChanged = hasCanopyCloudIdentityChanged(
       previousAccount,
       entry,
@@ -981,6 +1019,7 @@ async function persistCanopyCloudAccountClear(): Promise<void> {
   );
   invalidateCanopyCloudAccountCache();
   writeCache(null);
+  resetCanopyCloudSessionCredential();
   notifyAccountChange(null);
 }
 
@@ -1055,6 +1094,7 @@ export async function resetUnreadableCanopyCloudAccount(
         } catch (legacyError) {
           if (isErrnoException(legacyError) && legacyError.code === 'ENOENT') {
             writeCache(null);
+            resetCanopyCloudSessionCredential();
             return {
               status: 'not-needed',
               account: toPublicCanopyCloudAccountState(null),
@@ -1090,6 +1130,7 @@ export async function resetUnreadableCanopyCloudAccount(
     const backupPath = await chooseUnusedRecoveryBackupPath(filePath);
     await withReplicaPurgeFence(async () => rename(filePath, backupPath));
     writeCache(null);
+    resetCanopyCloudSessionCredential();
     notifyAccountChangeOrThrow(null);
     return {
       status: 'reset',
@@ -1166,6 +1207,7 @@ export function toPublicCanopyCloudAccountState(
     read,
     ...(secureStorageFailure ? { secureStorageFailure } : {}),
     hasApiKey: !!entry?.apiKey.trim(),
+    ...(isCanopyCloudSessionExpired(entry) ? { sessionExpired: true } : {}),
     authMode: entry?.authMode ?? null,
     credentialSource: entry?.credentialSource ?? null,
     ...(entry?.serverApiKeyId ? { serverApiKeyId: entry.serverApiKeyId } : {}),

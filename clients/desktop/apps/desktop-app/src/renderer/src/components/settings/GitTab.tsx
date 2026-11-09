@@ -14,6 +14,13 @@ import {
   resolveOverallDefault,
 } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { DEFAULT_VOICE_DICTATION_ENABLED } from '@canopy/desktop-shared/constants/preferences';
 import type {
   BranchNamePrefixMode,
@@ -34,6 +41,7 @@ import { useBranchDisplayStore } from '@/stores/branchDisplayStore';
 import { useBranchGroupingPreferenceStore } from '@/stores/branchGroupingPreferenceStore';
 import { mergeMappingsWithBuiltins } from '@canopy/desktop-shared/lib/branch-display-mapping';
 import {
+  Stack,
   Button,
   Notice,
   SettingsSelect,
@@ -255,6 +263,7 @@ export function WindowsGitExecutableSection(): JSX.Element {
     window.platform === 'win32' ? 'git.exe' : 'Git executable';
   const [status, setStatus] = useState<GitExecutableStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [failure, setFailure] = useState<InlineFailure | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -265,8 +274,9 @@ export function WindowsGitExecutableSection(): JSX.Element {
       .then((next: GitExecutableStatus) => {
         if (!cancelled) setStatus(next);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         // Non-fatal — the section renders the "not detected" state.
+        reportClientAppError(error);
       });
     return (): void => {
       cancelled = true;
@@ -276,6 +286,7 @@ export function WindowsGitExecutableSection(): JSX.Element {
   async function redetect(): Promise<void> {
     setBusy(true);
     setMessage(null);
+    setFailure(null);
     try {
       const next = await window.api.redetectGitExecutable();
       setStatus(next);
@@ -284,8 +295,10 @@ export function WindowsGitExecutableSection(): JSX.Element {
           ? `Git was detected at ${next.path}.`
           : 'No valid Git installation was detected.',
       );
-    } catch {
-      setMessage('No valid Git installation was detected.');
+    } catch (error: unknown) {
+      const appError = toAppError(resolveClientAppError(error));
+      if (appError)
+        setFailure(inlineFailure(appError, "Couldn't check for Git."));
     } finally {
       setBusy(false);
     }
@@ -294,6 +307,7 @@ export function WindowsGitExecutableSection(): JSX.Element {
   async function browse(): Promise<void> {
     setBusy(true);
     setMessage(null);
+    setFailure(null);
     try {
       const next = await window.api.browseGitExecutable();
       setStatus(next);
@@ -306,13 +320,15 @@ export function WindowsGitExecutableSection(): JSX.Element {
             : `Select a valid ${executableName} file.`,
         );
       }
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      setMessage(
-        detail
-          ? `Select a valid ${executableName} file. ${detail}`
-          : `Select a valid ${executableName} file.`,
-      );
+    } catch (error: unknown) {
+      const appError = toAppError(resolveClientAppError(error));
+      if (appError)
+        setFailure(
+          inlineFailure(
+            appError,
+            `Couldn't use the selected ${executableName}.`,
+          ),
+        );
     } finally {
       setBusy(false);
     }
@@ -372,7 +388,7 @@ export function WindowsGitExecutableSection(): JSX.Element {
           }
         >
           {statusLine || message ? (
-            <div className="space-y-1">
+            <Stack gap="tight">
               {statusLine && (
                 <p
                   className={`text-xs ${statusIsError ? 'fg-warning' : 'fg-secondary'}`}
@@ -389,8 +405,17 @@ export function WindowsGitExecutableSection(): JSX.Element {
                   {message}
                 </p>
               )}
-            </div>
+            </Stack>
           ) : null}
+          <DesktopErrorBanner
+            className=""
+            error={failure?.error}
+            {...(failure?.details === undefined
+              ? {}
+              : { details: failure.details })}
+            blockMessageFromReplay
+            testId="settings-git-executable-error"
+          />
         </SettingsRow>
         {window.platform === 'linux' && status && !status.ready && (
           <SettingsRow
@@ -415,6 +440,8 @@ export function WindowsGitExecutableSection(): JSX.Element {
 
 export function GitTab(): JSX.Element {
   const [prefs, setPrefs] = useState<PreferencesData | null>(null);
+  const [loadError, setLoadError] = useState<InlineFailure | null>(null);
+  const [saveError, setSaveError] = useState<InlineFailure | null>(null);
   const ghStatus = useGitHubCliStatus();
 
   useEffect(() => {
@@ -463,8 +490,16 @@ export function GitTab(): JSX.Element {
         };
         setPrefs(withDefaults);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         setPrefs(createGitTabFailedLoadPreferences());
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError)
+          setLoadError(
+            inlineFailure(
+              appError,
+              "Couldn't load Git settings. Defaults are shown.",
+            ),
+          );
       });
   }, []);
 
@@ -472,6 +507,7 @@ export function GitTab(): JSX.Element {
     if (!prefs) return;
     const next = { ...prefs, ...patch };
     setPrefs(next);
+    setSaveError(null);
     void window.api
       .savePreferences(patch)
       .then((normalized: PreferencesData) => {
@@ -479,8 +515,11 @@ export function GitTab(): JSX.Element {
         // snapshot used by worktree rows and the PR panel) update live.
         emitPreferencesUpdated(normalized);
       })
-      .catch(() => {
-        // Swallow — preference save can fail if userData is unavailable.
+      .catch((error: unknown) => {
+        // A save can fail if userData is unavailable.
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError)
+          setSaveError(inlineFailure(appError, "Couldn't save Git settings."));
       });
   }
 
@@ -539,6 +578,22 @@ export function GitTab(): JSX.Element {
 
   return (
     <SettingsPage title="Git" dataTestId="settings-tab-git">
+      <DesktopErrorBanner
+        className=""
+        error={loadError?.error}
+        {...(loadError?.details === undefined
+          ? {}
+          : { details: loadError.details })}
+        testId="settings-git-load-error"
+      />
+      <DesktopErrorBanner
+        className=""
+        error={saveError?.error}
+        {...(saveError?.details === undefined
+          ? {}
+          : { details: saveError.details })}
+        testId="settings-git-save-error"
+      />
       {/* Windows/macOS Git executable management (hidden elsewhere) */}
       <WindowsGitExecutableSection />
 

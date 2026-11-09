@@ -31,7 +31,7 @@ import {
   codexSpeedFastMode,
   readCodexSpeedRecord,
   type CodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   PIPELINE_DETAIL_MODAL_UI_STATE_KEY,
   PIPELINE_DETAIL_PANEL_UI_STATE_KEY_PREFIX,
@@ -47,6 +47,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useFileLabelsStore } from '@/stores/fileLabelsStore';
 import { desktopFileSessionController } from '@/lib/file-viewer/desktop-file-session-controller';
+import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useNavigationHistoryStore } from '@/stores/navigationHistoryStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -410,6 +411,9 @@ export function buildCurrentUiStateSnapshot(
       appAdvisorOpen: readBoolean(slices['appAdvisor.dialogOpen']) ?? false,
       ...readAppAdvisorLayout(slices['appAdvisor.dialogLayout']),
     },
+    dirtyFileTabIds: desktopFileSessionController.dirtyTabIds(),
+    activeCoworkProjectId:
+      useStandaloneChatStore.getState().activeChatProjectId,
   };
   const workspaceSettingsSlice = readObject(slices['workspaceSettings.modal']);
   if (workspaceSettingsSlice) {

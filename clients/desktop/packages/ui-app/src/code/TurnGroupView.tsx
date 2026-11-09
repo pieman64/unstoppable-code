@@ -636,7 +636,7 @@ function TurnGroupViewImpl({
     >
       <ToolApprovalWaitProvider value={approvalWait}>
         <div
-          className={`group/turn ${clean ? 'space-y-2' : 'space-y-1'}`}
+          className={`group/turn ${clean ? 'flex flex-col gap-2' : 'flex flex-col gap-1'}`}
           data-testid="chat-turn-group"
         >
           {turnGroup.wake ? (

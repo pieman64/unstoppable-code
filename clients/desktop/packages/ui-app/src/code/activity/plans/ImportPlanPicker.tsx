@@ -88,9 +88,7 @@ function FileOptionContent({
           />
         </div>
       </div>
-      <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
-        {file.repoName}
-      </span>
+      <span className="text-2xs fg-tertiary">{file.repoName}</span>
     </>
   );
 }
@@ -265,7 +263,7 @@ function PreviewPane({
           {path}
         </div>
       </div>
-      <ul className="space-y-1 text-xs fg-primary">
+      <ul className="flex flex-col gap-1 text-xs fg-primary">
         {BENEFITS.map((benefit) => (
           <li key={benefit}>{benefit}</li>
         ))}

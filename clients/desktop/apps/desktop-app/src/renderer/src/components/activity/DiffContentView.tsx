@@ -303,7 +303,9 @@ export function DiffContentView({
         <div
           className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex min-h-0 flex-1 flex-col`}
         >
-          <DiffBoundNotice kind="oversized" className="m-2 shrink-0" />
+          <div className="shrink-0 p-2">
+            <DiffBoundNotice kind="oversized" className="shrink-0" />
+          </div>
           {lineDiff}
         </div>
       ) : (

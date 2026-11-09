@@ -17,7 +17,7 @@ import type {
   BrowserProfileSwitchRequest,
   BrowserProfileSwitchResult,
   BrowserSessionSnapshot,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import { isErrnoException } from '../lib/type-guards';
 
 export interface BrowserSwitchRecord {

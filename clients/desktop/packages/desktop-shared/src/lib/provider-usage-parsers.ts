@@ -1,7 +1,7 @@
 import type {
   ProviderRateLimitSnapshot,
   ProviderRateLimitWindow,
-} from '../types/observability';
+} from '@canopy/execution-engine/types/observability';
 
 export interface ClaudeUsageDetails {
   rateLimits: ProviderRateLimitSnapshot[];

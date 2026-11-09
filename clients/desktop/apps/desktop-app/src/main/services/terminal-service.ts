@@ -38,6 +38,7 @@ import {
   type WorkerTerminalEvent,
 } from '@canopy/core-runtime/node/terminal';
 import {
+  desktopManagedTerminalEnvironmentFor,
   desktopTerminalEnvironmentFor,
   desktopTerminalShells,
   workerTerminal,
@@ -762,9 +763,9 @@ export async function listTerminalProfiles(): Promise<TerminalShellProfile[]> {
   return workerTerminal.profiles();
 }
 
-export function spawnManagedTerminal(
+function validateManagedSpawnRequest(
   request: TerminalSpawnRequest & { cwd?: string },
-): TerminalSession {
+): void {
   if (!request.managedCommand) {
     throw new TerminalServiceError(
       'invalid_payload',
@@ -789,6 +790,12 @@ export function spawnManagedTerminal(
   validateTerminalDimension(request.cols, 'cols');
   validateTerminalDimension(request.rows, 'rows');
   validateManagedCommand(request.managedCommand, { allowPathPrepend: true });
+}
+
+export function spawnManagedTerminal(
+  request: TerminalSpawnRequest & { cwd?: string },
+): TerminalSession {
+  validateManagedSpawnRequest(request);
   return workerTerminal.create({
     projectId: request.projectId,
     worktreeId: request.worktreeId,
@@ -822,6 +829,92 @@ export function spawnManagedTerminal(
             }
           })(),
   });
+}
+
+/** Who asked for a managed Claude terminal, for its placement (CAN-5097 D4). */
+export interface ManagedTerminalPlacement {
+  /** The launch came from the Remote Control bridge; it stays in process. */
+  readonly fromRemoteBridge?: boolean;
+}
+
+function managedCommandOf(
+  request: TerminalSpawnRequest & { cwd?: string },
+): ManagedTerminalCommand {
+  const command = request.managedCommand;
+  if (!command)
+    throw new TerminalServiceError(
+      'invalid_payload',
+      'Managed terminal command is required',
+    );
+  return command;
+}
+
+/**
+ * Opens a managed Claude terminal in the daemon's terminal host when it is
+ * eligible (CAN-5097), otherwise in process as `spawnManagedTerminal` does.
+ * The same validation runs first either way.
+ */
+export async function spawnPlacedManagedTerminal(
+  request: TerminalSpawnRequest & { cwd?: string },
+  placement: ManagedTerminalPlacement = {},
+): Promise<TerminalSession> {
+  validateManagedSpawnRequest(request);
+  const command = managedCommandOf(request);
+  if (request.cwd === undefined) return spawnManagedTerminal(request);
+  const routing = await import('../terminal/daemon-terminal-route');
+  const target = await routing.selectDaemonManagedTerminalTarget({
+    projectId: request.projectId,
+    worktreeId: request.worktreeId,
+    selectedRepoId: request.selectedRepoId,
+    relativeCwd: request.relativeCwd,
+    cwd: request.cwd,
+    managedKind: command.kind,
+    fromRemoteBridge: placement.fromRemoteBridge === true,
+  });
+  if (!target) return spawnManagedTerminal(request);
+  await routing.sweepOrphanedDaemonManagedTerminals();
+  try {
+    return await withWorkspaceTargetRuntimeStartReservation(
+      request.projectId,
+      request.worktreeId,
+      () =>
+        routing.getDaemonTerminals().create({
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          scope: target.scope,
+          cwdRootId: target.cwdRootId,
+          cwdRelativePath: '',
+          cwd: target.rootPath,
+          shell: {
+            shell: command.executable,
+            args: command.args,
+            shellBasename: path.basename(command.executable),
+          },
+          environment: desktopManagedTerminalEnvironmentFor(
+            request.projectId,
+            request.worktreeId,
+            command,
+          ),
+          cols: request.cols,
+          rows: request.rows,
+          managed: {
+            kind: command.kind,
+            title: command.title,
+            ...(command.focusOnSpawn !== undefined && {
+              focusOnSpawn: command.focusOnSpawn,
+            }),
+            ...(command.chatId !== undefined && { chatId: command.chatId }),
+            ...(command.sessionKey !== undefined && {
+              sessionKey: command.sessionKey,
+            }),
+          },
+        }),
+    );
+  } catch (error) {
+    if (routing.noteDaemonTerminalFallback(error))
+      return spawnManagedTerminal(request);
+    throw error;
+  }
 }
 
 /** Read-only receipt probe so callers can skip pre-write policy on a replay. */

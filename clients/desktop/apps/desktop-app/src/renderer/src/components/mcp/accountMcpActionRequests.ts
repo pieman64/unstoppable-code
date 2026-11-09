@@ -2,7 +2,7 @@ import {
   curatedMcpDesktopOnly,
   type CuratedMcpServerEntry,
 } from '@canopy/protocol/mcp-catalog';
-import type { McpServerIndexEntry } from '@canopy/desktop-shared/types/mcp-servers';
+import type { McpServerIndexEntry } from '@canopy/execution-engine/types/mcp-servers';
 import type { NavigationPage } from '@canopy/desktop-shared/types';
 import {
   customAccountMcpPromotable,

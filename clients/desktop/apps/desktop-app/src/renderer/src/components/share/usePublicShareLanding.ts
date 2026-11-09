@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type {
   CanopyCloudAccountPublicState,
@@ -8,7 +9,7 @@ import type {
   ScheduledActivity,
 } from '@canopy/desktop-shared/types';
 import type { CollectionConfig } from '@canopy/desktop-shared/types/collections';
-import type { PipelinePackageReadiness } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageReadiness } from '@canopy/execution-engine/types/pipeline';
 import {
   formatPipelinePackageInstalledStatus,
   formatPipelinePackageTransferLabel,
@@ -34,6 +35,11 @@ import {
   type ShareChatInsertOutcome,
   type ShareChatTarget,
 } from './shareChatTarget';
+import {
+  enablePluginInChat,
+  watchPluginChatTarget,
+  type PluginChatEnableOutcome,
+} from './pluginChatTarget';
 import { parseSkillSource } from '@/lib/skillFrontmatter';
 import { formatUnresolvedCapabilitiesNotice } from '@/lib/unresolvedCapabilities';
 import { tryParseAndValidateYaml } from '@/lib/pipeline-yaml';
@@ -50,8 +56,12 @@ import { useProjectsStore } from '@/stores/projectsStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import {
   findInstalledSharedPluginTarget,
-  installSharedPluginRef,
+  installSharedPluginRefWithOutcome,
 } from '@/lib/publicSharePluginInstall';
+import {
+  shareInstallPluginAlreadyAvailableStatus,
+  shareInstallPluginInstalledStatus,
+} from '@canopy/ui-app/sharing/share-install-copy';
 import { resolveSharedCollectionImport } from '@/lib/sharedCollectionImport';
 import { shareLandingErrorCopy } from './shareLandingErrorCopy';
 
@@ -236,6 +246,18 @@ export interface PublicShareLanding {
     installed: PublicShareInstalledTarget,
     target: ShareChatTarget,
   ) => Promise<ShareChatInsertOutcome>;
+  /**
+   * **Turn on in “<chat>”** (CAN-5219): turns an installed plugin on in the
+   * chat the install started from, keeping the chat's other plugins. Enables
+   * the detected installed ref, which may come from another marketplace than
+   * the share. Same guards as `insertInChat`, and never runs alongside it.
+   * Repeatable: a plugin already on stays on. Stays callable after the
+   * landing closes, so the installation notice can offer it.
+   */
+  turnOnInChat: (
+    installed: PublicShareInstalledTarget,
+    target: ShareChatTarget,
+  ) => Promise<PluginChatEnableOutcome>;
   /** Opens the installed entity's management surface (viewer/editor). */
   manage: (onNavigate?: () => void) => void;
   /** Removes the local installed copy; resolves whether it was removed. */
@@ -1142,8 +1164,24 @@ export function usePublicShareLanding(
       };
       try {
         if (snapshot.entity === 'plugin') {
-          const installedPlugin = await installSharedPluginRef(snapshot.ref);
-          succeed(installedPlugin);
+          const { target, outcome } = await installSharedPluginRefWithOutcome(
+            snapshot.ref,
+          );
+          succeed(target);
+          // Say whether Install ran or found the plugin already in place
+          // (CAN-5017); without a marketplace to name, keep `Installed.`. A
+          // skill-typed ref installs a skill, which keeps its own status. The
+          // modal matches these exact strings to replay-block the origin.
+          if (target.entity === 'plugin' && snapshot.marketplaceOrigin !== '') {
+            reportStatus(
+              outcome === 'installed'
+                ? shareInstallPluginInstalledStatus(snapshot.marketplaceOrigin)
+                : shareInstallPluginAlreadyAvailableStatus(
+                    snapshot.marketplaceOrigin,
+                    { installAttempted: true },
+                  ),
+            );
+          }
           reportHandoff({
             entity: 'plugin',
             externalId: link.externalId,
@@ -1791,6 +1829,74 @@ export function usePublicShareLanding(
     [snapshot, link.externalId, link.audience, reportHandoff, recovery],
   );
 
+  const turnOnInChat = useCallback(
+    async (
+      target: PublicShareInstalledTarget,
+      chat: ShareChatTarget,
+    ): Promise<PluginChatEnableOutcome> => {
+      // A plugin share whose ref is a skill installs as a skill and keeps
+      // the skill path.
+      if (
+        target.entity !== 'plugin' ||
+        snapshot?.entity !== 'plugin' ||
+        installInFlightRef.current ||
+        insertInFlightRef.current ||
+        installedRef.current !== target
+      )
+        return 'stale';
+      insertInFlightRef.current = true;
+      let current = true;
+      const pending = useNavigationStore.getState().pendingShareInstall;
+      const stop = watchPluginChatTarget(chat, (): void => {
+        current = false;
+      });
+      const stopReview = useNavigationStore.subscribe((state): void => {
+        if (state.pendingShareInstall !== pending) current = false;
+      });
+      try {
+        // The offer outlives the review: re-detect that the plugin is still
+        // installed under the same ref before turning it on.
+        const found = await detectInstalled(
+          snapshot,
+          link.audience,
+          recovery.skillTarget,
+        );
+        if (
+          !current ||
+          installedRef.current !== target ||
+          useNavigationStore.getState().pendingShareInstall !== pending
+        )
+          return 'stale';
+        // The chat is still open but the plugin is no longer installed under
+        // this ref, so "no longer open" would be wrong.
+        if (
+          found?.entity !== 'plugin' ||
+          found.marketplaceId !== target.marketplaceId ||
+          found.pluginName !== target.pluginName
+        )
+          return 'failed';
+        const outcome = await enablePluginInChat(chat, target);
+        if (outcome === 'enabled') {
+          reportHandoff({
+            entity: 'plugin',
+            externalId: link.externalId,
+            eventType: 'TRY_NOW',
+            audience: link.audience,
+          });
+        }
+        return outcome;
+      } catch (error) {
+        reportClientAppError(error);
+        return 'failed';
+      } finally {
+        stop();
+        stopReview();
+        insertInFlightRef.current = false;
+      }
+    },
+    [snapshot, link.externalId, link.audience, reportHandoff, recovery],
+  );
+
   // Behavioral `intent=try` (PR2b): once `installed` is known — from the
   // arrival detection, or right after an explicit Install on a try-intent
   // arrival (deliberate: the link promised "lands ready to stage", so the
@@ -2037,6 +2143,7 @@ export function usePublicShareLanding(
     install,
     tryNow,
     insertInChat,
+    turnOnInChat,
     manage,
     uninstall,
     installReview,

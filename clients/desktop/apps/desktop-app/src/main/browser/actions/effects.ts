@@ -2,7 +2,7 @@ import type {
   BrowserActionEffects,
   BrowserDownloadTransfer,
   BrowserJavaScriptDialog,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import type { BrowserCdpSend } from './actionability';
 
 /** Baseline fields contain no form values or serialized DOM. */

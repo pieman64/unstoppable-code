@@ -3,7 +3,10 @@ import type {
   PersistedChatBlock,
   PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
-import { isDelegatedAgentCallBlock } from '@canopy/agent-transcript';
+import {
+  isClaudeModsSkippedBlock,
+  isDelegatedAgentCallBlock,
+} from '@canopy/agent-transcript';
 import { isTranscriptBlocksReference } from '@canopy/agent-transcript/transcript-storage';
 import { isRecord } from './type-guards';
 
@@ -191,6 +194,8 @@ export function isPersistedChatBlock(
         isOptionalString(value.provider) &&
         isOptionalString(value.sourceEventId)
       );
+    case 'claude_mods_skipped':
+      return isClaudeModsSkippedBlock(value);
     case 'rebase_resolution_info':
       return (
         (value.kind === 'rebase_conflict' ||

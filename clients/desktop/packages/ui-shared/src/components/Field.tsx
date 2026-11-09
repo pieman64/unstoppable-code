@@ -11,6 +11,7 @@ import {
   type ReactNode,
   type TextareaHTMLAttributes,
 } from 'react';
+import type { AppError } from '@canopy/protocol/app-errors';
 import { ChevronDownMediumIcon, WarningIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { DROPDOWN_TRIGGER_INTERACTION_CLASS } from './Button';
@@ -266,18 +267,50 @@ TextInput.displayName = 'TextInput';
  * `invalid`. The glyph and the copy carry the destructive ink; the field keeps
  * its shape.
  */
+/** Only input errors belong under a field; anything else is a banner. */
+export type FieldInputError = Extract<AppError, { kind: 'input' }>;
+
+interface FieldErrorBaseProps {
+  readonly id: string;
+  /**
+   * Announce the message when it appears (`role="alert"`). Set it when the
+   * message arrives after an action (a submit, a failed save, a stale value)
+   * rather than as the person types.
+   */
+  readonly announce?: boolean;
+  /** A corrective action after the message (`Use suggested name`). */
+  readonly action?: ReactNode;
+  readonly 'data-testid'?: string;
+}
+
+export type FieldErrorProps = FieldErrorBaseProps &
+  (
+    | { readonly children: ReactNode; readonly error?: never }
+    | {
+        /**
+         * An input error's catalog copy (or its allowed override). Input
+         * failures are the person's to fix, so nothing records them.
+         */
+        readonly error: FieldInputError;
+        readonly children?: never;
+      }
+  );
+
 export function FieldError({
   id,
+  announce = false,
   children,
+  error,
+  action,
   'data-testid': dataTestId,
-}: {
-  readonly id: string;
-  readonly children: ReactNode;
-  readonly 'data-testid'?: string;
-}): JSX.Element {
+}: FieldErrorProps): JSX.Element {
+  const copy = error
+    ? [error.copy.title, error.copy.description].filter(Boolean).join(' ')
+    : children;
   return (
     <p
       id={id}
+      role={announce ? 'alert' : undefined}
       data-testid={dataTestId}
       className="flex items-start gap-1 text-xs fg-destructive text-pretty"
     >
@@ -286,7 +319,8 @@ export function FieldError({
       <span aria-hidden="true" className="flex h-4.5 shrink-0 items-center">
         <WarningIcon size={12} exactSize drawnStrokeWidth={1.5} />
       </span>
-      <span>{children}</span>
+      <span>{copy}</span>
+      {action ? <span className="shrink-0 fg-primary">{action}</span> : null}
     </p>
   );
 }

@@ -92,7 +92,7 @@ import type {
   PortalMcpSetConfigEnabledResult,
   PortalPluginMutationResult,
 } from '@canopy/desktop-shared/types';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import { skillSharePath } from '@canopy/protocol/skills';
 import {
   collectionSharePath,
@@ -110,7 +110,7 @@ import type {
   McpServerFile,
   McpServerIndexEntry,
   McpServerStatusEntry,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { isCustomAccountMcpServerKey } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
   readCollectionConfig,
@@ -455,16 +455,22 @@ function createMarketplaceShareResolver(
   return createSharedMarketplaceShareResolver(marketplaces, pluginDisplayName);
 }
 
+/** Whether the marketplace row is installed, as the Plugins page shows it. */
+export function isPluginInstalled(plugin: PluginInfo): boolean {
+  return (
+    plugin.parked === true ||
+    Boolean(plugin.cachePath) ||
+    Boolean(plugin.globalInstallStatus?.claude?.installed) ||
+    Boolean(plugin.globalInstallStatus?.codex?.installed)
+  );
+}
+
 function toPluginRow(
   plugin: PluginInfo,
   marketplace?: MarketplaceInfo,
   shareResolver?: MarketplaceShareResolver,
 ): PortalMarketplacePluginRow {
-  const installed =
-    plugin.parked === true ||
-    Boolean(plugin.cachePath) ||
-    Boolean(plugin.globalInstallStatus?.claude?.installed) ||
-    Boolean(plugin.globalInstallStatus?.codex?.installed);
+  const installed = isPluginInstalled(plugin);
   return {
     name: plugin.name,
     marketplaceId: plugin.marketplaceId,

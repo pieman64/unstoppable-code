@@ -87,6 +87,30 @@ async function accountMetadata(ctx) {
   }) };
 }
 
+// Private continuity metadata, separate from display accounts. Never resolve a
+// connection: that API returns credentials. Labels and refreshed values do not
+// identify a new connection in v2; credential IDs and environment names do.
+async function connectionMetadata(ctx, providerId) {
+  const identifier = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\\x00-\\x1f\\x7f]/.test(value);
+  if (!identifier(providerId)) throw new Error('Invalid provider.');
+  const result = await ctx.provider.list();
+  const providers = Array.isArray(result) ? result : result.data;
+  if (!Array.isArray(providers) || providers.length > 200) throw new Error('Invalid providers.');
+  const matches = providers.filter(provider => provider.id === providerId);
+  if (matches.length !== 1) throw new Error('Provider unavailable.');
+  const integrationId = matches[0].integrationID ?? providerId;
+  if (!identifier(integrationId)) throw new Error('Invalid integration.');
+  const active = await ctx.integration.connection.active(integrationId);
+  let connection = null;
+  if (active != null) {
+    if (active.type === 'env' && identifier(active.name)) connection = { type: 'env', name: active.name };
+    else if (active.type === 'credential' && identifier(active.id) && ['key', 'oauth', 'external'].includes(active.method))
+      connection = { type: 'credential', id: active.id, method: active.method };
+    else throw new Error('Invalid connection.');
+  }
+  return { providerId, integrationId, connection };
+}
+
 export default {
   id: 'canopy.host-approval',
   async setup(ctx) {
@@ -159,6 +183,7 @@ export default {
         }
         else if (url.pathname === '/models') result = await ctx.model.list();
         else if (url.pathname === '/accounts') result = await accountMetadata(ctx);
+        else if (url.pathname === '/connection') result = await connectionMetadata(ctx, url.searchParams.get('provider'));
         else if (url.pathname === '/tools') result = await Promise.all((await ctx.tool.list()).map(async (tool) => ({
           id: tool.id, description: tool.description, parameters: await jsonSchema(tool.input),
         })));

@@ -61,7 +61,8 @@ export const RELAY_DEFINITIONS: RelayDefinitions = {
  * whose open settled after the renderer gave up. Unknown or ended ids no-op.
  */
 export interface RelayBindingConnection extends CanopyFramedConnection {
-  releaseStream?(subscriptionId: string): void;
+  /** `ended`: the core delivered its end; `cancelled`: abandoned while the core may still serve it. */
+  releaseStream?(subscriptionId: string, reason?: 'ended' | 'cancelled'): void;
 }
 
 /** Opens one authenticated framed connection bound to `caller`. */

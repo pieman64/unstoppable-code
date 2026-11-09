@@ -132,15 +132,88 @@ describe('spawnProviderProcessDirect', () => {
     expect(observed.errors).toEqual([]);
   });
 
+  it('a request with stdin ignored gives the child no input', async () => {
+    const child = spawnProviderProcessDirect(
+      request(
+        [
+          '-e',
+          "process.stdout.write(String(require('fs').readFileSync(0).length))",
+        ],
+        { stdin: 'ignore' },
+      ),
+    );
+    const observed = observe(child);
+    expect(child.stdin).toBeNull();
+    expect((await observed.stdout).toString()).toBe('0');
+    await observed.closed;
+    expect(observed.closes).toEqual([[0, null]]);
+    expect(observed.errors).toEqual([]);
+  });
+
+  it('spawns with stdio[0] ignore when asked and pipe by default', async () => {
+    await jest.isolateModulesAsync(async (): Promise<void> => {
+      const childProcess =
+        jest.requireActual<typeof ChildProcessModule>('node:child_process');
+      const spawnSpy = jest.spyOn(childProcess, 'spawn');
+      const { spawnProviderProcessDirect: isolatedSpawn } =
+        await import('../spawn');
+      for (const mode of ['ignore', undefined] as const) {
+        const child = isolatedSpawn(
+          request(['-e', ''], mode ? { stdin: mode } : {}),
+        );
+        await observe(child).closed;
+      }
+      expect(spawnSpy.mock.calls.map((call) => call[2]?.stdio)).toEqual([
+        ['ignore', 'pipe', 'pipe'],
+        ['pipe', 'pipe', 'pipe'],
+      ]);
+    });
+  });
+
+  it('reports exit before close while a descendant holds stdout', async () => {
+    const child = spawnProviderProcessDirect(
+      request([
+        '-e',
+        `const { spawn } = require('node:child_process');
+         const descendant = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 1 << 30)'],
+           { stdio: ['ignore', 'inherit', 'ignore'] });
+         process.stdout.write(descendant.pid + '\\n', () => process.exit(0));`,
+      ]),
+    );
+    const observed = observe(child);
+    const events: string[] = [];
+    const exited = new Promise<[number | null, NodeJS.Signals | null]>(
+      (resolve) => {
+        child.once('exit', (code, signal) => {
+          events.push('exit');
+          resolve([code, signal]);
+        });
+      },
+    );
+    child.once('close', () => events.push('close'));
+    const descendant = Number(await firstLine(child));
+    strays.add(descendant);
+    expect(await exited).toEqual([0, null]);
+    expect(present(descendant)).toBe(true);
+    expect(observed.closes).toEqual([]);
+    process.kill(descendant, 'SIGKILL');
+    await observed.closed;
+    expect(events).toEqual(['exit', 'close']);
+    expect(observed.closes).toEqual([[0, null]]);
+  });
+
   it('a missing executable reports one error then close(null, null)', async () => {
     const child = spawnProviderProcessDirect(
       request([], { command: path.join(dir, 'missing') }),
     );
     const observed = observe(child);
+    const exits = jest.fn();
+    child.once('exit', exits);
     await observed.closed;
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(observed.errors.map((error) => error.code)).toEqual(['ENOENT']);
     expect(observed.closes).toEqual([[null, null]]);
+    expect(exits).not.toHaveBeenCalled();
     expect(child.pid).toBeUndefined();
   });
 
@@ -211,6 +284,45 @@ describe('spawnProviderProcessDirect', () => {
     await child.stop({ graceMs: 300 });
     expect(Date.now() - started).toBeGreaterThanOrEqual(250);
     expect(observed.closes).toEqual([[null, 'SIGKILL']]);
+  });
+
+  itPosix(
+    'stop signals only the group of a child that exits inside the TERM window',
+    async () => {
+      const child = spawnProviderProcessDirect(
+        request([
+          '-e',
+          `process.on('SIGTERM', () => process.exit(0));
+           process.stdout.write('ready\\n');
+           setInterval(() => undefined, 1 << 30);`,
+        ]),
+      );
+      const observed = observe(child);
+      await firstLine(child);
+      const pid = child.pid;
+      if (pid === undefined) throw new Error('no pid');
+      const kill = jest.spyOn(process, 'kill');
+      await child.stop({ graceMs: 5_000 });
+      expect(observed.closes).toEqual([[0, null]]);
+      expect(kill.mock.calls).toEqual([
+        [-pid, 'SIGTERM'],
+        [-pid, 'SIGKILL'],
+      ]);
+    },
+  );
+
+  itPosix('stop after close signals only the group', async () => {
+    const child = spawnProviderProcessDirect(request(['-e', '']));
+    const observed = observe(child);
+    await observed.closed;
+    const pid = child.pid;
+    if (pid === undefined) throw new Error('no pid');
+    const kill = jest.spyOn(process, 'kill');
+    await child.stop({ graceMs: 100 });
+    expect(kill.mock.calls).toEqual([
+      [-pid, 'SIGTERM'],
+      [-pid, 'SIGKILL'],
+    ]);
   });
 
   it('stop is idempotent', async () => {

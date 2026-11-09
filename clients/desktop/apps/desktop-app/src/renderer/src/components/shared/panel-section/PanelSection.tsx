@@ -15,6 +15,7 @@ import {
   PanelSection as SharedPanelSection,
   PanelSectionHeaderActionSlotContext,
   type PanelSectionHeaderProps,
+  type SpaceRole,
 } from '@canopy/ui-shared/components';
 import { useSortableDragHandle } from './sortable-section-context';
 import { useActivitySectionChrome } from './section-chrome-context';
@@ -25,6 +26,7 @@ interface PanelSectionProps {
   icon: JSX.Element;
   title: string;
   subtitle?: ReactNode;
+  subtitleGap?: SpaceRole;
   children?: ReactNode;
   headerAction?: ReactNode;
   collapsedIconColor?: CollapsedIconColor;
@@ -104,6 +106,7 @@ export function PanelSection({
   icon,
   title,
   subtitle,
+  subtitleGap,
   children,
   headerAction,
   collapsedIconColor = 'muted',
@@ -267,6 +270,7 @@ export function PanelSection({
       icon={icon}
       title={title}
       subtitle={subtitle}
+      subtitleGap={subtitleGap}
       headerAction={headerAction}
       collapsedIconColor={collapsedIconColor}
       defaultCollapsed={defaultCollapsed}

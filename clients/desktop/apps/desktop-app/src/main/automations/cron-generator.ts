@@ -13,7 +13,7 @@ import {
 import {
   readHelperUsage,
   type HelperUsage,
-} from '@canopy/desktop-shared/lib/helper-usage';
+} from '@canopy/execution-engine/lib/helper-usage';
 import { validateAutomationTrigger } from '@canopy/desktop-shared/lib/automations';
 import { isRecord } from '../lib/type-guards';
 import {

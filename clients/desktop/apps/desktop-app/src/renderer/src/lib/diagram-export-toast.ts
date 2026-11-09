@@ -1,5 +1,6 @@
 import type { MermaidExportToast } from '@canopy/ui-shared/components';
-import { useGitHubStore, type ToastMeta } from '@/stores/githubStore';
+import { useGitHubStore } from '@/stores/githubStore';
+import type { ToastMeta } from '@/stores/toastStore';
 
 /**
  * Posts a diagram export toast. It answers a click on the diagram, so like a

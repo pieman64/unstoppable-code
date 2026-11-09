@@ -23,6 +23,7 @@ import {
   loadDeferredToolsSchema,
   searchDeferredToolsSchema,
 } from './definitions';
+import { recordIssuedDeferredRefs, wasDeferredRefIssued } from './issued-refs';
 import { deferredToolsReloadCoordinator } from './reload-coordinator';
 
 export interface DeferredToolsReloadSink {
@@ -83,7 +84,7 @@ function jsonText(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function deferredToolsUnavailable(): DeferredToolsExecutionResult {
+export function deferredToolsUnavailable(): DeferredToolsExecutionResult {
   return {
     text: 'Deferred tools are not available for this chat. Instruct user to enable using the plugin picker from the chat composer.',
     isError: true,
@@ -114,24 +115,24 @@ export async function executeSearchDeferredTools(
     pluginSelections: runtime.pluginSelections,
   });
   const input: SearchDeferredToolsInput = parsed.data;
-  return {
-    text: jsonText({
-      provider,
-      results: input.queries.map((query) => {
-        const result = searchDeferredCatalogResult(catalog, query.text, {
-          kinds: query.kinds,
-          limit: query.limit,
-        });
-        return {
-          query: query.text,
-          matches: result.matches,
-          ...(result.unsupportedMatches > 0
-            ? { unsupportedMatches: result.unsupportedMatches }
-            : {}),
-        };
-      }),
-    }),
-  };
+  const results = input.queries.map((query) => {
+    const result = searchDeferredCatalogResult(catalog, query.text, {
+      kinds: query.kinds,
+      limit: query.limit,
+    });
+    return {
+      query: query.text,
+      matches: result.matches,
+      ...(result.unsupportedMatches > 0
+        ? { unsupportedMatches: result.unsupportedMatches }
+        : {}),
+    };
+  });
+  recordIssuedDeferredRefs(
+    runtime.scope,
+    results.flatMap((result) => result.matches.map((match) => match.ref)),
+  );
+  return { text: jsonText({ provider, results }) };
 }
 
 export async function executeLoadDeferredTools(
@@ -157,6 +158,7 @@ export async function executeLoadDeferredTools(
   const classified = classifyLoadItems(
     catalog,
     parsed.data.items.map((item) => item.ref),
+    (ref) => wasDeferredRefIssued(runtime.scope, ref),
   );
   const initialResult: LoadDeferredToolsResult = {
     status:

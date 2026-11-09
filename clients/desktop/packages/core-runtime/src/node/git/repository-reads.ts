@@ -16,6 +16,8 @@ export type GitConventionalDefaultBranch =
  * read-only Git host. Each names one command; nothing else is expressible.
  */
 export type GitRepositoryRead =
+  /** `rev-parse --verify --quiet HEAD^{commit}`; never infer unborn from rejection. */
+  | { readonly kind: 'head-commit' }
   /** {@link GIT_BRANCH_LIST_REF_ARGS} */
   | { readonly kind: 'branch-refs' }
   /** `rev-parse --git-common-dir` */
@@ -122,7 +124,7 @@ export type GitExecutableSelectionOrigin =
   | 'unvalidated';
 
 /** What a read-only host's selection reports; its path stays on the host. */
-export type GitExecutableSelectionFacts =
+export type GitExecutableSelectionFacts = (
   | {
       readonly ready: true;
       /** The `git version …` text validation parsed; null when unvalidated. */
@@ -136,7 +138,11 @@ export type GitExecutableSelectionFacts =
       readonly code: GitIgnoreHostFailureCode;
       /** The failure is the explicit choice's (Linux x64/arm64's saved or override). */
       readonly explicit: boolean;
-    };
+    }
+) & {
+  /** Windows discovery fact; absent on hosts that do not probe winget. */
+  readonly wingetAvailable?: boolean;
+};
 
 export interface GitExecutableSelectionRequest {
   readonly readSavedExecutablePath: (signal: AbortSignal) => Promise<string>;

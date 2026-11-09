@@ -83,6 +83,8 @@ export const NAVIGATION_PAGE_REPLAY_PRIVACY = Object.freeze({
   overview: 'reviewed',
   home: 'reviewed',
   chat: 'reviewed',
+  // The page's transcript wrapper mounts with the block (CAN-5975 narrows it).
+  'cloud-chat': 'reviewed',
   pipelines: 'reviewed',
   plugins: 'reviewed',
   audit: 'reviewed',

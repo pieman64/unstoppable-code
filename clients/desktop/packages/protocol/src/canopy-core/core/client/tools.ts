@@ -48,6 +48,21 @@ export interface InterfaceToolCatalogEntry {
   readonly description: string;
 }
 
+/**
+ * The Pipeline Editor's draft is editor context, not canonical state: core
+ * saves pipelines itself (CAN-5822), so none of these tools writes one.
+ */
+function pipelineEditorTool(description: string): InterfaceToolCatalogEntry {
+  return Object.freeze({
+    version: 1,
+    category: 'editor_context',
+    surfaces: Object.freeze(['main'] as const),
+    deadlineMs: INTERFACE_TOOL_DEFAULT_DEADLINE_MS,
+    affectsCanonicalState: false,
+    description,
+  });
+}
+
 export const INTERFACE_TOOL_CATALOG = Object.freeze({
   'ui.app_advisor.present': Object.freeze({
     version: 1,
@@ -83,6 +98,30 @@ export const INTERFACE_TOOL_CATALOG = Object.freeze({
     affectsCanonicalState: false,
     description: 'Read a snapshot of what the main window shows.',
   }),
+  'ui.pipeline_editor.list': pipelineEditorTool(
+    "List the pipelines the main window's Pipeline Editor can open.",
+  ),
+  'ui.pipeline_editor.open': pipelineEditorTool(
+    'Open one pipeline in the Pipeline Editor.',
+  ),
+  'ui.pipeline_editor.create': pipelineEditorTool(
+    'Start a new pipeline draft in the Pipeline Editor.',
+  ),
+  'ui.pipeline_editor.get_current': pipelineEditorTool(
+    "Read the Pipeline Editor's current draft, dirty state and validation.",
+  ),
+  'ui.pipeline_editor.set_yaml': pipelineEditorTool(
+    "Replace the Pipeline Editor's draft with new YAML, without saving it.",
+  ),
+  'ui.pipeline_editor.to_list': pipelineEditorTool(
+    'Return the Pipeline Editor to the pipeline list.',
+  ),
+  'ui.pipeline_editor.prepare_save': pipelineEditorTool(
+    'Read the draft the Pipeline Editor would save and the revision it loaded.',
+  ),
+  'ui.pipeline_editor.adopt_saved': pipelineEditorTool(
+    'Show a pipeline that core saved as the saved state of the Pipeline Editor.',
+  ),
 } satisfies Record<string, InterfaceToolCatalogEntry>);
 export type InterfaceToolName = keyof typeof INTERFACE_TOOL_CATALOG;
 export const INTERFACE_TOOL_NAMES: readonly InterfaceToolName[] = Object.freeze(

@@ -703,8 +703,10 @@ export const AppAdvisorNav = memo(function AppAdvisorNav({
       data-collapsed={collapsed ? 'true' : 'false'}
       aria-label={`${ORCHESTRATOR_LABEL} navigation`}
       onTransitionEnd={handleTransitionEnd}
-      className={`flex h-full shrink-0 flex-col overflow-hidden bg-sidebar transition-[width] duration-150 ease-out ${
-        collapsed ? 'w-0 border-r-0' : 'w-60 border-r '
+      // No divider: like the main window's sidebar in the inset layout, the
+      // nav sits on the window material and the cards beside it draw the edge.
+      className={`flex h-full shrink-0 flex-col overflow-hidden transition-[width] duration-150 ease-out ${
+        collapsed ? 'w-0' : 'w-60'
       }`}
     >
       {/* Header: a drag-region row reserving height beneath the persistent

@@ -30,11 +30,11 @@ import type { AiGatewayHarness } from '@canopy/protocol/ai-gateway-models';
 import {
   isUnavailableModelSelection,
   resolveGatewayModelEntry,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 export {
   isRemovedGatewayOnlyModel,
   resolveGatewayModelEntry,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import type {
   AgentProviderType,
   AiCreditsRoutingMode,
@@ -55,7 +55,7 @@ import {
   resolveModelAlias,
   IPC_CHANNELS,
 } from '@canopy/desktop-shared/types';
-import type { CodexConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { aiCreditsOutrankAccountProxy } from '@canopy/desktop-shared/lib/account-proxy';
 import { hasUserSuppliedProviderCredential } from './user-supplied-credential';

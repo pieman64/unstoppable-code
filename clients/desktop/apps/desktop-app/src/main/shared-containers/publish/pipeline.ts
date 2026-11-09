@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { finished, pipeline as streamPipeline } from 'node:stream/promises';
 import { createArtifactEncryptStream } from '@canopy/artifact-crypto';
-import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import {
   MAX_SHARED_CONTAINER_STAGE_REQUEST_BYTES,
   MAX_SHARED_CONTAINER_TITLE_LENGTH,

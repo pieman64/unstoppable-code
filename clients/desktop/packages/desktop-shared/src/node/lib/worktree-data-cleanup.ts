@@ -2,8 +2,8 @@ import type { RmOptions } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getCanopyDataDir } from '../../canopy-paths';
-import { isPathInside } from './path-safety';
-import { validateId } from './validation';
+import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
+import { validateId } from '@canopy/execution-engine/node/lib/validation';
 
 export const WORKTREE_DATA_REMOVE_MAX_RETRIES = 20;
 export const WORKTREE_DATA_REMOVE_RETRY_DELAY_MS = 100;

@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import type { JSX, ReactElement } from 'react';
 import {
   RichHoverTooltip,
@@ -28,18 +29,18 @@ export function EnvironmentUsageRichTooltip({
       surfaceClassName="min-w-40 max-w-70"
       surfacePadding="card"
       content={
-        <>
+        <Stack gap="tight">
           <span className="block text-3xs font-semibold fg-secondary">
             {title}
           </span>
-          <ul className="mt-1 space-y-0.5">
+          <ul className="flex flex-col gap-0.5">
             {items.map((item, index) => (
               <li key={`${item}-${index}`} className="truncate">
                 {item}
               </li>
             ))}
           </ul>
-        </>
+        </Stack>
       }
     >
       {children}

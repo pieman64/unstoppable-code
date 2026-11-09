@@ -314,6 +314,11 @@ const policiesUpdateFields = {
   modelGatewayModels: z.array(modelGatewayModelInputSchema).max(100).optional(),
   modelGatewayEnforced: z.boolean().optional(),
   modelGatewayPromptCachePassthrough: z.boolean().optional(),
+  prohibitMemberProductAnalytics: z.boolean().optional(),
+  prohibitMemberErrorReports: z.boolean().optional(),
+  prohibitMemberSessionReplay: z.boolean().optional(),
+  prohibitMemberActiveUseSignal: z.boolean().optional(),
+  prohibitMemberFeatureFlagIdentity: z.boolean().optional(),
 };
 
 const POLICY_FIELD_NAMES = Object.keys(policiesUpdateFields);

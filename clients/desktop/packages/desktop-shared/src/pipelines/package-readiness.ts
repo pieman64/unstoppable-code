@@ -1,4 +1,4 @@
-import type { PipelinePackageReadiness } from '../types/pipeline';
+import type { PipelinePackageReadiness } from '@canopy/execution-engine/types/pipeline';
 
 /**
  * True when Run must be blocked: a required requirement is known-missing, or

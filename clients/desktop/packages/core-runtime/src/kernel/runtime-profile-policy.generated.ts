@@ -21,12 +21,13 @@ export const RUNTIME_PROFILE_AUTHORITY_ONLY = [
 // prettier-ignore
 export const RUNTIME_PROFILE_DOMAINS = {
   "core": {
+    "core.agent": {"installed":["*"],"principals":["interface"],"modes":{}},
     "core.annotation": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.approval": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.archive": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.artifact": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.catalog": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
-    "core.chat": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
+    "core.chat": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*","!core.chat.visual.stage"],"read-only":["reads"]}},
     "core.client": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.config": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.cost": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
@@ -76,12 +77,13 @@ export const RUNTIME_PROFILE_DOMAINS = {
     "worker.terminal": {"installed":["*"],"principals":["owning-core","delegating-primary"],"modes":{"authority":["*"],"delegated-execution":["*"],"read-only":["reads"]}},
   },
   "core+worker": {
+    "core.agent": {"installed":["*"],"principals":["interface"],"modes":{}},
     "core.annotation": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.approval": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.archive": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.artifact": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.catalog": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
-    "core.chat": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
+    "core.chat": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*","!core.chat.visual.stage"],"read-only":["reads"]}},
     "core.client": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.config": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.cost": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},

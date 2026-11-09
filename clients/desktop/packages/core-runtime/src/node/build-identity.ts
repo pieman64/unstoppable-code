@@ -43,20 +43,33 @@ export function compiledBuildIdentity(
   return identity;
 }
 
-/** Dev/source runs allow test isolation; release bundles need a compiled test opt-in. */
-export function testDataDirectoryOverride(
-  environment: Readonly<Record<string, string | undefined>>,
-  name: 'CANOPY_DATA_DIR' | 'CANOPY_SECURE_DATA_DIR',
-): string | undefined {
+/** Source, dev and compiled test hosts may propagate launcher roots without an explicit override. */
+export function isDevelopmentOrTestBuild(): boolean {
   const identity = bundledBuildIdentity();
-  const value = environment[name]?.trim();
-  if (!value) return undefined;
-  const permitted =
+  return (
     identity === undefined ||
     identity.build === 'dev' ||
     (typeof __CANOPY_TEST_DATA_OVERRIDES__ !== 'undefined' &&
-      __CANOPY_TEST_DATA_OVERRIDES__);
-  if (!permitted)
-    throw new Error('Data directory overrides require a dev or test build.');
+      __CANOPY_TEST_DATA_OVERRIDES__)
+  );
+}
+
+export function dataDirectoryOverride(
+  environment: Readonly<Record<string, string | undefined>>,
+  name: 'CANOPY_DATA_DIR' | 'CANOPY_SECURE_DATA_DIR',
+): string | undefined {
+  // Overrides bypass default routing, not compiled-identity validation.
+  bundledBuildIdentity();
+  const value = environment[name]?.trim();
+  if (!value) return undefined;
   return value;
+}
+
+export function hasDataDirectoryOverride(
+  environment: Readonly<Record<string, string | undefined>>,
+): boolean {
+  return Boolean(
+    dataDirectoryOverride(environment, 'CANOPY_DATA_DIR') ||
+    dataDirectoryOverride(environment, 'CANOPY_SECURE_DATA_DIR'),
+  );
 }

@@ -1,5 +1,5 @@
 import { BRAND } from '@canopy/brand/current';
-import { brandEnvCandidates } from './brand/env';
+import { brandEnvCandidates } from '@canopy/execution-engine/brand/env';
 import {
   compareScriptNames,
   isLifecycleScriptName,

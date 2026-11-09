@@ -1,5 +1,5 @@
-import { OverlapMatcher } from '../../../lib/overlap-matcher';
-import { withJsonEscapedVariants } from '../../../lib/redaction';
+import { OverlapMatcher } from '@canopy/execution-engine/lib/overlap-matcher';
+import { withJsonEscapedVariants } from '@canopy/execution-engine/lib/redaction';
 import {
   FrameStack,
   IdentityText,

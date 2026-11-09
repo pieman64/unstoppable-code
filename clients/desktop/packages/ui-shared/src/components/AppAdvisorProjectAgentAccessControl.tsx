@@ -160,7 +160,7 @@ export function AppAdvisorProjectAgentAccessControl({
       aria-busy={saving || undefined}
     >
       <div className="flex min-h-7 items-center justify-between gap-6">
-        <div className="min-w-0 flex-1 space-y-0.5">
+        <div className="min-w-0 flex-1 flex flex-col gap-0.5">
           <div
             id={`${testIdPrefix}-label`}
             className="block text-s font-medium fg-primary"

@@ -3,18 +3,23 @@ import * as path from 'node:path';
 import type { ConnectedExecutionHostChannel } from '@canopy/core-platform/execution-host/channel';
 import type {
   PipelineHostErrorCode,
+  PipelineHostLauncherCommand,
   PipelineHostLaunch,
   PipelineHostMessage,
   PipelineHostRequest,
   PipelineHostRequestMessage,
 } from '@canopy/core-runtime/node/pipeline/host';
+import type { WorkerPipelineHostRequest } from '@canopy/protocol/canopy-core';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import type {
   ExecutionState,
   Pipeline,
   PipelinePreferenceLocator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
+import { setBrandEnv } from '@canopy/execution-engine/brand/env';
+import { applyModelRegistrySnapshot } from '@canopy/execution-engine/builtin-actions/_lib/model-registry';
 import { getCanopyDataDir } from '../../../canopy-paths';
+import { normalizeAgentModelConfig } from '../../../types';
 import { classifyDaemonPipeline } from '../daemon-eligibility';
 import { projectPipelineExecution } from '../execution-projection';
 import { cancelPipelineExecution, executePipeline } from '../executor';
@@ -38,6 +43,20 @@ import type {
   ExecutionResourceRegistrationHandle,
   ExecutionRuntime,
 } from '../executor/types';
+import {
+  createDaemonHostStepPort,
+  type DaemonHostStepPort,
+} from './host-steps';
+import type { CodexRuntimeService } from '../../codex-runtime';
+import {
+  acquireDaemonPipelineCodexRuntime,
+  shutdownDaemonPipelineCodexRuntime,
+} from './codex-runtime';
+import {
+  createPipelineOwnerClient,
+  type PipelineOwnerClientHost,
+} from './owner-client';
+import { createDaemonPipelineOwnerPorts } from './owner-ports';
 import { createDaemonPipelineRuntime } from './runtime';
 
 export interface ServePipelineHostOptions {
@@ -125,6 +144,8 @@ async function isOwnDataRoot(dataRoot: string): Promise<boolean> {
 interface LiveRun {
   readonly handle: ExecutionHandle;
   readonly runtime: ExecutionRuntime;
+  /** Withdraws the run's pending owner requests (CAN-5095). */
+  readonly ownerRequests?: AbortController;
 }
 
 /** Serves one pipeline host over its execution host channel (CAN-5086). */
@@ -137,6 +158,21 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
   const exitRequests: number[] = [];
   /** Starts admitted but not yet answered; checkpoint and exit wait for them. */
   const admitting = new Set<Promise<void>>();
+  /**
+   * Each run until its executor settles. A run leaves `runs` on its outcome
+   * event but still writes under the data root until then; checkpoint and
+   * exit wait for it.
+   */
+  const finishing = new Map<ExecutionHandle, Promise<void>>();
+  /** Executions started `ownerBound`; only they take host steps and `pause` (CAN-5771). */
+  const ownerBound = new Set<string>();
+  let hostSteps: DaemonHostStepPort | null = null;
+  /** Owner requests of model steps (CAN-5095). */
+  let ownerRequests: PipelineOwnerClientHost | null = null;
+  let codexMcpLauncher: PipelineHostLauncherCommand | null = null;
+  let dataRoot: string | null = null;
+  /** The provider CLIs the host's first model-step launch named (D21). */
+  let providerBinaries: { claude: string; codex: string } | null = null;
 
   const post = (message: PipelineHostMessage): void => {
     channel.postMessage(message);
@@ -189,16 +225,37 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
   };
 
   const settleExits = (): void => {
-    if (runs.size > 0 || admitting.size > 0) return;
+    if (runs.size > 0 || admitting.size > 0 || finishing.size > 0) return;
     const pending = exitRequests.splice(0);
     if (pending.length === 0) return;
-    for (const id of pending) respond(id, null);
-    channel.exit(0);
+    void shutdownDaemonPipelineCodexRuntime()
+      .catch(() => warn('The pipeline host could not stop its Codex runtime.'))
+      .finally(() => {
+        for (const id of pending) respond(id, null);
+        channel.exit(0);
+      });
+  };
+
+  /** Points the host's provider CLIs at the app's own, once (D21); false for other paths. */
+  const useProviderBinaries = (binaries: {
+    claude: string;
+    codex: string;
+  }): boolean => {
+    if (providerBinaries)
+      return (
+        providerBinaries.claude === binaries.claude &&
+        providerBinaries.codex === binaries.codex
+      );
+    providerBinaries = { ...binaries };
+    setBrandEnv(process.env, 'CLAUDE_BINARY_PATH', binaries.claude);
+    setBrandEnv(process.env, 'CODEX_BINARY_PATH', binaries.codex);
+    return true;
   };
 
   const forget = (executionId: string, handle: ExecutionHandle): void => {
     if (runs.get(executionId)?.handle !== handle) return;
     runs.delete(executionId);
+    ownerBound.delete(executionId);
     settleExits();
   };
 
@@ -230,13 +287,51 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       path: launch.cwd,
     };
     lastBundledActionsDir = launch.bundledActionsDir;
+    const isOwnerBound = launch.ownerBound === true;
+    const launcher = codexMcpLauncher;
+    const configuredRoot = dataRoot ?? path.dirname(dir);
+    const runOwnerRequests = isOwnerBound ? new AbortController() : undefined;
     const runtime = createDaemonPipelineRuntime({
       executionsDir: dir,
       bundledActionsDir: launch.bundledActionsDir,
       processEnvironment,
+      onStepNotifications: (stepId, notifications): void => {
+        for (const { title, body } of notifications)
+          post({
+            kind: 'notification',
+            executionId: params.executionId,
+            stepId,
+            title,
+            body,
+          });
+      },
       ...(launch.nodeProcess && { nodeProcess: launch.nodeProcess }),
       resourceMonitor,
       worktree,
+      ...(isOwnerBound && hostSteps && { pipelineHostActions: hostSteps }),
+      // Model ports only for a launch with model steps: Electron main answers
+      // owner requests only for those (CAN-5095), and every other step must
+      // not wait on it, as an unbound launch does not.
+      ...(isOwnerBound &&
+        ownerRequests &&
+        launch.providerBinaries && {
+          owner: createDaemonPipelineOwnerPorts(ownerRequests, {
+            executionId: params.executionId,
+            owner: params.owner,
+            ...(runOwnerRequests && { signal: runOwnerRequests.signal }),
+            ...(launch.codexEnvironment && {
+              codexEnvironment: launch.codexEnvironment,
+            }),
+          }),
+          ...(launcher && {
+            codexRuntime: (): CodexRuntimeService =>
+              acquireDaemonPipelineCodexRuntime({
+                dataRoot: configuredRoot,
+                mcpLauncher: launcher,
+                onProcess: (event) => post({ kind: 'process', ...event }),
+              }),
+          }),
+        }),
     });
     let pipeline: Pipeline;
     try {
@@ -244,11 +339,44 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     } catch {
       return fail(id, 'start_failed');
     }
-    const classification = classifyDaemonPipeline(pipeline, {
-      runtime,
-      repoPath: launch.repoPath ?? launch.cwd,
-    });
-    if (!classification.eligible) return fail(id, 'model_steps');
+    // Model steps resolve against their core's model registry; a later launch's wins.
+    if (
+      isOwnerBound &&
+      launch.modelCatalog &&
+      !applyModelRegistrySnapshot(launch.modelCatalog)
+    )
+      return fail(id, 'start_failed');
+    const classification = classifyDaemonPipeline(
+      pipeline,
+      { runtime, repoPath: launch.repoPath ?? launch.cwd },
+      {
+        hostSteps: isOwnerBound ? 'owner' : 'refuse',
+        modelSteps: isOwnerBound ? 'claude_codex' : 'refuse',
+      },
+    );
+    if (!classification.eligible)
+      return fail(
+        id,
+        classification.reason === 'host_step' ||
+          classification.reason === 'host_paths' ||
+          classification.reason === 'host_inputs'
+          ? 'host_steps'
+          : 'model_steps',
+      );
+    if (classification.modelSteps > 0) {
+      // Model steps run the app's own CLIs (D21), Codex ones the run's Codex environment (D20).
+      if (
+        !launch.modelCatalog ||
+        !launch.providerBinaries ||
+        !useProviderBinaries(launch.providerBinaries)
+      )
+        return fail(id, 'start_failed');
+      if (
+        classification.modelHarnesses.includes('codex') &&
+        (!launch.codexEnvironment || !launcher)
+      )
+        return fail(id, 'start_failed');
+    }
     const { executionId } = params;
     let handle: ExecutionHandle | null = null;
     const executionOptions: ExecutionOptions = {
@@ -274,6 +402,10 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       assetPaths: launch.assetPaths,
       repoPath: launch.repoPath,
       runtime,
+      ...(classification.modelSteps > 0 && {
+        modelConfig: normalizeAgentModelConfig(launch.modelConfig),
+        agentTerminalMode: false,
+      }),
       executionId,
       projectId: worktree.workspaceId,
       worktreeId: worktree.worktreeId,
@@ -311,6 +443,8 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
           executionId,
           jobId: event.jobId,
           stepId: event.stepId,
+          attempt: event.attempt,
+          ...(event.iteration !== undefined && { iteration: event.iteration }),
           stream: event.stream,
           text: event.data,
         });
@@ -325,17 +459,32 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     const started = handle;
     // The executor rejects completion only on its own failure; observe it so
     // that failure never ends the host.
-    void started.waitForCompletion().then(
-      () => forget(executionId, started),
-      () => {
-        warn('A workflow run ended with an executor error.');
-        const failed = started.getState();
-        if (TERMINAL.has(failed.status)) publish(executionId, failed);
-        forget(executionId, started);
-      },
-    );
+    const finished = started
+      .waitForCompletion()
+      .then(
+        () => forget(executionId, started),
+        () => {
+          warn('A workflow run ended with an executor error.');
+          const failed = started.getState();
+          if (TERMINAL.has(failed.status)) publish(executionId, failed);
+          forget(executionId, started);
+        },
+      )
+      .finally(() => {
+        finishing.delete(started);
+        settleExits();
+      })
+      .catch(() => warn('The pipeline host could not retire a workflow run.'));
+    finishing.set(started, finished);
     const state = started.getState();
-    if (!isSettled(state)) runs.set(executionId, { handle: started, runtime });
+    if (!isSettled(state)) {
+      runs.set(executionId, {
+        handle: started,
+        runtime,
+        ...(runOwnerRequests && { ownerRequests: runOwnerRequests }),
+      });
+      if (isOwnerBound) ownerBound.add(executionId);
+    }
     respond(id, projectPipelineExecution(state));
   };
 
@@ -359,6 +508,7 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     mode: 'finalize' | 'drain',
   ): Promise<void> => {
     const live = runs.get(executionId)?.handle;
+    const ownerRequests = runs.get(executionId)?.ownerRequests;
     try {
       if (mode === 'drain') {
         if (live) {
@@ -367,7 +517,10 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
           const timedOut = new Promise<'timeout'>((resolve) => {
             timer = setTimeout(() => resolve('timeout'), DRAIN_TIMEOUT_MS);
           });
-          const outcome = await Promise.race([live.cancel(), timedOut]);
+          const cancelling = live.cancel();
+          // A step waiting on its owner ends only once that request does.
+          ownerRequests?.abort();
+          const outcome = await Promise.race([cancelling, timedOut]);
           clearTimeout(timer);
           if (outcome === 'timeout') return fail(id, 'drain_timed_out');
           return respond(id, projectPipelineExecution(outcome));
@@ -384,6 +537,7 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         return respond(id, projectPipelineExecution(cancelled));
       }
       if (live) void live.cancel().catch(() => undefined);
+      ownerRequests?.abort();
       const cancelled = await cancelPipelineExecution(
         executionId,
         runtimeFor(dir, executionId),
@@ -405,16 +559,48 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     admissionOpen = false;
     await Promise.allSettled([...admitting]);
     const live = [...runs.values()].map(({ handle }) => handle);
-    const settled = await Promise.allSettled(
-      live.map((handle) =>
-        handle.pauseForShutdown
-          ? handle.pauseForShutdown()
-          : Promise.reject(new Error('The run cannot pause.')),
-      ),
+    // Runs that already reported their outcome still clear their cancellation
+    // marker under the data root; the answer waits for them too.
+    const retiring = [...finishing]
+      .filter(([handle]) => !live.includes(handle))
+      .map(([, finished]) => finished);
+    const pausing = live.map((handle) =>
+      handle.pauseForShutdown
+        ? handle.pauseForShutdown()
+        : Promise.reject(new Error('The run cannot pause.')),
+    );
+    // A step waiting on its owner pauses only once that request ends; the
+    // supervisor has already withdrawn its relays, so nothing would settle it.
+    ownerRequests?.close();
+    const settled = await Promise.allSettled(pausing);
+    await Promise.allSettled(retiring);
+    // Its app-servers end before the answer, so nothing outlives the checkpoint (D17).
+    await shutdownDaemonPipelineCodexRuntime().catch(() =>
+      warn('The pipeline host could not stop its Codex runtime.'),
     );
     if (settled.some((result) => result.status === 'rejected'))
       return fail(id, 'checkpoint_failed');
     respond(id, { checkpointedCount: live.length });
+  };
+
+  /** Pauses the owner-bound runs named: their owner is gone (CAN-5771). Admission stays open. */
+  const pause = async (id: number, executionIds: string[]): Promise<void> => {
+    const live = executionIds
+      .filter((executionId) => ownerBound.has(executionId))
+      .flatMap((executionId) => {
+        const run = runs.get(executionId);
+        return run ? [run] : [];
+      });
+    const pausing = live.map(({ handle }) =>
+      handle.pauseForShutdown
+        ? handle.pauseForShutdown()
+        : Promise.reject(new Error('The run cannot pause.')),
+    );
+    for (const run of live) run.ownerRequests?.abort();
+    const settled = await Promise.allSettled(pausing);
+    if (settled.some((result) => result.status === 'rejected'))
+      return fail(id, 'checkpoint_failed');
+    respond(id, { pausedCount: live.length });
   };
 
   const handle = async (
@@ -426,6 +612,16 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       if (!(await isOwnDataRoot(request.dataRoot))) return fail(id, 'closed');
       executionsDir = path.join(request.dataRoot, 'pipeline-executions');
       await configurePipelineOwnerFence(options.inspectProcess);
+      dataRoot = request.dataRoot;
+      codexMcpLauncher = request.codexMcpLauncher ?? null;
+      const hostChannel = {
+        raise: (hostRequest: WorkerPipelineHostRequest): void =>
+          post({ kind: 'hostRequest', request: hostRequest }),
+        withdraw: (executionId: string, requestId: string): void =>
+          post({ kind: 'hostRequestWithdrawn', executionId, requestId }),
+      };
+      hostSteps ??= createDaemonHostStepPort(hostChannel);
+      ownerRequests ??= createPipelineOwnerClient(hostChannel);
       return respond(id, null);
     }
     const dir = executionsDir;
@@ -453,9 +649,24 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         return respond(id, { failureCount: errors.length });
       }
       case 'checkpoint':
-        return checkpoint(id);
+        await checkpoint(id);
+        hostSteps?.close();
+        return;
+      case 'hostSettled': {
+        const { requestId, settlement } = request;
+        if (
+          !ownerRequests?.settle(requestId, settlement) &&
+          settlement.kind !== 'owner'
+        )
+          hostSteps?.settle(requestId, settlement);
+        return respond(id, null);
+      }
+      case 'pause':
+        return pause(id, request.executionIds);
       case 'exit':
         admissionOpen = false;
+        hostSteps?.close();
+        ownerRequests?.close();
         exitRequests.push(id);
         return settleExits();
     }

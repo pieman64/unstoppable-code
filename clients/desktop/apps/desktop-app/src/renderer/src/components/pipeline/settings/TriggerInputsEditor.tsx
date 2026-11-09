@@ -4,7 +4,7 @@ import type {
   PipelineInputType,
   PipelineInputValue,
   PipelineTriggerType,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   formatPipelineInputDefault,
   formatJsonInputDefault,
@@ -18,13 +18,20 @@ import { TextAreaField } from '../shared/TextAreaField';
 import { SelectField } from '../shared/SelectField';
 import { ToggleField } from '../shared/ToggleField';
 import { Tooltip } from '@canopy/ui-shared';
-import { Button, Heading, Surface } from '@canopy/ui-shared/components';
+import {
+  Stack,
+  Button,
+  Heading,
+  FieldError,
+  Surface,
+} from '@canopy/ui-shared/components';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 const TRIGGER_LABELS: Record<PipelineTriggerType, string> = {
   dispatch: 'Dispatch',
   plan_ready: 'Plan ready',
   task_ready: 'Task ready',
+  workflow: 'Workflow',
 };
 
 const INPUT_TYPE_OPTIONS: { value: PipelineInputType; label: string }[] = [
@@ -124,17 +131,20 @@ function JsonDefaultField({
           onChange({ ...def, default: parsed });
         }}
         aria-invalid={error ? true : undefined}
+        aria-describedby={
+          error ? `trigger-input-def-json-default-error-${name}` : undefined
+        }
         placeholder="(unset)"
         spellCheck={false}
         disabled={readonly}
       />
       {error && (
-        <p
-          className="text-xs fg-destructive"
+        <FieldError
+          id={`trigger-input-def-json-default-error-${name}`}
           data-testid={`trigger-input-def-json-default-error-${name}`}
         >
           {error}
-        </p>
+        </FieldError>
       )}
     </>
   );
@@ -190,39 +200,40 @@ function InputDefEditor({
 
   return (
     <Surface variant="group" size="small" padding="compact">
-      <div className="space-y-3">
-        <div className="flex gap-2 items-start">
-          <div className="flex-1">
-            <FormField label="Name" error={nameError}>
-              <TextField
-                value={nameDraft}
-                onChange={(e) => setNameDraft(e.target.value)}
-                onBlur={commitName}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    (e.target as HTMLInputElement).blur();
-                  }
-                }}
-                placeholder="input_name"
-                disabled={readonly}
-              />
-            </FormField>
-          </div>
-          {!readonly && (
-            <Tooltip label="Remove input">
-              <Button
-                variant="ghost"
-                size="compact"
-                iconOnly
-                onClick={onRemove}
-                aria-label="Remove input"
-                className="mt-6"
-              >
-                <AppCatalogCloseIcon size="sm" />
-              </Button>
-            </Tooltip>
-          )}
-        </div>
+      <div className="flex flex-col gap-3">
+        <FormField
+          label="Name"
+          error={nameError}
+          trailingAction={
+            !readonly && (
+              <Tooltip label="Remove input">
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
+                  onClick={onRemove}
+                  aria-label="Remove input"
+                  className=""
+                >
+                  <AppCatalogCloseIcon size="sm" />
+                </Button>
+              </Tooltip>
+            )
+          }
+        >
+          <TextField
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+            placeholder="input_name"
+            disabled={readonly}
+          />
+        </FormField>
 
         <div className="grid grid-cols-2 gap-2">
           <FormField label="Type">
@@ -437,7 +448,7 @@ export function TriggerInputsEditor({
   }
 
   return (
-    <div className="space-y-3">
+    <Stack gap="item">
       <div className="flex items-center justify-between">
         <Heading level={4} variant="label">
           {TRIGGER_LABELS[triggerType]}
@@ -453,7 +464,7 @@ export function TriggerInputsEditor({
           No inputs defined for this trigger.
         </p>
       ) : (
-        <div className="space-y-2">
+        <Stack gap="inline">
           {entries.map(([name, def]) => (
             <InputDefEditor
               key={name}
@@ -466,8 +477,8 @@ export function TriggerInputsEditor({
               readonly={readonly}
             />
           ))}
-        </div>
+        </Stack>
       )}
-    </div>
+    </Stack>
   );
 }

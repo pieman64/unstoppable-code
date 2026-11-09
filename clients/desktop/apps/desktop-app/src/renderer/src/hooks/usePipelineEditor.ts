@@ -8,11 +8,11 @@ import type {
   PipelineScalar,
   Step,
   Job,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   createDefaultPipeline,
   createDefaultStep,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   createJobId,
   createStepId,
@@ -84,6 +84,18 @@ export interface UsePipelineEditorReturn {
   isDirty: boolean;
   saving: boolean;
   save: (pipelineOverride?: Pipeline) => Promise<PipelineInfo | null>;
+  /**
+   * Shows a pipeline core saved for this editor elsewhere (an agent's save,
+   * CAN-5822) as its saved state. The current draft is kept, so edits made
+   * since `savedPipeline` stay unsaved.
+   */
+  adoptSaved: (savedPipeline: Pipeline, info: PipelineInfo) => void;
+  /**
+   * Holds the save guard while core saves this editor's draft for an agent
+   * (CAN-5822), so no other save overlaps it. Returns its release, or null
+   * when a save is already running.
+   */
+  holdSave: () => (() => void) | null;
 }
 
 export interface PipelineEditorRequest {
@@ -117,6 +129,8 @@ export function usePipelineEditor({
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<boolean>(false);
+  // Set synchronously so a save started before the next render is refused.
+  const savingRef = useRef(false);
   const [selection, setSelection] = useState<Selection>({ type: 'none' });
   const [activePanel, setActivePanel] = useState<ActivePanel>('steps');
   const [mainView, setMainView] = useState<MainView>('flowchart');
@@ -526,8 +540,10 @@ export function usePipelineEditor({
   const save = useCallback(
     async (pipelineOverride?: Pipeline): Promise<PipelineInfo | null> => {
       const pipelineToSave = pipelineOverride ?? pipeline;
-      if (!pipelineToSave || isReadonly || saving) return null;
+      if (!pipelineToSave || isReadonly || saving || savingRef.current)
+        return null;
 
+      savingRef.current = true;
       setSaving(true);
       try {
         // Shared pipeline path: serialize the in-memory pipeline back to YAML
@@ -596,11 +612,38 @@ export function usePipelineEditor({
         setError(err instanceof Error ? err.message : String(err));
         return null;
       } finally {
+        savingRef.current = false;
         setSaving(false);
       }
     },
     [isReadonly, pipeline, pipelineInfo, saving, sharedRemoteId],
   );
+
+  const adoptSaved = useCallback(
+    (savedPipeline: Pipeline, info: PipelineInfo): void => {
+      setError(null);
+      setPipelineInfo(info);
+      persistedIdRef.current = info.id;
+      baselineRef.current = JSON.stringify(savedPipeline);
+      setBaselineRevision((revision) => revision + 1);
+      pastRef.current = [];
+      futureRef.current = [];
+    },
+    [],
+  );
+
+  const holdSave = useCallback((): (() => void) | null => {
+    if (savingRef.current) return null;
+    savingRef.current = true;
+    setSaving(true);
+    let held = true;
+    return (): void => {
+      if (!held) return;
+      held = false;
+      savingRef.current = false;
+      setSaving(false);
+    };
+  }, []);
 
   return {
     pipeline,
@@ -646,5 +689,7 @@ export function usePipelineEditor({
     isDirty,
     saving,
     save,
+    adoptSaved,
+    holdSave,
   };
 }

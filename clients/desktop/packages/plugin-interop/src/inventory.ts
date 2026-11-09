@@ -21,6 +21,7 @@ import type {
   PluginMarkdownMember,
   PluginMcpServerMember,
   PluginMemberInventory,
+  PluginModMember,
   PluginSkillMember,
 } from './types';
 
@@ -97,6 +98,11 @@ export function isPluginMemberInventory(
         hasOptionalString(member, 'matcher') &&
         hasOptionalString(member, 'command'),
     ) &&
+    (value.mods === undefined ||
+      (Array.isArray(value.mods) &&
+        value.mods.every((member) =>
+          hasStringFields(member, ['module', 'hooksFile']),
+        ))) &&
     Array.isArray(value.mcpServers) &&
     value.mcpServers.every(
       (member) =>
@@ -240,6 +246,7 @@ function flattenHooksConfig(
   const hooks = isRecord(configuredHooks) ? configuredHooks : config;
   const results: PluginHookMember[] = [];
   for (const [event, entries] of Object.entries(hooks)) {
+    if (event === 'modules') continue;
     if (!Array.isArray(entries)) continue;
     for (const entry of entries) {
       if (!isRecord(entry)) continue;
@@ -262,6 +269,31 @@ function flattenHooksConfig(
   return results;
 }
 
+// Claude Code reads a Mod's `modules` from hooks/hooks.json and also from
+// every hooks file path the manifest names; an inline hooks object adds none.
+function modHookFileRecords(
+  files: ReadonlyMap<string, string | Uint8Array>,
+  configured: string | string[] | Record<string, unknown> | undefined,
+): Array<{ filePath: string; config: Record<string, unknown> }> {
+  const references = [
+    'hooks/hooks.json',
+    ...[configured ?? []]
+      .flat()
+      .filter((entry): entry is string => typeof entry === 'string'),
+  ];
+  const records: Array<{ filePath: string; config: Record<string, unknown> }> =
+    [];
+  const seen = new Set<string>();
+  for (const reference of references) {
+    const filePath = resolvePluginPath(reference);
+    if (filePath === null || seen.has(filePath)) continue;
+    seen.add(filePath);
+    const config = readJsonRecord(files, filePath);
+    if (config) records.push({ filePath, config });
+  }
+  return records;
+}
+
 function scanHooks(
   files: ReadonlyMap<string, string | Uint8Array>,
   manifest: ClaudePluginManifest | null,
@@ -271,6 +303,22 @@ function scanHooks(
     manifest?.hooks,
     'hooks/hooks.json',
   ).flatMap(flattenHooksConfig);
+}
+
+function scanMods(
+  files: ReadonlyMap<string, string | Uint8Array>,
+  manifest: ClaudePluginManifest | null,
+): PluginModMember[] {
+  const results: PluginModMember[] = [];
+  for (const { filePath, config } of modHookFileRecords(
+    files,
+    manifest?.hooks,
+  )) {
+    for (const module of readStringArray(config.modules) ?? []) {
+      results.push({ module, hooksFile: filePath });
+    }
+  }
+  return results;
 }
 
 function mcpServerRecords(
@@ -363,6 +411,7 @@ export function buildPluginMemberInventory(
     agents: scanMarkdownMembers(files, input.manifest?.agents, 'agents'),
     apps: scanMarkdownMembers(files, input.manifest?.apps, 'apps'),
     hooks: scanHooks(files, input.manifest),
+    mods: scanMods(files, input.manifest),
     mcpServers: scanMcpServers(files, input.manifest),
     lspServers: scanLspServers(files, input.manifest),
   };

@@ -10,8 +10,7 @@ import {
 } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { TerminalShellProfileId } from '@canopy/protocol/terminal';
-import { Button } from '@canopy/ui-shared/components';
-import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { Button, ErrorBanner } from '@canopy/ui-shared/components';
 import {
   ensureTerminalWorktreeHydrated,
   selectBucket,
@@ -586,13 +585,14 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
               onFocus={(): void => undefined}
             />
             {!ownsRecoveryUi && error && (
-              <span
-                role="alert"
-                data-testid="terminal-panel-error"
-                className={`${REPLAY_BLOCK_CLASS} pointer-events-none absolute inset-x-3 top-3 z-10 text-center text-xs fg-destructive`}
-              >
-                {error}
-              </span>
+              <div className="pointer-events-none absolute inset-x-3 top-3 z-10">
+                <ErrorBanner
+                  className=""
+                  error={error}
+                  blockMessageFromReplay
+                  testId="terminal-panel-error"
+                />
+              </div>
             )}
           </>
         ) : (
@@ -607,9 +607,9 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
       ) : ownsRecoveryUi ? null : (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2">
           {error && (
-            <span className={`${REPLAY_BLOCK_CLASS} text-xs fg-destructive`}>
-              {error}
-            </span>
+            <div className="w-full max-w-sm px-3">
+              <ErrorBanner className="" error={error} blockMessageFromReplay />
+            </div>
           )}
           <Button
             size="compact"

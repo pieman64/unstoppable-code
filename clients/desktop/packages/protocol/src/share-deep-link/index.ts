@@ -181,6 +181,8 @@ export interface PublicPipelineShareSnapshot {
 
 export interface PublicPluginShareSnapshot {
   entity: 'plugin';
+  /** Absent on public shares and snapshots resolved by older clients. */
+  sharedBy?: ScopedShareProvenance;
   externalId: string;
   name: string;
   description: string | null;

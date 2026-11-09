@@ -4,7 +4,7 @@ import type {
   PipelineAdvisorEvent,
   PipelineQueueEvent,
   StepOutputEvent,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { WorktreeSelection } from '@canopy/desktop-shared/types';
 import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';

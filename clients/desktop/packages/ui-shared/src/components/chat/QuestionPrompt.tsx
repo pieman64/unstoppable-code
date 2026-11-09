@@ -66,6 +66,11 @@ export interface QuestionPromptProps {
   readonly onClose: () => void;
   /** Re-sends the failed answer or skip. */
   readonly onRetry: () => void;
+  /**
+   * Returns the composer's typed text and empties the composer. A picked
+   * answer carries that text as its own answer, so nothing stays behind.
+   */
+  readonly takeText?: () => string;
   /** The text row: the composer's editor, microphone, and send. */
   readonly children: ReactNode;
 }
@@ -95,6 +100,7 @@ export function QuestionPrompt({
   readOnlyHint,
   onClose,
   onRetry,
+  takeText,
   children,
 }: QuestionPromptProps): JSX.Element {
   const titleId = useId();
@@ -116,7 +122,14 @@ export function QuestionPrompt({
   const choose = (option: string): void => {
     if (locked) return;
     if (kind === 'multi') prompt.toggle(option);
-    else prompt.pick(option);
+    // Typed text that cannot go with the pick stays in the composer.
+    else
+      prompt.pick(
+        option,
+        prompt.acceptsText && !question.keepTextOnPick
+          ? takeText?.()
+          : undefined,
+      );
   };
 
   const handleRowKeyDown = (

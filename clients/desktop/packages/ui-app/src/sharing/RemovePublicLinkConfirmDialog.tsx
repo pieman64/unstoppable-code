@@ -66,12 +66,12 @@ export function RemovePublicLinkConfirmDialog({
       trapFocus={trapFocus}
       restoreFocusRef={restoreFocusRef}
     >
-      <div className="px-6 py-4">
+      <div className="flex flex-col px-6 py-4 gap-3">
         <p className="text-s fg-secondary">
           {removePublicLinkMessage(remainingAudience)}
         </p>
         <ErrorBanner
-          className="mt-3"
+          className=""
           error={errorMessage}
           testId={`${p}-remove-public-link-error`}
         />

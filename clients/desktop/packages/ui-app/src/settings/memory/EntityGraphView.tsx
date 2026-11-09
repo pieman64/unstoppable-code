@@ -13,6 +13,7 @@ import {
   type JSX,
 } from 'react';
 import {
+  Stack,
   Button,
   CenteredLoadingSpinner,
   CopyDetailsButton,
@@ -356,8 +357,8 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
   const filtersActive = hasActiveEntityGraphFilters(filters);
 
   return (
-    <div className="space-y-4">
-      <Surface variant="card" padding="default">
+    <Stack gap="group">
+      <Surface gap="item" variant="card" padding="default">
         <form onSubmit={submitQuery} className="flex gap-2">
           <SearchField
             value={queryInput}
@@ -375,7 +376,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
             Filter
           </Button>
         </form>
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-3">
           <SettingsSelect
             value={filters.liveness}
             onValueChange={onLivenessChange}
@@ -545,7 +546,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
                   <FactCardsSkeleton layout="column" />
                 </DelayedLoadingPlaceholder>
               ) : (
-                <div className="mt-4 space-y-3">
+                <Stack gap="item" className="mt-4">
                   {selectedFactsError !== null && (
                     <Notice
                       intent="attention"
@@ -563,12 +564,12 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
                   {selectedFacts.map((fact) => (
                     <FactCard key={fact.id} fact={fact} />
                   ))}
-                </div>
+                </Stack>
               )}
             </aside>
           </Surface>
         </div>
       )}
-    </div>
+    </Stack>
   );
 }

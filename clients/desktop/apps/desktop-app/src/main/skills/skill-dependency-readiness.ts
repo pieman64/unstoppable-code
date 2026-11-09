@@ -1,4 +1,4 @@
-import type { PipelinePackageReadiness } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageReadiness } from '@canopy/execution-engine/types/pipeline';
 import type {
   SkillDependencyReadinessRequest,
   SkillDependencyRef,

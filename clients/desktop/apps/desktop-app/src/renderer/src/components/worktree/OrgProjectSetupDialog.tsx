@@ -1,3 +1,7 @@
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import {
   OrgProjectRelationshipNotice,
   type OrgProjectRelationshipActions,
@@ -16,7 +20,6 @@ import {
   DialogModal,
   Fact,
   FactList,
-  Notice,
 } from '@canopy/ui-shared/components';
 import type {
   OrgProjectPlaceholderState,
@@ -25,7 +28,6 @@ import type {
 import { CHAT_LABEL } from '@canopy/protocol';
 import { ORG_PROJECT_STATE_TEXT } from './orgProjectStateText';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { useGitHubStore } from '@/stores/githubStore';
 
 interface OrgProjectSetupDialogProps {
   relationship?: OrgProjectRelationshipActions;
@@ -59,7 +61,7 @@ export function OrgProjectSetupDialog({
   const [loaded, setLoaded] = useState(false);
   const pending = useRef(false);
   const closed = useRef(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<InlineFailure | null>(null);
   const canStart = state === 'ready-to-set-up' && !unfinished;
   // A Cowork project has no repository, branch or destination (CAN-3453):
   // setup creates an empty project on this computer.
@@ -114,7 +116,7 @@ export function OrgProjectSetupDialog({
       .then((preferences): void => {
         if (!active) return;
         if (preferences.__error) {
-          setError('Choose a destination folder to continue');
+          setError({ error: 'Choose a destination folder to continue' });
         } else {
           setDestination(preferences.orgProjectDefaultDestinationRoot ?? '');
         }
@@ -122,7 +124,7 @@ export function OrgProjectSetupDialog({
       })
       .catch((): void => {
         if (active) {
-          setError('Choose a destination folder to continue');
+          setError({ error: 'Choose a destination folder to continue' });
           setLoaded(true);
         }
       });
@@ -138,7 +140,9 @@ export function OrgProjectSetupDialog({
     try {
       await action();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Project setup failed');
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && !closed.current)
+        setError(inlineFailure(appError, "Couldn't set up the project."));
     } finally {
       pending.current = false;
     }
@@ -226,17 +230,16 @@ export function OrgProjectSetupDialog({
                 // than wrapping a temp directory across the dialog.
                 className="w-full justify-between text-left"
               >
-                {/* The path's own margin plus the button's 6px gap keeps 12px
-                between the truncated tail and the action label. The truncated
-                path keeps a native title with its full value. */}
-                <span
-                  className="mr-1.5 min-w-0 truncate font-mono"
-                  dir="rtl"
-                  title={destination || undefined}
-                >
-                  <bdi dir="ltr">{destination || 'Choose folder'}</bdi>
+                <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                  <span
+                    className="min-w-0 truncate font-mono"
+                    dir="rtl"
+                    title={destination || undefined}
+                  >
+                    <bdi dir="ltr">{destination || 'Choose folder'}</bdi>
+                  </span>
+                  <span className="shrink-0 fg-secondary">Change</span>
                 </span>
-                <span className="shrink-0 fg-secondary">Change</span>
               </Button>
             </DialogFormField>
             <p className="text-s fg-secondary">
@@ -252,7 +255,11 @@ export function OrgProjectSetupDialog({
             {ORG_PROJECT_STATE_TEXT[state]}
           </p>
         )}
-        {error && <Notice intent="destructive">{error}</Notice>}
+        <DesktopErrorBanner
+          className=""
+          error={error?.error}
+          {...(error?.details === undefined ? {} : { details: error.details })}
+        />
         <div className="flex justify-end gap-2">
           <Button
             variant="secondary"
@@ -275,20 +282,10 @@ export function OrgProjectSetupDialog({
                       orgProjectDefaultDestinationRoot: destination,
                     });
                   if (closed.current || !latestEligibility.current) return;
-                  void onStart(
-                    project.id,
-                    cowork ? undefined : destination,
-                  ).catch((cause: unknown): void => {
-                    useGitHubStore
-                      .getState()
-                      .addToast(
-                        cause instanceof Error
-                          ? cause.message
-                          : 'Project setup failed',
-                        'error',
-                      );
-                  });
-                  close();
+                  await onStart(project.id, cowork ? undefined : destination);
+                  // A dialog dismissed meanwhile must not close the next one,
+                  // which shares this close callback.
+                  if (!closed.current) close();
                 });
               }}
             >
@@ -306,19 +303,8 @@ export function OrgProjectSetupDialog({
                   const selected = await window.api.browseForRepo();
                   if (selected === null) return;
                   if (closed.current || !latestEligibility.current) return;
-                  void onStartFromFolder(project.id, selected.path).catch(
-                    (cause: unknown): void => {
-                      useGitHubStore
-                        .getState()
-                        .addToast(
-                          cause instanceof Error
-                            ? cause.message
-                            : 'Project setup failed',
-                          'error',
-                        );
-                    },
-                  );
-                  close();
+                  await onStartFromFolder(project.id, selected.path);
+                  if (!closed.current) close();
                 });
               }}
             >

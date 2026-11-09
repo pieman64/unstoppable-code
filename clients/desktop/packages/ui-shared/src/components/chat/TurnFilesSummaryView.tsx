@@ -16,6 +16,7 @@ import {
 } from '@tanstack/react-virtual';
 import { ChevronDownIcon, ChevronRightIcon } from '../../icons';
 import { FileDiff } from '../../icons/AppIcons';
+import { DisclosureToggle } from '../Disclosure';
 import { OverlayScrollArea } from '../OverlayScrollArea';
 import { useCleanChatLook } from '../chat-look';
 
@@ -219,7 +220,7 @@ function SummaryFiles({
   );
 }
 
-function SummaryDisclosure({
+function SummaryToggle({
   heading,
   detail,
   expanded,
@@ -234,13 +235,12 @@ function SummaryDisclosure({
   hasActions: boolean;
 }): JSX.Element {
   return (
-    <button
-      type="button"
+    <DisclosureToggle
+      variant={hasActions ? 'summary-wrapping' : 'summary'}
+      open={expanded}
+      bodyId={id}
       onClick={onToggle}
       aria-label={expanded ? 'Collapse changed files' : 'Expand changed files'}
-      aria-expanded={expanded}
-      aria-controls={id}
-      className={`focus-ring focus-ring-stretched before:absolute before:inset-0 before:rounded-lg before:content-[''] flex min-w-0 flex-1 cursor-default items-center gap-3 rounded-lg px-2 py-2 text-left text-s pointer-coarse:min-h-11 ${hasActions ? 'basis-full @min-[32rem]/turn-files:basis-0' : ''}`}
     >
       <span
         aria-hidden="true"
@@ -262,7 +262,7 @@ function SummaryDisclosure({
       >
         {expanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
       </span>
-    </button>
+    </DisclosureToggle>
   );
 }
 
@@ -374,7 +374,7 @@ export function TurnFilesSummaryView({
                 {singleFile}
               </span>
             ) : !singleOutput ? (
-              <SummaryDisclosure
+              <SummaryToggle
                 heading={heading}
                 detail={detail}
                 expanded={expanded}

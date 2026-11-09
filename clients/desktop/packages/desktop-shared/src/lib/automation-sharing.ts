@@ -34,6 +34,10 @@ import type {
   PipelinePackageRef,
   PipelineShareInstallPin,
 } from '@canopy/protocol/pipelines';
+import {
+  LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
+  rawPipelineDeclaresLocalOnlyTrigger,
+} from '@canopy/pipeline-interop/portability';
 import type { AutomationAction, ScheduledActivity } from '../types';
 import { hasAnySelections } from '../types';
 import { AUTOMATION_IF_CMD_OUTPUT_VAR_NAMES } from './automations';
@@ -78,6 +82,7 @@ export const AUTOMATION_SHARE_BLOCK_REASONS = [
   'pipeline_target_unresolved',
   'pipeline_dependencies_stale',
   'installed_pipeline_dependencies',
+  'pipeline_local_only_trigger',
 ] as const;
 
 export type AutomationShareBlockReason =
@@ -234,6 +239,7 @@ export const AUTOMATION_SHARE_BLOCK_MESSAGES: Record<
     'This automation changed after its workflows were checked. Check them again before sharing.',
   installed_pipeline_dependencies:
     'This automation was installed from a share with its workflows, so it cannot be shared again. Share the original instead.',
+  pipeline_local_only_trigger: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
 };
 
 /** User-facing copy for each stripped-field notice. */
@@ -610,6 +616,14 @@ export function buildSharedAutomationDocument(
   // this machine's pipeline IDs in the prompt and never install them.
   if ((activity.installedFrom?.pipelineDependencies?.length ?? 0) > 0) {
     return { ok: false, reasons: ['installed_pipeline_dependencies'] };
+  }
+  // The targeted pipeline's YAML travels inline; one that declares
+  // `workflow` can't leave this machine yet (CAN-5782).
+  if (
+    options.pipelineRawContent !== undefined &&
+    rawPipelineDeclaresLocalOnlyTrigger(options.pipelineRawContent)
+  ) {
+    return { ok: false, reasons: ['pipeline_local_only_trigger'] };
   }
 
   const reasons: AutomationShareBlockReason[] = [];

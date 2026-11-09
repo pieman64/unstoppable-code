@@ -12,7 +12,7 @@ import {
   type ProjectOwnerContext,
   type ScheduledActivity,
 } from '@canopy/desktop-shared/types';
-import type { ModelHarness } from '@canopy/desktop-shared/types/model-harnesses';
+import type { ModelHarness } from '@canopy/execution-engine/types/model-harnesses';
 import type {
   AgentSendFixedIds,
   TrustedSendCaller,

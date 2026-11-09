@@ -1,5 +1,5 @@
 import type { TrackedPlanData } from '@canopy/desktop-shared/types';
-import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
 
 /** Persisted links plus live plan references, scoped and deduplicated. */
 export function planLinkedExecutionIds(

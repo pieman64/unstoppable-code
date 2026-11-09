@@ -8,6 +8,7 @@ import type {
   AgentAuditEntry,
   AgentAuditModelUsage,
   AgentAuditStatus,
+  AgentAuditInterfaceToolCall,
   AgentAuditSubagentUsage,
   AgentAuditTokenTotals,
   AgentAuditToolCounts,
@@ -450,6 +451,48 @@ function parseCompactions(value: unknown): AgentAuditCompaction[] {
   return compactions;
 }
 
+function parseInterfaceToolCalls(
+  value: unknown,
+): AgentAuditInterfaceToolCall[] {
+  if (!Array.isArray(value)) return [];
+  const calls: AgentAuditInterfaceToolCall[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const callId = readString(item, 'callId');
+    const toolName = readString(item, 'toolName');
+    const leaseId = readString(item, 'leaseId');
+    const surface = readString(item, 'surface');
+    const interfaceKind = readString(item, 'interfaceKind');
+    const outcome = readString(item, 'outcome');
+    const deliveredAt = readString(item, 'deliveredAt');
+    const settledAt = readString(item, 'settledAt');
+    if (
+      callId === undefined ||
+      toolName === undefined ||
+      leaseId === undefined ||
+      surface === undefined ||
+      interfaceKind === undefined ||
+      outcome === undefined ||
+      deliveredAt === undefined ||
+      settledAt === undefined
+    )
+      continue;
+    const audience = readString(item, 'audience');
+    calls.push({
+      callId,
+      toolName,
+      leaseId,
+      surface,
+      interfaceKind,
+      ...(audience !== undefined ? { audience } : {}),
+      outcome,
+      deliveredAt,
+      settledAt,
+    });
+  }
+  return calls;
+}
+
 function parseSubagents(value: unknown): AgentAuditSubagentUsage[] {
   if (!Array.isArray(value)) return [];
   const subagents: AgentAuditSubagentUsage[] = [];
@@ -772,6 +815,10 @@ export function normalizeAuditEntry(value: unknown): AgentAuditEntry | null {
   const subagents = parseSubagents(value.subagents);
   if (subagents.length > 0) {
     entry.subagents = subagents;
+  }
+  const interfaceToolCalls = parseInterfaceToolCalls(value.interfaceToolCalls);
+  if (interfaceToolCalls.length > 0) {
+    entry.interfaceToolCalls = interfaceToolCalls;
   }
   const delegation = parseDelegationLineage(value.delegation);
   if (delegation) {

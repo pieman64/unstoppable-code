@@ -4,7 +4,7 @@ import type {
   TelemetrySharingVisibility,
 } from '@canopy/desktop-shared/types';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { Button, SegmentedControl } from '@canopy/ui-shared/components';
+import { SegmentedControl } from '@canopy/ui-shared/components';
 import { DataSharingFeaturePills } from '@canopy/ui-shared/components/DataSharingFeaturePills';
 import { Lock } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -13,9 +13,9 @@ import {
 } from '@canopy/ui-shared/lib/data-sharing-features';
 import type { JSX } from 'react';
 import { SettingsGroup, SettingsRow } from './SettingsLayout';
+import { SettingsLockedLabel } from './SettingsLockedLabel';
 import {
   sharesWithOrganization,
-  TELEMETRY_BULK_LABELS,
   TELEMETRY_DATA_TYPES,
   TELEMETRY_SCOPE_DESCRIPTIONS,
   TELEMETRY_SCOPE_LABELS,
@@ -31,7 +31,7 @@ import {
  * Agent Ledger entries sync under the Session summaries choice (LD02), so
  * that row says so while the Ledger is available.
  */
-const LEDGER_SHARING_NOTE = 'Also covers Feed entries.';
+const LEDGER_SHARING_NOTE = 'Also covers Feed entries';
 
 interface TelemetrySharingControlsProps {
   /** Per-data-type selections used for *display* (which pill reads active). */
@@ -56,7 +56,7 @@ interface TelemetrySharingControlsProps {
   /**
    * Per-scope org enforcement. A locked scope is pinned to its enforced value
    * (`organization` when required, `off` when prohibited), its selector is
-   * disabled, and a tooltip explains the lock. The "Set all to" bulk control
+   * disabled, and a tooltip explains the lock. The All activity control
    * never overrides a locked scope.
    */
   locked?: TelemetryLockMap;
@@ -64,6 +64,11 @@ interface TelemetrySharingControlsProps {
   lockTooltip?: string;
   /** Tooltip shown on a PROHIBITED scope, explaining that the block applies everywhere. */
   blockedTooltip?: string;
+  /**
+   * The selected org that holds the locks, named in each locked row's inline
+   * badge ("Required by Acme" / "Turned off by Acme").
+   */
+  lockOrganizationName?: string;
   /**
    * Per-visibility tooltip copy. Defaults to the context-free descriptions;
    * surfaces pass {@link resolveTelemetryScopeDescriptions} so `Organization`
@@ -75,7 +80,8 @@ interface TelemetrySharingControlsProps {
 interface ScopeSelectorProps {
   /** The data type the row sets, naming the picker for assistive tech. */
   label: string;
-  selected: TelemetrySharingVisibility;
+  /** `null` when no single scope applies, such as the All activity row over mixed choices. */
+  selected: TelemetrySharingVisibility | null;
   scopes: readonly TelemetrySharingVisibility[];
   disabled: boolean;
   /** Org-enforced value: pin to it, show a lock icon on it, fold the lock note into each button's tooltip. */
@@ -160,8 +166,24 @@ function ScopeSelector({
 }
 
 /**
- * Presentational telemetry sharing controls: one settings group holding a
- * "set all to …" bulk row plus a per-data-type visibility selector, one row
+ * The visibility every data type shares, or `null` when they differ, so the
+ * All activity row shows no segment selected over mixed choices.
+ */
+function commonScope(
+  value: TelemetrySharingPreferences,
+): TelemetrySharingVisibility | null {
+  const [first, ...rest] = TELEMETRY_DATA_TYPES.map(
+    (dataType) => value[dataType.key],
+  );
+  if (first === undefined) {
+    return null;
+  }
+  return rest.every((scope) => scope === first) ? first : null;
+}
+
+/**
+ * Presentational telemetry sharing controls: one settings group holding an
+ * "All activity" row plus a per-data-type visibility selector, one row
  * per data-sharing scope, each disclosing the product features that row
  * powers (or would enable). Pure — it takes `value` + `onChange` and never
  * touches `window.api`.
@@ -179,6 +201,7 @@ export function TelemetrySharingControls({
   locked = NO_LOCKS,
   lockTooltip,
   blockedTooltip,
+  lockOrganizationName,
   scopeDescriptions = TELEMETRY_SCOPE_DESCRIPTIONS,
 }: TelemetrySharingControlsProps): JSX.Element {
   const ledgerEnabled = useFeatureFlagsStore((state) =>
@@ -215,7 +238,7 @@ export function TelemetrySharingControls({
 
   const displayValue = applyLocks(value);
 
-  // The "Set all to" bulk control can't honor a mixed locked/unlocked state —
+  // The All activity control can't honor a mixed locked/unlocked state —
   // every locked scope stays pinned to its enforced value regardless. Hide it
   // once any scope is org-enforced so the only controls shown are the ones that
   // actually apply; members adjust the remaining unlocked scopes individually.
@@ -257,24 +280,27 @@ export function TelemetrySharingControls({
   }
 
   return (
-    // One group: the "Set all to" row, then one row per data type. It is its
-    // own box so the opt-in modal and the Privacy page render it the same way.
+    // One group: the All activity row, then one row per data type. The All
+    // activity row is the same picker as the rows under it, with no segment
+    // selected while their choices differ. Its segments keep the bulk test
+    // ids (`telemetry-sharing-bulk-<scope>`).
     <SettingsGroup dataTestId="telemetry-sharing-controls">
       {anyLocked ? null : (
         <SettingsRow
-          label="Set all to"
-          control={orderedScopes.map((scope) => (
-            <Button
-              size="compact"
-              key={scope}
-              variant="secondary"
+          label="All activity"
+          description="Set every type below at once"
+          control={
+            <ScopeSelector
+              label="All activity"
+              selected={commonScope(displayValue)}
+              scopes={orderedScopes}
               disabled={disabled}
-              onClick={(): void => handleBulk(scope)}
-              data-testid={`telemetry-sharing-bulk-${scope}`}
-            >
-              {TELEMETRY_BULK_LABELS[scope]}
-            </Button>
-          ))}
+              locked={null}
+              descriptions={scopeDescriptions}
+              testIdPrefix="telemetry-sharing-bulk"
+              onSelect={handleBulk}
+            />
+          }
         />
       )}
 
@@ -295,7 +321,17 @@ export function TelemetrySharingControls({
             data-locked={isLocked ? 'true' : undefined}
           >
             <SettingsRow
-              label={dataType.label}
+              label={
+                <SettingsLockedLabel
+                  label={dataType.label}
+                  reason={
+                    isLocked && lockOrganizationName
+                      ? `${lockValue === 'off' ? 'Turned off by' : 'Required by'} ${lockOrganizationName}`
+                      : null
+                  }
+                  dataTestId={`telemetry-sharing-lock-badge-${dataType.key}`}
+                />
+              }
               description={
                 ledgerEnabled && dataType.key === 'summaries' ? (
                   <>
@@ -334,6 +370,7 @@ export function TelemetrySharingControls({
                 scope={dataType.key}
                 sharing={shared}
                 includeEnforcementOnly={false}
+                tone="quiet"
                 dataTestId={`telemetry-sharing-features-${dataType.key}`}
               />
               {showDependencyNote ? (

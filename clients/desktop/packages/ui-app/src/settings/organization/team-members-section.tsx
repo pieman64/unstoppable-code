@@ -12,6 +12,7 @@ import {
 } from 'react';
 import { LogOut, Mail, Trash2 } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  Stack,
   Badge,
   Button,
   CopyButton,
@@ -501,7 +502,7 @@ export function TeamMembersSection({
                   <span className="flex h-8 w-8 items-center justify-center rounded-full bg-secondary fg-secondary">
                     <Mail size={14} />
                   </span>
-                  <div className="min-w-0">
+                  <Stack gap="tight" className="min-w-0">
                     <p
                       className={joinClassNames(
                         'truncate text-s font-medium fg-primary',
@@ -510,7 +511,7 @@ export function TeamMembersSection({
                     >
                       {invite.invitedEmail ?? 'Invite link'}
                     </p>
-                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <StatusBadge
                         variant={
                           invite.seatPaymentState === 'FAILED'
@@ -534,7 +535,7 @@ export function TeamMembersSection({
                         <Badge>{invite.organizationTeamName}</Badge>
                       )}
                     </div>
-                  </div>
+                  </Stack>
                 </div>
                 <div className="flex items-center gap-2">
                   {invite.seatPaymentState === 'READY' && (
@@ -1261,6 +1262,7 @@ function SeatChargeNotice({
   if (status === 'error') {
     return (
       <Surface
+        gap="inline"
         variant="group"
         size="small"
         padding="compact"
@@ -1269,7 +1271,7 @@ function SeatChargeNotice({
         <p className="text-s fg-primary">{QUOTE_ERROR}</p>
         <Button
           size="compact"
-          className="mt-2"
+          className="self-start"
           onClick={onRetryQuote}
           data-testid="seat-charge-retry"
         >
@@ -1308,7 +1310,11 @@ function SeatChargeNotice({
         . The seat then renews with the rest of your plan.
       </p>
       {needsCard ? (
-        <div className="mt-3" data-testid="seat-charge-needs-card">
+        <Stack
+          gap="inline"
+          className="mt-3"
+          data-testid="seat-charge-needs-card"
+        >
           <p className="text-s fg-secondary">
             {canManageBilling && canAddCard
               ? 'There is no payment method on file yet. Add a card to continue.'
@@ -1318,14 +1324,14 @@ function SeatChargeNotice({
             <Button
               size="compact"
               variant="secondary"
-              className="mt-2"
+              className="self-start"
               onClick={onAddCard}
               data-testid="seat-charge-add-card"
             >
               Add card
             </Button>
           ) : null}
-        </div>
+        </Stack>
       ) : quote.card !== null ? (
         <p className="mt-2 text-xs fg-secondary">
           Charging {quote.card.brand} ending in {quote.card.last4}.

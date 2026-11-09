@@ -1,4 +1,5 @@
 import type { ShareOperationResult } from '@canopy/protocol/sharing';
+import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import {
   toShareOperationResult,
   withShareStage,
@@ -51,7 +52,7 @@ import {
 import type {
   PipelinePackageAnalysisSummary,
   PipelinePackageReadiness,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { PipelineShareInstallPin } from '@canopy/protocol/pipelines';
 import type { CuratedAutomationDetail } from '@canopy/protocol/automation-catalog';
 import { isCuratedCatalogKey } from '@canopy/protocol/plugin-catalog';
@@ -78,6 +79,7 @@ import {
 } from '../automations/chat-automation-save';
 import { projectOwnedChatAutomations } from '../automations/owned-chat-projection';
 import { getAutomationsService } from '../automations/service';
+import { logMainProcessError } from '../lib/main-process-logging';
 import {
   createSharedAutomation,
   deleteSharedAutomation,
@@ -302,7 +304,19 @@ function validateGenerateIfCommandRequest(request: unknown): string | null {
   return null;
 }
 
-export function registerAutomationsHandlers(accessors: WindowAccessors): void {
+/** The window accessors the automations service drives. */
+type AutomationsWindowAccessors = Pick<
+  WindowAccessors,
+  | 'getMainWindow'
+  | 'getAppAdvisorWindow'
+  | 'openAppAdvisorWindow'
+  | 'ensureAppAdvisorWindow'
+  | 'sendAppAdvisorWindowCommand'
+>;
+
+export function registerAutomationsHandlers(
+  accessors: AutomationsWindowAccessors,
+): void {
   const service = getAutomationsService();
   service.configure({
     getMainWindow: accessors.getMainWindow,
@@ -311,17 +325,25 @@ export function registerAutomationsHandlers(accessors: WindowAccessors): void {
     ensureAppAdvisorWindow: accessors.ensureAppAdvisorWindow,
     sendAppAdvisorWindowCommand: accessors.sendAppAdvisorWindowCommand,
     onChange: (stored: AutomationsListResponse) => {
-      // Windows edit a converted automation as its chat action (CAN-4551).
-      const snapshot = projectOwnedChatAutomations(stored);
-      sendToWindow(
-        accessors.getMainWindow(),
-        IPC_CHANNELS.automationsChanged,
-        snapshot,
-      );
-      sendToWindow(
-        accessors.getAppAdvisorWindow(),
-        IPC_CHANNELS.automationsChanged,
-        snapshot,
+      // Windows edit a converted automation as its chat action (CAN-4551),
+      // with its workflow-page facts counted across every context (CAN-5782).
+      void service.allActivities().then(
+        (activities) => {
+          const snapshot = projectOwnedChatAutomations(stored, activities);
+          sendToWindow(
+            accessors.getMainWindow(),
+            IPC_CHANNELS.automationsChanged,
+            snapshot,
+          );
+          sendToWindow(
+            accessors.getAppAdvisorWindow(),
+            IPC_CHANNELS.automationsChanged,
+            snapshot,
+          );
+        },
+        (error: unknown) => {
+          logMainProcessError('Failed to publish the automations list', error);
+        },
       );
     },
   });
@@ -330,7 +352,10 @@ export function registerAutomationsHandlers(accessors: WindowAccessors): void {
     [AutomationsListRequest | undefined],
     AutomationsListResponse
   >(IPC_CHANNELS.automationsList, async (_event, request) => {
-    const snapshot = projectOwnedChatAutomations(await service.list());
+    const snapshot = projectOwnedChatAutomations(
+      await service.list(),
+      await service.allActivities(),
+    );
     // App Advisor lists what the Automations page shows; everything else
     // reads the full snapshot.
     return isRecord(request) && request.scope === 'selected-context'
@@ -357,7 +382,12 @@ export function registerAutomationsHandlers(accessors: WindowAccessors): void {
         // save a chat automation as a pipeline (CAN-4551).
         return await createAutomationFromForm(request);
       } catch (error) {
-        return { ok: false, error: errorMessage(error) };
+        const coworkFolderMissing = readCoworkFolderMissing(error);
+        return {
+          ok: false,
+          error: errorMessage(error),
+          ...(coworkFolderMissing ? { coworkFolderMissing } : {}),
+        };
       }
     },
   );

@@ -6,11 +6,11 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { Notice, Surface } from '@canopy/ui-shared/components';
+import { Stack, Notice, Surface } from '@canopy/ui-shared/components';
 import type {
   ExecutionState,
   ExecutionSummary,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   useStepLogInterest,
   type PipelineDetailOwner,
@@ -122,7 +122,7 @@ function InlineStepDetail({
     Object.keys(resolved.stepDef.env ?? {}).length > 0;
 
   return (
-    <Surface variant="group" size="small" className="mt-1 overflow-hidden">
+    <Surface variant="group" size="small" className="overflow-hidden">
       {resolved.stepResult?.agentTerminalMode && (
         <div className="border-b px-3 py-2">
           <TerminalModeBanner
@@ -146,17 +146,17 @@ function InlineStepDetail({
       )}
 
       {hasConfig && (
-        <div className="border-b px-3 py-2">
-          <div className="mb-1 text-2xs font-medium fg-secondary">
-            Configuration
+        <div className="flex flex-col border-b px-3 py-2 gap-1">
+          <div className="text-2xs font-medium fg-secondary">Configuration</div>
+          <div className="flex flex-col gap-0">
+            <KeyValueTable values={resolved.stepDef.with} />
+            <KeyValueTable values={resolved.stepDef.env} />
           </div>
-          <KeyValueTable values={resolved.stepDef.with} />
-          <KeyValueTable values={resolved.stepDef.env} />
         </div>
       )}
 
-      <div className="px-3 py-2">
-        <div className="mb-1 flex items-center gap-2 text-2xs font-medium fg-secondary">
+      <div className="flex flex-col px-3 py-2 gap-1">
+        <div className="flex items-center gap-2 text-2xs font-medium fg-secondary">
           <span>Log output</span>
           {resolved.stepResult?.status === 'running' && (
             <LoadingSpinner tone="active" />
@@ -210,7 +210,7 @@ function InlineMatrixJobSummary({
   }
 
   return (
-    <div className="space-y-1" data-testid={`pipeline-inline-matrix-${jobId}`}>
+    <Stack gap="tight" data-testid={`pipeline-inline-matrix-${jobId}`}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs fg-secondary">
         <span>{variants.length} variants</span>
         {group?.resolved_max_parallel !== undefined && (
@@ -218,7 +218,7 @@ function InlineMatrixJobSummary({
         )}
         <span>{complete} complete</span>
       </div>
-      <ul className="max-h-45 space-y-0.5 overflow-y-auto">
+      <ul className="flex flex-col max-h-45 overflow-y-auto gap-0.5 [&>*]:shrink-0">
         {variants.map(({ id, definition, result }) => (
           <li
             key={id}
@@ -237,7 +237,7 @@ function InlineMatrixJobSummary({
           </li>
         ))}
       </ul>
-    </div>
+    </Stack>
   );
 }
 
@@ -281,7 +281,6 @@ function ChildPipelineToggle({
 
   return (
     <Disclosure
-      className="mt-1"
       open={expandedChildSteps.has(stepInstanceKey)}
       onOpenChange={(): void => onToggle(stepInstanceKey)}
       label={child.pipeline_name}
@@ -308,7 +307,7 @@ export function ChildPipelineExpansion({
   childContext: PipelineInlineChildContext;
 }): JSX.Element {
   return (
-    <div className="mt-1">
+    <div className="pt-1 pl-2">
       <PipelineExecutionInlineDetail
         executionId={childExecutionId}
         owner={childContext.owner}
@@ -402,27 +401,27 @@ export function PipelineExecutionInlineDetail({
   }, [selectedStep, state]);
 
   return (
-    <div className="ml-2 border-l-2 border-line-accent pl-3">
+    <div className="flex flex-col gap-2 border-l-2 border-line-accent pl-3">
       {state?.error && (
-        <Notice intent="destructive" title="Execution error" className="mb-2">
+        <Notice intent="destructive" title="Execution error">
           <span className="whitespace-pre-wrap break-words font-mono">
             {state.error}
           </span>
         </Notice>
       )}
       {!state ? (
-        <div className="flex min-h-30 items-center justify-center text-s fg-secondary">
+        <div className="flex min-h-30 items-center justify-center gap-3 text-s fg-secondary">
           {loadFailed ? (
             'Failed to load execution details.'
           ) : (
             <>
-              <LoadingSpinner tone="active" className="mr-3" />
+              <LoadingSpinner tone="active" />
               Loading execution details…
             </>
           )}
         </div>
       ) : (
-        <>
+        <Stack gap="group">
           {archived ? null : (
             <PipelinePauseResumeContent
               executionId={executionId}
@@ -430,9 +429,9 @@ export function PipelineExecutionInlineDetail({
               idScope={idScope}
             />
           )}
-          <div className="flex flex-col gap-3">
+          <Stack gap="item">
             <div className="flex min-h-0 min-w-0 flex-col">
-              <div className="flex min-h-0 min-w-0 flex-col gap-2">
+              <Stack gap="inline" className="min-h-0 min-w-0">
                 {Object.entries(state.pipeline_snapshot.jobs).map(
                   ([jobId, jobDef]) => {
                     const group = state.job_groups[jobId];
@@ -443,42 +442,49 @@ export function PipelineExecutionInlineDetail({
                       ? []
                       : buildAttemptViews(jobResult);
                     return (
-                      <Surface key={jobId} variant="group" padding="compact">
-                        <div className="mb-2 flex items-start justify-between gap-3">
-                          <div>
-                            <div className="text-s font-medium fg-primary/80">
-                              {jobDef.name}
+                      <Surface
+                        key={jobId}
+                        variant="group"
+                        gap="item"
+                        padding="compact"
+                      >
+                        <Stack gap="inline">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-s font-medium fg-primary/80">
+                                {jobDef.name}
+                              </div>
+                              <div className="font-mono text-2xs fg-secondary">
+                                {jobId}
+                              </div>
                             </div>
-                            <div className="font-mono text-2xs fg-secondary">
-                              {jobId}
-                            </div>
+                            <Badge
+                              {...pipelineStatusBadge(
+                                group?.status ?? jobResult?.status ?? 'pending',
+                              )}
+                            >
+                              {group?.status ?? jobResult?.status ?? 'pending'}
+                            </Badge>
                           </div>
-                          <Badge
-                            {...pipelineStatusBadge(
-                              group?.status ?? jobResult?.status ?? 'pending',
-                            )}
-                          >
-                            {group?.status ?? jobResult?.status ?? 'pending'}
-                          </Badge>
-                        </div>
 
-                        <div className="mb-3 flex flex-wrap gap-2 text-2xs fg-secondary">
-                          {jobDef.max_retries > 0 && (
-                            <span>
-                              Retries {jobResult?.retry_count ?? 0}/
-                              {jobDef.max_retries}
-                            </span>
-                          )}
-                          {jobDef.max_iterations !== undefined &&
-                            jobDef.max_iterations > 0 && (
+                          <div className="flex flex-wrap gap-2 text-2xs fg-secondary">
+                            {jobDef.max_retries > 0 && (
                               <span>
-                                Iteration {jobResult?.iteration_count ?? 1}/
-                                {jobDef.max_iterations}
+                                Retries {jobResult?.retry_count ?? 0}/
+                                {jobDef.max_retries}
                               </span>
                             )}
-                        </div>
+                            {jobDef.max_iterations !== undefined &&
+                              jobDef.max_iterations > 0 && (
+                                <span>
+                                  Iteration {jobResult?.iteration_count ?? 1}/
+                                  {jobDef.max_iterations}
+                                </span>
+                              )}
+                          </div>
+                        </Stack>
 
-                        <Surface variant="inset" size="small" className="mb-3">
+                        <Surface variant="inset" size="small" className="">
                           <div className="p-2.5">
                             <TimingSummaryGrid
                               identity={`job:${executionId}:${jobId}:current`}
@@ -498,7 +504,7 @@ export function PipelineExecutionInlineDetail({
                         </Surface>
 
                         {isMatrixJob ? (
-                          <div className="mb-3">
+                          <div>
                             <InlineMatrixJobSummary
                               state={state}
                               jobId={jobId}
@@ -506,12 +512,13 @@ export function PipelineExecutionInlineDetail({
                           </div>
                         ) : null}
 
-                        <div className="space-y-3">
+                        <Stack gap="item">
                           {attempts.map((attemptView) => (
-                            <div
+                            <Stack
+                              gap="tight"
                               key={`${jobId}-${attemptView.source}-${attemptView.attempt}-${attemptView.iteration ?? 1}`}
                             >
-                              <div className="mb-1 flex items-center justify-between gap-3">
+                              <div className="flex items-center justify-between gap-3">
                                 <div className="text-2xs font-medium fg-secondary">
                                   {attemptView.label}
                                 </div>
@@ -521,8 +528,8 @@ export function PipelineExecutionInlineDetail({
                                     attemptView.started_at,
                                     attemptView.completed_at,
                                   ) && (
-                                    <div className="text-2xs fg-secondary">
-                                      <span className="mr-1 fg-secondary">
+                                    <div className="inline-flex items-baseline gap-1 text-2xs fg-secondary">
+                                      <span className="fg-secondary">
                                         Duration
                                       </span>
                                       <PipelineTimer
@@ -536,7 +543,7 @@ export function PipelineExecutionInlineDetail({
                                     </div>
                                   )}
                               </div>
-                              <div className="space-y-1">
+                              <Stack gap="tight">
                                 {jobDef.steps.map((step) => {
                                   const stepResult = attemptView.steps[step.id];
                                   const isSelected =
@@ -558,6 +565,7 @@ export function PipelineExecutionInlineDetail({
                                   return (
                                     <div
                                       key={`${jobId}-${attemptView.source}-${attemptView.attempt}-${attemptView.iteration ?? 1}-${step.id}`}
+                                      className="flex flex-col gap-1"
                                     >
                                       <button
                                         type="button"
@@ -576,19 +584,21 @@ export function PipelineExecutionInlineDetail({
                                       >
                                         <div className="min-w-0 flex items-center gap-1.5">
                                           <ChevronIcon open={isSelected} />
-                                          <div>
-                                            <div className="truncate text-s fg-primary/80">
-                                              {step.name ?? step.id}
-                                            </div>
-                                            <div className="truncate font-mono text-2xs fg-secondary">
-                                              {step.id}
+                                          <Stack gap="tight">
+                                            <div className="flex flex-col gap-0">
+                                              <div className="truncate text-s fg-primary/80">
+                                                {step.name ?? step.id}
+                                              </div>
+                                              <div className="truncate font-mono text-2xs fg-secondary">
+                                                {step.id}
+                                              </div>
                                             </div>
                                             {hasTimingData(
                                               stepResult?.started_at,
                                               stepResult?.completed_at,
                                             ) && (
-                                              <div className="mt-1 text-2xs fg-secondary">
-                                                <span className="mr-1 fg-secondary">
+                                              <div className="inline-flex items-baseline gap-1 text-2xs fg-secondary">
+                                                <span className="fg-secondary">
                                                   Duration
                                                 </span>
                                                 <PipelineTimer
@@ -608,7 +618,7 @@ export function PipelineExecutionInlineDetail({
                                                 />
                                               </div>
                                             )}
-                                          </div>
+                                          </Stack>
                                         </div>
                                         <div className="flex items-center gap-2">
                                           {stepResult?.error && (
@@ -655,18 +665,18 @@ export function PipelineExecutionInlineDetail({
                                     </div>
                                   );
                                 })}
-                              </div>
-                            </div>
+                              </Stack>
+                            </Stack>
                           ))}
-                        </div>
+                        </Stack>
                       </Surface>
                     );
                   },
                 )}
-              </div>
+              </Stack>
             </div>
-          </div>
-        </>
+          </Stack>
+        </Stack>
       )}
     </div>
   );

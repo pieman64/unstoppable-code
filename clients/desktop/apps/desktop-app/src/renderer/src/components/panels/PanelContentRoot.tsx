@@ -4,12 +4,13 @@ import {
   PanelContentRoot as SharedPanelContentRoot,
   type PanelContentRootProps as SharedPanelContentRootProps,
 } from '@canopy/ui-app/panel-content-root';
+import { panelErrorBoundaryHost } from '@/lib/desktop-error-boundary-host';
 import { renderPanelContent } from '@/lib/panels/registry';
 import { usePanelWindowsStore } from '@/stores/panelWindowsStore';
 
 export type PanelContentRootProps = Omit<
   SharedPanelContentRootProps,
-  'renderPanelContent' | 'auxLayoutKeys'
+  'renderPanelContent' | 'auxLayoutKeys' | 'errorHost'
 >;
 
 export function PanelContentRoot(props: PanelContentRootProps): JSX.Element {
@@ -23,6 +24,7 @@ export function PanelContentRoot(props: PanelContentRootProps): JSX.Element {
       {...props}
       renderPanelContent={renderPanelContent}
       auxLayoutKeys={auxLayoutKeys}
+      errorHost={panelErrorBoundaryHost}
     />
   );
 }

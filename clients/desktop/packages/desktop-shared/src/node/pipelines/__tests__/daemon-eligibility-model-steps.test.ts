@@ -1,7 +1,7 @@
 // CAN-5095: the classifier admits the Claude and Codex model steps the
 // daemon's pipeline host runs, behind an option, and refuses every other
 // model step with a reason that names why. Runs over the real bundled action
-// manifests.
+// manifests. CAN-5831: Ollama models on the agent actions are admitted too.
 import {
   mkdirSync,
   mkdtempSync,
@@ -22,12 +22,13 @@ import {
   initClaudeModels,
   initCodexModels,
   initCopilotModels,
+  initModelHarnessAssignments,
   initOllamaModels,
   initOpenCodeModels,
 } from '@canopy/desktop-shared/types';
-import type { Pipeline, Step } from '@canopy/desktop-shared/types/pipeline';
-import { toCopilotModelId } from '../../../lib/copilot-models';
-import { toOpenCodeModelId } from '../../../lib/opencode-models';
+import type { Pipeline, Step } from '@canopy/execution-engine/types/pipeline';
+import { toCopilotModelId } from '@canopy/execution-engine/lib/copilot-models';
+import { toOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import {
   getProjectActionsDir,
   getProjectActionsDirCandidates,
@@ -158,9 +159,54 @@ describe('classifyDaemonPipeline with model steps', () => {
     }
   });
 
+  it('admits Ollama agent steps on the Claude and Codex harnesses', () => {
+    const ollama = OLLAMA_MODELS[0] ?? '';
+    expect(getModelSource(ollama)).toBe('ollama');
+    for (const uses of ['builtin/agent-prompt', 'builtin/agent-resume']) {
+      expect(
+        classifyDaemonPipeline(
+          oneStep({ uses, with: { prompt: 'x', model: ollama } }),
+          context,
+          ADMIT,
+        ),
+      ).toEqual({ eligible: true, modelSteps: 1, modelHarnesses: ['codex'] });
+    }
+    initModelHarnessAssignments({
+      revision: 1,
+      assignments: [
+        {
+          modelId: ollama,
+          source: 'ollama',
+          harness: 'claude',
+          defaultHarness: 'codex',
+          configurable: true,
+          overridden: true,
+        },
+      ],
+    });
+    try {
+      expect(
+        classifyDaemonPipeline(oneStep(agentPrompt(ollama)), context, ADMIT),
+      ).toEqual({ eligible: true, modelSteps: 1, modelHarnesses: ['claude'] });
+    } finally {
+      initModelHarnessAssignments({ revision: 0, assignments: [] });
+    }
+  });
+
   it('refuses models the daemon does not run', () => {
+    // An Ollama model resolves a local route only on the model-aware agent
+    // actions, in process as in the daemon (CAN-5831 D1).
+    expect(
+      classifyDaemonPipeline(
+        oneStep({
+          uses: 'builtin/router',
+          with: { model: OLLAMA_MODELS[0] ?? '' },
+        }),
+        context,
+        ADMIT,
+      ),
+    ).toMatchObject({ eligible: false, reason: 'model_provider' });
     const picks: Array<[string, string]> = [
-      [OLLAMA_MODELS[0] ?? '', 'ollama'],
       [CURSOR_MODELS[0] ?? '', 'cursor-managed'],
       [COPILOT_MODELS[0] ?? '', 'copilot-managed'],
       [OPENCODE_MODELS[0] ?? '', 'opencode-managed'],
@@ -169,7 +215,7 @@ describe('classifyDaemonPipeline with model steps', () => {
       expect(model).not.toBe('');
       expect(getModelSource(model)).toBe(source);
     }
-    for (const model of ['ollama:llama3', ...picks.map(([model]) => model)]) {
+    for (const model of picks.map(([model]) => model)) {
       expect(
         classifyDaemonPipeline(oneStep(agentPrompt(model)), context, ADMIT),
       ).toMatchObject({ eligible: false, reason: 'model_provider' });

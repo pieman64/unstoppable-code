@@ -1,4 +1,4 @@
-import type { PipelineRunTarget } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineRunTarget } from '@canopy/execution-engine/types/pipeline';
 
 /**
  * Pure read/build helpers for a `builtin/run-pipeline` step `target`. The

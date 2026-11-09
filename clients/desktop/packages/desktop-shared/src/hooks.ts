@@ -12,15 +12,15 @@ import {
   isChatTabPluginSelections,
   normalizePluginSelections,
 } from './lib/plugin-selections-normalization';
-import type { ChatModel } from './types/chat-models';
-import { isThinkingLevel } from './thinking';
-import type { ThinkingLevel } from './types/thinking';
+import type { ChatModel } from '@canopy/execution-engine/types/chat-models';
+import { isThinkingLevel } from '@canopy/execution-engine/thinking';
+import type { ThinkingLevel } from '@canopy/execution-engine/types/thinking';
 import {
   codexSpeedFastMode,
   isCodexSpeed,
   readCodexSpeedRecord,
   withCodexSpeed,
-} from './lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   getShareablePluginRefKey,
   normalizeShareablePluginRef,
@@ -32,7 +32,7 @@ import {
   titleCaseIdentifier,
 } from './lib/scoped-config-utils';
 import { BRAND } from '@canopy/brand/current';
-import { brandEnvCandidates } from './brand/env';
+import { brandEnvCandidates } from '@canopy/execution-engine/brand/env';
 import {
   normalizeCommandShellDefinition,
   type CommandShellDefinition,

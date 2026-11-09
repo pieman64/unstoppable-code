@@ -1,5 +1,5 @@
 import type { GatewayModelEntry } from '@canopy/protocol/llm-gateway';
-import { isSyntacticallyValidModelId } from './model-id';
+import { isSyntacticallyValidModelId } from '@canopy/execution-engine/lib/model-id';
 
 /** Catalog eligibility only. Execution independently validates owner and funding. */
 export function isOpenCodeGatewayRouteSupported(

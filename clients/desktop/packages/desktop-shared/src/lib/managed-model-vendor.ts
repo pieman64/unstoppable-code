@@ -1,6 +1,6 @@
-import { getRawCopilotModelId } from './copilot-models';
-import { getCursorModelVendor } from './cursor-models';
-import { getRawOpenCodeModelId } from './opencode-models';
+import { getRawCopilotModelId } from '@canopy/execution-engine/lib/copilot-models';
+import { getCursorModelVendor } from '@canopy/execution-engine/lib/cursor-models';
+import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 
 /** Display classification from model namespaces, never labels or account names. */
 export function getManagedModelVendor(model: string): string | undefined {

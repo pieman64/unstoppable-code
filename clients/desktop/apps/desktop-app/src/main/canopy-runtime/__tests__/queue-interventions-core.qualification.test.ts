@@ -13,6 +13,7 @@ import {
   projectQueueForce,
 } from '../../ipc/chat-queue-projections';
 import {
+  handlePortalChatInputDelivery,
   handlePortalChatQueueCancel,
   handlePortalChatQueueEdit,
   handlePortalChatQueueForce,
@@ -298,6 +299,45 @@ describe('queue interventions through core (CAN-4112)', () => {
         'execution_failed',
         'execution_failed',
       ]);
+      expect(getChatQueueService).not.toHaveBeenCalled();
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+  // CAN-5897: the Portal dismiss of an input-delivery row is one revisioned
+  // chat command, the proposed core.chat.inputDelivery.action's destination.
+  it('a Portal input-delivery dismiss commits one chat command for that row', async () => {
+    const { port, runtime, dispatch } = compose();
+    try {
+      const context = portalContext(port, dispatch);
+      await handlePortalChatInputDelivery(
+        {
+          ...portalCommand('portal-dismiss', {
+            ...target,
+            rowId: 'row-1',
+            rowRevision: 3,
+            action: 'dismiss',
+          }),
+          type: 'portal.chat.input_delivery',
+        },
+        context,
+      );
+
+      expect(context.failures).toEqual([]);
+      expect(context.completed).toHaveLength(1);
+      expect(port.commands).toHaveLength(1);
+      expect(port.commands[0]).toMatchObject({
+        projectId: 'ws-1',
+        worktreeId: 'wt-1',
+        commandId: 'portal-dismiss',
+        command: {
+          type: 'chat.input_delivery_action',
+          chatId: 'chat-1',
+          rowId: 'row-1',
+          rowRevision: 3,
+          action: 'dismiss',
+        },
+      });
       expect(getChatQueueService).not.toHaveBeenCalled();
     } finally {
       await runtime.shutdown();

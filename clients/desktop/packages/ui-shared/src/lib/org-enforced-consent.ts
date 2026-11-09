@@ -110,6 +110,11 @@ export function describeEnforcedPolicies(
           // Model availability is enforced at selection/execution boundaries,
           // not represented in the telemetry-consent summary.
           break;
+        case 'usage-data':
+          // Member usage-data prohibitions only turn the member's own
+          // telemetry off while they work in that organization; they are not
+          // represented in the consent summary.
+          break;
         case 'model-gateway': {
           // The endpoint itself is the consent: joining sends this member's
           // prompts and code to a server the org runs, under the org's

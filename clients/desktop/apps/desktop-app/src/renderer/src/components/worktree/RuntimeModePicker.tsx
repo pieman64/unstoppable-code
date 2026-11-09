@@ -109,7 +109,7 @@ export function RuntimeModePicker({
   );
 
   return (
-    <div className={showLabel ? 'space-y-1.5 pt-1' : undefined}>
+    <div className={showLabel ? 'flex flex-col gap-1.5 pt-1' : undefined}>
       <div className="flex flex-wrap items-center gap-2">
         {showLabel && (
           <span className="text-2xs font-medium fg-secondary">Runtime</span>

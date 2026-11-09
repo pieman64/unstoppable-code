@@ -100,6 +100,7 @@ class MemoryCatalogHost implements CoreCatalogHost {
     pluginName: 'a',
     install: 'external',
   };
+  extraPluginRefs: { marketplaceId: string; pluginName: string }[] = [];
   readonly refreshPlans: CatalogRefreshPlan[] = [];
   readError: Error | null = null;
   snapshotFailures = 0;
@@ -125,7 +126,7 @@ class MemoryCatalogHost implements CoreCatalogHost {
       entries: this.entries,
       refs: {
         ...emptyCatalogSelectionRefs(),
-        pluginRefs: [ref('a'), ref('b'), ref('gone')],
+        pluginRefs: [ref('a'), ref('b'), ref('gone'), ...this.extraPluginRefs],
       },
     });
   }
@@ -602,6 +603,90 @@ describe('core.catalog handlers (CAN-4123)', () => {
         code: 'core.catalog.refreshTooLarge',
       },
     });
+    expect(host.calls.refreshSources).toBe(1);
+  });
+
+  it('refuses a selection or refresh too large to record before changing anything (CAN-5898)', async () => {
+    const dispatcher = compose();
+    host.extraPluginRefs = Array.from({ length: 400 }, (_, index) =>
+      ref(`${'a-plugin-with-a-long-name-'.repeat(8)}${index}`),
+    );
+    const read = await dispatcher.query(
+      'core.catalog.selection.get',
+      { scope: {} },
+      { caller: reader },
+    );
+    await expect(
+      dispatcher.instruction(
+        'core.catalog.selection.update',
+        {
+          scope: {},
+          expectedRevision: read.revision,
+          selectedItemIds: host.extraPluginRefs.map(
+            (plugin) => `plugin:m/${plugin.pluginName}`,
+          ),
+          _meta: keyed('large-selection'),
+        },
+        { caller: writer, metadata: keyed('large-selection') },
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'resource_exhausted',
+        message: 'This selection is too large to record.',
+      },
+    });
+    expect(host.calls.replaceGlobalSelection).toBe(0);
+
+    host.sources = Array.from({ length: 100 }, (_, index) => ({
+      ...host.sources[0],
+      sourceId: `${'a-source-with-a-long-id-'.repeat(16)}${index}`,
+    }));
+    await expect(
+      dispatcher.instruction(
+        'core.catalog.source.refresh',
+        {
+          sourceIds: 'all',
+          providers: ['claude', 'codex'],
+          mode: 'update_then_scan',
+          _meta: keyed('large-refresh'),
+        },
+        { caller: writer, metadata: keyed('large-refresh') },
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'resource_exhausted',
+        code: 'core.catalog.refreshTooLarge',
+      },
+    });
+    expect(host.calls.refreshSources).toBe(0);
+    const { items } = await operations.list({
+      kinds: ['core.catalog.source.refresh'],
+      limit: 10,
+    });
+    expect(items).toEqual([]);
+  });
+
+  it('replays a large explicit refresh under its key without checking its size again (CAN-5898)', async () => {
+    const dispatcher = compose();
+    host.sources = Array.from({ length: 40 }, (_, index) => ({
+      ...host.sources[0],
+      sourceId: `${'a-source-with-a-long-id-'.repeat(20)}${index}`,
+    }));
+    const refresh = (): Promise<unknown> =>
+      dispatcher.instruction(
+        'core.catalog.source.refresh',
+        {
+          sourceIds: host.sources.map((source) => source.sourceId),
+          providers: ['claude', 'codex'],
+          mode: 'update_then_scan',
+          _meta: keyed('large-explicit'),
+        },
+        { caller: writer, metadata: keyed('large-explicit') },
+      );
+
+    const ack = await refresh();
+    expect(ack).toMatchObject({ scanOnlySources: [] });
+    await expect(refresh()).resolves.toEqual(ack);
     expect(host.calls.refreshSources).toBe(1);
   });
 

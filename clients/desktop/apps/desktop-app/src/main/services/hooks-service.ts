@@ -163,6 +163,53 @@ export async function setWorktreePausedHookKeys(
   return worktree;
 }
 
+/**
+ * Pause or resume one listed hook, or every listed hook, of a worktree. The
+ * change applies to the latest worktree row, so a competing pause or resume
+ * is kept. Portal's `portal.hook.pause`/`resume` and the tunneled
+ * `hook:change-pause` (browser Remote Control, CAN-5985) both run it. A hook
+ * the worktree does not list is refused as `not_found`.
+ */
+export async function changeListedHookPause(
+  input: {
+    projectId: string;
+    worktreeId: string;
+    kind: 'pause' | 'resume';
+    selection: { readonly hookKey: string } | { readonly all: true };
+    source: ScriptHookSettingsSource;
+  },
+  setPaused: typeof setWorktreeHooksPaused = setWorktreeHooksPaused,
+  listed: typeof listHooks = listHooks,
+): Promise<{ pausedHookKeys: string[] }> {
+  const hooks = await listed({
+    projectId: input.projectId,
+    worktreeId: input.worktreeId,
+  });
+  let hookKeys: string[];
+  if ('hookKey' in input.selection) {
+    const { hookKey } = input.selection;
+    if (!hooks.some((hook) => hook.hookKey === hookKey)) {
+      throw new PortalServiceError(
+        'not_found',
+        `Hook ${hookKey} was not found.`,
+      );
+    }
+    hookKeys = [hookKey];
+  } else {
+    hookKeys = hooks.map((hook) => hook.hookKey);
+  }
+  const { pausedHookKeys } = await changeWorktreeHookPause(
+    {
+      projectId: input.projectId,
+      worktreeId: input.worktreeId,
+      change: { kind: input.kind, hookKeys },
+      source: input.source,
+    },
+    setPaused,
+  );
+  return { pausedHookKeys };
+}
+
 const NOOP_SUCCESS: HookRunResponse = {
   success: true,
   stopped: false,

@@ -40,7 +40,7 @@ import type {
   McpServerConfigData,
   McpServerDefinitionData,
   StartMcpOAuthLoginResponse,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   clearMcpOAuthToken,
   getMcpOAuthToken,
@@ -168,6 +168,11 @@ export interface StartMcpOAuthFlowInput {
   proxyPort: number;
   force?: boolean;
   browser?: 'external' | 'embedded';
+  /**
+   * CAN-4126: set for a sign-in a client presents itself (embedded). The
+   * callback is refused, and nothing is saved, once `isLive()` is false.
+   */
+  presentation?: { isLive(): boolean };
 }
 
 interface PendingMcpOAuthState {
@@ -182,6 +187,7 @@ interface PendingMcpOAuthState {
   oauth: ResolvedMcpOAuthConfig;
   callbackServer?: Server;
   callbackTimeout?: ReturnType<typeof setTimeout>;
+  presentation?: { isLive(): boolean };
 }
 
 interface ResolvedMcpOAuthConfig extends TokenRequestConfig {
@@ -1306,6 +1312,7 @@ export async function startMcpOAuthFlow(
       redirectUri,
       upstreamUrl: getCanonicalUpstreamUrl(definition),
       oauth,
+      ...(input.presentation ? { presentation: input.presentation } : {}),
     };
     try {
       if (declaredCallbackPort !== undefined) {
@@ -1392,6 +1399,8 @@ async function handleMcpOAuthCallbackInternal(
   try {
     pending.callbackServer?.close();
     if (pending.callbackTimeout) clearTimeout(pending.callbackTimeout);
+    if (pending.presentation && !pending.presentation.isLive())
+      return { success: false, message: 'Sign-in was canceled.' };
 
     const error = url.searchParams.get('error');
     if (error) {

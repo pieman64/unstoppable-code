@@ -1,4 +1,4 @@
-import type { BrowserRectangle } from '@canopy/desktop-shared/types/browser';
+import type { BrowserRectangle } from '@canopy/execution-engine/types/browser';
 
 /**
  * One node of the pierced `DOM.getDocument({ depth: -1, pierce: true })`

@@ -6,7 +6,7 @@ import {
   type AiCreditsScopeRequest,
 } from '@canopy/desktop-shared/types';
 import type { BillingLaneAvailability } from '@canopy/desktop-shared/lib/default-model-lane';
-import type { CodexSpeedCatalog } from '@canopy/desktop-shared/types/codex-speed-capabilities';
+import type { CodexSpeedCatalog } from '@canopy/execution-engine/types/codex-speed-capabilities';
 import {
   setRendererBillingLaneAvailability,
   getRendererCodexAccountModelsKey,

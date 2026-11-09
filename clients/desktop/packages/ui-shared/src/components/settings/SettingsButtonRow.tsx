@@ -51,7 +51,7 @@ export function SettingsButtonRow({
       data-settings-control="row"
       className="focus-ring -mx-2 -my-3 box-content flex min-h-10 min-w-0 flex-1 items-center justify-between gap-6 rounded-md px-2 py-3 text-left transition-colors hover:bg-subtle focus-visible:bg-subtle disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
     >
-      <span className="min-w-0 flex-1 space-y-0.5">
+      <span className="min-w-0 flex-1 flex flex-col gap-0.5">
         <span className="block min-w-0 text-s font-medium fg-primary">
           {label}
         </span>

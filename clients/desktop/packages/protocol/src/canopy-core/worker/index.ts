@@ -21,3 +21,6 @@ export * from './registry';
 export * from './script';
 export * from './terminal';
 export * from './git-merge';
+export * from './git-local-mutations';
+
+export * from './git-worktree-writes';

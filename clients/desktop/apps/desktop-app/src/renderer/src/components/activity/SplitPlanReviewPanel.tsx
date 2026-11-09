@@ -1,5 +1,6 @@
 import { memo, useMemo, useState, type JSX } from 'react';
 import {
+  Stack,
   Button,
   Chip,
   Disclosure,
@@ -244,9 +245,9 @@ function IssueBanner({
     <Notice
       intent={severity === 'error' ? 'destructive' : 'attention'}
       data-testid={`split-plan-${severity}-banner`}
-      className="mb-2"
+      className=""
     >
-      <div className="space-y-1">
+      <Stack gap="tight">
         {Array.from(grouped.entries()).map(([code, codeIssues]) => (
           <div key={code}>
             <span className="font-medium">{ISSUE_CODE_LABELS[code]}</span>
@@ -254,7 +255,7 @@ function IssueBanner({
             {codeIssues[0].message}
           </div>
         ))}
-      </div>
+      </Stack>
     </Notice>
   );
 }
@@ -357,7 +358,7 @@ const SplitPlanChangesEditor = memo(function SplitPlanChangesEditor({
   }
 
   return (
-    <div className="space-y-1.5">
+    <div className="flex flex-col gap-1.5">
       {ownedFiles.map((file) => {
         const change = child.changes.find((c) => c.file === file.path);
         const isWholeFile = change?.hunks === 'all';
@@ -376,7 +377,7 @@ const SplitPlanChangesEditor = memo(function SplitPlanChangesEditor({
               isWholeFile ? 'whole file' : `${change?.hunks.length} hunk(s)`
             }
           >
-            <div className="space-y-1">
+            <Stack gap="tight">
               {file.hunks.length === 0 ? (
                 <HunkRow
                   file={file}
@@ -411,7 +412,7 @@ const SplitPlanChangesEditor = memo(function SplitPlanChangesEditor({
                   );
                 })
               )}
-            </div>
+            </Stack>
           </Disclosure>
         );
       })}
@@ -464,34 +465,37 @@ const SplitPlanChildRow = memo(function SplitPlanChildRow({
     <Surface
       data-testid={`split-plan-row-${child.index}`}
       variant="group"
+      gap="inline"
       padding="compact"
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium fg-secondary">
           [{child.index}/{total}]
         </span>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="compact"
-            iconOnly
-            onClick={() => onMoveUp(position)}
-            disabled={position === 0}
-            aria-label={`Move child ${child.index} up`}
-          >
-            &#8593;
-          </Button>
-          <Button
-            variant="ghost"
-            size="compact"
-            iconOnly
-            onClick={() => onMoveDown(position)}
-            disabled={position === total - 1}
-            aria-label={`Move child ${child.index} down`}
-          >
-            &#8595;
-          </Button>
-          <span className="ml-2 text-3xs fg-secondary">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
+              onClick={() => onMoveUp(position)}
+              disabled={position === 0}
+              aria-label={`Move child ${child.index} up`}
+            >
+              &#8593;
+            </Button>
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
+              onClick={() => onMoveDown(position)}
+              disabled={position === total - 1}
+              aria-label={`Move child ${child.index} down`}
+            >
+              &#8595;
+            </Button>
+          </div>
+          <span className="text-3xs fg-secondary">
             <span className="fg-success-strong">+{lineStats.additions}</span>{' '}
             <span className="fg-destructive">-{lineStats.deletions}</span>
           </span>
@@ -564,8 +568,8 @@ const SplitPlanChildRow = memo(function SplitPlanChildRow({
       </div>
 
       {dependsOnOptions.length > 0 && (
-        <div className="mt-2">
-          <span className="mb-1 block text-xs font-medium fg-secondary">
+        <Stack gap="tight">
+          <span className="block text-xs font-medium fg-secondary">
             Depends on
           </span>
           <div
@@ -586,13 +590,11 @@ const SplitPlanChildRow = memo(function SplitPlanChildRow({
               );
             })}
           </div>
-        </div>
+        </Stack>
       )}
 
-      <div className="mt-2">
-        <span className="mb-1 block text-xs font-medium fg-secondary">
-          Changes
-        </span>
+      <Stack gap="tight">
+        <span className="block text-xs font-medium fg-secondary">Changes</span>
         <SplitPlanChangesEditor
           child={child}
           snapshot={snapshot}
@@ -600,7 +602,7 @@ const SplitPlanChildRow = memo(function SplitPlanChildRow({
           allChildIndices={allChildIndices}
           onReassign={onReassign}
         />
-      </div>
+      </Stack>
     </Surface>
   );
 });
@@ -719,8 +721,8 @@ export function SplitPlanReviewPanel({
       data-testid="split-plan-panel"
       className="flex min-h-0 flex-1 flex-col"
     >
-      <div className="flex-1 overflow-y-auto px-5 py-3">
-        <Surface variant="group" className="mb-3">
+      <div className="flex flex-col flex-1 overflow-y-auto px-5 py-3 gap-3">
+        <Surface variant="group" className="">
           <div className="px-3 py-2.5">
             <div className="text-xs font-medium fg-secondary">Final goal</div>
             <div
@@ -732,7 +734,7 @@ export function SplitPlanReviewPanel({
           </div>
         </Surface>
 
-        <div className="mb-3">
+        <div>
           <FormField
             label="Build/test command"
             htmlFor="split-plan-build-command"
@@ -750,7 +752,7 @@ export function SplitPlanReviewPanel({
 
         <Surface
           variant="outline"
-          className="mb-3"
+          className=" "
           data-testid="split-plan-aggregate-check"
         >
           <div className="flex items-center gap-2 px-3 py-2 text-xs">
@@ -774,31 +776,33 @@ export function SplitPlanReviewPanel({
           </div>
         </Surface>
 
-        <IssueBanner issues={validation.issues} severity="error" />
-        <IssueBanner issues={validation.issues} severity="warning" />
+        <div className="flex flex-col gap-2">
+          <IssueBanner issues={validation.issues} severity="error" />
+          <IssueBanner issues={validation.issues} severity="warning" />
 
-        <div className="space-y-2">
-          {plan.children.map((child, position) => (
-            <SplitPlanChildRow
-              key={child.index}
-              child={child}
-              position={position}
-              total={plan.children.length}
-              snapshot={snapshot}
-              ownership={ownership}
-              allChildIndices={allChildIndices}
-              lineStats={
-                lineStatsByIndex.get(child.index) ?? {
-                  additions: 0,
-                  deletions: 0,
+          <Stack gap="inline">
+            {plan.children.map((child, position) => (
+              <SplitPlanChildRow
+                key={child.index}
+                child={child}
+                position={position}
+                total={plan.children.length}
+                snapshot={snapshot}
+                ownership={ownership}
+                allChildIndices={allChildIndices}
+                lineStats={
+                  lineStatsByIndex.get(child.index) ?? {
+                    additions: 0,
+                    deletions: 0,
+                  }
                 }
-              }
-              onUpdate={handleUpdateChild}
-              onMoveUp={handleMoveUp}
-              onMoveDown={handleMoveDown}
-              onReassign={handleReassign}
-            />
-          ))}
+                onUpdate={handleUpdateChild}
+                onMoveUp={handleMoveUp}
+                onMoveDown={handleMoveDown}
+                onReassign={handleReassign}
+              />
+            ))}
+          </Stack>
         </div>
       </div>
 

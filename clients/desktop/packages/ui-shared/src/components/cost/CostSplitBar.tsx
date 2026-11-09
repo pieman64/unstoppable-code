@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { SegmentsBar } from '../Progress';
 import { formatCostAmount, type CostSegment } from './cost-format';
 
 export interface CostSplitBarProps {
@@ -33,34 +34,12 @@ export function CostSplitBar({
   const filledScale = visibleTotal > 0 ? Math.max(boundedScale, 0.02) : 0;
 
   return (
-    <div
-      role="img"
-      aria-label={
-        visibleTotal > 0 ? `${label}: ${description}` : `${label}: none`
-      }
-      data-testid={testId}
-      className={`flex w-full overflow-hidden rounded-full bg-muted ${
-        size === 'summary' ? 'h-1.5' : 'h-1'
-      }`}
-    >
-      {visibleTotal > 0 ? (
-        <div
-          className="flex h-full gap-px"
-          style={{ width: `${filledScale * 100}%` }}
-        >
-          {visibleSegments.map((segment) => (
-            <span
-              key={segment.key}
-              className="h-full"
-              style={{
-                flexGrow: segment.value / visibleTotal,
-                flexBasis: 0,
-                backgroundColor: segment.color,
-              }}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
+    <SegmentsBar
+      segments={visibleSegments}
+      scale={filledScale}
+      label={visibleTotal > 0 ? `${label}: ${description}` : `${label}: none`}
+      size={size === 'summary' ? 'default' : 'compact'}
+      dataTestId={testId}
+    />
   );
 }

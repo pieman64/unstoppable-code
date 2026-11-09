@@ -30,6 +30,7 @@ import { EmbeddedDiffFileTree } from '@/components/activity/EmbeddedDiffFileTree
  * away here (same posture as ToolDisplayInfo.tsx / AutomationsPage.tsx).
  */
 /* eslint-disable react-refresh/only-export-components */
+import { RenderFaultProbe } from '@/lib/e2e-render-fault';
 import {
   memo,
   useCallback,
@@ -103,8 +104,12 @@ import {
 } from '@/stores/panelLayoutStore';
 import { isInAppBrowserAvailable } from '@/lib/remote-control/in-app-browser-availability';
 import { CHAT_VISUALS_PANEL_TITLE } from '@canopy/ui-app/panel-layout-store';
-import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
-import { CenteredLoadingSpinner, Heading } from '@canopy/ui-shared/components';
+import {
+  Surface,
+  EmptyState,
+  LoadingRegion,
+  Heading,
+} from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { WorktreeChatSurface } from '@/components/chat/WorktreeChatSurface';
 import { getWorktreeChatSelection } from '@/components/chat/useWorktreeChatSurfaceState';
@@ -238,10 +243,14 @@ function PanelContentFrame({
 /** Neutral empty state shown when a panel has no selected worktree. */
 function PanelEmptyState(): JSX.Element {
   return (
-    <div data-testid="panel-empty-state" className="flex min-h-0 flex-1">
-      <LoadingPlaceholder
-        label="Select a worktree to view this panel"
-        className="flex-1"
+    <div
+      data-testid="panel-empty-state"
+      className="flex min-h-0 flex-1 items-center justify-center"
+    >
+      <EmptyState
+        title="Select a worktree to view this panel"
+        tone="quiet"
+        titleWeight="normal"
       />
     </div>
   );
@@ -276,8 +285,11 @@ function PanelNewTabContent(props: PanelContentProps): JSX.Element {
  */
 function PanelMissingBindingState({ label }: { label: string }): JSX.Element {
   return (
-    <div data-testid="panel-missing-binding" className="flex min-h-0 flex-1">
-      <LoadingPlaceholder label={label} className="flex-1" />
+    <div
+      data-testid="panel-missing-binding"
+      className="flex min-h-0 flex-1 items-center justify-center"
+    >
+      <EmptyState title={label} tone="quiet" titleWeight="normal" />
     </div>
   );
 }
@@ -477,12 +489,16 @@ function EmptyFileTabBody({
   };
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs">
-        <span className="min-w-0 flex-1 truncate fg-secondary">Open file</span>
-        <FileTabTreeToggleButton tabId={tabId} visible={treeVisible} />
-      </div>
+      <Surface variant="section" boundary="bottom">
+        <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+          <span className="min-w-0 flex-1 truncate fg-secondary">
+            Open file
+          </span>
+          <FileTabTreeToggleButton tabId={tabId} visible={treeVisible} />
+        </div>
+      </Surface>
       <div
-        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center"
+        className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center gap-2"
         data-testid="file-tab-empty-state"
       >
         <FolderIcon size="xl" className="fg-secondary/60" />
@@ -498,8 +514,8 @@ function EmptyFileTabBody({
             same thing, instead of a sentence telling you to press it. */}
         {canSearchFiles && (
           <Button
+            className=""
             size="sm"
-            className="mt-2"
             shortcut={formatShortcutHint('open-file-search-palette')}
             onClick={openFileSearch}
             data-testid="file-tab-empty-open-file"
@@ -543,9 +559,10 @@ function PanelChangeDiagramContent(props: PanelContentProps): JSX.Element {
       {scope ? (
         <Suspense
           fallback={
-            <DelayedLoadingPlaceholder slowNote="Still loading change diagram…">
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
+            <LoadingRegion
+              layout="fill"
+              slowNote="Still loading change diagram…"
+            />
           }
         >
           <ChangeDiagramPanel {...scope} active={props.isVisible} />
@@ -592,9 +609,7 @@ const PanelPipelineExecutionContent = memo(
             shown ? (
               <Suspense
                 fallback={
-                  <DelayedLoadingPlaceholder slowNote="Still loading run…">
-                    <CenteredLoadingSpinner className="my-12" />
-                  </DelayedLoadingPlaceholder>
+                  <LoadingRegion layout="fill" slowNote="Still loading run…" />
                 }
               >
                 <PipelineExecutionPanel
@@ -608,13 +623,16 @@ const PanelPipelineExecutionContent = memo(
               </Suspense>
             ) : null
           ) : (
-            <Notice
-              intent="destructive"
-              data-testid="panel-pipeline-execution-unbound"
-              className="m-2"
-            >
-              This run tab is missing its run. Close it and open the run again.
-            </Notice>
+            <div className="shrink-0 p-2">
+              <Notice
+                intent="destructive"
+                data-testid="panel-pipeline-execution-unbound"
+                className=""
+              >
+                This run tab is missing its run. Close it and open the run
+                again.
+              </Notice>
+            </div>
           )
         ) : (
           <PanelEmptyState />
@@ -681,9 +699,7 @@ function PlanPanelBoundContent({
     <PanelContentFrame kind={kind} panelId={props.panelId}>
       <Suspense
         fallback={
-          <DelayedLoadingPlaceholder slowNote="Still loading plan…">
-            <CenteredLoadingSpinner className="my-12" />
-          </DelayedLoadingPlaceholder>
+          <LoadingRegion layout="fill" slowNote="Still loading plan…" />
         }
       >
         {kind === 'plan' ? (
@@ -722,9 +738,7 @@ const PanelChatVisualsContent = memo(function PanelChatVisualsContent(
       ) : (
         <Suspense
           fallback={
-            <DelayedLoadingPlaceholder slowNote="Still loading visuals…">
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
+            <LoadingRegion layout="fill" slowNote="Still loading visuals…" />
           }
         >
           <DesktopChatVisualsPanel
@@ -803,9 +817,10 @@ const PanelSubagentsContent = memo(function PanelSubagentsContent(
         shown ? (
           <Suspense
             fallback={
-              <DelayedLoadingPlaceholder slowNote="Still loading subagents…">
-                <CenteredLoadingSpinner className="my-12" />
-              </DelayedLoadingPlaceholder>
+              <LoadingRegion
+                layout="fill"
+                slowNote="Still loading subagents…"
+              />
             }
           >
             <DesktopSubagentsPanelHost
@@ -860,9 +875,10 @@ const PanelSubagentChatContent = memo(function PanelSubagentChatContent(
       {shown ? (
         <Suspense
           fallback={
-            <DelayedLoadingPlaceholder slowNote="Still loading subagent chat…">
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
+            <LoadingRegion
+              layout="fill"
+              slowNote="Still loading subagent chat…"
+            />
           }
         >
           <DesktopSubagentChatPanelHost
@@ -1040,8 +1056,11 @@ const PanelFileDiffContent = memo(function PanelFileDiffContent(
                 )}
               </div>
               {treeVisible && (
-                <aside
-                  className="flex w-64 shrink-0 flex-col overflow-hidden border-l"
+                <Surface
+                  as="aside"
+                  variant="section"
+                  boundary="left"
+                  className="flex w-64 shrink-0 flex-col overflow-hidden"
                   data-testid="file-tab-tree"
                 >
                   {treeMode === 'diff' ? (
@@ -1086,7 +1105,7 @@ const PanelFileDiffContent = memo(function PanelFileDiffContent(
                       }
                     />
                   )}
-                </aside>
+                </Surface>
               )}
             </div>
           </>
@@ -1185,13 +1204,15 @@ const PanelBrowserContent = memo(function PanelBrowserContent(
             visible={props.isVisible && hostVisible}
           />
         ) : (
-          <Notice
-            intent="destructive"
-            data-testid="panel-browser-unbound"
-            className="m-2"
-          >
-            This Browser panel is missing its session binding.
-          </Notice>
+          <div className="shrink-0 p-2">
+            <Notice
+              intent="destructive"
+              data-testid="panel-browser-unbound"
+              className=""
+            >
+              This Browser panel is missing its session binding.
+            </Notice>
+          </div>
         )
       ) : (
         <PanelEmptyState />
@@ -1272,9 +1293,10 @@ const PanelActivityCardContent = memo(function PanelActivityCardContent(
             data-testid="activity-card-unknown-section"
             className="flex min-h-0 flex-1"
           >
-            <LoadingPlaceholder
-              label="This activity section is no longer available"
-              className="flex-1"
+            <EmptyState
+              title="This activity section is no longer available"
+              tone="quiet"
+              titleWeight="normal"
             />
           </div>
         )
@@ -1347,13 +1369,7 @@ const PanelAutomationsContent = memo(function PanelAutomationsContent(
   return (
     <PanelContentFrame kind="automations" panelId={props.panelId}>
       {selectedWorktree ? (
-        <Suspense
-          fallback={
-            <DelayedLoadingPlaceholder>
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
-          }
-        >
+        <Suspense fallback={<LoadingRegion layout="fill" />}>
           <AutomationsPanel
             panelId={props.panelId}
             variant={variant}
@@ -1444,9 +1460,7 @@ const PanelCostContent = memo(function PanelCostContent(
       {selectedWorktree ? (
         <Suspense
           fallback={
-            <DelayedLoadingPlaceholder slowNote="Still loading cost…">
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
+            <LoadingRegion layout="fill" slowNote="Still loading cost…" />
           }
         >
           <CostPanelHost
@@ -1477,9 +1491,10 @@ const PanelSessionBreakdownContent = memo(function PanelSessionBreakdownContent(
       {selectedWorktree && isSessionBreakdownPanelInstance(instance) ? (
         <Suspense
           fallback={
-            <DelayedLoadingPlaceholder slowNote="Still loading session breakdown…">
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
+            <LoadingRegion
+              layout="fill"
+              slowNote="Still loading session breakdown…"
+            />
           }
         >
           <SessionBreakdownPanelHost
@@ -1784,16 +1799,26 @@ export function getPanelDefinition(kind: PanelKind): DesktopPanelDefinition {
 export function renderPanelContent(props: PanelContentProps): ReactNode {
   if (!isPanelKind(props.kind)) {
     return (
-      <Notice
-        intent="destructive"
-        data-testid="panel-unknown-kind"
-        className="m-2"
-      >
-        Unknown panel kind: {props.kind}
-      </Notice>
+      <div className="shrink-0 p-2">
+        <Notice
+          intent="destructive"
+          data-testid="panel-unknown-kind"
+          className=""
+        >
+          Unknown panel kind: {props.kind}
+        </Notice>
+      </div>
     );
   }
-  return getPanelDefinition(props.kind).render(props);
+  const content = getPanelDefinition(props.kind).render(props);
+  return __CANOPY_E2E__ ? (
+    <>
+      <RenderFaultProbe target={`panel:${props.panelId}`} />
+      {content}
+    </>
+  ) : (
+    content
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -39,11 +39,11 @@ import {
   type EnforcedOrgGatewayLane,
   type LaneModelDefaults,
 } from '@canopy/desktop-shared/lib/default-model-lane';
-import { isGatewayRoutableModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isGatewayRoutableModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   DEFAULT_CODEX_SPEED,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { codexSpeedFields, withoutCodexSpeed } from './codex-speed';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';

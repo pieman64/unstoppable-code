@@ -27,6 +27,8 @@ import {
  * - `dashed`: a dashed line with no fill, for a drop zone or an empty
  *   placeholder that is waiting for something.
  * - `pane`: a full-bleed page region, without rounded corners.
+ * - `panel`: a full-bleed card-fill work panel.
+ * - `rail`: a full-bleed navigation region on the sidebar fill.
  * - `well`: a full-bleed secondary region for a media preview.
  * - `section`: an unfilled region attached to a pane. `boundary` supplies
  *   the shared edge of headers, footers, toolbars and status regions.
@@ -39,6 +41,8 @@ export type SurfaceVariant =
   | 'inset'
   | 'dashed'
   | 'pane'
+  | 'panel'
+  | 'rail'
   | 'well'
   | 'section';
 
@@ -48,7 +52,9 @@ export type SurfaceBoundary =
   | 'top'
   | 'bottom'
   | 'start'
+  | 'left'
   | 'end'
+  | 'right'
   | 'block'
   | 'frame';
 
@@ -57,7 +63,9 @@ const SURFACE_BOUNDARY_CLASS: Readonly<Record<SurfaceBoundary, string>> = {
   top: 'border-t',
   bottom: 'border-b',
   start: 'border-s',
+  left: 'border-l',
   end: 'border-e',
+  right: 'border-r',
   block: 'border-y',
   frame: `${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
 };
@@ -68,6 +76,15 @@ const SURFACE_BOUNDARY_CLASS: Readonly<Record<SurfaceBoundary, string>> = {
  * Flat pane regions always retain square corners.
  */
 export type SurfaceSize = 'default' | 'small';
+
+/** A pane's height comes from its parent or the viewport, never a caller override. */
+export type SurfaceExtent = 'content' | 'parent' | 'viewport';
+
+const SURFACE_EXTENT_CLASS: Readonly<Record<SurfaceExtent, string>> = {
+  content: '',
+  parent: 'h-full',
+  viewport: 'h-screen',
+};
 
 /**
  * The inner padding, by role. `none` lets the content lay itself out (a
@@ -87,6 +104,8 @@ export const SURFACE_VARIANT_CLASS: Readonly<Record<SurfaceVariant, string>> = {
   inset: `bg-base ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
   dashed: 'border border-dashed border-line-secondary',
   pane: 'bg-base',
+  panel: 'bg-card',
+  rail: 'bg-sidebar',
   well: 'bg-secondary',
   section: '',
 };
@@ -110,6 +129,8 @@ export const SURFACE_RADIUS_CLASS: Readonly<Record<SurfaceVariant, string>> = {
   inset: 'rounded-md',
   dashed: 'rounded-lg',
   pane: '',
+  panel: '',
+  rail: '',
   well: '',
   section: '',
 };
@@ -145,6 +166,8 @@ export interface SurfaceProps extends SurfaceAttributes {
   readonly boundary?: SurfaceBoundary;
   /** Corner size; see {@link SurfaceSize}. */
   readonly size?: SurfaceSize;
+  /** Fill the parent's height or the viewport; intrinsic content by default. */
+  readonly extent?: SurfaceExtent;
   /** Inner padding by role; `none` by default. */
   readonly padding?: SurfacePadding;
   /**
@@ -169,6 +192,7 @@ export interface SurfaceProps extends SurfaceAttributes {
 export function surfaceClassName({
   variant,
   size = 'default',
+  extent = 'content',
   padding = 'none',
   gap,
   selected = false,
@@ -180,6 +204,7 @@ export function surfaceClassName({
   SurfaceProps,
   | 'variant'
   | 'size'
+  | 'extent'
   | 'padding'
   | 'gap'
   | 'selected'
@@ -194,12 +219,17 @@ export function surfaceClassName({
       ? SURFACE_SMALL_RADIUS_CLASS
       : SURFACE_RADIUS_CLASS[variant],
     selected ? SURFACE_SELECTED_CLASS : SURFACE_VARIANT_CLASS[variant],
-    (variant === 'pane' || variant === 'well' || variant === 'section') &&
+    (variant === 'pane' ||
+      variant === 'panel' ||
+      variant === 'rail' ||
+      variant === 'well' ||
+      variant === 'section') &&
     !(boundary === 'frame' && selected)
       ? SURFACE_BOUNDARY_CLASS[boundary]
       : '',
     interactive ? SURFACE_INTERACTIVE_CLASS : '',
     SURFACE_PADDING_CLASS[padding],
+    SURFACE_EXTENT_CLASS[extent],
     replay === 'block'
       ? REPLAY_BLOCK_CLASS
       : replay === 'mask'
@@ -220,6 +250,7 @@ export function Surface({
   as: Tag = 'div',
   variant,
   size,
+  extent,
   padding,
   gap,
   selected,
@@ -239,6 +270,7 @@ export function Surface({
       className: surfaceClassName({
         variant,
         size,
+        extent,
         padding,
         gap,
         selected,

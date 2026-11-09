@@ -55,3 +55,11 @@ export interface ExecutionSecretReader {
 export interface ExecutionSecretGrantHandle {
   revoke(): void;
 }
+
+/** The owner side's staging port; ExecutionSecretGrants implements it. */
+export interface ExecutionSecretStager {
+  stage(
+    audience: ExecutionSecretAudience,
+    bindings: readonly ExecutionSecretBinding[],
+  ): ExecutionSecretGrantHandle;
+}

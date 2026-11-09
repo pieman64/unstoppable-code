@@ -3,6 +3,10 @@ import type {
   PipelineEditorOpenLocator,
   PipelineEditorRow,
 } from '@canopy/desktop-shared/types';
+import type {
+  Pipeline,
+  PipelineInfo,
+} from '@canopy/execution-engine/types/pipeline';
 import type { UsePipelineEditorReturn } from '@/hooks/usePipelineEditor';
 
 export interface PipelineEditorControllerTarget {
@@ -56,6 +60,11 @@ export interface PipelineEditorControllerAdapter {
    * Returns false on validation failure.
    */
   applyRawYaml: () => boolean;
+  /**
+   * Shows a pipeline core saved for an agent as the editor's saved state, and
+   * as what Discard restores (CAN-5822).
+   */
+  adoptSaved: (savedPipeline: Pipeline, info: PipelineInfo) => void;
 }
 
 /**

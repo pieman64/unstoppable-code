@@ -13,7 +13,7 @@ import type {
   ExecutionSummary,
   PipelineInfo,
   PipelineTriggerType,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   PipelineStartKind,
   PipelineTriggerHookRow,
@@ -46,6 +46,7 @@ export function pipelineStartKinds(
   }
   if (types?.includes('plan_ready')) kinds.push('plan-approved');
   if (types?.includes('task_ready')) kinds.push('task-ready');
+  if (types?.includes('workflow')) kinds.push('workflow');
   return kinds;
 }
 
@@ -267,6 +268,11 @@ export interface PipelineRunsOptions {
   readonly activities: readonly ScheduledActivity[];
   /** The executions the rows were built from. */
   readonly executions: readonly ExecutionSummary[];
+  /**
+   * CAN-5782: a workflow page's schedule records. Every run of theirs is
+   * listed, also one that started nothing (skipped or missed).
+   */
+  readonly scheduleIds?: ReadonlySet<string>;
 }
 
 /**
@@ -301,12 +307,13 @@ function linkedExecutionRunsPipeline(
  * A pipeline's Runs section: the Runs feed rows for its executions plus the
  * automation runs that started one, in the feed's order. An automation run
  * that started nothing (skipped, missed, or not a pipeline run) is left out,
- * as are watchers.
+ * as are watchers, except a workflow page's schedule runs, which are all
+ * listed (CAN-5782).
  */
 export function runsForPipeline(
   rows: readonly WorkflowRunRow[],
   pipeline: PipelineInfo,
-  { pipelines, activities, executions }: PipelineRunsOptions,
+  { pipelines, activities, executions, scheduleIds }: PipelineRunsOptions,
 ): readonly WorkflowRunRow[] {
   const activitiesById = new Map(
     activities.map((activity) => [activity.id, activity]),
@@ -321,6 +328,7 @@ export function runsForPipeline(
         // Library's Last run.
         return row.summary.pipeline_id === pipeline.id;
       case 'automation':
+        if (scheduleIds?.has(row.activityId) === true) return true;
         return (
           row.linkedExecutionId !== undefined &&
           linkedExecutionRunsPipeline(
@@ -335,4 +343,45 @@ export function runsForPipeline(
         return false;
     }
   });
+}
+
+/**
+ * How many workflows use `pipeline` (CAN-5782 phase 09): each automation
+ * that runs it directly, each hook that runs it, each other workflow page
+ * that calls it through `builtin/run-pipeline` (`workflowCallers`), and its
+ * own workflow page once, however many schedules that page has.
+ */
+export function pipelineUserCount(
+  pipeline: PipelineInfo,
+  {
+    activities,
+    pipelines,
+    hookCount,
+  }: {
+    readonly activities: readonly ScheduledActivity[];
+    readonly pipelines: readonly PipelineInfo[];
+    readonly hookCount: number;
+  },
+): number {
+  // A converted owner's action is projected to its chat action, so the
+  // page's own schedules are found by `workflowSchedule`, as the Library and
+  // the Trigger section find them, not by the action they run.
+  const own = new Set(
+    pipeline.source === 'user'
+      ? activities.flatMap((activity) =>
+          activity.workflowSchedule?.pipelineId === pipeline.id
+            ? [activity.id]
+            : [],
+        )
+      : [],
+  );
+  const direct = automationsRunningPipeline(activities, pipeline, {
+    pipelines,
+  }).filter((row) => !own.has(row.activity.id)).length;
+  return (
+    direct +
+    (own.size > 0 ? 1 : 0) +
+    hookCount +
+    (pipeline.workflowCallers ?? 0)
+  );
 }

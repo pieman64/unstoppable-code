@@ -8,7 +8,7 @@ import {
 } from '@canopy/core-runtime/node/w5/worktree-list-repository';
 import type { WorktreeData } from '../../types';
 import type { WorktreeListRepository } from '@canopy/core-runtime/node/w5/worktree-list-repository';
-import { withStorageAdmission } from './storage-admission';
+import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import {
   getSingleRepoWorktreeDir,
   getWorktreesFilePath,

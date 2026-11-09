@@ -124,6 +124,8 @@ export const CoreChatRuntimeSummarySchema = z.object({
   ]),
   queuedMessageIds: z.array(id),
   lastActivityAt: z.number().optional(),
+  /** The running turn's id, as `core.chat.turn.cancel` takes it; absent when none runs or the core does not report it (CAN-4185). */
+  activeTurnId: id.optional(),
 });
 
 export const CoreChatQueueSummarySchema = z.object({
@@ -152,6 +154,19 @@ export const CoreChatSnapshotGetResultSchema = z.object({
   runtimeByChatId: z.record(id, CoreChatRuntimeSummarySchema),
   queue: z.array(CoreChatQueueSummarySchema),
   pendingApprovals: z.array(CanopyJsonValueSchema).optional(),
+  /** The opened chat's unanswered questions, in the shape `pending_question.upserted` carries (CAN-4185). */
+  pendingQuestions: z
+    .array(
+      z
+        .object({
+          requestId: id,
+          chatId: id,
+          questions: z.array(CanopyJsonValueSchema),
+          toolUseId: id.optional(),
+        })
+        .catchall(CanopyJsonValueSchema),
+    )
+    .optional(),
   todos: z.array(CanopyJsonValueSchema).optional(),
   tasks: z.array(CanopyJsonValueSchema).optional(),
 });

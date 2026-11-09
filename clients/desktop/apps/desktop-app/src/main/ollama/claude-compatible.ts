@@ -4,7 +4,7 @@ import {
   type ChatModel,
 } from '@canopy/desktop-shared/types';
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
-import { resolveAnthropicMockEnvOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import { buildClaudeCompatibleOllamaEnv, getOllamaService } from './index';
 import { OLLAMA_UNSUPPORTED_PLATFORM_MESSAGE } from './service';
 

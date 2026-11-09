@@ -3,7 +3,7 @@ import type { PipelinePackageEnvironmentRequirement } from '@canopy/protocol/pip
 import {
   isMcpServersIndexFile,
   type McpServerRef,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { getMcpServersIndexFilePath } from '../lib/paths';
 
 interface PortableMcpMetadata {

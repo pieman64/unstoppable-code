@@ -25,7 +25,7 @@ import {
   type PreferencesData,
 } from '@canopy/desktop-shared/types';
 import { CREDITS_LANE_DEFAULT_CANDIDATES } from '@canopy/desktop-shared/lib/default-model-lane';
-import { isGatewayRoutableModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isGatewayRoutableModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isProviderQuotaReached } from '../agents/ai-credits-quota-state';
 import {
   isModelBlockedByStoredPolicy,

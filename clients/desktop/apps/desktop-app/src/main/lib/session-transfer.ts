@@ -1,13 +1,19 @@
+import { constants as fsConstants } from 'node:fs';
+import {
+  ensureWorkspaceWriteDirectory,
+  withWorkspaceDirectoryWrite,
+} from './cowork-folder-guard';
 import {
   detachInputDelivery,
   isInputLedger,
 } from '@canopy/desktop-shared/chat-input-delivery';
-import type { ModelHarness } from '@canopy/desktop-shared/model-harnesses';
+import type { ModelHarness } from '@canopy/execution-engine/model-harnesses';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   access,
   cp,
+  copyFile,
   lstat,
   mkdtemp,
   mkdir,
@@ -41,7 +47,7 @@ import {
   isCodexSpeed,
   readCodexSpeedRecord,
   withCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import { readCodexRolloutSeedItems } from '@canopy/desktop-shared/node/codex-runtime';
 import {
   IPC_CHANNELS,
@@ -241,6 +247,7 @@ export const SESSION_TRANSFER_FIELD_EXHAUSTIVENESS: Record<
   codexReconstructionSeedId: true,
   claudeForkSessionOnNextSend: true,
   autoArchive: true,
+  autoArchiveTurnId: true,
   newChatStartedWatcherPending: true,
   newChatStartedWatcherFiredAt: true,
   adhocMigrationSource: true,
@@ -2355,15 +2362,18 @@ async function finalizeImportedSession(args: {
         )
       )
         continue;
-      await mkdir(attachmentsDir, { recursive: true });
+      await ensureWorkspaceWriteDirectory(attachmentsDir);
       const destination = join(
         attachmentsDir,
         `${randomUUID()}${extname(attachment.file)}`,
       );
-      await cp(join(inspected.rootPath, attachment.file), destination, {
-        errorOnExist: true,
-        force: false,
-      });
+      await withWorkspaceDirectoryWrite(attachmentsDir, () =>
+        copyFile(
+          join(inspected.rootPath, attachment.file),
+          destination,
+          fsConstants.COPYFILE_EXCL,
+        ),
+      );
       copiedPaths.set(attachment.sourcePath, destination);
     }
     baseTab.inputDelivery = {

@@ -138,6 +138,61 @@ export type ExternalAgentDesktopList = z.infer<
   typeof externalAgentDesktopListSchema
 >;
 
+/**
+ * One of the person's computers as hosted agents see it (CAN-5985).
+ * `agents` is `connected` once the computer approved the hosted agents root,
+ * and `removal_pending` until it confirms forgetting it. `online` comes from
+ * fresh relay presence, never from a stored record.
+ */
+export const externalAgentComputerSchema = z.strictObject({
+  deviceId: z.string().regex(/^[A-Za-z0-9_-]{22}$/),
+  /** Stable remote ID, once the computer is connected for agents. */
+  remoteId: z.uuid().nullable(),
+  name: z.string().max(120),
+  online: z.boolean(),
+  agents: z.enum(['connected', 'not_connected', 'removal_pending']),
+});
+export type ExternalAgentComputer = z.infer<typeof externalAgentComputerSchema>;
+
+export const externalAgentComputerListSchema = z.strictObject({
+  computers: z.array(externalAgentComputerSchema).max(100),
+});
+export type ExternalAgentComputerList = z.infer<
+  typeof externalAgentComputerListSchema
+>;
+
+/** How a Connect ended. Only `paired` changed anything. */
+export const externalAgentComputerConnectOutcomeSchema = z.discriminatedUnion(
+  'status',
+  [
+    z.strictObject({ status: z.literal('paired'), remoteId: z.uuid() }),
+    z.strictObject({
+      status: z.enum([
+        'denied',
+        'offline',
+        'host_unsupported',
+        'timeout',
+        'cancelled',
+        'busy',
+        'capacity',
+        'plan_required',
+        'failed',
+      ]),
+    }),
+  ],
+);
+export type ExternalAgentComputerConnectOutcome = z.infer<
+  typeof externalAgentComputerConnectOutcomeSchema
+>;
+
+/** `pending` until the computer confirms; it never claims removal early. */
+export const externalAgentComputerRemovalSchema = z.strictObject({
+  status: z.enum(['removed', 'pending']),
+});
+export type ExternalAgentComputerRemoval = z.infer<
+  typeof externalAgentComputerRemovalSchema
+>;
+
 /** How an edit changes when the connection ends. */
 export const externalAgentExpiryChangeSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('keep') }),
@@ -180,6 +235,33 @@ export type ExternalAgentConfirmationChange = z.infer<
   typeof externalAgentConfirmationChangeSchema
 >;
 
+/** The most characters a person's own name for a connection may have. */
+export const EXTERNAL_AGENT_LABEL_MAX_LENGTH = 60;
+
+/** A person's own name for a connection; null removes it. */
+export const externalAgentLabelSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(EXTERNAL_AGENT_LABEL_MAX_LENGTH)
+  .refine((label) => !/\p{Cc}/u.test(label), {
+    message: 'A label cannot contain control characters.',
+  })
+  .nullable();
+
+/**
+ * How every surface names a connection: "My agent (ChatGPT)" with a label,
+ * else the client's own name.
+ */
+export function externalAgentDisplayName(connection: {
+  readonly clientName: string;
+  readonly label: string | null;
+}): string {
+  return connection.label === null
+    ? connection.clientName
+    : `${connection.label} (${connection.clientName})`;
+}
+
 /** Body of `PUT /api/v1/external-agents/connections/[connectionId]/access`. */
 export const externalAgentAccessUpdateSchema = z.strictObject({
   /** The revision the page loaded; a newer one is refused as a conflict. */
@@ -189,6 +271,8 @@ export const externalAgentAccessUpdateSchema = z.strictObject({
   confirmation: externalAgentConfirmationChangeSchema.optional(),
   /** Omitted keeps the current setting. */
   textContentCompatibility: z.boolean().optional(),
+  /** Omitted keeps the current label; null removes it. */
+  label: externalAgentLabelSchema.optional(),
 });
 export type ExternalAgentAccessUpdate = z.infer<
   typeof externalAgentAccessUpdateSchema
@@ -283,6 +367,8 @@ export type ExternalAgentConnectionSummary = {
   id: string;
   server: ExternalAgentServer;
   clientName: string;
+  /** The person's own name for it; null when they haven't set one. */
+  label: string | null;
   verified: boolean;
   status: ExternalAgentConnectionStatus;
   /** ISO 8601 timestamps. */
@@ -307,6 +393,7 @@ export type ExternalAgentNotice = {
   kind: 'connected' | 'widened';
   connectionId: string;
   clientName: string;
+  label: string | null;
   server: ExternalAgentServer;
   at: string;
 };
@@ -316,6 +403,7 @@ export type ExternalAgentWaitingAction = {
   pendingActionId: string;
   connectionId: string;
   clientName: string;
+  label: string | null;
   server: ExternalAgentServer;
   /** The registry's plain-language action with server-resolved names. */
   action: string;
@@ -418,6 +506,7 @@ export type ExternalAgentPendingAction = {
   connectionId: string;
   server: ExternalAgentServer;
   clientName: string;
+  label: string | null;
   clientVerified: boolean;
   toolName: string;
   confirmation: {

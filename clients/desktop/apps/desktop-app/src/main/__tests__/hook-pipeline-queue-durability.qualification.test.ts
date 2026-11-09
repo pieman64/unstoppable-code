@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as OperationsModule from '@canopy/core-runtime/node/operations';
 import type { OperationRecord } from '@canopy/protocol/canopy-core';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import type * as HookPipelineModule from '../lib/hook-pipeline';
 import type * as RecoveryModule from '../lib/hook-recovery';
 import type * as CarryoverModule from '../services/foreign-activity-carryover-service';

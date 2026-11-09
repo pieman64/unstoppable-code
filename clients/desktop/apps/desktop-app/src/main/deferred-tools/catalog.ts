@@ -27,7 +27,7 @@ import type {
   McpServerConfigSummary,
   McpServerIndexEntry,
   McpServersIndexFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { loadSkills } from '../skills/skill-service';
 import { loadMarketplacesCacheOnly } from '../plugins/plugin-service';
 import {
@@ -751,9 +751,18 @@ export function searchDeferredCatalog(
   return searchDeferredCatalogResult(catalog, query, options).matches;
 }
 
+export const DEFERRED_REF_NOT_ISSUED_MESSAGE =
+  'This chat has not been given that ref. Search with SearchDeferredTools in this chat, then load a ref it returned.';
+
+/**
+ * Classifies a Load request against the live catalog. `issued` says whether
+ * search returned a ref to this chat (CAN-5995); any other ref is refused
+ * before the catalog is consulted.
+ */
 export function classifyLoadItems(
   catalog: DeferredCatalog,
   refs: readonly string[],
+  issued: (ref: string) => boolean,
 ): LoadClassification {
   const seen = new Set<string>();
   const selected: DeferredCatalogItem[] = [];
@@ -771,6 +780,14 @@ export function classifyLoadItems(
       continue;
     }
     seen.add(trimmed);
+    if (!issued(trimmed)) {
+      rejected.push({
+        ref: trimmed,
+        code: 'not_found',
+        message: DEFERRED_REF_NOT_ISSUED_MESSAGE,
+      });
+      continue;
+    }
     const item = catalog.byRef.get(trimmed);
     if (!item) {
       rejected.push({

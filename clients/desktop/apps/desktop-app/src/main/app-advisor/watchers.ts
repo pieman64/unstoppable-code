@@ -114,7 +114,7 @@ import {
   backgroundExecutionDeniedMessage,
   backgroundExecutionRetryMessage,
 } from '@canopy/desktop-shared/node/background-execution-context';
-import type { ResourceContextDecision } from '@canopy/desktop-shared/lib/resource-context-policy';
+import type { ResourceContextDecision } from '@canopy/execution-engine/lib/resource-context-policy';
 import {
   pipelineContextResources,
   type PipelineContextResource,

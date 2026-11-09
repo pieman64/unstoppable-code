@@ -19,8 +19,11 @@ import {
   type AppAdvisorRendererToolRequest,
   type AppAdvisorRendererToolResponse,
   type AppAdvisorSettingsLoadResponse,
+  type AppAdvisorSettingsPatchRequest,
+  type AppAdvisorSettingsPatchResponse,
   type AppAdvisorSettingsSaveRequest,
   type AppAdvisorSettingsSaveResponse,
+  type AppAdvisorSettingsViewResponse,
   type AppAdvisorUiStateEnvelope,
   type AppAdvisorWindowOpenRequest,
   type AppAdvisorWindowBatchRemovalDialog,
@@ -36,7 +39,7 @@ import {
   normalizeAgentArtifactNavigationRequest,
 } from '@canopy/desktop-shared/lib/agent-artifacts';
 import { OPENCODE_CONNECTION_TIMEOUT_MS } from '@canopy/desktop-shared/types/opencode-connection';
-import { ASK_USER_TIMEOUT_MS } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { ASK_USER_TIMEOUT_MS } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   BROWSER_TYPING_BUDGET_MAX_MS,
   browserTypingBudgetMs,
@@ -46,6 +49,7 @@ import { cancelBrowserAutomation } from '../browser/automation-cancellation';
 import { focusWindow } from '../lib/main-window-focus';
 import { openExternalGuarded } from '../lib/open-external';
 import { sendToWindowDetailed } from '../lib/window-send';
+import { sendToWebContents } from '../lib/web-contents-send';
 import {
   validateAgentModelId,
   validateId,
@@ -63,7 +67,10 @@ import type {
   InterfaceToolOutcome,
   InterfaceToolPayload,
 } from '@canopy/core-runtime/node/client';
-import { getSessionInterfaceToolRegistry } from '../agents/interface-tool-binding';
+import {
+  getSessionInterfaceToolRegistry,
+  interfaceToolAudienceOf,
+} from '../agents/interface-tool-binding';
 
 export { getLatestAppAdvisorWindowUiState } from '../app-advisor/window-ui-state';
 
@@ -211,7 +218,9 @@ export function sendInterfaceToolRequest(
   request: AppAdvisorRendererToolRequest,
 ): boolean {
   if (webContents.isDestroyed()) return false;
-  webContents.send(IPC_CHANNELS.appAdvisorToolRequest, request);
+  // Through the send interceptors, so a remote-control bridge forwards the
+  // call to its controller's window (CAN-5823).
+  sendToWebContents(webContents, IPC_CHANNELS.appAdvisorToolRequest, request);
   return true;
 }
 /** CAN-4131: tell a renderer a lease-bound call ended without its reply. */
@@ -220,7 +229,11 @@ export function sendInterfaceToolCancellation(
   cancellation: AppAdvisorRendererToolCancellation,
 ): boolean {
   if (webContents.isDestroyed()) return false;
-  webContents.send(IPC_CHANNELS.appAdvisorToolRequestCancelled, cancellation);
+  sendToWebContents(
+    webContents,
+    IPC_CHANNELS.appAdvisorToolRequestCancelled,
+    cancellation,
+  );
   return true;
 }
 
@@ -487,6 +500,42 @@ const answeredQuestions = new Map<
   }
 >();
 const ANSWERED_QUESTION_CACHE_LIMIT = 50;
+
+// Ready paired views observe the existing registry independently of which
+// computer started a turn. Their bridge sender owns the subscription lifetime.
+const questionViews = new Map<number, RemoteAppAdvisorWindowHost>();
+
+function publishQuestionToControllers(
+  request: AppAdvisorRendererToolRequest,
+  settled: boolean,
+  originalRouteKey: string | null,
+): void {
+  if (request.kind !== 'ask_user_question' || !request.chatId) return;
+  const windows = new Set<BrowserWindow>();
+  for (const view of questionViews.values()) {
+    if (view.routeKey === originalRouteKey) continue;
+    const window = view.getAppAdvisorWindow();
+    if (window && !windows.has(window)) {
+      windows.add(window);
+      if (settled) {
+        sendToWindowDetailed(
+          window,
+          IPC_CHANNELS.appAdvisorToolRequestCancelled,
+          {
+            requestId: request.requestId,
+            originChatId: request.chatId,
+          },
+        );
+      } else {
+        sendToWindowDetailed(
+          window,
+          IPC_CHANNELS.appAdvisorToolRequest,
+          request,
+        );
+      }
+    }
+  }
+}
 
 function rememberAnsweredQuestion(
   request: AppAdvisorRendererToolRequest,
@@ -1059,6 +1108,11 @@ function settlePendingRequest(
   rememberAnsweredQuestion(request.request, response);
   rememberCompletedResponse(key, response);
   request.resolve(response);
+  if (request.request.kind === 'ask_user_question') {
+    // An answer on another view also retires the original renderer card.
+    notifyRendererToolCancellation(request.request, request.surfaces);
+    publishQuestionToControllers(request.request, true, request.routeKey);
+  }
   projectAppAdvisorPendingQuestionState(request.request);
 }
 
@@ -1141,6 +1195,21 @@ export function listAnsweredAppAdvisorAskUserQuestions(): Array<{
   return Array.from(answeredQuestions.values()).map((entry) => ({ ...entry }));
 }
 
+const askUserAnswerProvenance = new Map<string, 'person' | 'agent'>();
+
+/**
+ * Who answered this question, read once. Only a window's answer or a Portal
+ * session of the signed-in user is a person's; anything else, or no record,
+ * is an agent's.
+ */
+export function takeAppAdvisorAnswerProvenance(
+  requestId: string,
+): 'person' | 'agent' {
+  const provenance = askUserAnswerProvenance.get(requestId);
+  askUserAnswerProvenance.delete(requestId);
+  return provenance ?? 'agent';
+}
+
 /**
  * Settle an awaiting ask-user question from outside the renderer round-trip
  * (the portal answer/dismiss commands, CAN-2565). `answer: null` means the
@@ -1158,6 +1227,7 @@ export function completeAppAdvisorAskUserRequest(
   requestId: string,
   chatId: string,
   answer: AppAdvisorAskUserAnswer | null,
+  options?: { agentOriginated?: boolean },
 ): boolean {
   const key = getRendererToolRequestScopeKey(requestId, chatId);
   const entry = pending.get(key);
@@ -1168,6 +1238,11 @@ export function completeAppAdvisorAskUserRequest(
   ) {
     return false;
   }
+  if (answer)
+    askUserAnswerProvenance.set(
+      requestId,
+      options?.agentOriginated === false ? 'person' : 'agent',
+    );
   settlePendingRequest(
     key,
     answer
@@ -1281,6 +1356,7 @@ export async function requestAppAdvisorRendererTool(
       surfaces: routedSurfaces,
       routeKey: routed?.routeKey ?? null,
     });
+    publishQuestionToControllers(request, false, routed?.routeKey ?? null);
     projectAppAdvisorPendingQuestionState(request);
     options?.signal?.addEventListener('abort', abortPendingRequest, {
       once: true,
@@ -1349,14 +1425,14 @@ export async function requestCurrentAppAdvisorUiState(
 
 /**
  * CAN-4131: GetCurrentUiState for an App Advisor session. Served by the main
- * window's interface lease; a chat driven from another computer keeps the
- * routed path; an unbound session gets the fallback state without a call.
+ * window's interface lease, or for a chat driven from another computer by
+ * that computer's window lease (CAN-5823); an unbound session gets the
+ * fallback state without a call.
  */
 export async function requestCurrentAppAdvisorUiStateThroughLease(input: {
   scope: { workspaceId: string; worktreeId: string; chatId: string };
   originChatTabId: string;
   bound: boolean;
-  remoteFallbackSurfaces: AppAdvisorRendererToolSurfaces;
   signal?: AbortSignal;
 }): Promise<AppAdvisorUiStateEnvelope> {
   const request: AppAdvisorRendererToolRequest = {
@@ -1364,22 +1440,22 @@ export async function requestCurrentAppAdvisorUiStateThroughLease(input: {
     requestId: randomUUID(),
     originChatTabId: input.originChatTabId,
   };
-  if (routeRendererToolRequest(request) !== null)
-    return requestCurrentAppAdvisorUiState(
-      input.remoteFallbackSurfaces,
-      input.originChatTabId,
-    );
   const registry = getSessionInterfaceToolRegistry();
   if (!input.bound || !registry) return createFallbackUiState();
+  const audience = interfaceToolAudienceOf(input.scope.chatId);
   const outcome = await registry.invoke({
     toolName: 'ui.get_current_ui_state',
     input: { originChatTabId: input.originChatTabId },
     scope: input.scope,
+    ...audience,
     ...(input.signal ? { signal: input.signal } : {}),
   });
   const response = interfaceToolOutcomeToRendererResponse(outcome, request);
   if (response.ok && response.uiState) {
-    setLatestAppAdvisorUiState(response.uiState);
+    // A controlling computer's window describes that window, not this
+    // computer's screen.
+    if (audience.audience === undefined)
+      setLatestAppAdvisorUiState(response.uiState);
     return response.uiState;
   }
   return createFallbackUiState();
@@ -1388,7 +1464,7 @@ export async function requestCurrentAppAdvisorUiStateThroughLease(input: {
 /**
  * Sends pending questions again to an App Advisor window whose page just
  * (re)loaded: this computer's own, or, given `remote`, a controlling
- * computer's window for the questions routed to it.
+ * computer's paired view. Paired views can answer any chat's pending question.
  */
 export function redeliverPendingAppAdvisorAskUserRequests(
   getAppAdvisorWindow: () => BrowserWindow | null,
@@ -1399,11 +1475,12 @@ export function redeliverPendingAppAdvisorAskUserRequests(
     if (entry.request.kind !== 'ask_user_question') {
       continue;
     }
-    if (entry.routeKey !== (remote?.routeKey ?? null)) {
+    if (!remote && entry.routeKey !== null) continue;
+    if (remote && entry.routeKey !== remote.routeKey && !entry.request.chatId)
       continue;
-    }
-    // A controller that reconnected answers from its new windows.
-    if (remote) entry.surfaces = remote;
+    // Replaying another computer's question must not change its execution or
+    // presentation owner. Only its original controller replaces stale windows.
+    if (remote && entry.routeKey === remote.routeKey) entry.surfaces = remote;
     sendToWindowDetailed(
       win,
       IPC_CHANNELS.appAdvisorToolRequest,
@@ -1551,7 +1628,16 @@ export function registerAppAdvisorHandlers(
       // renderer dismissal racing a portal answer (CAN-2565) would otherwise
       // overwrite the answer duplicate lookups replay. A late response still
       // settles a timed-out request's fence.
-      settlePendingRequest(responseKey(response), response);
+      // The question card in a window (this computer's or the controlling
+      // computer's) is where a person answers.
+      const key = responseKey(response);
+      if (
+        response.ok &&
+        response.answer &&
+        pending.get(key)?.request.kind === 'ask_user_question'
+      )
+        askUserAnswerProvenance.set(response.requestId, 'person');
+      settlePendingRequest(key, response);
     },
   );
 
@@ -1596,6 +1682,29 @@ export function registerAppAdvisorHandlers(
         );
         return saved;
       });
+  });
+
+  // The settings Portal's Orchestrator settings get and save serve, for
+  // browser Remote Control (CAN-5985); the desktop modal keeps its own
+  // channels above.
+  // Loaded on first use: the settings view reaches the model catalog, whose
+  // imports lead back to this module.
+  registerIpcHandler<[], AppAdvisorSettingsViewResponse>(
+    IPC_CHANNELS.appAdvisorSettingsView,
+    async () => {
+      const { readAppAdvisorSettingsView } =
+        await import('../app-advisor/settings-view');
+      return readAppAdvisorSettingsView();
+    },
+  );
+
+  registerIpcHandler<
+    [AppAdvisorSettingsPatchRequest],
+    AppAdvisorSettingsPatchResponse
+  >(IPC_CHANNELS.appAdvisorSettingsPatch, async (_event, patch) => {
+    const { applyAppAdvisorSettingsPatch } =
+      await import('../app-advisor/settings-view');
+    return applyAppAdvisorSettingsPatch(patch, accessors);
   });
 
   registerIpcHandler<[], AppAdvisorClaudeMdLoadResponse>(
@@ -1682,6 +1791,11 @@ export function registerAppAdvisorHandlers(
     IPC_CHANNELS.appAdvisorWindowRendererReady,
     (event) => {
       const remote = remoteWindowHostForSender?.(event.sender);
+      if (remote && !questionViews.has(event.sender.id)) {
+        const senderId = event.sender.id;
+        questionViews.set(senderId, remote);
+        event.sender.once('destroyed', () => questionViews.delete(senderId));
+      }
       return remote
         ? remote.markAppAdvisorWindowRendererReady()
         : accessors.markAppAdvisorWindowRendererReady(event.sender);

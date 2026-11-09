@@ -1,6 +1,12 @@
 // CAN-5095: Electron main settles pipeline owner requests for a daemon run it
 // follows, with its in-process functions and the run's own stored scope.
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -11,6 +17,7 @@ import type { PipelineOwnerSettlement } from '@canopy/core-runtime/node/pipeline
 import {
   initClaudeModels,
   initCodexModels,
+  initOllamaModels,
 } from '@canopy/desktop-shared/types';
 import type { ExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import {
@@ -18,6 +25,7 @@ import {
   type PipelineOwnerRun,
 } from '../pipeline-owner-requests';
 import { createElectronExecutionRuntime } from '../execution-runtime';
+import { resolveClaudeModConfigDirectory } from '../../agents/claude-mod-admission-launch';
 
 const ROUTE_CANARY = 'http://127.0.0.1:9/codex-gateway/route-canary';
 const KEY_CANARY = 'sk-account-proxy-client-key-canary';
@@ -36,6 +44,9 @@ const mockCreateApprovalSession = jest.fn(() => ({
   dispose: jest.fn(),
 }));
 const mockLedgerDispose = jest.fn();
+const mockModAdmission = jest.fn<Promise<unknown>, unknown[]>(() =>
+  Promise.resolve(undefined),
+);
 
 jest.mock('electron', () => ({
   ...jest.requireActual<object>('electron'),
@@ -86,6 +97,39 @@ jest.mock('../../ledger/session-end-sweep-ports', () => ({
   ...jest.requireActual<object>('../../ledger/session-end-sweep-ports'),
   notifyLedgerSessionEnded: (): Promise<void> => Promise.resolve(),
 }));
+jest.mock('../../agents/claude-mod-admission-launch', () => ({
+  ...jest.requireActual<object>('../../agents/claude-mod-admission-launch'),
+  resolveClaudeModAdmissionContext: (...args: unknown[]): Promise<unknown> =>
+    mockModAdmission(...args),
+}));
+// CAN-5831: the local Ollama server's route on either harness; no key.
+jest.mock('../../ollama/claude-compatible', () => ({
+  resolveClaudeCompatibleInvocation: (): Promise<unknown> =>
+    Promise.resolve({
+      providerType: 'ollama',
+      sdkModel: 'qwen3-coder',
+      envOverride: {
+        ANTHROPIC_BASE_URL: 'http://127.0.0.1:11434',
+        ANTHROPIC_AUTH_TOKEN: 'ollama',
+      },
+    }),
+}));
+jest.mock('../../ollama/codex-compatible', () => ({
+  resolveCodexCompatibleOllamaInvocation: (): Promise<unknown> =>
+    Promise.resolve({
+      source: 'ollama',
+      harness: 'codex',
+      runtimeModel: 'qwen3-coder',
+      aiCreditsRouted: false,
+      codexConfig: {
+        model_provider: 'canopy_ollama',
+        model: 'qwen3-coder',
+        model_providers: {
+          canopy_ollama: { base_url: 'http://127.0.0.1:11434/v1' },
+        },
+      },
+    }),
+}));
 jest.mock('../../mcp/http-proxy-service', () => ({
   getMcpHttpProxyService: (): unknown => ({
     registerCanopyWorktreeSessionRoute: (): Promise<void> => Promise.resolve(),
@@ -99,6 +143,7 @@ jest.mock('../../mcp/http-proxy-service', () => ({
 
 const CLAUDE = 'sonnet';
 const CODEX = 'gpt-6.1-sol';
+const OLLAMA = 'ollama-qwen3-coder';
 let worktree: string;
 
 function state(): ExecutionState {
@@ -125,7 +170,16 @@ function state(): ExecutionState {
 }
 
 function run(): PipelineOwnerRun {
-  return { executionId: 'execution-1', state, secretValues: [] };
+  return {
+    executionId: 'execution-1',
+    scope: () => ({
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      executionContext: 'personal',
+      folder: worktree,
+    }),
+    secretValues: [],
+  };
 }
 
 function ownerRequest(
@@ -160,6 +214,14 @@ const signal = new AbortController().signal;
 beforeAll(() => {
   initClaudeModels([{ id: CLAUDE, label: 'Sonnet' }]);
   initCodexModels([{ id: CODEX, label: 'Codex default' }]);
+  initOllamaModels([
+    {
+      id: OLLAMA,
+      rawModelId: 'qwen3-coder',
+      label: 'qwen3-coder',
+      show: { capabilities: ['completion', 'tools'] },
+    },
+  ]);
 });
 
 beforeEach(() => {
@@ -365,8 +427,14 @@ describe('PipelineOwnerRunContext', () => {
 
   it('the in-process runtime and the owner settlement resolve the same invocation', async () => {
     const runtime = createElectronExecutionRuntime();
-    const cases: Array<{ model: string; routed: unknown }> = [
+    const cases: Array<{
+      model: string;
+      routed: unknown;
+      harness?: 'claude' | 'codex';
+    }> = [
       { model: CLAUDE, routed: null },
+      { model: OLLAMA, routed: null, harness: 'claude' },
+      { model: OLLAMA, routed: null, harness: 'codex' },
       {
         model: CLAUDE,
         routed: {
@@ -391,9 +459,11 @@ describe('PipelineOwnerRunContext', () => {
         },
       },
     ];
-    for (const { model, routed } of cases) {
+    for (const { model, routed, harness: assigned } of cases) {
       mockRouting.mockImplementation(() => Promise.resolve(routed));
+      const harness = assigned ?? (model === CODEX ? 'codex' : 'claude');
       const options = {
+        harness,
         routeSessionId: ROUTE,
         workspaceId: 'workspace-1',
         worktreeId: 'worktree-1',
@@ -404,7 +474,6 @@ describe('PipelineOwnerRunContext', () => {
         model,
         options,
       );
-      const harness = model === CODEX ? 'codex' : 'claude';
       const settlement = await new PipelineOwnerRunContext(run()).apply(
         ownerRequest({
           action: 'owner.model.invocation',
@@ -427,6 +496,7 @@ describe('PipelineOwnerRunContext', () => {
       }).toEqual({
         kind: 'model.invocation',
         ...inProcess,
+        modelGatewayRouted: inProcess?.modelGatewayRouted === true,
         accountProxyRouted: inProcess?.accountProxyRouted === true,
       });
     }
@@ -464,6 +534,128 @@ describe('PipelineOwnerRunContext', () => {
     expect(settlement.values).toBeUndefined();
     expect(mockUnregisterRoutes).toHaveBeenCalledTimes(1);
     expect(mockUnregisterRoutes).toHaveBeenCalledWith(ROUTE);
+  });
+
+  it("answers a step's Claude Mod policy for a folder in the run, and refuses one outside it", async () => {
+    const context = new PipelineOwnerRunContext(run());
+    const policy = {
+      enabled: true,
+      authority: 'ok',
+      admissions: [],
+      modsDisabled: true,
+      ambientPlugins: [{ pluginId: 'demo@market', installPath: worktree }],
+      sessionModIds: [],
+    };
+    mockModAdmission.mockResolvedValue(policy);
+    const inside = await context.apply(
+      ownerRequest({
+        action: 'owner.claude.modAdmission',
+        cwd: worktree,
+        settingSources: ['user', 'project'],
+      }),
+      signal,
+    );
+    expect(ownerValue(inside)).toEqual({
+      kind: 'claude.modAdmission',
+      context: policy,
+    });
+    expect(mockModAdmission).toHaveBeenCalledWith({
+      cwd: worktree,
+      settingSources: ['user', 'project'],
+    });
+
+    // The user's own Claude config folder, which an in-process step reads too.
+    const ownConfig = await context.apply(
+      ownerRequest({
+        action: 'owner.claude.modAdmission',
+        cwd: worktree,
+        settingSources: ['user'],
+        claudeConfigDir: resolveClaudeModConfigDirectory({
+          cwd: worktree,
+          environment: false,
+        }),
+      }),
+      signal,
+    );
+    expect(ownerValue(ownConfig)).toMatchObject({
+      kind: 'claude.modAdmission',
+    });
+
+    // A config folder in the run that does not exist yet.
+    const fresh = await context.apply(
+      ownerRequest({
+        action: 'owner.claude.modAdmission',
+        cwd: worktree,
+        settingSources: ['user'],
+        claudeConfigDir: join(worktree, 'not-yet', 'claude'),
+      }),
+      signal,
+    );
+    expect(ownerValue(fresh)).toMatchObject({
+      kind: 'claude.modAdmission',
+    });
+
+    mockModAdmission.mockClear();
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'canopy-mods-')));
+    try {
+      for (const request of [
+        { cwd: elsewhere },
+        { cwd: worktree, claudeConfigDir: elsewhere },
+      ]) {
+        const refused = await context.apply(
+          ownerRequest({
+            action: 'owner.claude.modAdmission',
+            settingSources: ['user'],
+            ...request,
+          }),
+          signal,
+        );
+        expect(refused.result).toMatchObject({
+          status: 'failure',
+          message: 'This step folder is outside the workflow run.',
+        });
+      }
+      // A link inside the run that resolves elsewhere is refused too.
+      const link = join(worktree, 'claude-config');
+      symlinkSync(elsewhere, link);
+      // So is a folder not created yet under such a link.
+      for (const claudeConfigDir of [link, join(link, 'not-yet')]) {
+        const linked = await context.apply(
+          ownerRequest({
+            action: 'owner.claude.modAdmission',
+            cwd: worktree,
+            settingSources: ['user'],
+            claudeConfigDir,
+          }),
+          signal,
+        );
+        expect(linked.result).toMatchObject({
+          status: 'failure',
+          message: 'This step folder is outside the workflow run.',
+        });
+      }
+      expect(mockModAdmission).not.toHaveBeenCalled();
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+
+    // An answer beyond its bounds is refused, never sent.
+    mockModAdmission.mockResolvedValue({
+      ...policy,
+      ambientPlugins: Array.from({ length: 1025 }, (_, index) => ({
+        pluginId: `mod-${index}@market`,
+        installPath: worktree,
+      })),
+    });
+    const oversized = await context.apply(
+      ownerRequest({
+        action: 'owner.claude.modAdmission',
+        cwd: worktree,
+        settingSources: ['user'],
+      }),
+      signal,
+    );
+    expect(oversized.result.status).toBe('failure');
   });
 
   it('a route session of another run is refused and never released', async () => {

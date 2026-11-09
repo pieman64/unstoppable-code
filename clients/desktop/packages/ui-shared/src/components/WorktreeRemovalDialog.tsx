@@ -1,5 +1,6 @@
 'use client';
 
+import { Button } from './Button';
 import { useState, type JSX } from 'react';
 import { InfoIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
@@ -133,26 +134,29 @@ export function WorktreeRemovalDialog({
                 go with it.{' '}
               </>
             )}
-            {retentionSummary}
-            <RichHoverTooltip
-              content={
-                <span className="block text-xs leading-snug fg-primary">
-                  {retentionDetail}
-                </span>
-              }
-              surfaceClassName="w-72"
-              dataTestId={automationId('worktree-removal-retention-detail')}
-              triggerWrapperClassName="ml-1 align-middle"
-            >
-              <button
-                type="button"
-                aria-label="About restoring this worktree"
-                data-testid={automationId('worktree-removal-retention-info')}
-                className="focus-ring inline-flex rounded-full fg-tertiary hover:fg-primary"
+            <span className="inline-flex max-w-full items-center gap-1 align-middle">
+              <span className="min-w-0">{retentionSummary}</span>
+              <RichHoverTooltip
+                content={
+                  <span className="block text-xs leading-snug fg-primary">
+                    {retentionDetail}
+                  </span>
+                }
+                surfaceClassName="w-72"
+                dataTestId={automationId('worktree-removal-retention-detail')}
+                triggerWrapperClassName="inline-flex h-5 shrink-0 items-center align-middle"
               >
-                <InfoIcon size={14} aria-hidden="true" />
-              </button>
-            </RichHoverTooltip>
+                <Button
+                  variant="ghost-quiet"
+                  size="sm"
+                  iconOnly
+                  aria-label="About restoring this worktree"
+                  data-testid={automationId('worktree-removal-retention-info')}
+                >
+                  <InfoIcon size={14} aria-hidden="true" />
+                </Button>
+              </RichHoverTooltip>
+            </span>
           </p>
         }
         confirmLabel={confirmLabel}

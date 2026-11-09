@@ -492,12 +492,14 @@ export function SettingsOptionCard({
       }`}
     >
       {preview}
-      <span className="block text-s font-medium fg-primary">{label}</span>
-      {description ? (
-        <span className="mt-1 block text-xs text-pretty fg-secondary">
-          {description}
-        </span>
-      ) : null}
+      <span className="flex flex-col gap-1">
+        <span className="block text-s font-medium fg-primary">{label}</span>
+        {description ? (
+          <span className="block text-xs text-pretty fg-secondary">
+            {description}
+          </span>
+        ) : null}
+      </span>
     </button>
   );
 }

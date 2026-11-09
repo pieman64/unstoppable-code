@@ -3,7 +3,7 @@ import {
   type CodexAccountModelAccessFailure,
 } from '@canopy/protocol/auth-recovery';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
-import { classifyCodexAccountModelRejection } from '@canopy/desktop-shared/agent-failures';
+import { classifyCodexAccountModelRejection } from '@canopy/execution-engine/agent-failures';
 import { isCodexModelAvailableToAccount } from '@canopy/desktop-shared/lib/default-model-lane';
 import {
   CODEX_ACCOUNT_MODELS,

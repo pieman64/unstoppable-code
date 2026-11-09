@@ -2,7 +2,7 @@
 // Pure secret/PII scrubber (CAN-374 / CAN-402).
 //
 // The single source of truth for masking secrets and PII out of free text:
-// telemetry and instrumentation through `@canopy/desktop-shared/lib/redaction`
+// telemetry and instrumentation through `@canopy/execution-engine/lib/redaction`
 // (which re-exports it), and local memory through `@canopy/memory-consolidation`,
 // which the desktop and Canopy Cloud share. Only regular expressions: no Node
 // APIs, no Electron, no filesystem.

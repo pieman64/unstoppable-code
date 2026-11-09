@@ -1,4 +1,4 @@
-import type { TransientAgentRetryOptions } from '../types/agent-failures';
+import type { TransientAgentRetryOptions } from '@canopy/execution-engine/types/agent-failures';
 import {
   requireProviderForModel,
   getExecutionHarnessForModel,
@@ -16,11 +16,14 @@ import {
   type StructuredHelperQueryResult,
 } from './structured-helper-query';
 import type { HelperAgentPluginRuntime } from './helper-agent-plugins';
-import type { HelperUsage } from './helper-usage';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import type { HelperTranscriptObserver } from './helper-transcript';
-import type { CodexConfig } from './codex-model-config';
-import { isTransientAgentRetryExhaustedError } from '../agent-failures/transient-retry';
-import { mergeHelperUsage, readHelperUsage } from './helper-usage';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
+import { isTransientAgentRetryExhaustedError } from '@canopy/execution-engine/agent-failures/transient-retry';
+import {
+  mergeHelperUsage,
+  readHelperUsage,
+} from '@canopy/execution-engine/lib/helper-usage';
 
 interface CommitMessageResult {
   commitMessage: CommitMessage | null;

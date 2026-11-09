@@ -13,7 +13,7 @@ import type {
   PipelineEditorOpenLocator,
   PipelineEditorRow,
 } from '@canopy/desktop-shared/types';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import { ChatIcon } from '@canopy/ui-shared/icons';
 import {
   usePipelineList,
@@ -61,7 +61,7 @@ import {
   fetchPipelineDocument,
   pipelineInfoToDocumentLocator,
 } from '@/lib/pipelineDocument';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
 
 export type ProjectContext = {

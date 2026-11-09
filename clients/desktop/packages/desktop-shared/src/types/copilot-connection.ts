@@ -1,4 +1,4 @@
-import type { CopilotModelEntry } from './copilot-models';
+import type { CopilotModelEntry } from '@canopy/execution-engine/types/copilot-models';
 
 export interface CopilotAccount {
   host: string;

@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import {
   type JSX,
   useCallback,
@@ -17,7 +18,7 @@ import type {
   IPCResult,
   SharedPipelineDetail,
   SharedPipelineWriteRequest,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   CapabilityPackageAnalysisError,
   ShareConflictError,
@@ -431,7 +432,7 @@ export function SharePipelineModal({
   const notes = useMemo(
     (): JSX.Element | null =>
       localPipelineInfo.source === 'user' ? null : (
-        <div className="space-y-3">
+        <Stack gap="item">
           <p
             className="text-s fg-secondary"
             data-testid="share-pipeline-snapshot-note"
@@ -444,7 +445,7 @@ export function SharePipelineModal({
               file location is unavailable.
             </Notice>
           )}
-        </div>
+        </Stack>
       ),
     [localPipelineInfo.source, projectSourceUnavailable],
   );

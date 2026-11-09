@@ -14,7 +14,7 @@ import type {
   McpHttpAuthTarget,
   McpServerDefinitionData,
   McpServerIndexEntry,
-} from '../types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 
 /** Every handler the protocol defines; leaving one out fails to compile. */
 const MCP_HTTP_AUTH_HANDLERS: Readonly<Record<McpHttpAuthHandler, true>> = {

@@ -27,7 +27,8 @@ import {
  * Portal and other clients see daemon-hosted work as the resource monitor
  * does. With no daemon status (no session, an older daemon, a dropped
  * connection) or a stale one, they read Electron main's accounting alone.
- * Family counts and the memory guard stay Electron main's, as admission does.
+ * Family counts stay Electron main's; the memory guard counts the merged
+ * memory, as admission does (CAN-5695).
  */
 
 export interface ExecutionStatusProjection {

@@ -99,8 +99,11 @@ export interface QuestionPromptState {
   /** The current step's field value (`field` kind). */
   readonly fieldValue: string;
   readonly validationError: string | null;
-  /** Pick a single-choice answer: it records and moves on at once. */
-  readonly pick: (option: string) => void;
+  /**
+   * Pick a single-choice answer: it records and moves on at once, with any
+   * typed own answer as its freeform.
+   */
+  readonly pick: (option: string, text?: string) => void;
   /** Toggle a multiple-choice answer. */
   readonly toggle: (option: string) => void;
   readonly setFieldValue: (value: string) => void;
@@ -239,10 +242,11 @@ export function useQuestionPrompt({
   );
 
   const pick = useCallback(
-    (option: string): void => {
+    (option: string, text = ''): void => {
       const nextSelections = new Map(selections).set(safeStep, [option]);
       const nextTexts = new Map(texts);
-      nextTexts.delete(safeStep);
+      if (text.trim()) nextTexts.set(safeStep, text);
+      else nextTexts.delete(safeStep);
       advance(nextSelections, nextTexts);
     },
     [advance, safeStep, selections, texts],

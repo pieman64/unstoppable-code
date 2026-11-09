@@ -30,12 +30,12 @@ import {
   type McpCapabilityIdentity,
 } from '@canopy/protocol/mcp-servers';
 import type { AgentDelegationStatus } from '@canopy/protocol/delegation';
-import type { AgentModelDefinition } from '@canopy/desktop-shared/types/agent-models';
+import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
 import type {
   ExecutionState,
   ExecutionSummary,
   PipelineData,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   AutomationAction,
   AutomationRunHistoryRequest,

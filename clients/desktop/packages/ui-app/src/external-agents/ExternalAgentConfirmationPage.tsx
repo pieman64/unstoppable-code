@@ -10,8 +10,12 @@ import {
   type ExternalAgentPendingActionState,
   type ExternalAgentPendingActionStore,
 } from '@canopy/app-state/external-agents';
-import type { ExternalAgentPendingAction } from '@canopy/protocol/external-agents';
 import {
+  externalAgentDisplayName,
+  type ExternalAgentPendingAction,
+} from '@canopy/protocol/external-agents';
+import {
+  Stack,
   Button,
   Disclosure,
   McpServerLogo,
@@ -195,16 +199,16 @@ function ExternalAgentConfirmationDetails({
           fallback="monogram"
           shape="squircle"
         />
-        <div className="min-w-0 space-y-1">
+        <Stack gap="tight" className="min-w-0">
           <Heading level={1} variant="page">
             {action.confirmation.action}
           </Heading>
           {pending ? (
             <p className="text-s text-pretty fg-secondary">
-              {`${action.clientName} asked to do this for you. Nothing happens unless you confirm.`}
+              {`${externalAgentDisplayName(action)} asked to do this for you. Nothing happens unless you confirm.`}
             </p>
           ) : null}
-        </div>
+        </Stack>
       </header>
 
       <SettingsSection
@@ -221,7 +225,7 @@ function ExternalAgentConfirmationDetails({
                 onOpenPath(externalAgentPath(action.connectionId))
               }
             >
-              {`${action.clientName}, ${action.clientVerified ? 'verified' : 'unverified'}`}
+              {`${externalAgentDisplayName(action)}, ${action.clientVerified ? 'verified' : 'unverified'}`}
             </Button>
           </FactRow>
           <FactRow label="Server">
@@ -336,9 +340,10 @@ function ExactRequest({
       dataTestId="external-agent-confirmation-request-disclosure"
       toggleTestId="external-agent-confirmation-request-toggle"
     >
-      <div
+      <Stack
         data-testid="external-agent-confirmation-request"
-        className="min-w-0 space-y-2"
+        gap="inline"
+        className="min-w-0"
       >
         <div className="break-all font-mono text-xs fg-primary">
           {action.toolName}
@@ -354,7 +359,7 @@ function ExactRequest({
             </pre>
           </Surface>
         )}
-      </div>
+      </Stack>
     </Disclosure>
   );
 }
@@ -462,13 +467,13 @@ function PauseOffer({
         title="Paused."
         data-testid="external-agent-confirmation-paused"
       >
-        {`${action.clientName} can’t read or change anything until you resume it. `}
+        {`${externalAgentDisplayName(action)} can’t read or change anything until you resume it. `}
         <TextLinkButton
           onClick={(): void =>
             onOpenPath(externalAgentPath(action.connectionId))
           }
         >
-          {`Open ${action.clientName}`}
+          {`Open ${externalAgentDisplayName(action)}`}
         </TextLinkButton>
         {' to resume it.'}
       </Notice>
@@ -486,7 +491,7 @@ function PauseOffer({
           intent="attention"
           data-testid="external-agent-confirmation-pause-failed"
         >
-          Couldn’t pause {action.clientName}. Try again.
+          Couldn’t pause {externalAgentDisplayName(action)}. Try again.
         </Notice>
       ) : null}
       <Button
@@ -499,8 +504,8 @@ function PauseOffer({
         onClick={pause}
       >
         {pausing
-          ? `Pausing ${action.clientName}…`
-          : `Pause ${action.clientName}`}
+          ? `Pausing ${externalAgentDisplayName(action)}…`
+          : `Pause ${externalAgentDisplayName(action)}`}
       </Button>
     </div>
   );

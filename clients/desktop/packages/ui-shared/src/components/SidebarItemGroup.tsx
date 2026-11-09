@@ -37,6 +37,7 @@ import {
   type ActionMenuItem,
 } from './ActionMenuItems';
 import { ColorSwatchPicker, type ColorSwatchOption } from './ColorSwatchPicker';
+import { DisclosureChevron, DisclosureToggle } from './Disclosure';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
@@ -209,25 +210,20 @@ export function SidebarItemGroupHeader({
       data-sidebar-item-group-header=""
       data-testid={`sidebar-item-group-header${testIdSuffix}`}
     >
-      <button
+      <DisclosureToggle
         ref={toggleRef}
-        type="button"
-        aria-expanded={!group.collapsed}
-        aria-controls={contentId}
+        variant="sidebar-group"
+        open={!group.collapsed}
+        bodyId={contentId}
         onClick={(event): void => {
           onToggle();
           if (event.detail > 0) event.currentTarget.blur();
         }}
         {...activatorProps}
-        className="focus-ring flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded text-left text-s font-normal fg-quaternary hover:fg-secondary group-focus-within/sidebar-item:fg-secondary pointer-coarse:h-11"
         data-testid={`sidebar-item-group-toggle${testIdSuffix}`}
       >
         <span className={SIDEBAR_ROW_LEADING_SLOT_CLASSNAME}>
-          <ChevronDownMediumIcon
-            size="sm"
-            aria-hidden="true"
-            className={`shrink-0 ${group.collapsed ? '-rotate-90' : ''}`}
-          />
+          <DisclosureChevron direction={group.collapsed ? 'right' : 'down'} />
         </span>
         <span
           id={`${contentId}-label`}
@@ -253,7 +249,7 @@ export function SidebarItemGroupHeader({
             </span>
           </span>
         )}
-      </button>
+      </DisclosureToggle>
       {!readOnly && (
         <div
           className={`${headerRest.resting ? 'pointer-fine:invisible ' : ''}${
@@ -619,7 +615,7 @@ export function SidebarItemGroupEditor({
           data-testid="sidebar-item-group-editor-close"
         />
       </div>
-      <div className="px-2 pb-2">
+      <div className="px-2 pb-2 flex flex-col gap-2">
         <TextInput
           ref={inputRef}
           id={inputId}
@@ -662,7 +658,7 @@ export function SidebarItemGroupEditor({
             close();
           }}
         />
-        <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="flex items-center justify-between gap-2">
           <span className="text-s fg-secondary">Show name in sidebar</span>
           <ToggleSwitch
             id={showNameId}
@@ -676,7 +672,7 @@ export function SidebarItemGroupEditor({
             }}
           />
         </div>
-        <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="flex items-center justify-between gap-2">
           <span className="text-s fg-secondary">Remove group when empty</span>
           <ToggleSwitch
             checked={group.keepWhenEmpty !== true}
@@ -685,7 +681,7 @@ export function SidebarItemGroupEditor({
             onChange={(next): void => onKeepWhenEmptyChange(!next)}
           />
         </div>
-        <div className="mt-2">
+        <div>
           <ColorSwatchPicker
             value={group.color}
             palette={SIDEBAR_ITEM_GROUP_SWATCHES}

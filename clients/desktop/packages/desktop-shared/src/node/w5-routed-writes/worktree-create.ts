@@ -1,4 +1,4 @@
-import { withStorageAdmission } from '../lib/storage-admission';
+import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import type { W5CommitOptions } from '@canopy/core-runtime/node/w5/commit-scope';
 import type { W5CommitLogFileStore } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import { createW5KeyedOperationRunner } from '@canopy/core-runtime/node/w5/keyed-operation';
@@ -27,7 +27,7 @@ import type { CreateWorktreeServiceOptions } from '../lib/worktree-service';
 import type { WorktreeData } from '../../types';
 import { acquireW5DesktopDeleteGate } from '@canopy/core-platform/w5-process-file-lock';
 import { getCanopyDataDir } from '../../canopy-paths';
-import { validateId } from '../lib/validation';
+import { validateId } from '@canopy/execution-engine/node/lib/validation';
 import { assertNoConflictingW5Reservation } from './worktree-delete-records';
 
 export class CliWorktreeCoworkError extends Error {

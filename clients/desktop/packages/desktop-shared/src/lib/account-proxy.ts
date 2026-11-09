@@ -17,13 +17,13 @@ import {
   type AccountProxyRoutingStrategy,
   type AccountProxyStatus,
 } from '../types/account-proxy';
-import type { ProviderRateLimitSnapshot } from '../types/observability';
+import type { ProviderRateLimitSnapshot } from '@canopy/execution-engine/types/observability';
 import {
   isOllamaModel,
   type AgentProviderType,
   type AiCreditsRoutingMode,
 } from '../types';
-import { isGatewayOnlyModel } from './gateway-model-availability';
+import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

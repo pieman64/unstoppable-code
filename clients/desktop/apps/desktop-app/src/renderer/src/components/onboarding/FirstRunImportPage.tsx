@@ -23,6 +23,7 @@ import {
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import { FolderIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { formatCompactAge } from '@canopy/ui-shared/lib';
+import { SourceBranchCommitHint } from '@canopy/ui-shared/components';
 import {
   POSTHOG_REPLAY_BLOCK_CLASS,
   POSTHOG_REPLAY_MASK_CLASS,
@@ -147,6 +148,15 @@ function RowDetail({
         <span className="max-w-full shrink-0">{name}</span>
       </span>
       {pickedType !== null && <span className="shrink-0">· {pickedType}</span>}
+      {/* Advisory only: the repository stays selectable and importable. */}
+      {candidate.kind === 'git' && (
+        <SourceBranchCommitHint
+          headUnborn={candidate.headUnborn}
+          className="shrink-0"
+          testId={`first-run-import-row-no-commits-${candidate.id}`}
+          leadingSeparator
+        />
+      )}
       {activity !== null && <span className="shrink-0">· {activity}</span>}
     </span>
   );

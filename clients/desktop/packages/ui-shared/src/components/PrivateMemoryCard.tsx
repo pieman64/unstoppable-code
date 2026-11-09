@@ -69,14 +69,14 @@ export function PrivateMemoryCard({
         label={PRIVATE_MEMORY_LABEL}
         htmlFor={switchId}
         description={
-          <>
+          <div className="flex flex-col gap-1">
             <p>{PRIVATE_MEMORY_EXPLANATION}</p>
             {managed && (
-              <p className="mt-1" data-testid={`${dataTestId}-managed`}>
+              <p data-testid={`${dataTestId}-managed`}>
                 {privateMemoryManagedLabel(organizationName)}
               </p>
             )}
-          </>
+          </div>
         }
         control={
           <ToggleSwitch

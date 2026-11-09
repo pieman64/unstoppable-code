@@ -1,3 +1,4 @@
+import { SPACE_ROLE_GAP_CLASS, type SpaceRole } from './Stack';
 import {
   type JSX,
   type KeyboardEvent,
@@ -29,6 +30,16 @@ const NAVIGATE_EXCLUDED_SELECTOR =
 
 /** The hover-revealed Copy/Revert badge cluster. */
 const BUBBLE_ACTIONS_SELECTOR = '[data-bubble-actions]';
+const FOOTER_INSET_CLASS: Readonly<Record<SpaceRole, string>> = {
+  tight: 'pt-1',
+  inline: 'pt-2',
+  item: 'pt-3',
+  group: 'pt-4',
+  block: 'pt-5',
+  section: 'pt-6',
+  page: 'pt-8',
+  hero: 'pt-10',
+};
 
 export interface UserBubbleProps {
   /**
@@ -61,6 +72,8 @@ export interface UserBubbleProps {
   /** Optional content rendered below the bubble (e.g., attachment
    * thumbnails). */
   footer?: ReactNode;
+  /** Own the inset and gaps around margin-free attachment/memory footer blocks. */
+  footerGap?: SpaceRole;
   /** Test ID hook for automation on the outer bubble wrapper. */
   dataTestId?: string;
   /** Optional extra status data attribute (e.g., for portal styling). */
@@ -103,6 +116,7 @@ export function UserBubble({
   variant = 'default',
   media,
   footer,
+  footerGap,
   dataTestId,
   dataStatus,
   onNavigate,
@@ -316,7 +330,15 @@ export function UserBubble({
         {media}
         {children}
       </div>
-      {footer}
+      {footerGap === undefined ? (
+        footer
+      ) : (
+        <div
+          className={`flex flex-col ${SPACE_ROLE_GAP_CLASS[footerGap]} ${FOOTER_INSET_CLASS[footerGap]} empty:hidden`}
+        >
+          {footer}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,3 +1,8 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
+import {
+  classifyFetchFailure,
+  retryAtFromDelay,
+} from '@canopy/desktop-shared/node/lib/app-error-classification';
 // Minimal client for CLIProxyAPI's v8 management API. Every response carries
 // `X-CPA-VERSION`, which is how a non-proxy server and an outdated proxy are
 // told apart from a wrong key.
@@ -125,7 +130,10 @@ export async function requestAccountProxyManagement(
     });
   } catch (error) {
     if (request.signal?.aborted) throw error;
-    throw new AccountProxyManagementError('unreachable');
+    throw classifyFetchFailure(
+      error,
+      new AccountProxyManagementError('unreachable'),
+    );
   }
   // Headers first: a server that is not a proxy, or one too old to speak
   // this API, never gets its body read.
@@ -142,7 +150,26 @@ export async function requestAccountProxyManagement(
   // body that fails to arrive can never make it look retryable.
   if (response.status === 401) {
     await response.body?.cancel().catch(() => undefined);
-    throw new AccountProxyManagementError('unauthorized');
+    throw classifyError(
+      new AccountProxyManagementError('unauthorized'),
+      'external.sign_in_required',
+    );
+  }
+  if (
+    response.status === 429 ||
+    (response.status >= 500 && response.status <= 599)
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    const error = new AccountProxyManagementError('unexpected');
+    if (response.status === 429) {
+      const seconds = Number(response.headers.get('retry-after'));
+      throw classifyError(error, 'external.rate_limited', {
+        retryAt: retryAtFromDelay(
+          response.headers.has('retry-after') ? seconds * 1000 : undefined,
+        ),
+      });
+    }
+    throw classifyError(error, 'external.service_unavailable');
   }
   let text: string;
   try {
@@ -153,7 +180,10 @@ export async function requestAccountProxyManagement(
     }
     if (error instanceof AccountProxyManagementError) throw error;
     if (request.signal?.aborted) throw error;
-    throw new AccountProxyManagementError('unreachable');
+    throw classifyFetchFailure(
+      error,
+      new AccountProxyManagementError('unreachable'),
+    );
   }
   if (response.status === 403) {
     if (/banned|too many failed/i.test(text)) {

@@ -88,7 +88,7 @@ export function MarketplaceSourceStatusNotice({
         </>
       }
     >
-      <ul className="space-y-0.5">
+      <ul className="flex flex-col gap-0.5">
         {source.status.errors.map((error, index) => (
           <li key={`${error.label}-${index}`}>
             {error.label}:{' '}

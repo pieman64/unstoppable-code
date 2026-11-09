@@ -1,9 +1,9 @@
-import { AccountMcpConnectionError } from '@canopy/desktop-shared/types/mcp-servers';
+import { AccountMcpConnectionError } from '@canopy/execution-engine/types/mcp-servers';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import type {
   AccountMcpConnection,
   McpServersIndexFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import type {
   ChatTabPluginSelections,
   PluginSelectionTombstones,

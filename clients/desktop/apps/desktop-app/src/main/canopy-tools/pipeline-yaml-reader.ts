@@ -1,15 +1,10 @@
+import { CanopyOperationError } from '@canopy/core-runtime';
 import {
-  authorizeProjectPipelineRequest,
-  assertStoredPipelineContext,
-} from '../pipelines/pipeline-install-context';
-import { pipelineResourceContextEnabled } from '../pipelines/resource-lanes';
-import { readFile } from 'node:fs/promises';
-import * as path from 'node:path';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
-import * as pipelineStore from '../pipelines/pipeline-service';
-import { isOwnedPipelineHiddenFromAgent } from '../automations/owned-pipeline';
-import { discoverProjectPipelines } from '../pipelines/project-pipeline-discovery';
-import { resolveWorktreeCwd } from '../lib/resolve-worktree';
+  PIPELINE_GRANTS,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import { activeAgentCoreOperations } from './active-agent-core-operations';
 
 export interface PipelineYamlLineRange {
   startLine: number;
@@ -41,8 +36,7 @@ export interface PipelineYamlReadResult {
 }
 
 interface LoadedPipelineYaml {
-  info: Pick<PipelineInfo, 'id' | 'name' | 'source' | 'filename'>;
-  filePath: string;
+  info: { id: string; name: string; source: string };
   raw: string;
 }
 
@@ -190,87 +184,49 @@ function formatLine(entry: NumberedLine, width: number): string {
   return `${String(entry.lineNumber).padStart(width, ' ')}: ${entry.text}`;
 }
 
-function loadStoredPipelineYaml(pipelineId: string): LoadedPipelineYaml | null {
-  const text = pipelineStore.getPipelineText(pipelineId);
-  const pathResult = pipelineStore.getPipelinePath(pipelineId);
-  if (!text.success || !text.data || !pathResult.success || !pathResult.data) {
-    return null;
-  }
-  const infos = pipelineStore.listPipelines();
-  const info = infos.success
-    ? infos.data?.find((entry) => entry.id === pipelineId)
-    : undefined;
-  return {
-    info: {
-      id: pipelineId,
-      name: info?.name ?? pipelineId,
-      source: info?.source ?? 'user',
-      filename: info?.filename ?? path.basename(pathResult.data),
-    },
-    filePath: pathResult.data,
-    raw: text.data,
-  };
-}
-
-async function loadProjectPipelineYaml(
-  pipelineId: string,
-  cwd: string,
-  projectId: string,
-): Promise<LoadedPipelineYaml | null> {
-  const pipelines = await discoverProjectPipelines(cwd).catch(() => []);
-  const info = pipelines.find((entry) => entry.id === pipelineId);
-  if (!info?.filePath) return null;
-  if (pipelineResourceContextEnabled()) {
-    const resolved = await authorizeProjectPipelineRequest({
-      id: pipelineId,
-      cwd,
-      filePath: info.filePath,
-    });
-    if (resolved.projectId !== projectId)
-      throw new Error('Workflow unavailable (context-mismatch)');
-  }
-  return {
-    info,
-    filePath: info.filePath,
-    raw: await readFile(info.filePath, 'utf8'),
-  };
-}
+/** ReadPipelineYaml reads definitions as its own principal, with only the read grant (CAN-5991). */
+const AGENT_PIPELINE_YAML_CALLER: CanopyCallerDescriptor = {
+  principalId: 'desktop-agent-pipeline-yaml',
+  clientInstanceId: 'desktop-main',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'mcp',
+  grants: [PIPELINE_GRANTS.read],
+};
 
 async function loadPipelineYaml(
   request: PipelineYamlReadRequest,
 ): Promise<LoadedPipelineYaml | null> {
-  if (request.pipelineId.startsWith('curated:')) {
-    const { getManagedCuratedPipeline } =
-      await import('../pipelines/curated-pipeline-catalog');
-    const pipeline = await getManagedCuratedPipeline(request.pipelineId);
-    const filePath = pipeline.info.filePath;
-    if (!filePath)
-      throw new Error('Curated pipeline did not provide a managed definition.');
+  try {
+    const { definition } = await activeAgentCoreOperations(
+      'pipelineYaml',
+    ).query(
+      'core.pipeline.definition.get',
+      {
+        definitionId: request.pipelineId,
+        scope: {
+          workspaceId: request.projectId,
+          worktreeId: request.worktreeId,
+          ...(request.repoId ? { repoId: request.repoId } : {}),
+        },
+      },
+      { caller: AGENT_PIPELINE_YAML_CALLER },
+    );
     return {
-      info: pipeline.info,
-      filePath,
-      raw: await readFile(filePath, 'utf8'),
+      info: {
+        id: definition.definitionId,
+        name: definition.name,
+        source: definition.source,
+      },
+      raw: definition.document,
     };
+  } catch (error) {
+    if (
+      error instanceof CanopyOperationError &&
+      error.payload.code === 'core.pipeline.definitionNotFound'
+    )
+      return null;
+    throw error;
   }
-  const cwd = request.repoId
-    ? resolveWorktreeCwd(request.projectId, request.worktreeId, request.repoId)
-    : resolveWorktreeCwd(request.projectId, request.worktreeId);
-  if (pipelineResourceContextEnabled()) {
-    if (request.pipelineId.startsWith('project--'))
-      return loadProjectPipelineYaml(
-        request.pipelineId,
-        cwd,
-        request.projectId,
-      );
-    await assertStoredPipelineContext(request.pipelineId, request.projectId);
-  }
-  // Hidden like the Orchestrator automation that owns it (CAN-4551).
-  if (await isOwnedPipelineHiddenFromAgent(request.pipelineId, request))
-    return null;
-  return (
-    loadStoredPipelineYaml(request.pipelineId) ??
-    (await loadProjectPipelineYaml(request.pipelineId, cwd, request.projectId))
-  );
 }
 
 export async function readWorktreePipelineYaml(
@@ -337,8 +293,6 @@ export async function readWorktreePipelineYaml(
     text: [
       `Pipeline YAML: ${loaded.info.name} (${loaded.info.id})`,
       `Source: ${loaded.info.source}`,
-      `Filename: ${loaded.info.filename}`,
-      `File: ${loaded.filePath}`,
       `Total lines: ${String(rawLines.length)}`,
       ...filterSummary,
       '---',

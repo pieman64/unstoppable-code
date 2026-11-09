@@ -9,7 +9,7 @@ import type {
   ProviderConnectorEntry,
   ProviderConnectorListResult,
   ProviderConnectorProvider,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';

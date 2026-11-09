@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState, type JSX } from 'react';
-import { Disclosure } from '@canopy/ui-shared/components';
+import { Stack, Disclosure, StatusGlyph } from '@canopy/ui-shared/components';
+import type { StatusGlyphState } from '@canopy/ui-shared/lib';
 import { Surface } from '@canopy/ui-shared/components';
 
 export interface TodoSectionBodyItem {
@@ -37,7 +38,7 @@ export function TodoSectionBody({
   const pending = items.filter((t) => t.status === 'pending');
   const completedCount = completed.length;
   return (
-    <div className="space-y-2" data-testid="activity-todo-body">
+    <Stack gap="inline" data-testid="activity-todo-body">
       {/* Active tasks */}
       {active.map((item) => (
         <TodoItemRow key={item.id} item={item} />
@@ -58,7 +59,7 @@ export function TodoSectionBody({
             dataTestId="activity-todo-completed"
             toggleTestId="activity-todo-completed-toggle"
           >
-            <div className="space-y-1.5">
+            <div className="flex flex-col gap-1.5">
               {completed.map((item) => (
                 <TodoItemRow key={item.id} item={item} />
               ))}
@@ -66,7 +67,7 @@ export function TodoSectionBody({
           </Disclosure>
         </div>
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -97,76 +98,18 @@ function TodoItemRow({ item }: { item: TodoSectionBodyItem }): JSX.Element {
   );
 }
 
+const TODO_STATES: Readonly<
+  Record<TodoSectionBodyItem['status'], StatusGlyphState>
+> = {
+  completed: 'done',
+  in_progress: 'running',
+  pending: 'queued',
+};
+
 function TodoStatusIcon({
   status,
 }: {
   status: TodoSectionBodyItem['status'];
 }): JSX.Element {
-  if (status === 'completed') {
-    return (
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        className="shrink-0"
-      >
-        <circle
-          cx="8"
-          cy="8"
-          r="7"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          className="fg-success-strong/70"
-        />
-        <path
-          d="M5 8l2 2 4-4"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="fg-success-strong/70"
-        />
-      </svg>
-    );
-  }
-  if (status === 'in_progress') {
-    return (
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        className="shrink-0"
-      >
-        <circle
-          cx="8"
-          cy="8"
-          r="7"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          className="fg-info"
-        />
-        <circle cx="8" cy="8" r="2.5" fill="currentColor" className="fg-info" />
-      </svg>
-    );
-  }
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      className="shrink-0"
-    >
-      <circle
-        cx="8"
-        cy="8"
-        r="7"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        className="fg-secondary/60"
-      />
-    </svg>
-  );
+  return <StatusGlyph state={TODO_STATES[status]} />;
 }

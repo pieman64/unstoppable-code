@@ -17,7 +17,7 @@ import {
   isLedgerInjectedToolKey,
   type CanopyInjectedToolKey,
   type CanopyInjectedToolSurface,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   APP_ADVISOR_TOOL_ENTRIES,
   isAppAdvisorLedgerToolKey,
@@ -31,6 +31,7 @@ import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/genera
 import { isClaudeWorkerToolExposed } from '../integration/claude-worker-tool-exposure';
 import { isRecord } from './integration-http';
 import { hasInterfaceTool } from '../agents/interface-tool-binding';
+import { isPipelineEditorToolAdvertised } from '../pipeline-editor/tool-advertisement';
 import type { CanopyInjectedToolTextResult } from '../canopy-tools/core';
 import {
   SET_AUTO_ARCHIVE_DESCRIPTION,
@@ -747,7 +748,12 @@ export function getCanopyRouteTools(
       : route.assistantMode === 'pipeline-editor'
         ? uiServer
           ? PIPELINE_EDITOR_UI_MCP_TOOLS
-          : PIPELINE_EDITOR_MAIN_MCP_TOOLS
+          : PIPELINE_EDITOR_MAIN_MCP_TOOLS.filter((tool) =>
+              isPipelineEditorToolAdvertised(
+                tool.canonicalKey,
+                route.interfaceTools,
+              ),
+            )
         : getClaudeCanopyToolsForSurface(effectiveSurface);
   const codeGraphToolsAdvertised = route.codeGraphToolsAdvertised !== false;
   const ledgerToolsAdvertised = route.ledgerTools !== undefined;

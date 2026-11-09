@@ -7,6 +7,7 @@ import {
   Button,
   ConfirmDialog,
   ErrorState,
+  Stack,
   Surface,
 } from '@canopy/ui-shared/components';
 import { DiffContentView } from './DiffContentView';
@@ -113,39 +114,41 @@ export function RevertConfirmModal({
       dataTestId="revert-confirm-modal"
       confirmTestId="revert-confirm-btn"
     >
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs fg-tertiary">
-          {displayPath(file)}
-        </span>
-        <Button
-          variant="ghost"
-          size="compact"
-          className="-mr-3 shrink-0"
-          aria-expanded={previewExpanded}
-          onClick={handleTogglePreview}
-        >
-          {previewExpanded ? 'Hide changes' : 'Show changes'}
-        </Button>
-      </div>
-      <Surface variant="outline" className="mt-2 overflow-hidden">
-        <div
-          className={`max-h-60 overflow-auto ${previewExpanded ? '' : 'hidden'}`}
-        >
-          {previewError ? (
-            <ErrorState space="panel" message={previewError} />
-          ) : (
-            <DiffContentView
-              oldValue={previewData?.oldValue ?? ''}
-              newValue={previewData?.newValue ?? ''}
-              viewMode="unified"
-              loading={previewLoading}
-              truncated={previewData?.truncated ?? false}
-              binary={previewData?.binary ?? false}
-              imagePreview={previewData?.imagePreview}
-            />
-          )}
+      <Stack gap="inline">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="min-w-0 flex-1 truncate font-mono text-xs fg-tertiary">
+            {displayPath(file)}
+          </span>
+          <Button
+            variant="ghost"
+            size="compact"
+            className="-mr-3 shrink-0"
+            aria-expanded={previewExpanded}
+            onClick={handleTogglePreview}
+          >
+            {previewExpanded ? 'Hide changes' : 'Show changes'}
+          </Button>
         </div>
-      </Surface>
+        <Surface variant="outline" className="overflow-hidden">
+          <div
+            className={`max-h-60 overflow-auto ${previewExpanded ? '' : 'hidden'}`}
+          >
+            {previewError ? (
+              <ErrorState space="panel" message={previewError} />
+            ) : (
+              <DiffContentView
+                oldValue={previewData?.oldValue ?? ''}
+                newValue={previewData?.newValue ?? ''}
+                viewMode="unified"
+                loading={previewLoading}
+                truncated={previewData?.truncated ?? false}
+                binary={previewData?.binary ?? false}
+                imagePreview={previewData?.imagePreview}
+              />
+            )}
+          </div>
+        </Surface>
+      </Stack>
     </ConfirmDialog>
   );
 }

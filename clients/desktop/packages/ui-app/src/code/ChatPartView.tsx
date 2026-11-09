@@ -90,6 +90,8 @@ import {
   ChatToolResultPart,
   readChatToolResultVisual,
 } from './ChatToolResultPart';
+import { useClaudeModsSkippedHost } from '../capability/claude-mods/ClaudeModsSkippedHost';
+import { DeferredClaudeModsSkippedPart } from '../capability/claude-mods/DeferredClaudeModsSkippedPart';
 import { Notice } from '@canopy/ui-shared/components/Notice';
 
 /**
@@ -423,6 +425,7 @@ const PART_KIND_FLAGS: Record<PortalChatPart['kind'], true> = {
   prompt_source: true,
   compaction: true,
   account_switch: true,
+  mods_skipped: true,
 };
 const PART_KINDS: ReadonlySet<string> = new Set(Object.keys(PART_KIND_FLAGS));
 
@@ -750,6 +753,7 @@ function ChatPartViewImpl({
   const composerQuestions = useContext(ComposerAskUserQuestionsContext);
   const outputReader = useContext(ToolOutputReaderContext);
   const turnSettled = useContext(ToolTurnSettledContext);
+  const modsSkippedHost = useClaudeModsSkippedHost();
   const clean = useCleanChatLook();
   // Smooth streaming (Labs) paces live text; without it, text parts render
   // as before (Mermaid diagrams draw as soon as they arrive).
@@ -1245,6 +1249,21 @@ function ChatPartViewImpl({
 
     case 'account_switch':
       return <DeferredAccountProxySwitchPart data={data} />;
+
+    case 'mods_skipped':
+      // The host supplies the chat and the details navigation, when it has
+      // them; the notice leaves out the controls that need what is missing.
+      return (
+        <DeferredClaudeModsSkippedPart
+          data={data}
+          {...(modsSkippedHost?.context !== undefined
+            ? { context: modsSkippedHost.context }
+            : {})}
+          {...(modsSkippedHost?.onOpenDetails !== undefined
+            ? { onOpenDetails: modsSkippedHost.onOpenDetails }
+            : {})}
+        />
+      );
 
     default: {
       // Exhaustiveness guard: a new part kind must be handled explicitly here

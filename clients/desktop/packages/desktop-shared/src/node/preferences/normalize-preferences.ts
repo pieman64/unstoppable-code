@@ -20,7 +20,7 @@ import {
   normalizeManagedDelegationMaxDepth,
   normalizeManagedDelegationLifetimeLimit,
 } from '@canopy/protocol/delegation/discovery';
-import { normalizeCodexMaxConcurrentSubagents } from '../../lib/codex-multi-agent';
+import { normalizeCodexMaxConcurrentSubagents } from '@canopy/execution-engine/lib/codex-multi-agent';
 import { normalizeAppAdvisorProjectAgentAccess } from '../../lib/app-advisor-project-agent-access';
 import { normalizeCustomBrowserSearchEngines } from '../../lib/browser-search-engines';
 import { isAccountProxyRoutingStrategy } from '../../lib/account-proxy';
@@ -43,7 +43,7 @@ import {
 } from '../../types';
 import { normalizeApprovalRules } from '../../lib/approval-engine';
 import { normalizeFileIndexingPreferences } from '@canopy/core-runtime/node';
-import { normalizeGlobalInstructionsConfig } from '../../lib/global-instructions';
+import { normalizeGlobalInstructionsConfig } from '@canopy/execution-engine/lib/global-instructions';
 import { normalizeStringArray } from '../../lib/string-array';
 import { normalizePromotionalNotifications } from '../../lib/promotional-notifications';
 import { normalizeSuggestionsState } from '@canopy/protocol/suggestions';
@@ -66,6 +66,7 @@ import {
   isAiCreditsRoutingMode,
   isChatBillingFramework,
   normalizeTelemetrySharing,
+  normalizeUsageData,
   normalizeString,
   isChatInterfaceMode,
   isBackgroundProcessMode,
@@ -114,6 +115,39 @@ import {
   normalizeParkedCodexPlugins,
   normalizeChatDetailPreference,
 } from './record-normalizers';
+import {
+  isClaudeModAdmission,
+  isClaudeModPluginId,
+  type ClaudeModAdmission,
+} from '../../types/claude-mod-admission';
+
+/** Valid admissions only; a plugin listed more than once keeps none. */
+function normalizeClaudeModAdmissions(value: unknown): ClaudeModAdmission[] {
+  if (!Array.isArray(value)) return [];
+  const entries: readonly unknown[] = value;
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    const pluginId: unknown =
+      typeof entry === 'object' && entry !== null && 'pluginId' in entry
+        ? entry.pluginId
+        : undefined;
+    if (isClaudeModPluginId(pluginId)) {
+      counts.set(pluginId, (counts.get(pluginId) ?? 0) + 1);
+    }
+  }
+  return entries.flatMap((entry) => {
+    if (!isClaudeModAdmission(entry) || counts.get(entry.pluginId) !== 1) {
+      return [];
+    }
+    return [
+      {
+        pluginId: entry.pluginId,
+        contentDigest: entry.contentDigest,
+        admittedAt: entry.admittedAt,
+      },
+    ];
+  });
+}
 
 export function normalizePreferences(
   data: Partial<PreferencesData> | Record<string, unknown> | undefined,
@@ -331,6 +365,13 @@ export function normalizePreferences(
       data?.approvalDefaults,
       DEFAULT_PREFERENCES.approvalDefaults,
     ),
+    claudeModAdmissions: normalizeClaudeModAdmissions(
+      data?.claudeModAdmissions,
+    ),
+    claudeModsDisabled:
+      typeof data?.claudeModsDisabled === 'boolean'
+        ? data.claudeModsDisabled
+        : DEFAULT_PREFERENCES.claudeModsDisabled,
     globalApprovalRules: normalizeApprovalRules(data?.globalApprovalRules),
     approvalsUpgradeNoticeDismissed:
       typeof data?.approvalsUpgradeNoticeDismissed === 'boolean'
@@ -975,6 +1016,10 @@ export function normalizePreferences(
       typeof data?.autoDownloadUpdates === 'boolean'
         ? data.autoDownloadUpdates
         : DEFAULT_PREFERENCES.autoDownloadUpdates,
+    automaticUpdateChecks:
+      typeof data?.automaticUpdateChecks === 'boolean'
+        ? data.automaticUpdateChecks
+        : DEFAULT_PREFERENCES.automaticUpdateChecks,
     showDiagnosticsPill:
       typeof data?.showDiagnosticsPill === 'boolean'
         ? data.showDiagnosticsPill
@@ -1041,6 +1086,7 @@ export function normalizePreferences(
     ...(dataSharingOptInHints ? { dataSharingOptInHints } : {}),
     ...(dataSharingOptInHistory ? { dataSharingOptInHistory } : {}),
     ...(nativeProviderAccounts ? { nativeProviderAccounts } : {}),
+    usageData: normalizeUsageData(data?.usageData),
     telemetrySharing: normalizeTelemetrySharing(data?.telemetrySharing),
     // Legacy tier marker: kept as read so older files round-trip; nothing
     // writes it, and plan changes never rewrite `telemetrySharing`.

@@ -221,6 +221,14 @@ export interface NoticeProps extends Omit<
    * next belongs in the message itself. Rendered quieter than the message.
    */
   detail?: ReactNode;
+  /** Total copy-to-detail gap for margin-free supporting content. */
+  detailGap?: 'inline';
+  /**
+   * Announce `detail` when it appears (`role="alert"`), for a static notice
+   * (`role="none"`) whose action can fail: the standing copy stays silent and
+   * only the failure is read out.
+   */
+  announceDetail?: boolean;
   /**
    * Trailing content on the message row. Usually recovery actions: use
    * `NoticeButton` and order them so the single recommended action
@@ -276,6 +284,12 @@ export interface NoticeProps extends Omit<
    * reported, sets this so the crash does not count twice.
    */
   errorRecordingDisabled?: boolean;
+  /**
+   * The tray's hairline edge. `neutral` everywhere except `ErrorBanner`, the
+   * one surface allowed a destructive edge (docs/design/feedback.md#notice).
+   * @internal Not for direct callers; use `ErrorBanner`.
+   */
+  edge?: NoticeEdge;
 }
 
 /** Whether a notice's title leads the message's line or sits above it. */
@@ -470,12 +484,17 @@ export function ComposerNoticeStack({
  * - `className` is for placement only (margins, width). Surface, inset,
  *   radius, typography, and color are owned here.
  */
+/** The tray's hairline edge; only `ErrorBanner` asks for `destructive`. */
+export type NoticeEdge = 'neutral' | 'destructive';
+
 export function Notice({
   intent = 'neutral',
   icon,
   title,
   children,
   detail,
+  detailGap,
+  announceDetail = false,
   actions,
   actionsPlacement = 'trailing',
   onDismiss,
@@ -488,6 +507,7 @@ export function Notice({
   titleLayout = 'inline',
   errorRecordingChokePoint = 'notice',
   errorRecordingDisabled = false,
+  edge = 'neutral',
   className = '',
   ...rest
 }: NoticeProps): JSX.Element {
@@ -539,9 +559,11 @@ export function Notice({
       data-notice-surface={surface}
       className={`flex gap-2 text-xs fg-primary ${
         surface === 'tray'
-          ? `bg-base bg-[linear-gradient(var(--bg-subtle),var(--bg-subtle))] ring-[length:var(--border-hairline)] ring-line-secondary ${
-              TRAY_RADIUS_BY_SHAPE[resolvedShape]
-            }`
+          ? `bg-base bg-[linear-gradient(var(--bg-subtle),var(--bg-subtle))] ring-[length:var(--border-hairline)] ${
+              edge === 'destructive'
+                ? 'ring-line-destructive'
+                : 'ring-line-secondary'
+            } ${TRAY_RADIUS_BY_SHAPE[resolvedShape]}`
           : ''
       } ${
         composerShape
@@ -586,7 +608,11 @@ export function Notice({
             )}
             <div
               ref={copyRef}
-              className="min-w-0 flex-1 py-1.25"
+              className={
+                detailGap === 'inline'
+                  ? 'flex min-w-0 flex-1 flex-col gap-2 py-1.25'
+                  : 'min-w-0 flex-1 py-1.25'
+              }
               {...(live && liveRegionScope === 'content'
                 ? {
                     role: resolvedRole,
@@ -628,7 +654,16 @@ export function Notice({
               {detail !== undefined && (
                 // 2px of air between the line and its detail, so the detail
                 // reads as a second paragraph rather than a wrapped line.
-                <div className="mt-0.5 text-pretty fg-tertiary">{detail}</div>
+                <div
+                  role={announceDetail ? 'alert' : undefined}
+                  className={
+                    detailGap === 'inline'
+                      ? 'text-pretty fg-tertiary empty:hidden'
+                      : 'mt-0.5 text-pretty fg-tertiary'
+                  }
+                >
+                  {detail}
+                </div>
               )}
             </div>
           </div>

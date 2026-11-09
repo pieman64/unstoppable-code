@@ -20,6 +20,8 @@
  * Neither layer takes a `className` that restyles: geometry, type and color
  * are named props, so every table keeps one look.
  */
+import { IconCircleQuestionmark } from '../icons/AppGlyphs.generated';
+import { Tooltip } from './Tooltip';
 import {
   useEffect,
   useMemo,
@@ -98,7 +100,9 @@ const SHOW_FROM_CLASS: Record<DataTableBreakpoint, string> = {
 
 const VERTICAL_ALIGN_CLASS: Record<DataTableVerticalAlign, string> = {
   middle: 'align-middle',
-  top: 'align-top',
+  // Cells keep py-1 for middle rows. Here the larger padding centers a one-line
+  // row in h-9 and keeps text level when another cell wraps.
+  top: 'align-top [&>td]:py-2 [&>th]:py-2',
 };
 
 const ARIA_SORT: Record<DataTableSortDirection, 'ascending' | 'descending'> = {
@@ -442,6 +446,8 @@ export interface DataTableRowProps extends DataTableAttributes {
    * Enter on the row (not on a control inside it) calls this.
    */
   readonly onActivate?: () => void;
+  /** Also activate on Space when preserving a caller's existing row behavior. */
+  readonly activateOnSpace?: boolean;
   /** The row the user is on: the selected fill and `aria-current`. */
   readonly selected?: boolean;
   /** Focusable from script without being a tab stop, such as a revealed row. */
@@ -501,6 +507,7 @@ function isRowTarget(
 /** A 36px body row with a hairline above it. */
 export function DataTableRow({
   onActivate,
+  activateOnSpace = false,
   selected = false,
   focusable = false,
   dimmed = false,
@@ -533,14 +540,19 @@ export function DataTableRow({
         onActivate === undefined
           ? undefined
           : (event): void => {
-              if (event.key !== 'Enter') return;
+              if (
+                event.key !== 'Enter' &&
+                !(activateOnSpace && event.key === ' ')
+              ) {
+                return;
+              }
               if (event.target !== event.currentTarget) return;
               event.preventDefault();
               onActivate();
             }
       }
       className={joinClasses(
-        'h-9 border-t border-line-base',
+        'group h-9 border-t border-line-base',
         VERTICAL_ALIGN_CLASS[verticalAlign],
         interactive && 'focus-ring focus-ring-inset cursor-pointer',
         dimmed && 'opacity-55',
@@ -741,6 +753,8 @@ export interface DataTableColumn<T> {
   readonly showFrom?: DataTableBreakpoint;
   /** Renders this column's cells as row headers (`<th scope="row">`). */
   readonly rowHeader?: boolean;
+  /** A visible help icon beside the header, for a label that needs explaining. */
+  readonly headerHint?: string;
   /** A note on what the column means, shown on hover over the header. */
   readonly tooltip?: string;
   /** How session replay records a column of private text. */
@@ -973,7 +987,24 @@ export function DataTable<T>({
                 : undefined
             }
           >
-            {column.header}
+            {column.headerHint ? (
+              <span className="inline-flex items-center gap-1">
+                {column.header}
+                <Tooltip label={column.headerHint}>
+                  <span
+                    tabIndex={0}
+                    aria-label={column.headerHint}
+                    role="img"
+                    data-testid={derivedTestId(testId, `hint-${column.key}`)}
+                    className="focus-ring inline-flex rounded-sm fg-tertiary"
+                  >
+                    <IconCircleQuestionmark size={12} />
+                  </span>
+                </Tooltip>
+              </span>
+            ) : (
+              column.header
+            )}
           </DataTableHeaderCell>
         ))}
       </DataTableHead>

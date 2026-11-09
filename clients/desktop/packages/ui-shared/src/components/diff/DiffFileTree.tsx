@@ -223,7 +223,7 @@ function DiffFileTreeGroupRow({
 }: DiffFileTreeGroupRowProps): JSX.Element {
   return (
     <section
-      className="space-y-1 px-1 py-1"
+      className="flex flex-col gap-1 px-1 py-1"
       data-testid={`diff-file-tree-group-${group.heading.toLowerCase()}`}
     >
       <div className="px-1">
@@ -234,7 +234,7 @@ function DiffFileTreeGroupRow({
       {group.files.length === 0 ? (
         <p className="px-1 text-3xs fg-secondary">None</p>
       ) : (
-        <ul className="space-y-0.5">
+        <ul className="flex flex-col gap-0.5">
           {group.files.map((file) => (
             <DiffFileTreeRow
               key={file.key}

@@ -265,13 +265,19 @@ export function DigestPreferencesCard({
                 : null;
           return (
             <li key={cadence.key} className={SETTINGS_CARD_ROW_CLASS}>
-              <div className="min-w-0">
-                <p className="text-s font-medium fg-primary">{cadence.label}</p>
-                <p className="text-xs fg-secondary">
-                  {cadence.describe(preferences)}
-                </p>
+              <div className="min-w-0 flex flex-col gap-2">
+                <div>
+                  <p className="text-s font-medium fg-primary">
+                    {cadence.label}
+                  </p>
+
+                  <p className="text-xs fg-secondary">
+                    {cadence.describe(preferences)}
+                  </p>
+                </div>
+
                 {anchorField && (
-                  <div className="mt-2 flex items-center gap-2 text-xs fg-secondary">
+                  <div className="flex items-center gap-2 text-xs fg-secondary">
                     {/* The dropdown carries its own name; this is its visible
                         lead-in. */}
                     <span aria-hidden="true">

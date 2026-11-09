@@ -1,9 +1,15 @@
 import { z } from 'zod';
 
+import { CanopyRequestMetadataSchema } from '../../common';
+import {
+  defineCanopyInstruction,
+  defineCanopyInstructionRegistry,
+} from '../../definitions';
 import {
   CanopyWorkspaceScopeSchema,
   CanopyErrorPayloadSchema,
   CanopyQueryRetryDirectiveSchema,
+  keyedOperationErrorSchema,
 } from '../shared';
 
 // These limits mirror `@canopy/agent-transcript/lib/visual-ref`, which
@@ -119,3 +125,78 @@ export const CoreChatVisualReadErrorSchema = CanopyErrorPayloadSchema.extend({
     .optional(),
   retry: CanopyQueryRetryDirectiveSchema,
 });
+
+/** ShowVisual writes into the calling chat's transcript staging (CAN-5996). */
+export const CORE_CHAT_VISUAL_STAGE_GRANTS = {
+  write: 'core.chat.write',
+} as const;
+
+const visualId = z
+  .string()
+  .regex(/^vis_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+const recipientId = z.string().min(1).max(512);
+
+/**
+ * A prepared visual for the calling chat. The host supplies `recipient` from
+ * the calling session, never from tool input; the HTML is the prepared
+ * document ShowVisual built, which the staging store re-checks.
+ */
+export const CoreChatVisualStageParamsSchema = z.strictObject({
+  recipient: z.strictObject({
+    workspaceId: recipientId,
+    worktreeId: recipientId,
+    chatId: recipientId,
+  }),
+  visual: z.strictObject({
+    visualId,
+    html: z
+      .string()
+      .min(1)
+      .max(VISUAL_PREPARED_MAX_BYTES)
+      .refine(
+        (html) =>
+          new TextEncoder().encode(html).length <= VISUAL_PREPARED_MAX_BYTES,
+        'The visual exceeds the prepared-document limit.',
+      ),
+    title: z.string().min(1).max(VISUAL_TITLE_MAX_LENGTH),
+    maxHeight: z.number().int().min(VISUAL_MIN_HEIGHT).max(VISUAL_MAX_HEIGHT),
+    heights: z
+      .array(z.tuple([positiveFinite, positiveFinite]))
+      .max(VISUAL_HEIGHTS_MAX_ENTRIES)
+      .optional(),
+    codexCallId: z.string().min(1).max(512).optional(),
+  }),
+  _meta: CanopyRequestMetadataSchema.extend({
+    idempotencyKey: z.string().min(1).max(512),
+  }),
+});
+export type CoreChatVisualStageParams = z.output<
+  typeof CoreChatVisualStageParamsSchema
+>;
+
+export const CoreChatVisualStageResultSchema = z.strictObject({
+  visualId,
+  byteLength: ordinal.max(VISUAL_PREPARED_MAX_BYTES),
+  sha256,
+});
+export type CoreChatVisualStageResult = z.output<
+  typeof CoreChatVisualStageResultSchema
+>;
+
+// Served by the desktop dispatcher over the chat state service (CAN-5996).
+// Not composed into the shared registries: the daemon and the web core do
+// not serve it.
+export const CORE_CHAT_VISUAL_STAGE_INSTRUCTION_DEFINITIONS =
+  defineCanopyInstructionRegistry('core', {
+    'core.chat.visual.stage': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'chat',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'keyed',
+      requiredGrants: [CORE_CHAT_VISUAL_STAGE_GRANTS.write],
+      params: CoreChatVisualStageParamsSchema,
+      result: CoreChatVisualStageResultSchema,
+      error: keyedOperationErrorSchema(['core.chat.visual.stage.unavailable']),
+    }),
+  });

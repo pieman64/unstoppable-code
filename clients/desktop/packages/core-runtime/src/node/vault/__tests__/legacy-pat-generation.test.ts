@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -15,31 +15,15 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
-const names = {
-  prod: '.secure',
-  rc: '.secure-rc',
-  internal: '.secure-internal',
-  dev: '.secure-dev',
-};
-const dataDirNames = {
-  prod: ['.data'],
-  rc: ['.data-rc', '.data'],
-  dev: ['.data-dev'],
-};
 
-it('mirrors current, internal-shared, then legacy lookup, without decrypting or rewriting', async () => {
+it('mirrors nested current then root-contained legacy lookup, without decrypting or rewriting', async () => {
   const paths = resolveLegacyPatPaths({
-    home: root,
-    names,
-    dataDirNames,
-    mode: 'internal',
-    runtimeMode: 'prod',
+    dataRoot: join(root, '.data-internal'),
     environment: {},
   });
   expect(paths).toEqual([
-    join(root, '.secure-internal/github-pat.enc'),
-    join(root, '.secure/github-pat.enc'),
-    join(root, '.data/secure/github-pat.enc'),
+    join(root, '.data-internal/secure-storage/github-pat.enc'),
+    join(root, '.data-internal/secure/github-pat.enc'),
   ]);
   const read = createLegacyPatGenerationReader({ identity, paths });
   expect(await read(identity)).toBeNull();
@@ -60,7 +44,6 @@ it('mirrors current, internal-shared, then legacy lookup, without decrypting or 
     legacyPatCiphertextGeneration(Buffer.from([1, 255, 0, 128])),
   );
   await rm(paths[1]);
-  await rm(paths[2]);
   expect(await read(identity)).toBeNull();
 });
 
@@ -94,23 +77,19 @@ it('does not fall through a read error and hashes empty ciphertext distinctly fr
 });
 
 it.each(['CANOPY_DATA_DIR', 'CANOPY_SECURE_DATA_DIR'])(
-  'test override %s disables shared-home fallback',
+  'test override %s keeps legacy lookup under the selected data root',
   (key) => {
     const paths = resolveLegacyPatPaths({
-      home: root,
-      names,
-      dataDirNames,
-      mode: 'internal',
-      runtimeMode: 'prod',
+      dataRoot: join(root, '.data-internal'),
       environment: { [key]: join(root, 'override') },
     });
     expect(paths).toHaveLength(2);
-    expect(paths).not.toContain(join(root, '.secure/github-pat.enc'));
+    expect(paths).not.toContain(join(root, '.data/secure/github-pat.enc'));
     expect(paths[0]).toBe(
       join(
         root,
         key === 'CANOPY_DATA_DIR'
-          ? 'override-secure/github-pat.enc'
+          ? 'override/secure-storage/github-pat.enc'
           : 'override/github-pat.enc',
       ),
     );
@@ -119,8 +98,37 @@ it.each(['CANOPY_DATA_DIR', 'CANOPY_SECURE_DATA_DIR'])(
         root,
         key === 'CANOPY_DATA_DIR'
           ? 'override/secure/github-pat.enc'
-          : '.data/secure/github-pat.enc',
+          : '.data-internal/secure/github-pat.enc',
       ),
     );
   },
 );
+
+it('never reads or mutates retained sibling or predecessor ciphertext', async () => {
+  const foreign = [
+    '.canopy-secure',
+    '.canopy-internal-secure',
+    '.canopy-rc-secure',
+    '.canopy-secure-dev',
+    '.unstoppable-code-secure',
+    '.canopy/secure',
+  ].map((directory) => join(root, directory, 'github-pat.enc'));
+  for (const file of foreign) {
+    await mkdir(join(file, '..'), { recursive: true });
+    await writeFile(file, 'retained-recovery-ciphertext');
+  }
+  const paths = resolveLegacyPatPaths({
+    dataRoot: join(root, '.canopy-internal'),
+    environment: {
+      CANOPY_ENV: 'production',
+      CANOPY_RELEASE_FLAVOR: 'stable',
+      CANOPY_BRAND: 'unstoppable-code',
+    },
+  });
+  const read = createLegacyPatGenerationReader({ identity, paths });
+  expect(await read(identity)).toBeNull();
+  for (const file of foreign) {
+    expect(paths).not.toContain(file);
+    expect(await readFile(file, 'utf8')).toBe('retained-recovery-ciphertext');
+  }
+});

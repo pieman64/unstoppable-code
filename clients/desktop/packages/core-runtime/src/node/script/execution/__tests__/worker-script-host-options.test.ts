@@ -1,7 +1,11 @@
 import type { ExecutionSecretBinding } from '@canopy/protocol/canopy-core';
 
 import type { ExecutionSecretSource } from '../../../execution-secrets';
-import { createWorkerScriptHandlers, type ScriptProcessOutcome } from '..';
+import {
+  createWorkerScriptHandlers,
+  type ScriptChildProcess,
+  type ScriptProcessOutcome,
+} from '..';
 import {
   SCOPE,
   createScriptWorkerFixture,
@@ -133,5 +137,141 @@ describePosix('script worker host options', () => {
     relay.lines(['a']);
     relay.finished(outcome);
     expect(events).toEqual(['started', 'lines:a', 'finished:a']);
+  });
+
+  it('a drain cancel waits for a run whose process has not started yet', async () => {
+    // The daemon reports a script's pid only once its process start returns.
+    let startProcess = (): void => undefined;
+    const signals: NodeJS.Signals[] = [];
+    fixture = await createScriptWorkerFixture({
+      host: {
+        spawn: (): ScriptChildProcess => {
+          const closeListeners: Array<(code: number | null) => void> = [];
+          let pid: number | undefined;
+          startProcess = (): void => {
+            pid = 4242;
+            // A run already told to end exits as soon as it starts.
+            if (signals.includes('SIGKILL'))
+              closeListeners.forEach((listener) => listener(null));
+          };
+          return {
+            get pid(): number | undefined {
+              return pid;
+            },
+            stdout: null,
+            stderr: null,
+            onError: (): void => undefined,
+            onClose: (listener): void => {
+              closeListeners.push(listener);
+            },
+            killGroup: (signal): void => {
+              signals.push(signal);
+            },
+          };
+        },
+      },
+    });
+    const params = scriptParams('true');
+    const started = new Promise<void>((resolve) => {
+      fixture.worker.observe(params.executionId, {
+        onProcessStarted: resolve,
+      });
+    });
+    const running = fixture.worker.execute(params);
+    await started;
+    let answered = false;
+    const cancelled = fixture.worker
+      .cancel({ scope: SCOPE, scriptKey: 'dev', drain: true })
+      .then((result) => {
+        answered = true;
+        return result;
+      });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(answered).toBe(false);
+    expect(signals).toContain('SIGKILL');
+    startProcess();
+    await expect(cancelled).resolves.toMatchObject({
+      stopped: [{ executionId: params.executionId, status: 'cancelled' }],
+    });
+    await running;
+  });
+
+  it("a drain cancel fails when a run's processes cannot be confirmed ended", async () => {
+    fixture = await createScriptWorkerFixture({
+      host: {
+        drainOwnedProcess: (pid): Promise<void> => {
+          try {
+            process.kill(-pid, 'SIGKILL');
+          } catch {
+            // Already gone.
+          }
+          return Promise.reject(new Error('termination unconfirmed'));
+        },
+      },
+    });
+    const params = scriptParams('sleep 30');
+    const started = new Promise<void>((resolve) => {
+      fixture.worker.observe(params.executionId, {
+        onProcessStarted: resolve,
+      });
+    });
+    const running = fixture.worker.execute(params);
+    await started;
+    await expect(
+      fixture.worker.cancel({ scope: SCOPE, scriptKey: 'dev', drain: true }),
+    ).rejects.toMatchObject({ payload: { kind: 'internal' } });
+    await running.catch(() => undefined);
+  });
+
+  it("a drain cancel fails when a not-yet-started run's forced end is unconfirmed", async () => {
+    let startProcess = (): void => undefined;
+    let forced = false;
+    fixture = await createScriptWorkerFixture({
+      host: {
+        spawn: (): ScriptChildProcess => {
+          const closeListeners: Array<(code: number | null) => void> = [];
+          let pid: number | undefined;
+          startProcess = (): void => {
+            pid = 4243;
+            if (forced) closeListeners.forEach((listener) => listener(null));
+          };
+          return {
+            get pid(): number | undefined {
+              return pid;
+            },
+            stdout: null,
+            stderr: null,
+            onError: (): void => undefined,
+            onClose: (listener): void => {
+              closeListeners.push(listener);
+            },
+            killGroup: (signal): void => {
+              if (signal === 'SIGKILL') forced = true;
+            },
+            // The host could not confirm the forced end took the tree.
+            forced: (): Promise<void> =>
+              Promise.reject(new Error('termination unconfirmed')),
+          };
+        },
+      },
+    });
+    const params = scriptParams('true');
+    const started = new Promise<void>((resolve) => {
+      fixture.worker.observe(params.executionId, {
+        onProcessStarted: resolve,
+      });
+    });
+    const running = fixture.worker.execute(params);
+    await started;
+    const cancelled = fixture.worker.cancel({
+      scope: SCOPE,
+      scriptKey: 'dev',
+      drain: true,
+    });
+    startProcess();
+    await expect(cancelled).rejects.toMatchObject({
+      payload: { kind: 'internal' },
+    });
+    await running.catch(() => undefined);
   });
 });

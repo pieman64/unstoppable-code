@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import type { CanopyProxyError } from '@canopy/protocol';
 import { AiCreditsStopLine } from './AiCreditsStopLine';
 import { MODEL_LIBRARY_UNLOCK_COPY } from './modelLibraryLock';
-import { Notice } from './Notice';
+import { CanopyProxyErrorPresentation } from './CanopyProxyErrorPresentation';
 
 /**
  * Read-only rendering of a structured AI Credits proxy failure, shared by every
@@ -75,28 +75,14 @@ export function CanopyProxyErrorSummary({
     return <AiCreditsStopLine dataTestId={dataTestId} />;
   }
   return (
-    <Notice
-      intent="attention"
-      // `status` (polite), not the desktop notice's `alert` (assertive): these
-      // surfaces replay a transcript, so interrupting the reader for a failure
-      // that may be minutes old is wrong.
+    <CanopyProxyErrorPresentation
+      state="unresolved"
       role="status"
-      data-testid={dataTestId}
-      detail={
-        error.correlationId ? (
-          <>
-            Error id:{' '}
-            <span
-              className="font-mono text-2xs"
-              data-testid={`${dataTestId}-correlation-id`}
-            >
-              {error.correlationId}
-            </span>
-          </>
-        ) : undefined
-      }
+      dataTestId={dataTestId}
+      diagnostics="supporting"
+      correlationId={error.correlationId}
     >
       {summaryTitle(error.code)}
-    </Notice>
+    </CanopyProxyErrorPresentation>
   );
 }

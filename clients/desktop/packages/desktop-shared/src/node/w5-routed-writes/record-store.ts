@@ -11,7 +11,7 @@ import {
   createStorageAuthorityAdmission,
   routeStorageAdmissionToAuthority,
   withStorageAdmission,
-} from '../lib/storage-admission';
+} from '@canopy/execution-engine/node/lib/storage-admission';
 import { W5_RECORD_NAMESPACES } from './selector';
 
 export type { W5CommitLogFileStore, W5RecordPortTransport };

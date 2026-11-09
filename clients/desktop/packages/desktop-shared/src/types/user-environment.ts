@@ -1,9 +1,12 @@
-import type { SecureStorageFailure } from './secure-storage';
-import type { SecretValueInput, StoredSecretErrorCode } from './stored-secrets';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
+import type {
+  SecretValueInput,
+  StoredSecretErrorCode,
+} from '@canopy/execution-engine/types/stored-secrets';
 
 /**
  * A variable value. Main holds plaintext (`string`); replies to the renderer
- * carry a {@link import('./stored-secrets').StoredSecretValue} in place of
+ * carry a {@link import('@canopy/execution-engine/types/stored-secrets').StoredSecretValue} in place of
  * every non-empty value marked secret, and saves accept either form.
  */
 export type EnvironmentValue = SecretValueInput;

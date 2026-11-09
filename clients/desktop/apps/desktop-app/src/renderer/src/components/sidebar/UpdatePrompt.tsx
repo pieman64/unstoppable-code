@@ -245,13 +245,13 @@ export function UpdatePrompt(): JSX.Element {
   }
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2">
       {manualLinux &&
         state.phase === 'available' &&
         state.info?.manualDownload &&
         linuxCopy.apt && (
           <div
-            className="text-xs fg-secondary select-text space-y-2"
+            className="flex flex-col gap-2 text-xs fg-secondary select-text"
             data-testid="update-prompt-linux-guidance"
           >
             <p>{linuxCopy.apt.introduction}</p>

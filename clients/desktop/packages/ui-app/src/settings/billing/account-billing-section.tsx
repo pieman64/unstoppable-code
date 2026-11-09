@@ -23,6 +23,7 @@ import {
   formatUsd,
 } from '@canopy/ui-shared/lib';
 import {
+  Stack,
   BillingHistoryTable as SharedBillingHistoryTable,
   BusyLabel,
   Button,
@@ -565,73 +566,77 @@ function OrgCoverageCard({
     >
       <div className={SETTINGS_CARD_GROUP_CLASS}>
         <div className="flex items-start gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Heading level={2} variant="section">
-                    Subscription plan
-                  </Heading>
-                  <SubscriptionPlanPill
-                    chrome={chrome}
-                    dataTestId="billing-plan-pill"
-                  />
-                </div>
-                <p
-                  className={withPrivacyClass(
-                    'mt-1 text-s fg-secondary',
-                    single ? blockClassName : '',
-                  )}
-                >
-                  {single && soleOrg !== undefined
-                    ? `Your seat is covered by ${soleOrg.name}, so no personal payment method is required for your plan.`
-                    : 'Your seat is covered by your organization, so no personal payment method is required for your plan.'}
-                </p>
-                {personalPending !== null ? (
-                  <p
-                    className="mt-2 text-xs fg-secondary"
-                    data-testid="billing-org-coverage-cancels-on"
-                  >
-                    {personalPendingLapsed
-                      ? 'Your personal plan is ending. Access will end shortly.'
-                      : `Your personal plan cancels on ${formatDate(
-                          personalPending.effectiveAt,
-                        )}. You can resume any time before then.`}
-                  </p>
-                ) : null}
-              </div>
-              {/* A covered member normally has no personal plan and therefore no
+          <Stack gap="group" className="min-w-0 flex-1">
+            <Stack gap="item">
+              <div className="flex items-start justify-between gap-3">
+                <Stack gap="inline" className="min-w-0">
+                  <Stack gap="tight">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Heading level={2} variant="section">
+                        Subscription plan
+                      </Heading>
+                      <SubscriptionPlanPill
+                        chrome={chrome}
+                        dataTestId="billing-plan-pill"
+                      />
+                    </div>
+                    <p
+                      className={withPrivacyClass(
+                        'text-s fg-secondary',
+                        single ? blockClassName : '',
+                      )}
+                    >
+                      {single && soleOrg !== undefined
+                        ? `Your seat is covered by ${soleOrg.name}, so no personal payment method is required for your plan.`
+                        : 'Your seat is covered by your organization, so no personal payment method is required for your plan.'}
+                    </p>
+                  </Stack>
+                  {personalPending !== null ? (
+                    <p
+                      className="text-xs fg-secondary"
+                      data-testid="billing-org-coverage-cancels-on"
+                    >
+                      {personalPendingLapsed
+                        ? 'Your personal plan is ending. Access will end shortly.'
+                        : `Your personal plan cancels on ${formatDate(
+                            personalPending.effectiveAt,
+                          )}. You can resume any time before then.`}
+                    </p>
+                  ) : null}
+                </Stack>
+                {/* A covered member normally has no personal plan and therefore no
                 menu. This branch replaces `PlanCard` entirely, so without the
                 menu here a user holding a REDUNDANT personal plan (the case
                 `buildCoverageNotes` already flags) would have no cancel path at
                 all. The menu self-suppresses when there is no live personal
                 subscription, which is exactly the "don't show it to plain org
                 members" rule. */}
-              {summary !== null && slots !== null ? (
-                <slots.SubscriptionActionsMenu
-                  scope="user"
-                  summary={summary}
-                  onChanged={onChanged}
-                />
-              ) : null}
-            </div>
-            {listedOrgs.length > 0 && (
-              <ul className="mt-3 list-disc space-y-1 pl-5">
-                {listedOrgs.map((org) => (
-                  <li
-                    key={org.id}
-                    className={withPrivacyClass(
-                      'text-s fg-primary',
-                      blockClassName,
-                    )}
-                  >
-                    {org.name}
-                  </li>
-                ))}
-              </ul>
-            )}
+                {summary !== null && slots !== null ? (
+                  <slots.SubscriptionActionsMenu
+                    scope="user"
+                    summary={summary}
+                    onChanged={onChanged}
+                  />
+                ) : null}
+              </div>
+              {listedOrgs.length > 0 && (
+                <ul className="list-disc flex flex-col gap-1 pl-5">
+                  {listedOrgs.map((org) => (
+                    <li
+                      key={org.id}
+                      className={withPrivacyClass(
+                        'text-s fg-primary',
+                        blockClassName,
+                      )}
+                    >
+                      {org.name}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Stack>
             {primary && (
-              <div className="mt-4">
+              <div>
                 <SettingsLink
                   href={organizationBillingPath(primary.id)}
                   data-testid="billing-org-primary-cta"
@@ -647,11 +652,11 @@ function OrgCoverageCard({
               </div>
             )}
             {otherManageable.length > 0 && (
-              <div className="mt-4">
+              <Stack gap="inline">
                 <p className="text-xs font-medium fg-secondary">
                   {primary ? 'Other organizations' : 'Organizations you manage'}
                 </p>
-                <div className="mt-2 flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2">
                   {otherManageable.map((org) => (
                     <SettingsLink
                       key={org.id}
@@ -666,9 +671,9 @@ function OrgCoverageCard({
                     </SettingsLink>
                   ))}
                 </div>
-              </div>
+              </Stack>
             )}
-          </div>
+          </Stack>
         </div>
       </div>
     </section>
@@ -724,7 +729,7 @@ function PlanCard({
       >
         <div className={SETTINGS_CARD_GROUP_CLASS}>
           <div className="flex items-start gap-3">
-            <div className="min-w-0 flex-1">
+            <Stack gap="tight" className="min-w-0 flex-1">
               <Heading level={2} variant="section">
                 Subscription plan
               </Heading>
@@ -733,11 +738,11 @@ function PlanCard({
               {loading ? (
                 <BillingCardBodySkeleton body="plan" />
               ) : (
-                <p className="mt-1 text-s fg-secondary">
+                <p className="text-s fg-secondary">
                   No plan details available.
                 </p>
               )}
-            </div>
+            </Stack>
           </div>
         </div>
       </section>
@@ -777,28 +782,30 @@ function PlanCard({
       <div className={SETTINGS_CARD_GROUP_CLASS}>
         <div className="flex items-start gap-3">
           <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <Heading level={2} variant="section">
-                  Subscription plan
-                </Heading>
-                <PlanPill
-                  planDisplayName={plan ? plan.displayName : 'Free'}
-                  dataTestId="billing-plan-pill"
-                />
-                {trial?.active && <TrialBadge endsAt={trial.endsAt} />}
-                {seatCount !== null && seatCount > 0 && (
-                  <span className="text-xs fg-secondary">
-                    {`${seatCount} ${seatCount === 1 ? 'seat' : 'seats'}`}
-                  </span>
-                )}
-              </div>
+            <Stack gap="inline" className="min-w-0">
+              <Stack gap="tight">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Heading level={2} variant="section">
+                    Subscription plan
+                  </Heading>
+                  <PlanPill
+                    planDisplayName={plan ? plan.displayName : 'Free'}
+                    dataTestId="billing-plan-pill"
+                  />
+                  {trial?.active && <TrialBadge endsAt={trial.endsAt} />}
+                  {seatCount !== null && seatCount > 0 && (
+                    <span className="text-xs fg-secondary">
+                      {`${seatCount} ${seatCount === 1 ? 'seat' : 'seats'}`}
+                    </span>
+                  )}
+                </div>
 
-              <p className="mt-1 text-xs fg-secondary">
-                {showTrialNudge
-                  ? `You're on a free trial — nothing's due yet. Upgrade to ${proName} to lock in your access.`
-                  : 'Your plan and next payment.'}
-              </p>
+                <p className="text-xs fg-secondary">
+                  {showTrialNudge
+                    ? `You're on a free trial — nothing's due yet. Upgrade to ${proName} to lock in your access.`
+                    : 'Your plan and next payment.'}
+                </p>
+              </Stack>
 
               {/* A pending cancellation REPLACES the next-billing line: there is no
               next charge, and a silently-canceling plan that still advertises a
@@ -806,9 +813,9 @@ function PlanCard({
               While trialing, the countdown pill + the nudge above already convey
               the timing, so the plain "Next billing" line is redundant. */}
               {pendingCancellation !== null ? (
-                <>
+                <Stack gap="tight">
                   <p
-                    className="mt-2 text-s fg-secondary"
+                    className="text-s fg-secondary"
                     data-testid="billing-cancels-on"
                   >
                     {pendingCancellationLapsed
@@ -818,7 +825,7 @@ function PlanCard({
                         )}`}
                   </p>
                   <p
-                    className="mt-1 text-xs fg-secondary"
+                    className="text-xs fg-secondary"
                     data-testid="billing-pending-cancel-notice"
                   >
                     {pendingCancellationLapsed
@@ -827,10 +834,10 @@ function PlanCard({
                           pendingCancellation.effectiveAt,
                         )}. You can resume any time before then.`}
                   </p>
-                </>
+                </Stack>
               ) : complimentary ? (
                 <p
-                  className="mt-2 text-s fg-secondary"
+                  className="text-s fg-secondary"
                   data-testid="billing-complimentary"
                 >
                   Complimentary
@@ -839,7 +846,7 @@ function PlanCard({
                 !(trial?.active ?? false) &&
                 nextBillingAmountUsd !== null &&
                 nextBillingDate !== null && (
-                  <p className="mt-2 text-s fg-secondary">
+                  <p className="text-s fg-secondary">
                     {`Next billing: ${formatUsd(
                       nextBillingAmountUsd,
                     )} on ${formatDate(nextBillingDate)}`}
@@ -848,7 +855,7 @@ function PlanCard({
               )}
 
               {summary.coverageNotes.length > 0 && (
-                <ul className="mt-2 flex flex-col gap-1">
+                <ul className="flex flex-col gap-1">
                   {summary.coverageNotes.map((note) => (
                     <li key={note} className="text-xs fg-secondary">
                       {note}
@@ -856,7 +863,7 @@ function PlanCard({
                   ))}
                 </ul>
               )}
-            </div>
+            </Stack>
 
             <div className="flex shrink-0 items-center gap-2">
               <PaymentAreaCta
@@ -927,24 +934,29 @@ function BillingTransactions({
   };
 
   return (
-    <div data-testid="billing-history">
-      <p className="text-s font-medium fg-primary">Transactions</p>
-      <div className="mt-2">
-        <SharedBillingHistoryTable charges={charges} formatDate={formatDate} />
-      </div>
-      <ErrorBanner className="mt-2" error={loadMoreError} />
+    <Stack gap="item" data-testid="billing-history">
+      <Stack gap="inline">
+        <p className="text-s font-medium fg-primary">Transactions</p>
+        <div>
+          <SharedBillingHistoryTable
+            charges={charges}
+            formatDate={formatDate}
+          />
+        </div>
+        <ErrorBanner error={loadMoreError} />
+      </Stack>
       {hasMore && (
         <Button
           size="compact"
           onClick={() => void handleLoadMore()}
           disabled={loadingMore}
           aria-busy={loadingMore}
-          className="mt-3"
+          className="self-start"
         >
           <BusyLabel busy={loadingMore}>Load more</BusyLabel>
         </Button>
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -1215,10 +1227,7 @@ function SavedCardSection({
 }): JSX.Element | null {
   const slots = useBillingSettingsSlots();
   const { blockClassName } = useSettingsPrivacy();
-  const cardLabelClass = withPrivacyClass(
-    'mt-1 text-s fg-primary',
-    blockClassName,
-  );
+  const cardLabelClass = withPrivacyClass('text-s fg-primary', blockClassName);
   const cardLabel = paymentMethod
     ? `${formatCardLabel(
         paymentMethod.brand,
@@ -1232,7 +1241,10 @@ function SavedCardSection({
     if (!cardLabel) return null;
     return (
       <div>
-        <div className="pb-4" data-testid="billing-payment-method">
+        <div
+          className="pb-4 flex flex-col gap-1"
+          data-testid="billing-payment-method"
+        >
           <p className="text-s font-medium fg-primary">Payment method</p>
           <p className={cardLabelClass}>{cardLabel}</p>
         </div>
@@ -1245,16 +1257,16 @@ function SavedCardSection({
     <div>
       <div className="pb-4" data-testid="billing-payment-method">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+          <Stack gap="tight" className="min-w-0">
             <p className="text-s font-medium fg-primary">Payment method</p>
             {cardLabel ? (
               <p className={cardLabelClass}>{cardLabel}</p>
             ) : (
-              <p className="mt-1 text-s fg-secondary">
+              <p className="text-s fg-secondary">
                 No card on file. Add one to fund AI credit top-ups.
               </p>
             )}
-          </div>
+          </Stack>
           <PaymentAreaCta
             action="payment-method"
             hasCard={paymentMethod !== null}

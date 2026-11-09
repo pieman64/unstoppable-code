@@ -5,13 +5,20 @@ import {
 } from '@/components/pages/usage/OtherAccountSnapshots';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type { CodexLoginState } from '@canopy/desktop-shared/types';
+import { toAppError, type AppError } from '@canopy/protocol/app-errors';
 import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import {
+  Stack,
   Button,
   ChoiceList,
   ChoiceListRow,
   DialogModal,
-  ErrorBanner,
 } from '@canopy/ui-shared/components';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { invalidateCodexAuthStatusCache } from '@/hooks/useCodexAuthStatus';
@@ -32,7 +39,14 @@ export function CodexLoginModal({
     phase: 'ready',
     activeWorkCount: 0,
   });
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<InlineFailure | null>(null);
+  /** Shows a failure of a step this dialog started; a cancellation shows nothing. */
+  const fail = useCallback(
+    (appError: AppError | undefined, copy: string): void => {
+      if (appError) setError(inlineFailure(appError, copy));
+    },
+    [],
+  );
   const [method, setMethod] = useState<'chatgpt' | 'chatgptDeviceCode'>(
     'chatgpt',
   );
@@ -88,18 +102,28 @@ export function CodexLoginModal({
     }
   }, []);
 
-  const cancelAfterStart = useCallback((reportError: boolean): void => {
-    if (cancellationScheduled.current) return;
-    cancellationScheduled.current = true;
-    const pending = startPromise.current ?? Promise.resolve();
-    void pending
-      .catch(() => undefined)
-      .then(() => window.api.codexLogin.cancel())
-      .catch(() => {
-        if (reportError)
-          setError("Couldn't finish cancelling sign-in. Try again.");
-      });
-  }, []);
+  const cancelAfterStart = useCallback(
+    (reportError: boolean): void => {
+      if (cancellationScheduled.current) return;
+      cancellationScheduled.current = true;
+      const pending = startPromise.current ?? Promise.resolve();
+      // Cancel once the start settles either way; a failed start already shows
+      // its own error.
+      void Promise.allSettled([pending])
+        .then(() => window.api.codexLogin.cancel())
+        .catch((caught: unknown) => {
+          if (reportError)
+            fail(
+              toAppError(resolveClientAppError(caught)),
+              "Couldn't finish cancelling sign-in. Try again.",
+            );
+          // Closing the dialog cancels in the background, with nowhere to show
+          // a failure.
+          else reportClientAppError(caught);
+        });
+    },
+    [fail],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -115,15 +139,19 @@ export function CodexLoginModal({
       .then((next) => {
         if (!disposed) receive(next);
       })
-      .catch(() => {
-        if (!disposed) setError("Couldn't start Codex sign-in. Try again.");
+      .catch((caught: unknown) => {
+        if (!disposed)
+          fail(
+            toAppError(resolveClientAppError(caught)),
+            "Couldn't start Codex sign-in. Try again.",
+          );
       });
     return (): void => {
       disposed = true;
       unsubscribe();
       if (!completed.current) cancelAfterStart(false);
     };
-  }, [cancelAfterStart, receive]);
+  }, [cancelAfterStart, fail, receive]);
 
   useEffect(() => {
     if (
@@ -135,10 +163,13 @@ export function CodexLoginModal({
     openedAttempt.current = `${state.attemptId}:${state.method}`;
     void window.api.codexLogin
       .openBrowser()
-      .catch(() =>
-        setError("Couldn't open your browser. Use Open browser to try again."),
+      .catch((caught: unknown) =>
+        fail(
+          toAppError(resolveClientAppError(caught)),
+          "Couldn't open your browser. Use Open browser to try again.",
+        ),
       );
-  }, [state.attemptId, state.method, state.phase]);
+  }, [fail, state.attemptId, state.method, state.phase]);
 
   const cancel = (): void => {
     if (!state.attemptId) {
@@ -155,7 +186,12 @@ export function CodexLoginModal({
     void window.api.codexLogin
       .cancel()
       .then(receive)
-      .catch(() => setError("Couldn't finish cancelling sign-in. Try again."));
+      .catch((caught: unknown) =>
+        fail(
+          toAppError(resolveClientAppError(caught)),
+          "Couldn't finish cancelling sign-in. Try again.",
+        ),
+      );
   };
   const start = (nextMethod = method): void => {
     setError(null);
@@ -167,7 +203,12 @@ export function CodexLoginModal({
     startPromise.current = pending;
     void pending
       .then(receive)
-      .catch(() => setError("Couldn't start Codex sign-in. Try again."));
+      .catch((caught: unknown) =>
+        fail(
+          toAppError(resolveClientAppError(caught)),
+          "Couldn't start Codex sign-in. Try again.",
+        ),
+      );
   };
   useCurrentUiStateReporter('auth.loginModal', {
     open: true,
@@ -223,8 +264,11 @@ export function CodexLoginModal({
                 onClick={(): void => {
                   void window.api.codexLogin
                     .openBrowser()
-                    .catch(() =>
-                      setError("Couldn't open your browser. Try again."),
+                    .catch((caught: unknown) =>
+                      fail(
+                        toAppError(resolveClientAppError(caught)),
+                        "Couldn't open your browser. Try again.",
+                      ),
                     );
                 }}
               >
@@ -242,7 +286,16 @@ export function CodexLoginModal({
               size="compact"
               variant="primary"
               onClick={(): void => {
-                void window.api.codexLogin.retryVerification().then(receive);
+                setError(null);
+                void window.api.codexLogin
+                  .retryVerification()
+                  .then(receive)
+                  .catch((caught: unknown) =>
+                    fail(
+                      toAppError(resolveClientAppError(caught)),
+                      "Couldn't verify your Codex account.",
+                    ),
+                  );
               }}
             >
               Try again
@@ -253,7 +306,7 @@ export function CodexLoginModal({
     >
       <div className="flex flex-col">
         <div
-          className="space-y-4 px-6 pt-6 pb-4.5 text-s fg-primary"
+          className="flex flex-col px-6 pt-6 pb-4.5 text-s fg-primary gap-4"
           aria-live="polite"
         >
           {state.phase === 'confirm' ? (
@@ -282,7 +335,7 @@ export function CodexLoginModal({
             <>
               <p>Finish signing in in your browser.</p>
               {state.userCode ? (
-                <div className="space-y-2">
+                <Stack gap="inline">
                   <p className="fg-secondary">Enter this code when asked:</p>
                   <div className="flex items-center gap-3">
                     <code
@@ -303,7 +356,7 @@ export function CodexLoginModal({
                       {copied ? 'Copied' : 'Copy code'}
                     </Button>
                   </div>
-                </div>
+                </Stack>
               ) : (
                 <p className="fg-secondary">
                   This window will update when sign-in finishes. Your paused
@@ -327,6 +380,7 @@ export function CodexLoginModal({
           {snapshots.length > 0 && (
             <>
               <Button
+                className="self-start"
                 size="compact"
                 variant="secondary"
                 data-testid="auth-login-snapshots-toggle"
@@ -349,7 +403,13 @@ export function CodexLoginModal({
               )}
             </>
           )}
-          <ErrorBanner error={error} className="" />
+          <DesktopErrorBanner
+            className=""
+            error={error?.error}
+            {...(error?.details === undefined
+              ? {}
+              : { details: error.details })}
+          />
         </div>
       </div>
     </DialogModal>

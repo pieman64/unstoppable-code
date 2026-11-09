@@ -1,3 +1,4 @@
+import { applyGlobalPluginDefaultsSaveRule } from '@canopy/desktop-shared/node/preferences/global-plugin-defaults';
 import { applyTerminalSettingsSaveRule } from '@canopy/desktop-shared/node/preferences/terminal-settings';
 import {
   applyOnboardingTipsUpdate,
@@ -8,7 +9,7 @@ import {
 } from '@canopy/protocol/onboarding-tips';
 import { isDataSharingOptInFeature } from '@canopy/protocol/canopy-server';
 import { DATA_SHARING_OPT_IN_SCOPES } from '@canopy/ui-shared/lib/data-sharing-features';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import type { TelemetryEnforcement } from '@canopy/desktop-shared/lib/telemetry-enforcement';
 import type {
   DataSharingOptInResult,
@@ -78,6 +79,7 @@ import {
 } from '../lifecycle/background-presence';
 import { requestActivationRecompute } from '../notifications/campaigns/scheduler';
 import { getWakeLockService } from '../power/wake-lock-service';
+import { getUsageDataPolicy } from '../lib/usage-data-policy';
 import { getMemoryDiagnosticsService } from '../memory-diagnostics';
 import { getBrowserService } from '../browser/browser-service-registry';
 import { registerIpcHandler } from './register';
@@ -622,6 +624,17 @@ export function registerPreferenceHandlers(): void {
       if (
         Object.prototype.hasOwnProperty.call(
           preferences,
+          'claudeModAdmissions',
+        ) ||
+        Object.prototype.hasOwnProperty.call(preferences, 'claudeModsDisabled')
+      ) {
+        throw new Error(
+          'Claude Mod consent and the kill switch must be changed with the typed Claude Mod admission service.',
+        );
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(
+          preferences,
           'accountProxyConnection',
         )
       ) {
@@ -662,6 +675,10 @@ export function registerPreferenceHandlers(): void {
       // older controller sends this exact two-key intent; a wider snapshot may
       // be stale and never changes them.
       applyTerminalSettingsSaveRule(preferences, rendererPatch);
+      // Global plugin defaults also change through core.catalog (CAN-4123).
+      // Every writer sends them as a one-key save; a wider snapshot may hold
+      // a copy read before that change and never puts it back (CAN-5766).
+      applyGlobalPluginDefaultsSaveRule(preferences, rendererPatch);
       const previous = await readPreferencesFile();
       const previousCodeGraph = getCodeGraphPreferencesSnapshot();
       const proxy = getMcpHttpProxyService();
@@ -680,7 +697,18 @@ export function registerPreferenceHandlers(): void {
       let defaultBrowserRegistration: Promise<unknown> | undefined;
       const { previous: committedPrevious, next: normalized } =
         await updatePreferencesFileWithPrevious(
-          () => rendererPatch,
+          // Usage data merges per key: a partial patch must not turn the
+          // flows it omits back on through their defaults.
+          (latest) =>
+            rendererPatch.usageData
+              ? {
+                  ...rendererPatch,
+                  usageData: {
+                    ...latest.usageData,
+                    ...rendererPatch.usageData,
+                  },
+                }
+              : rendererPatch,
           (committed) => {
             // Apply in commit order: an older overlapping save must not
             // re-enable diagnostics after a newer save turned them off.
@@ -692,6 +720,11 @@ export function registerPreferenceHandlers(): void {
             setAppAdvisorProjectAgentAccess(
               committed.appAdvisorProjectAgentAccess,
             );
+            // The full merged-and-normalized object, never the partial patch,
+            // applied in commit order like the values above. Applied on every
+            // commit: a commit proves the stored file is real again, which
+            // also ends a fail-closed startup read of unreadable preferences.
+            getUsageDataPolicy().setPreferences(committed.usageData);
             if ('useAsSystemDefaultBrowser' in preferences) {
               defaultBrowserRegistration = enqueueDefaultBrowserRegistration(
                 committed.useAsSystemDefaultBrowser === true,
@@ -793,7 +826,7 @@ export function registerPreferenceHandlers(): void {
         notifyPortalStructureChanged();
       }
       if (
-        'globalPluginSelections' in preferences &&
+        'globalPluginSelections' in rendererPatch &&
         !pluginSelectionsEqual(
           committedPrevious.globalPluginSelections,
           normalized.globalPluginSelections,

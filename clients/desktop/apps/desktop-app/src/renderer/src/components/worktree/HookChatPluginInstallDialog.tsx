@@ -1,4 +1,5 @@
-import { Button, Surface } from '@canopy/ui-shared/components';
+import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Stack, Button, Surface } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Checkbox } from '@canopy/ui-shared/components';
 import type { HookChatPluginDependencyItem } from '@canopy/desktop-shared/types';
@@ -354,7 +355,7 @@ export function HookChatPluginInstallDialog({
         </p>
 
         {installable.length > 0 && (
-          <div className="space-y-2">
+          <Stack gap="inline">
             <div className="text-2xs font-medium fg-secondary">Installable</div>
             <Surface variant="outline">
               <ul className="divide-y">
@@ -373,49 +374,49 @@ export function HookChatPluginInstallDialog({
                         className="mt-0.5"
                         aria-label={`Install ${item.displayName}`}
                       />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium fg-primary">
-                            {item.displayName}
-                          </span>
-                          <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
-                            {item.kind}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 fg-secondary">
-                          {item.displaySource}
-                        </div>
-                        {describeUsage(item) && (
-                          <div className="mt-0.5 text-3xs fg-secondary/80">
-                            {describeUsage(item)}
+                      <Stack gap="tight" className="min-w-0 flex-1">
+                        <div className="flex flex-col gap-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium fg-primary">
+                              {item.displayName}
+                            </span>
+                            <Badge>{item.kind}</Badge>
                           </div>
-                        )}
+                          <div className="mt-0.5 fg-secondary">
+                            {item.displaySource}
+                          </div>
+                          {describeUsage(item) && (
+                            <div className="mt-0.5 text-3xs fg-secondary/80">
+                              {describeUsage(item)}
+                            </div>
+                          )}
+                        </div>
                         {status.state === 'in-progress' && (
-                          <div className="mt-1 text-2xs fg-secondary">
+                          <div className="text-2xs fg-secondary">
                             Installing…
                           </div>
                         )}
                         {status.state === 'success' && (
-                          <div className="mt-1 text-2xs fg-success-strong">
+                          <div className="text-2xs fg-success-strong">
                             Installed
                           </div>
                         )}
                         {status.state === 'error' && (
-                          <div className="mt-1 text-2xs fg-destructive-strong">
+                          <div className="text-2xs fg-destructive-strong">
                             {status.message}
                           </div>
                         )}
-                      </div>
+                      </Stack>
                     </li>
                   );
                 })}
               </ul>
             </Surface>
-          </div>
+          </Stack>
         )}
 
         {unavailable.length > 0 && (
-          <div className="space-y-2">
+          <Stack gap="inline">
             <div className="text-2xs font-medium fg-secondary">
               Cannot install automatically
             </div>
@@ -427,9 +428,7 @@ export function HookChatPluginInstallDialog({
                       <span className="font-medium fg-primary">
                         {item.displayName}
                       </span>
-                      <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
-                        {item.kind}
-                      </span>
+                      <Badge>{item.kind}</Badge>
                     </div>
                     <div className="mt-0.5 fg-secondary">
                       {item.displaySource}
@@ -447,7 +446,7 @@ export function HookChatPluginInstallDialog({
               These references can&apos;t be installed from this dialog. Add
               them manually from the Plugins or Skills tab if you need them.
             </p>
-          </div>
+          </Stack>
         )}
 
         <div className="flex items-center justify-between gap-2">

@@ -8,7 +8,7 @@ import {
   type JSX,
 } from 'react';
 import type { CodexAccountModelAccessFailure } from '@canopy/protocol/auth-recovery';
-import { computeUsageLimitResumePrompt } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { computeUsageLimitResumePrompt } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import { CodexAccountModelNotice } from '@canopy/ui-shared/components';
 import {
   useChatStore,

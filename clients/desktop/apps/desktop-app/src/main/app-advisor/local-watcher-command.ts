@@ -5,7 +5,7 @@ import { PassThrough } from 'node:stream';
 import { basename, dirname } from 'node:path';
 import { fsyncDirectory } from '../lib/fsync-directory';
 import { isErrnoException, isRecord } from '../lib/type-guards';
-import { findExecutableOnPath } from '@canopy/desktop-shared/node/lib/path-lookup';
+import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import {
   LOCAL_WATCHER_LIMITS,
   type WatcherCommandOutput,

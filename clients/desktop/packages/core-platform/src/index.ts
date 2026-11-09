@@ -97,3 +97,17 @@ export {
   type HostTrustGeneration,
   type PreparedTrustScope,
 } from './prepared-trust';
+export {
+  observeLinuxColdProcess,
+  observeLinuxColdProcesses,
+  LinuxColdInspectionError,
+  type LinuxColdIO,
+} from './internal-root-cold/linux';
+export {
+  WindowsColdInspectionError,
+  observeWindowsColdProcess,
+  observeWindowsColdProcesses,
+  parseWindowsColdObservation,
+} from './internal-root-cold/windows';
+export { createLinuxColdPathMapper } from './internal-root-cold/linux-mounts';
+export type { NativeColdProcess } from './internal-root-cold/types';

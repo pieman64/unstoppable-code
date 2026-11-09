@@ -4,10 +4,11 @@ import {
   type PipelineCatalogIssue,
   type CuratedPipelineSummary,
 } from '@canopy/protocol/pipeline-catalog';
-import { API_PIPELINE_TRIGGER_TYPES } from '@canopy/protocol/pipelines';
+import { PORTABLE_PIPELINE_TRIGGER_TYPES } from '@canopy/protocol/pipelines';
 import type { PipelinePackageManifestV1 } from '@canopy/protocol/pipelines';
 import { normalizePipeline } from './normalize-pipeline';
 import { getTriggerTypes } from './document';
+import { LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE } from './portability';
 import { parsePipelineText } from './parse-pipeline';
 
 export class PipelineCatalogValidationError extends Error {
@@ -231,10 +232,14 @@ export function validateCuratedPipeline(
       : record(raw.on)
         ? Object.keys(raw.on)
         : [];
+  // A readable trigger that can't be published yet gets its own reason.
+  if (triggers.includes('workflow'))
+    fail('on', 'invalid_trigger', LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE);
   if (
     !triggers.length ||
     triggers.some(
-      (trigger) => !API_PIPELINE_TRIGGER_TYPES.some((type) => type === trigger),
+      (trigger) =>
+        !PORTABLE_PIPELINE_TRIGGER_TYPES.some((type) => type === trigger),
     )
   )
     fail(

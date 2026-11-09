@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type { SettingsSaveState } from '@canopy/ui-shared/components';
 import { Button, ErrorBanner } from '@canopy/ui-shared/components';
@@ -358,7 +359,7 @@ export function CodeStartPageSettings({
 
   if (layout === 'settings') {
     return (
-      <div className="flex flex-col gap-10">
+      <Stack gap="hero">
         <ProjectSettingsScopeGroup scope={mode} onScopeChange={setMode}>
           {mode === 'local' ? (
             <SettingsRow
@@ -434,32 +435,34 @@ export function CodeStartPageSettings({
               allowUseTeamSetting={mode === 'local'}
             />
           </SettingsGroup>
-          <ErrorBanner error={error} className="" />
+          <ErrorBanner className="" error={error} />
         </SettingsSection>
-      </div>
+      </Stack>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <SourceLocalToggle mode={mode} onChange={setMode} />
-      <SettingsGroup>
-        <StartPageSettingControl
-          layout="row"
-          workspaceId={project.id}
-          target={
-            mode === 'source' && worktreeId
-              ? { kind: 'worktree', worktreeId }
-              : { kind: 'baseline' }
-          }
-          projectType={project.type}
-          value={value}
-          onChange={changeValue}
-          onValidityChange={setStartPageValid}
-          allowUseTeamSetting={mode === 'local'}
-        />
-      </SettingsGroup>
-      <ErrorBanner error={error} className="" />
+    <Stack gap="group">
+      <Stack gap="group">
+        <SourceLocalToggle mode={mode} onChange={setMode} />
+        <SettingsGroup>
+          <StartPageSettingControl
+            layout="row"
+            workspaceId={project.id}
+            target={
+              mode === 'source' && worktreeId
+                ? { kind: 'worktree', worktreeId }
+                : { kind: 'baseline' }
+            }
+            projectType={project.type}
+            value={value}
+            onChange={changeValue}
+            onValidityChange={setStartPageValid}
+            allowUseTeamSetting={mode === 'local'}
+          />
+        </SettingsGroup>
+      </Stack>
+      <ErrorBanner className="" error={error} />
       <div
         className={`flex items-center ${mode === 'source' ? 'justify-between' : 'justify-end'}`}
       >
@@ -493,6 +496,6 @@ export function CodeStartPageSettings({
           />
         )}
       </div>
-    </div>
+    </Stack>
   );
 }

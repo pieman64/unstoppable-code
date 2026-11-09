@@ -1,4 +1,4 @@
-import type { CodexTransportErrorDetail } from '../../agent-failures/codex-transport-failure';
+import type { CodexTransportErrorDetail } from '@canopy/execution-engine/agent-failures/codex-transport-failure';
 import {
   CodexSharedRestartRecoveryError,
   isCodexAppServerRequestTimeoutError,

@@ -1,4 +1,4 @@
-import type { BrowserActionTargetState } from '@canopy/desktop-shared/types/browser';
+import type { BrowserActionTargetState } from '@canopy/execution-engine/types/browser';
 import { isCDPRecord, readCDPInteger } from '../frames/cdp-decode';
 import { remoteObjectId, remoteValue } from '../frames/host-cdp';
 import {

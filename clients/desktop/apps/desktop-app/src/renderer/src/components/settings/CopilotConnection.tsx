@@ -4,10 +4,19 @@ import {
   Button,
   CopyButton,
   ProviderStatusDot,
-  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import type { CopilotConnectionStatus } from '@canopy/desktop-shared/types';
-import { extractIpcErrorMessage } from '@/lib/errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import {
+  inlineFailure,
+  inlineFailureWithMainSentence,
+  type InlineFailure,
+} from '@/lib/inline-app-error';
 import { emitPreferencesUpdated } from '@/lib/preferences-events';
 import { GitHubIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
@@ -21,16 +30,20 @@ interface CopilotConnectionProps {
   readonly placement?: 'row' | 'section';
 }
 
-/** A path or an OS error code (ENOENT, EACCES, ...) marks text as raw. */
-const RAW_FAILURE_TEXT = /[\\/]|\bE[A-Z]{3,}\b/;
+const ACTION_FAILED: Readonly<
+  Record<'connect' | 'disconnect' | 'changeAccount', string>
+> = {
+  connect: "Couldn't connect Copilot.",
+  disconnect: "Couldn't disconnect Copilot.",
+  changeAccount: "Couldn't change the Copilot account.",
+};
 
 export function CopilotConnection({
   placement = 'section',
 }: CopilotConnectionProps = {}): JSX.Element | null {
   const [status, setStatus] = useState<CopilotConnectionStatus>();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const [errorDetails, setErrorDetails] = useState<string>();
+  const [error, setError] = useState<InlineFailure | null>(null);
   const mounted = useRef(true);
   const operation = useRef(false);
   // A cancelled setup rejects with an abort; that is the user's choice, not a
@@ -62,20 +75,30 @@ export function CopilotConnection({
               account: null,
               phase: 'idle',
             });
-            setError(
-              'Copilot sign-in changed. Reconnect the account you want to use.',
-            );
+            setError({
+              error:
+                'Copilot sign-in changed. Reconnect the account you want to use.',
+            });
           }
         }
       })
-      .catch(() => {
-        if (mounted.current && !operation.current)
-          setError('Could not check Copilot setup. Reopen this page to retry.');
+      .catch((reason: unknown) => {
+        const appError = toAppError(resolveClientAppError(reason));
+        if (appError && mounted.current && !operation.current)
+          setError(
+            inlineFailure(
+              appError,
+              "Couldn't check Copilot setup. Reopen this page to check again.",
+            ),
+          );
       });
     return (): void => {
       mounted.current = false;
       off();
-      if (operation.current) void api.cancel().catch(() => undefined);
+      if (operation.current)
+        void api.cancel().catch((reason: unknown) => {
+          reportClientAppError(reason);
+        });
     };
   }, []);
 
@@ -87,8 +110,7 @@ export function CopilotConnection({
     operation.current = true;
     cancelRequested.current = false;
     setBusy(true);
-    setError(undefined);
-    setErrorDetails(undefined);
+    setError(null);
     try {
       await api[kind]();
       const next = await api.status();
@@ -96,16 +118,11 @@ export function CopilotConnection({
       emitPreferencesUpdated(preferences);
       if (mounted.current) setStatus(next);
     } catch (reason) {
-      if (mounted.current && !cancelRequested.current) {
-        // Main writes its own sentences (a declined sign-in, a blocking
-        // policy). Raw text with a path or an OS code is never shown:
-        // our sentence leads and Copy details carries it.
-        const message =
-          reason instanceof Error ? extractIpcErrorMessage(reason) : '';
-        const ours = message !== '' && !RAW_FAILURE_TEXT.test(message);
-        setError(ours ? message : 'Copilot setup failed. Try again.');
-        setErrorDetails(ours || message === '' ? undefined : message);
-      }
+      // Main writes its own sentences (a declined sign-in, a blocking
+      // policy), which lead; raw text leaves ours leading.
+      const appError = toAppError(resolveClientAppError(reason));
+      if (appError && mounted.current && !cancelRequested.current)
+        setError(inlineFailureWithMainSentence(appError, ACTION_FAILED[kind]));
     } finally {
       operation.current = false;
       if (mounted.current) setBusy(false);
@@ -177,7 +194,15 @@ export function CopilotConnection({
               data-testid="copilot-cancel"
               onClick={() => {
                 cancelRequested.current = true;
-                void window.api.copilotConnection?.cancel();
+                void window.api.copilotConnection
+                  ?.cancel()
+                  .catch((reason: unknown) => {
+                    const appError = toAppError(resolveClientAppError(reason));
+                    if (appError && mounted.current)
+                      setError(
+                        inlineFailure(appError, "Couldn't stop Copilot setup."),
+                      );
+                  });
               }}
             >
               Cancel
@@ -212,7 +237,7 @@ export function CopilotConnection({
       {/* The pitch answers what Connect does, so it is spent once Copilot is
           connected and stays through setup. */}
       {!connected && (
-        <div className="space-y-1 text-xs text-pretty fg-secondary">
+        <div className="flex flex-col text-xs text-pretty fg-secondary gap-1">
           <p>
             Connect your GitHub account to use Copilot models, tools, and
             skills.
@@ -263,11 +288,12 @@ export function CopilotConnection({
           out first.
         </p>
       )}
-      <ErrorBanner
+      <DesktopErrorBanner
         className=""
-        error={error}
+        error={error?.error}
         testId="copilot-connection-error"
-        {...(errorDetails ? { details: errorDetails } : {})}
+        {...(error?.details === undefined ? {} : { details: error.details })}
+        onDismiss={(): void => setError(null)}
       />
     </SettingsRow>
   );

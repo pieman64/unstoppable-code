@@ -1,6 +1,7 @@
 import { Heading } from './Heading';
-import type { JSX, ReactNode } from 'react';
+import { Children, type JSX, type ReactNode } from 'react';
 import { Button } from './Button';
+import { Stack } from './Stack';
 
 export interface SettingsDangerConfirmBlockProps {
   /** Section heading rendered inside the bordered card. */
@@ -10,6 +11,8 @@ export interface SettingsDangerConfirmBlockProps {
   /** Optional supplementary message rendered below `description` (e.g. an
    * "active sessions" warning). */
   warning?: ReactNode;
+  /** Warning paragraphs; this block owns their spacing. Empty items are omitted. */
+  warnings?: readonly ReactNode[];
   /** True when the destructive action should be disabled before confirmation
    * (e.g. active sessions, missing source repo path). */
   triggerDisabled?: boolean;
@@ -45,6 +48,7 @@ export function SettingsDangerConfirmBlock({
   title,
   description,
   warning,
+  warnings,
   triggerDisabled,
   triggerLabel,
   confirming,
@@ -57,18 +61,22 @@ export function SettingsDangerConfirmBlock({
   variant = 'destructive',
   surface = 'card',
 }: SettingsDangerConfirmBlockProps): JSX.Element {
+  const warningItems = Children.toArray(warnings);
   if (surface === 'row') {
     return (
       <div className="flex min-h-10 items-center justify-between gap-6">
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <div className="text-s font-medium fg-primary">{title}</div>
-          {description && (
-            <div className="text-xs text-pretty fg-secondary">
-              {description}
-            </div>
-          )}
-          {warning}
-        </div>
+        <Stack gap="tight" className="min-w-0 flex-1">
+          <div className="flex flex-col gap-0.5">
+            <div className="text-s font-medium fg-primary">{title}</div>
+            {description && (
+              <div className="text-xs text-pretty fg-secondary">
+                {description}
+              </div>
+            )}
+            {warning}
+          </div>
+          {warningItems.length > 0 && <Stack gap="tight">{warningItems}</Stack>}
+        </Stack>
         <div className="flex shrink-0 items-center gap-2">
           {!confirming ? (
             <Button
@@ -111,30 +119,35 @@ export function SettingsDangerConfirmBlock({
       : 'border-line-attention/30';
 
   return (
-    <div className={`rounded-lg border ${cardBorderClass} p-3`}>
-      <Heading
-        level={3}
-        variant="title"
-        tone={variant === 'destructive' ? 'destructive' : undefined}
-      >
-        {title}
-      </Heading>
-      {description && (
-        <p className="mt-1 text-xs fg-secondary">{description}</p>
-      )}
-      {warning}
+    <div
+      className={`flex flex-col gap-2 rounded-lg border ${cardBorderClass} p-3`}
+    >
+      <div>
+        <Stack gap="tight">
+          <Heading
+            level={3}
+            variant="title"
+            tone={variant === 'destructive' ? 'destructive' : undefined}
+          >
+            {title}
+          </Heading>
+          {description && <p className="text-xs fg-secondary">{description}</p>}
+          {warningItems.length > 0 && <Stack gap="tight">{warningItems}</Stack>}
+        </Stack>
+        {warning}
+      </div>
       {!confirming ? (
         <Button
           onClick={onConfirmStart}
           disabled={triggerDisabled || isWorking}
           variant={variant}
           size="sm"
-          className="mt-2"
+          className="self-start"
         >
           {triggerLabel}
         </Button>
       ) : (
-        <div className="mt-2 flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <Button
             onClick={onConfirm}
             disabled={isWorking}

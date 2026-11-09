@@ -1,4 +1,4 @@
-import type { SharedPipelineSaveImpact } from '@canopy/desktop-shared/types/pipeline';
+import type { SharedPipelineSaveImpact } from '@canopy/execution-engine/types/pipeline';
 
 export async function getSharedPipelineSaveImpact(
   remoteId: string,

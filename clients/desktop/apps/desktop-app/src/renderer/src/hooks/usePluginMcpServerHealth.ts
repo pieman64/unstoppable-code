@@ -3,7 +3,7 @@ import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type {
   DetectedMcpServerInfo,
   McpServerIndexEntry,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import type { PluginMcpServerInfo } from '@canopy/protocol/plugins';
 import type {
   McpTestConnectionOutcome,

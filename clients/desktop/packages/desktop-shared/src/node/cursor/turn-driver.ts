@@ -5,7 +5,7 @@ import { Readable, Writable } from 'node:stream';
 import type { McpServer, SessionConfigOption } from '@agentclientprotocol/sdk';
 import type { CursorReportedUsage } from '@canopy/agent-transcript/lib/cursor-usage';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
-import type { CanopyInjectedToolKey } from '../../lib/canopy-injected-tools';
+import type { CanopyInjectedToolKey } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   parseCursorMcpToolCall,
   resolveCursorCanopyToolKey,
@@ -18,7 +18,7 @@ import {
   parseCursorModelVariant,
   planCursorThinking,
   type CursorConfigSet,
-} from '../../lib/cursor-thinking';
+} from '@canopy/execution-engine/lib/cursor-thinking';
 import { connectAcp, type AcpClient } from '../acp';
 import { isTransientAcpFailure } from './acp-failure';
 import {
@@ -628,10 +628,12 @@ export async function runCursorTurn(
         host.onPromptAccepted?.();
       }
     };
+    const { stdin } = child;
+    if (!stdin) throw new Error('The Cursor ACP child has no stdin.');
     client = await connectAcp({
       transport: {
         input: Readable.toWeb(child.stdout),
-        output: Writable.toWeb(child.stdin),
+        output: Writable.toWeb(stdin),
         close: (): void => {
           hook?.revoke();
           void closeChild();

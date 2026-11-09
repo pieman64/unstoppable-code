@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { useCloudOrigin } from '@/lib/cloud-origin';
 import {
@@ -54,6 +55,7 @@ import {
   SHARED_AGENTS_CHANGED_EVENT,
   SHARED_PLUGINS_CHANGED_EVENT,
 } from '@/hooks/useSharedMarketplaceShares';
+import { DetailEntityTypeProvider } from '@canopy/ui-shared/components';
 import {
   DetailActionBar,
   DetailActionSlotsProvider,
@@ -85,7 +87,7 @@ import {
 import type {
   McpServerIndexEntry,
   ProviderConnectorListResult,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   curatedMcpDesktopOnly,
   type CuratedMcpServerEntry,
@@ -117,7 +119,7 @@ import {
 import { CUSTOM_SKILL_SOURCE_ID } from '@/lib/sharedSkillImport';
 import { entryIdForSelection } from '@/lib/relatedCapabilities';
 import { PipelineCatalogDetail } from '../pipeline/PipelineCatalogDetail';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import {
   AutomationCatalogDetail,
@@ -128,7 +130,7 @@ import type { CuratedAutomationsController } from '@/hooks/useCuratedAutomations
 import type {
   AgentModelDefinition,
   SharedAgentSummary,
-} from '@canopy/desktop-shared/types/agent-models';
+} from '@canopy/execution-engine/types/agent-models';
 import { LocalAgentMarketplaceDetail } from './LocalAgentMarketplaceDetail';
 import {
   getShareablePluginRefKey,
@@ -251,6 +253,8 @@ export interface PluginEntryDetailProps {
    * CAN-2382). The host swaps the selected entry and keeps a back stack.
    */
   onOpenEntry?: (entryId: string) => void;
+  /** Opens a marketplace source's page, to manage what it installed. */
+  onOpenMarketplaceSource?: (sourceId: string) => void;
   /** Open a related pipeline while preserving host-owned detail history. */
   onOpenPipeline?: (link: PipelineEditDeepLink) => void;
   returnToMarketplace?: CapabilityMarketplaceReturnTarget;
@@ -542,7 +546,15 @@ function SharedDetailShellWithUnshare({
   );
 }
 
-export function PluginEntryDetail({
+export function PluginEntryDetail(props: PluginEntryDetailProps): JSX.Element {
+  return (
+    <DetailEntityTypeProvider kind={props.entry.kind}>
+      <PluginEntryDetailContent {...props} />
+    </DetailEntityTypeProvider>
+  );
+}
+
+function PluginEntryDetailContent({
   entry,
   presentation = 'modal',
   initialIntent = 'view',
@@ -574,6 +586,7 @@ export function PluginEntryDetail({
   sharedBlueprints = [],
   onClose,
   onOpenEntry,
+  onOpenMarketplaceSource,
   onOpenPipeline,
   returnToMarketplace,
   onNavigateBack,
@@ -596,6 +609,7 @@ export function PluginEntryDetail({
   // Local overrides: an install or compatibility toggle re-renders the
   // detail immediately, while the shared cache write below keeps every other
   // surface (row states, install counters) in agreement.
+  const [mcpSignInOpen, setMcpSignInOpen] = useState(false);
   const [pluginOverride, setPluginOverride] = useState<PluginInfo | null>(null);
   const [pluginAddOpen, setPluginAddOpen] = useState(false);
   const [curatedEditorOpen, setCuratedEditorOpen] = useState(false);
@@ -752,6 +766,13 @@ export function PluginEntryDetail({
     () => resolvePlugin(marketplaces, ref),
     [marketplaces, ref],
   );
+  // The source list is these same rows, so a marketplace outside them has no
+  // page to open and its name stays plain text.
+  const openSource = (sourceId: string): (() => void) | undefined =>
+    onOpenMarketplaceSource &&
+    marketplaces.some((marketplace) => marketplace.id === sourceId)
+      ? (): void => onOpenMarketplaceSource(sourceId)
+      : undefined;
   // The viewer's own share of this installed plugin (an account share, a
   // public link or both), matched on its share key, for the Shared by you
   // section (CAN-4842).
@@ -1059,7 +1080,7 @@ export function PluginEntryDetail({
         audienceCount={agentAudienceCount}
         copyTarget={{ kind: 'agent', itemId: agent.id, facts: agent }}
       >
-        <div className="space-y-6">
+        <Stack gap="section">
           <SharedAgentMarketplaceDetail agent={agent} />
           <SharedByYou
             kind="agent"
@@ -1068,7 +1089,7 @@ export function PluginEntryDetail({
             facts={agent}
             onUnshared={sharedByYouUnshared('agent', agent.id, agent.name)}
           />
-        </div>
+        </Stack>
       </SharedDetailShell>
     );
   }
@@ -1115,7 +1136,7 @@ export function PluginEntryDetail({
           facts: plugin,
         }}
       >
-        <div className="space-y-6">
+        <Stack gap="section">
           <SharedPluginMarketplaceDetail plugin={plugin} />
           <SharedByYou
             kind="plugin"
@@ -1128,7 +1149,7 @@ export function PluginEntryDetail({
               plugin.name,
             )}
           />
-        </div>
+        </Stack>
       </SharedDetailShell>
     );
   }
@@ -1378,6 +1399,7 @@ export function PluginEntryDetail({
             pluginTryIt(onInstall, busy)
           }
           alternatives={entry.alsoAvailableFrom}
+          onOpenSource={openSource(resolved.marketplace.id)}
           onOpenEntryId={onOpenEntry}
           bundledServerRows={entry.bundledServerRows}
           // A page leaves through its breadcrumb (CAN-4261); the plugin's
@@ -1399,6 +1421,7 @@ export function PluginEntryDetail({
             <InstalledEntryStatusSection
               entry={entry}
               onUninstalled={onClose}
+              onManageSource={openSource(resolved.marketplace.id)}
             />
           }
           relatedContent={
@@ -1775,7 +1798,7 @@ export function PluginEntryDetail({
       onClose={onClose}
       onNavigateBack={onNavigateBack}
       shareAction={shareAction}
-      fluid
+      fluid={mcpSignInOpen}
     >
       <>
         <McpAccountConnectionPicker
@@ -1804,10 +1827,16 @@ export function PluginEntryDetail({
           // creates must not remount the detail and replay its Add (REG-3033).
           key={`${entry.id}:${selectedAccountConnection?.id ?? 'primary'}`}
           {...connectionSource}
+          onSignInBrowserChange={setMcpSignInOpen}
           statusContent={
             <InstalledEntryStatusSection
               entry={entry}
               onUninstalled={onClose}
+              onManageSource={
+                entry.ref.type === 'marketplace-plugin'
+                  ? openSource(entry.ref.marketplaceId)
+                  : undefined
+              }
             />
           }
           installedServerId={

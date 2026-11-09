@@ -31,7 +31,7 @@ import type {
   BrowserTransferErrorCode,
   BrowserTransferStatus,
   BrowserUploadTransfer,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import { getEnhancedEnv } from '@canopy/desktop-shared/pipelines/config-paths';
 import { getBrowserTaskFilesDir, getWorktreeDataDir } from '../../lib/paths';
 import { sanitizeDownloadName, uniqueDownloadName } from './download-name';

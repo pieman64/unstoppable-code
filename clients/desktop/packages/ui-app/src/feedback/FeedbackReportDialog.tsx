@@ -169,6 +169,7 @@ export function FeedbackReportDialog({
   initialReportType,
   error,
   telemetry,
+  ownerDocument,
 }: FeedbackReportDialogContentProps): JSX.Element {
   const [draft, setDraft] = useState<DraftState>({ status: 'loading' });
   const draftPromise = useRef<Promise<DraftState> | null>(null);
@@ -508,6 +509,7 @@ export function FeedbackReportDialog({
       mode={error ? 'error' : 'feedback'}
       {...(initialReportType ? { initialReportType } : {})}
       onClose={onClose}
+      ownerDocument={ownerDocument}
       onDraftChange={setForm}
       onSubmit={handleSubmit}
       submitBlocked={diagnosticsHeld}

@@ -1,5 +1,6 @@
 'use client';
 
+import { Stack } from '../Stack';
 import {
   memo,
   useCallback,
@@ -267,7 +268,7 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
       className="min-w-0 py-3"
     >
       {row.state === 'editing' ? (
-        <div className="space-y-3">
+        <Stack gap="item">
           {agentTitle}
           <div className="text-s fg-secondary" role="status" aria-live="polite">
             {LABELS[row.state]}
@@ -331,7 +332,7 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
               </p>
             )}
           </MessageEditCard>
-        </div>
+        </Stack>
       ) : (
         <div className="flex justify-end">
           <div className="group relative min-w-0 max-w-full">
@@ -561,9 +562,10 @@ export const InputDeliveryList = memo(function InputDeliveryList({
   ) : null;
   if (visible.length === 0) return <>{notice}</>;
   return (
-    <section
+    <Stack
       aria-label="Pending and cancelled messages"
-      className="space-y-3"
+      as="section"
+      gap="item"
       onFocusCapture={(event) => {
         const row = event.target.closest<HTMLElement>('[data-input-row-id]');
         if (row?.dataset.inputRowId) {
@@ -593,6 +595,6 @@ export const InputDeliveryList = memo(function InputDeliveryList({
           receivingContext={receivingContext}
         />
       ))}
-    </section>
+    </Stack>
   );
 });

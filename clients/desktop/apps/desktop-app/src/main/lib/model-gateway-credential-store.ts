@@ -1,5 +1,5 @@
 import { normalizeModelGatewayBaseUrl } from '@canopy/protocol/canopy-server';
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';

@@ -61,11 +61,11 @@ import {
   type ModelHarness,
   type WorkspaceType,
 } from '@canopy/desktop-shared/types';
-import { AGENT_MODEL_PREFIX } from '@canopy/desktop-shared/types/agent-models';
+import { AGENT_MODEL_PREFIX } from '@canopy/execution-engine/types/agent-models';
 import type {
   PipelineChatSendRecord,
   PipelinePackageCapabilityOverlay,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { z } from 'zod';
 import { dispatchPipelineProjectBotAction } from '../agent-actions/desktop-project-bot-port';
 import {
@@ -1859,7 +1859,9 @@ interface LiveOperation {
   fingerprint: string;
   result: Promise<PipelineHostActionResult>;
   /** The operation's timeout finalizer once registered; joiners share it. */
-  shared: { finalizer?: () => Promise<PipelineHostActionResult> };
+  shared: {
+    finalizer?: () => Promise<PipelineHostActionResult | undefined>;
+  };
 }
 
 /** One live operation per idempotency key: concurrent callers share it. */

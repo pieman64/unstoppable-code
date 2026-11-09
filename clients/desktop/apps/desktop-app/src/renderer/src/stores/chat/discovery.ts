@@ -234,6 +234,17 @@ export function scheduleEmptyTabPluginSelectionSanitization(options: {
   });
 }
 
+/** When a Mod's admission last changed; 0 until one changes in this window. */
+let claudeModAdmissionChangedAtMs = 0;
+
+/**
+ * Discovery decides Mod admission like a launch does, so a Claude tab's
+ * commands from before an admission change are stale.
+ */
+export function noteClaudeModAdmissionChange(nowMs = Date.now()): void {
+  claudeModAdmissionChangedAtMs = nowMs;
+}
+
 export function shouldRefreshVisibleTabDiscovery(
   tab?: Pick<ChatTab, 'providerType' | 'model' | 'discovery'>,
   nowMs = Date.now(),
@@ -248,7 +259,9 @@ export function shouldRefreshVisibleTabDiscovery(
 
   const providerType = resolveDiscoveryProviderType(tab);
   if (providerType !== 'codex') {
-    return false;
+    return (
+      Date.parse(tab.discovery.discoveredAt) < claudeModAdmissionChangedAtMs
+    );
   }
 
   if (tab.discovery.providerType !== 'codex') {

@@ -3,7 +3,7 @@ import type {
   McpServerIndexEntry,
   McpServerDefinitionData,
   McpServerConfigData,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { getMcpServersIndexFilePath } from '../lib/paths';
 import { resolveAccountMcpProxyTarget } from '../canopy-cloud/mcp-connections';
 import type { McpHttpProxyServiceForResolver } from '../plugins/plugin-resolver';

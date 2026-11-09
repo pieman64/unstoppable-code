@@ -9,9 +9,14 @@ import {
 import type {
   ExecutionResourceMonitor,
   ExecutionRuntime,
+  PipelineHostActions,
+  PipelineStepNotification,
   ResolvePipelineTargetRequest,
   ResolvePipelineTargetResult,
 } from '../executor/types';
+import type { CodexRuntimeService } from '../../codex-runtime';
+import { runCodexPipelinePromptWith } from '../codex-pipeline-prompt';
+import type { DaemonPipelineOwnerPorts } from './owner-ports';
 
 /** The worktree a launch runs in, as the daemon verified it (CAN-5086 D17). */
 export interface DaemonPipelineWorktree {
@@ -28,6 +33,21 @@ export interface DaemonPipelineRuntimeOptions {
   readonly resourceMonitor?: ExecutionResourceMonitor;
   /** The only worktree target this runtime resolves; none for a lookup runtime. */
   readonly worktree?: DaemonPipelineWorktree;
+  /** Owner-bound launches only (CAN-5771). */
+  readonly pipelineHostActions?: PipelineHostActions;
+  /** An owner-bound launch's model ports (CAN-5095): its core answers each call. */
+  readonly owner?: DaemonPipelineOwnerPorts;
+  /** The host's own Codex runtime, for an owner-bound launch's Codex steps. */
+  readonly codexRuntime?: () => CodexRuntimeService;
+  /** Hands a step's desktop notifications to Electron main (CAN-5868). */
+  readonly onStepNotifications?: (
+    stepId: string,
+    notifications: readonly PipelineStepNotification[],
+  ) => void;
+}
+
+function noCodexRuntime(): CodexRuntimeService {
+  throw new Error('The background service has no Codex runtime.');
 }
 
 function resolveVerifiedWorktree(
@@ -65,6 +85,8 @@ function resolveVerifiedWorktree(
  * It has no prompt runner, ledger, lifecycle, plan persistence, host actions
  * or AI-credit route, so a model or host step that slipped past the
  * classifier fails closed; it resolves only the launch's verified worktree.
+ * A step's desktop notifications go to Electron main, which shows them
+ * (CAN-5868).
  */
 export function createDaemonPipelineRuntime(
   options: DaemonPipelineRuntimeOptions,
@@ -82,10 +104,48 @@ export function createDaemonPipelineRuntime(
     ...(options.resourceMonitor && {
       resourceMonitor: options.resourceMonitor,
     }),
+    ...(options.pipelineHostActions && {
+      pipelineHostActions: options.pipelineHostActions,
+    }),
+    ...(options.onStepNotifications && {
+      onStepPostProcess: notificationForwarder(options.onStepNotifications),
+    }),
     resolvePipelineTarget: (request) =>
       resolveVerifiedWorktree(options.worktree, request),
-    // Every model is refused: daemon runs carry no model steps (D7).
+    // Every model is refused unless the launch's core answers for it (D7).
     isModelBlockedByOrgPolicy: () => Promise.resolve(true),
     isOrgModelPolicyActive: () => Promise.resolve(true),
+    ...(options.owner && ownerModelPorts(options.owner, options.codexRuntime)),
+  };
+}
+
+function notificationForwarder(
+  forward: NonNullable<DaemonPipelineRuntimeOptions['onStepNotifications']>,
+): NonNullable<ExecutionRuntime['onStepPostProcess']> {
+  return (ctx) => {
+    if (ctx.notifications?.length) forward(ctx.step.id, ctx.notifications);
+  };
+}
+
+/**
+ * The model ports of an owner-bound launch (CAN-5095 D2): Claude steps run
+ * their action subprocess, Codex steps the shared runner on the host's own
+ * runtime. Terminal workers, Cursor, Copilot, OpenCode, Agent models and
+ * plugin collections stay absent, so such a step fails closed.
+ */
+function ownerModelPorts(
+  owner: DaemonPipelineOwnerPorts,
+  codexRuntime: (() => CodexRuntimeService) | undefined,
+): Partial<ExecutionRuntime> {
+  const { codex, ...ports } = owner;
+  return {
+    ...ports,
+    codexPromptRunner: {
+      runCodexPrompt: (request) =>
+        runCodexPipelinePromptWith(request, {
+          ...codex,
+          runtime: codexRuntime ?? noCodexRuntime,
+        }),
+    },
   };
 }

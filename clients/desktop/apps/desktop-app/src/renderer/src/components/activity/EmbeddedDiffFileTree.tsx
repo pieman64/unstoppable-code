@@ -157,30 +157,34 @@ export function EmbeddedDiffFileTree({
         <div className="px-2 pt-2 text-xs fg-secondary">Turn changes</div>
       )}
       {searchOpen && (
-        <SearchField
-          autoFocus
-          className="m-2"
-          clearOnEscape={false}
-          aria-label="Search changed files"
-          placeholder="Search files…"
-          value={query}
-          onValueChange={(next) => {
-            setQuery(next);
-            setSearchRequest((value) => value + 1);
-            setRevealFilteredFile(false);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              setSearchOpen(false);
-              setQuery('');
-            }
-          }}
-        />
+        <div className="shrink-0 p-2">
+          <SearchField
+            autoFocus
+            className=""
+            clearOnEscape={false}
+            aria-label="Search changed files"
+            placeholder="Search files…"
+            value={query}
+            onValueChange={(next) => {
+              setQuery(next);
+              setSearchRequest((value) => value + 1);
+              setRevealFilteredFile(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                setSearchOpen(false);
+                setQuery('');
+              }
+            }}
+          />
+        </div>
       )}
       {error && (
-        <Notice intent="destructive" className="m-2">
-          {error}
-        </Notice>
+        <div className="shrink-0 p-2">
+          <Notice intent="destructive" className="">
+            {error}
+          </Notice>
+        </div>
       )}
       {filtered.uncommitted.length + filtered.committed.length === 0 ? (
         <p className="p-3 text-xs fg-secondary">

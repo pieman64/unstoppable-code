@@ -66,6 +66,15 @@ export interface ElectronDaemonConnectionOptions<C extends Connection> {
    * so it shows nothing (q-13). Not consulted once the lifetime aborted.
    */
   readonly isRestartRefusal?: (error: unknown) => boolean;
+  /**
+   * The lease's label and presence; defaults to an interactive `Desktop`
+   * lease. The daemon owner session's is `Workflow host steps` (CAN-5771 D10).
+   */
+  readonly lease?: {
+    readonly label: string;
+    readonly interactive: boolean;
+    readonly foreground: boolean;
+  };
 }
 export interface ElectronDaemonGetOptions {
   /**
@@ -374,10 +383,13 @@ export function createElectronDaemonConnectionService<C extends Connection>(
         identity: {
           clientInstanceId: caller.clientInstanceId,
           interfaceKind: 'desktop',
-          label: 'Desktop',
+          label: options.lease?.label ?? 'Desktop',
         },
         renewalIntervalMs: 15_000,
-        presence: () => ({ interactive: true, foreground: false }),
+        presence: () => ({
+          interactive: options.lease?.interactive ?? true,
+          foreground: options.lease?.foreground ?? false,
+        }),
         onError: (error) => {
           if (lifetime.signal.aborted) return;
           // A replacement attach the lease retries with backoff ("Core exited

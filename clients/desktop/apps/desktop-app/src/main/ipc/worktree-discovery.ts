@@ -16,6 +16,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { discoverCodexWorktreeEnvironment } from '../agents/codex-discovery';
 import { discoverWorktreeEnvironment } from '../agents/sdk-discovery';
+import type { ClaudeModLaunchPluginRequest } from '../agents/claude-mod-admission-launch';
 import { resolveClaudeCompatibleInvocation } from '../ollama/claude-compatible';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { ensureAppAdvisorHomeScaffold } from '../lib/app-advisor-workspace';
@@ -113,7 +114,7 @@ export async function runProviderDiscovery(
       : applyGlobalDefaults,
   );
   const effectiveSelections = pluginContext.selections;
-  let sdkPlugins: { type: 'local'; path: string }[] | undefined;
+  let sdkPlugins: ClaudeModLaunchPluginRequest[] | undefined;
   let selectedCapabilityRoots: CodexSelectedCapabilityRoot[] | undefined;
   if (hasAnySelections(effectiveSelections)) {
     try {
@@ -126,13 +127,14 @@ export async function runProviderDiscovery(
           // Discovery only materializes metadata, so HTTP MCP auth falls
           // back to provider-side handling when no proxy service is present.
           purpose: providerType === 'codex' ? 'codex-discovery' : 'discovery',
+          cwd,
           ...(pluginContext.preferences
             ? { preferences: pluginContext.preferences }
             : {}),
         },
       );
       if (providerType !== 'codex' && resolved.sdkPlugins.length > 0) {
-        sdkPlugins = resolved.sdkPlugins;
+        sdkPlugins = resolved.identifiedSdkPlugins ?? resolved.sdkPlugins;
       }
       if (
         providerType === 'codex' &&
@@ -187,6 +189,9 @@ export async function runProviderDiscovery(
     mcpServers: result.mcpServers,
     discoveredAt: new Date().toISOString(),
     providerType,
+    ...('skippedMods' in result && result.skippedMods
+      ? { skippedMods: result.skippedMods }
+      : {}),
   };
 }
 
@@ -246,11 +251,14 @@ async function runDiscovery(
       (selectedRepoId === undefined ||
         selectedRepoId === WORKSPACE_ROOT_REPO_ID)
     ) {
+      // A Mod forecast is current state; the saved record never keeps it.
+      const { skippedMods: _forecast, ...persistedDiscovery } = discovery;
+      void _forecast;
       await recordWorktreeDiscovery({
         kind: 'environment',
         workspaceId: projectId,
         worktreeId,
-        discovery,
+        discovery: persistedDiscovery,
       });
     }
     emit(

@@ -9,7 +9,7 @@
 
 import { parseAccountProxyTraceId } from '@canopy/desktop-shared/lib/account-proxy';
 import type { AccountProxySessionAccount } from '@canopy/desktop-shared/types/account-proxy';
-import type { AgentAuditAccountProxyUsage } from '@canopy/desktop-shared/types/observability';
+import type { AgentAuditAccountProxyUsage } from '@canopy/execution-engine/types/observability';
 
 /** What the last account list read knows about an account. */
 export interface AccountProxyAccountFacts {

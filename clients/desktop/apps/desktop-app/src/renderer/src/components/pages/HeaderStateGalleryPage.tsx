@@ -7,7 +7,7 @@ import {
   HEADER_STATE_GALLERY_PROJECT_ID,
 } from './headerStateGalleryData';
 import { useSeededHeaderGalleryState } from './headerStateGallerySeed';
-import { Heading, Surface } from '@canopy/ui-shared/components';
+import { Stack, Heading, Surface } from '@canopy/ui-shared/components';
 
 /**
  * Personal reference page for the worktree header, reachable from the sidebar
@@ -131,11 +131,11 @@ function HeaderStateGalleryContent(): JSX.Element {
       className="flex h-full flex-col bg-base fg-primary"
       data-testid="header-states-page"
     >
-      <header className="px-8 pb-4 pt-8">
+      <header className="flex flex-col gap-1 px-8 pb-4 pt-8">
         <Heading level={1} variant="page">
           Worktree header — all states
         </Heading>
-        <p className="mt-1 max-w-3xl text-xs fg-secondary">
+        <p className="max-w-3xl text-xs fg-secondary">
           Personal reference for the worktree header. Every row is the real{' '}
           <code>WorktreeTopBar</code> driven by seeded state — no git, no
           network. The synthetic project is scoped to this page and removed when
@@ -147,15 +147,19 @@ function HeaderStateGalleryContent(): JSX.Element {
         {!ready ? (
           <div className="fg-secondary">Seeding…</div>
         ) : (
-          <>
-            <section className="mb-12">
-              <Heading level={2} variant="title" className="mb-3">
+          <div className="flex flex-col gap-12">
+            <section className="flex flex-col gap-3">
+              <Heading className="" level={2} variant="title">
                 States
               </Heading>
-              <div className="flex flex-col gap-6">
+              <Stack gap="section">
                 {HEADER_GALLERY_STATES.map((state) => (
-                  <div key={state.id} data-testid={`header-state-${state.id}`}>
-                    <div className="mb-1.5 flex items-baseline gap-2">
+                  <div
+                    key={state.id}
+                    className="flex flex-col gap-1.5"
+                    data-testid={`header-state-${state.id}`}
+                  >
+                    <div className="flex items-baseline gap-2">
                       <span className="text-xs font-medium">{state.title}</span>
                       <span className="text-2xs fg-secondary">
                         {state.note}
@@ -164,21 +168,23 @@ function HeaderStateGalleryContent(): JSX.Element {
                     <HeaderGalleryRow worktreeId={state.id} />
                   </div>
                 ))}
-              </div>
+              </Stack>
             </section>
 
-            <section>
-              <Heading level={2} variant="title" className="mb-1">
-                Responsive behavior
-              </Heading>
-              <p className="mb-3 max-w-3xl text-xs fg-secondary">
-                The same state at shrinking widths. Copy sheds first (
-                <code>Create PR</code> → <code>PR</code>, Launch → icon at 640),
-                then controls drop by priority: archive (560), Create PR (480),
-                badges (420), pinned scripts (400), <code>Open in</code> (360).
-                Labels truncate only once the space is genuinely gone, base
-                branch first.
-              </p>
+            <section className="flex flex-col gap-3">
+              <Stack gap="tight">
+                <Heading className="" level={2} variant="title">
+                  Responsive behavior
+                </Heading>
+                <p className="max-w-3xl text-xs fg-secondary">
+                  The same state at shrinking widths. Copy sheds first (
+                  <code>Create PR</code> → <code>PR</code>, Launch → icon at
+                  640), then controls drop by priority: archive (560), Create PR
+                  (480), badges (420), pinned scripts (400),{' '}
+                  <code>Open in</code> (360). Labels truncate only once the
+                  space is genuinely gone, base branch first.
+                </p>
+              </Stack>
               {/* These rows are FIXED pixel widths — that is the point — so on
                   a narrow content region they are wider than the page. Give
                   the strip its own horizontal scroller: otherwise the page's
@@ -190,47 +196,56 @@ function HeaderStateGalleryContent(): JSX.Element {
               <div className="-mx-8 overflow-x-auto px-8">
                 <div className="flex w-max flex-col gap-4">
                   {TIER_WIDTHS.map((width) => (
-                    <div key={width} data-testid={`header-state-tier-${width}`}>
-                      <div className="mb-1 text-2xs fg-secondary">
-                        {width}px
-                      </div>
+                    <Stack
+                      gap="tight"
+                      key={width}
+                      data-testid={`header-state-tier-${width}`}
+                    >
+                      <div className="text-2xs fg-secondary">{width}px</div>
                       <HeaderGalleryRow
                         worktreeId="long-branch"
                         width={width}
                       />
-                    </div>
+                    </Stack>
                   ))}
                 </div>
               </div>
             </section>
 
-            <section className="mt-12" data-testid="header-state-pins">
-              <Heading level={2} variant="title" className="mb-1">
-                Pinned scripts
-              </Heading>
-              <p className="mb-3 max-w-3xl text-xs fg-secondary">
-                Running, idle and starting pins before the launch cluster.
-                Labels collapse to play buttons below 760, and pins drop below
-                400, before <code>Open in</code> and Launch.
-              </p>
+            <section
+              className="flex flex-col gap-3"
+              data-testid="header-state-pins"
+            >
+              <Stack gap="tight">
+                <Heading className="" level={2} variant="title">
+                  Pinned scripts
+                </Heading>
+                <p className="max-w-3xl text-xs fg-secondary">
+                  Running, idle and starting pins before the launch cluster.
+                  Labels collapse to play buttons below 760, and pins drop below
+                  400, before <code>Open in</code> and Launch.
+                </p>
+              </Stack>
               <div className="-mx-8 overflow-x-auto px-8">
                 <div className="flex w-max flex-col gap-4">
                   {PIN_WIDTHS.map((width) => (
-                    <div key={width} data-testid={`header-state-pins-${width}`}>
-                      <div className="mb-1 text-2xs fg-secondary">
-                        {width}px
-                      </div>
+                    <Stack
+                      gap="tight"
+                      key={width}
+                      data-testid={`header-state-pins-${width}`}
+                    >
+                      <div className="text-2xs fg-secondary">{width}px</div>
                       <HeaderGalleryRow
                         worktreeId="long-branch"
                         width={width}
                         pinnedActions={GALLERY_PINS}
                       />
-                    </div>
+                    </Stack>
                   ))}
                 </div>
               </div>
             </section>
-          </>
+          </div>
         )}
       </div>
     </div>

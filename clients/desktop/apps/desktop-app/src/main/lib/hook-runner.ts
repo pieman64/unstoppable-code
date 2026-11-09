@@ -7,7 +7,7 @@ import {
   type ChatHookAction,
   type PipelineHookAction,
 } from '@canopy/desktop-shared/hooks';
-import { setBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { setBrandEnv } from '@canopy/execution-engine/brand/env';
 import type { PersistedPrSnapshotFileV1 } from '@canopy/desktop-shared/types/github';
 import { buildPrQueueHookVariables } from '@canopy/desktop-shared/lib/pr-merge-queue';
 import type { BrowserWindow } from 'electron';

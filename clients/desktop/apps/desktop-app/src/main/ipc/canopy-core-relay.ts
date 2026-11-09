@@ -5,24 +5,46 @@ import type {
   CanopyCoreRelayRequest,
   CanopyCoreRelayReply,
 } from '../../shared/canopy-core-relay';
+import {
+  createWebCoreBindingProvider,
+  type WebCoreBindingOptions,
+} from '../canopy-cloud/web-core-connection';
 import { registerIpcHandler } from './register';
+import { desktopWebCoreBindingOptions } from './cloud-chats';
 import {
   sendInterfaceToolCancellation,
   sendInterfaceToolRequest,
   setInterfaceToolReplyHandler,
 } from './app-advisor';
+import {
+  sendPipelineEditorInterfaceToolRequest,
+  setPipelineEditorInterfaceToolReplyHandler,
+} from './pipeline-editor';
 import { createDesktopInterfaceLeases } from '../canopy-runtime/interface-tools/desktop-interface-leases';
+import { setRemoteInterfaceLeaseHost } from '../canopy-runtime/interface-tools/remote-interface-leases';
+import { setMcpSignInPresenterLeases } from '../mcp/oauth-coordinator';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
-import { RELAY_DEFINITIONS } from '../canopy-runtime/renderer-relay/definitions';
+import {
+  RELAY_DEFINITIONS,
+  type RelayBindingProvider,
+} from '../canopy-runtime/renderer-relay/definitions';
 import {
   createInterimInMemoryBindingProvider,
   type RelayCapabilities,
 } from '../canopy-runtime/renderer-relay/interim-in-memory-binding';
+import { routeRendererRelayRequest } from '../canopy-runtime/renderer-relay/relay-authority';
 import {
   createRendererRelay,
+  type RendererRelay,
   type RendererRelayEvent,
+  type RendererRelayLimits,
   type RendererRelaySurfaceResolution,
 } from '../canopy-runtime/renderer-relay/relay';
+import {
+  WEB_CORE_HOST_DEFINITIONS,
+  WEB_CORE_RELAY_DEFINITIONS,
+  webCoreRelayAllows,
+} from '../canopy-runtime/renderer-relay/web-core-relay-definitions';
 
 export const RENDERER_RELAY_GRANTS: readonly CanopyCallerDescriptor['grants'][number][] =
   Array.from(
@@ -35,9 +57,35 @@ export const RENDERER_RELAY_GRANTS: readonly CanopyCallerDescriptor['grants'][nu
     ),
   );
 
+/**
+ * The web-core authority's relay: cloud chat operations only, main window
+ * only, with main holding the connection's client lease and acknowledging
+ * each stream item once it is handed to the renderer.
+ */
+export function createWebCoreRendererRelay(options: {
+  readonly bindingProvider: RelayBindingProvider;
+  readonly resolveSurface: (
+    event: RendererRelayEvent,
+  ) => RendererRelaySurfaceResolution;
+  readonly clientVersion?: string;
+  readonly limits?: Partial<RendererRelayLimits>;
+}): RendererRelay {
+  return createRendererRelay({
+    ...options,
+    definitions: WEB_CORE_RELAY_DEFINITIONS,
+    allows: webCoreRelayAllows,
+    host: {
+      definitions: WEB_CORE_HOST_DEFINITIONS,
+      lease: { label: 'Desktop cloud chats', interfaceKind: 'http' },
+      ackDelivered: true,
+    },
+  });
+}
+
 export function registerCanopyCoreRelayHandlers(
   dispatcher: DesktopCanopyDispatcher,
   resolveSurface: (event: RendererRelayEvent) => RendererRelaySurfaceResolution,
+  webCore: WebCoreBindingOptions = desktopWebCoreBindingOptions(),
 ): () => void {
   // Interim connection-scoped declarations; durable ownership waits for a relay daemon binding (W3 exit, CAN-3166).
   const registrations = new Map<string, RelayCapabilities>();
@@ -54,12 +102,27 @@ export function registerCanopyCoreRelayHandlers(
         ? sendInterfaceToolCancellation(contents, cancellation)
         : false;
     },
+    sendPipelineEditor: (target, request) => {
+      const contents = webContents.fromId(target.id);
+      return contents
+        ? sendPipelineEditorInterfaceToolRequest(contents, request)
+        : false;
+    },
   });
-  setInterfaceToolReplyHandler((senderId, response) =>
+  setMcpSignInPresenterLeases({
+    leaseFor: (id) => interfaceLeases.leaseOf(id),
+    isLive: (leaseId) => dispatcher.interfaceTools.hasLease(leaseId),
+  });
+  setRemoteInterfaceLeaseHost(interfaceLeases);
+  const claimReply = (
+    senderId: number,
+    response: unknown,
+  ): 'claimed' | 'not_claimed' =>
     interfaceLeases.reply(senderId, response) === 'unknown_call'
       ? 'not_claimed'
-      : 'claimed',
-  );
+      : 'claimed';
+  setInterfaceToolReplyHandler(claimReply);
+  setPipelineEditorInterfaceToolReplyHandler(claimReply);
   const relay = createRendererRelay({
     bindingProvider: createInterimInMemoryBindingProvider(dispatcher, {
       onCapabilities: (caller, capabilities) => {
@@ -75,15 +138,29 @@ export function registerCanopyCoreRelayHandlers(
     resolveSurface,
     clientVersion: app.getVersion(),
   });
+  const webCoreRelay = createWebCoreRendererRelay({
+    bindingProvider: createWebCoreBindingProvider(webCore),
+    resolveSurface,
+    clientVersion: app.getVersion(),
+  });
   registerIpcHandler<[CanopyCoreRelayRequest], CanopyCoreRelayReply>(
     IPC_CHANNELS.canopyCoreRelay,
-    (event, input) => relay.invoke(event, input),
+    (event, input) =>
+      routeRendererRelayRequest(
+        { local: relay, webCore: webCoreRelay },
+        event,
+        input,
+      ),
   );
   return () => {
     ipcMain.removeHandler(IPC_CHANNELS.canopyCoreRelay);
     setInterfaceToolReplyHandler(null);
+    setPipelineEditorInterfaceToolReplyHandler(null);
+    setRemoteInterfaceLeaseHost(null);
+    setMcpSignInPresenterLeases(null);
     interfaceLeases.dispose();
     relay.dispose();
+    webCoreRelay.dispose();
     registrations.clear();
   };
 }

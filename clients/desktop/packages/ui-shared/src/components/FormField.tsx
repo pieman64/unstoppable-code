@@ -1,6 +1,13 @@
 'use client';
 
-import { useId, type JSX, type ReactNode } from 'react';
+import {
+  Children,
+  Fragment,
+  isValidElement,
+  useId,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import { FieldError } from './Field';
 
 /**
@@ -26,6 +33,8 @@ export interface FormFieldControlProps {
 
 export interface FormFieldProps {
   readonly label: ReactNode;
+  /** Inline annotation after the label; the field owns its 8px separation. */
+  readonly labelMeta?: ReactNode;
   /** Id for the control; one is generated when omitted. */
   readonly id?: string;
   /** Help text under the field. */
@@ -36,6 +45,8 @@ export interface FormFieldProps {
    * field (docs/design/forms.md).
    */
   readonly error?: ReactNode;
+  /** Margin-free action aligned with the control row, independent of errors. */
+  readonly trailingAction?: ReactNode;
   readonly dataTestId?: string;
   /** Renders the control with the ids and state the field supplies. */
   readonly children: (control: FormFieldControlProps) => ReactNode;
@@ -43,6 +54,14 @@ export interface FormFieldProps {
 
 function hasContent(node: ReactNode): boolean {
   return node !== undefined && node !== null && node !== false && node !== '';
+}
+
+function hasActionContent(node: ReactNode): boolean {
+  return Children.toArray(node).some((child) =>
+    isValidElement<{ children?: ReactNode }>(child) && child.type === Fragment
+      ? hasActionContent(child.props.children)
+      : hasContent(child),
+  );
 }
 
 /**
@@ -62,9 +81,11 @@ function hasContent(node: ReactNode): boolean {
  */
 export function FormField({
   label,
+  labelMeta,
   id,
   description,
   error,
+  trailingAction,
   dataTestId,
   children,
 }: FormFieldProps): JSX.Element {
@@ -74,33 +95,62 @@ export function FormField({
   const descriptionId = `${controlId}-description`;
   const showError = hasContent(error);
   const showDescription = hasContent(description);
+  const showTrailingAction = hasActionContent(trailingAction);
   const describedBy =
     [showError ? errorId : null, showDescription ? descriptionId : null]
       .filter((value): value is string => value !== null)
       .join(' ') || undefined;
+  const errorContent = showError ? (
+    <FieldError
+      id={errorId}
+      data-testid={dataTestId ? `${dataTestId}-error` : undefined}
+    >
+      {error}
+    </FieldError>
+  ) : null;
 
   return (
-    <div className="flex flex-col gap-1.5" data-testid={dataTestId}>
-      <label htmlFor={controlId} className={FORM_FIELD_LABEL_CLASS}>
+    <div
+      className={
+        showTrailingAction
+          ? 'grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5'
+          : 'flex flex-col gap-1.5'
+      }
+      data-testid={dataTestId}
+    >
+      <label
+        htmlFor={controlId}
+        className={`${FORM_FIELD_LABEL_CLASS}${showTrailingAction ? ' col-start-1' : ''}`}
+      >
         {label}
+        {hasActionContent(labelMeta) && (
+          <span className="pl-2 empty:pl-0">{labelMeta}</span>
+        )}
       </label>
-      <div className="flex min-w-0 flex-col">
+      <div
+        className={`flex min-w-0 flex-col${showTrailingAction ? ' col-start-1 row-start-2 self-start' : ''}`}
+      >
         {children({
           id: controlId,
           'aria-describedby': describedBy,
           'aria-invalid': showError ? true : undefined,
         })}
       </div>
-      {showError ? (
-        <FieldError
-          id={errorId}
-          data-testid={dataTestId ? `${dataTestId}-error` : undefined}
-        >
-          {error}
-        </FieldError>
-      ) : null}
+      {showTrailingAction && (
+        <div className="col-start-2 row-start-2 flex self-start">
+          {trailingAction}
+        </div>
+      )}
+      {showTrailingAction && errorContent ? (
+        <div className="col-start-1">{errorContent}</div>
+      ) : (
+        errorContent
+      )}
       {showDescription ? (
-        <p id={descriptionId} className={FORM_FIELD_DESCRIPTION_CLASS}>
+        <p
+          id={descriptionId}
+          className={`${FORM_FIELD_DESCRIPTION_CLASS}${showTrailingAction ? ' col-start-1' : ''}`}
+        >
           {description}
         </p>
       ) : null}

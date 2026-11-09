@@ -5,6 +5,7 @@ import { ChatIcon } from '@canopy/ui-shared/icons';
 import { useBrowserStore } from '@/stores/browserStore';
 import { stageBrowserConsoleEntry } from '@/lib/browserChatStaging';
 import { Button, SegmentedControl, Tooltip } from '@canopy/ui-shared';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface BrowserConsolePanelProps {
   browserId: string;
@@ -55,30 +56,32 @@ export function BrowserConsolePanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-1 border-b px-2 py-1">
-        <SegmentedControl<ConsoleFilter>
-          value={filter}
-          onChange={setFilter}
-          label="Filter"
-          width="content"
-          shape="capsule"
-          options={[
-            { value: 'all', label: 'All' },
-            { value: 'errors', label: 'Errors' },
-          ]}
-        />
-        <div className="flex-1" />
-        <Tooltip label="Clear console">
-          <Button
-            variant="ghost"
-            size="compact"
-            onClick={(): void => clearConsole(browserId)}
-            aria-label="Clear console"
-          >
-            Clear
-          </Button>
-        </Tooltip>
-      </div>
+      <Surface variant="section" boundary="bottom">
+        <div className="flex items-center gap-1 px-2 py-1">
+          <SegmentedControl<ConsoleFilter>
+            value={filter}
+            onChange={setFilter}
+            label="Filter"
+            width="content"
+            shape="capsule"
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'errors', label: 'Errors' },
+            ]}
+          />
+          <div className="flex-1" />
+          <Tooltip label="Clear console">
+            <Button
+              variant="ghost"
+              size="compact"
+              onClick={(): void => clearConsole(browserId)}
+              aria-label="Clear console"
+            >
+              Clear
+            </Button>
+          </Tooltip>
+        </div>
+      </Surface>
       <div className="min-h-0 flex-1 overflow-auto font-mono text-2xs">
         {visible.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs fg-secondary">

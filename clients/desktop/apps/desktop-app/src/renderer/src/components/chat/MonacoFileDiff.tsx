@@ -238,7 +238,9 @@ export function MonacoFileDiff({
     >
       {snapshot.data.truncated && (
         // The shared notice, worded as on the web (REG-3024).
-        <DiffBoundNotice kind="oversized" className="m-2 shrink-0" />
+        <div className="shrink-0 p-2">
+          <DiffBoundNotice kind="oversized" className="shrink-0" />
+        </div>
       )}
       <DiffEditor
         key={snapshot.identity.snapshotId}

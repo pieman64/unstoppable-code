@@ -48,7 +48,7 @@ export function ScriptActionsSettingsSection({
       </Surface>
     ) : (
       <section
-        className="space-y-1"
+        className="flex flex-col gap-1"
         data-testid="script-actions-settings-no-worktree"
       >
         {noWorktreeNote}

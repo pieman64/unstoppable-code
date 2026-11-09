@@ -1,4 +1,4 @@
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import type { PipelinePluginCollectionRunContext } from '@/components/activity/PipelineTriggerModal';
 
 type PlanReadyExecuteOptions = Parameters<typeof window.pipelines.execute>[1];

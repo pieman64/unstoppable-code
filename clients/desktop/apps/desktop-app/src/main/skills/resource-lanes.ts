@@ -4,8 +4,8 @@ import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   PIPELINE_EDITOR_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
-import { classifyResourceOwner } from '@canopy/desktop-shared/lib/resource-context';
-import type { ResourceContextInput } from '@canopy/desktop-shared/lib/resource-context-policy';
+import { classifyResourceOwner } from '@canopy/execution-engine/lib/resource-context';
+import type { ResourceContextInput } from '@canopy/execution-engine/lib/resource-context-policy';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   LanePartitioned,

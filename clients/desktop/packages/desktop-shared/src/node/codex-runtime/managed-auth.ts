@@ -5,7 +5,7 @@ import {
   type CodexAuthenticationLease,
 } from './connection';
 import { resolveCodexSpawnProfile } from './profile';
-import { isRecord } from '../lib/type-guards';
+import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 
 export type CodexManagedLogin =
   | { type: 'chatgpt'; loginId: string; authUrl: string }

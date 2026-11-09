@@ -9,11 +9,9 @@ import {
 import { useCanopyClient } from '@canopy/app-state';
 import {
   DelayedLoadingPlaceholder,
-  Notice,
-  NoticeButton,
+  ErrorBanner,
   Skeleton,
   SettingsRowsRow,
-  CopyDetailsButton,
   SettingsRowsSection,
 } from '@canopy/ui-shared/components';
 import {
@@ -234,27 +232,13 @@ function InstallUpdateEmailsContent({
       aria-busy={state.kind === 'loading' || undefined}
       data-testid="install-update-emails-setting"
     >
-      {error && (
-        <Notice
-          intent="destructive"
-          data-testid="install-update-emails-error"
-          actions={
-            <>
-              {error.details !== undefined ? (
-                <CopyDetailsButton details={error.details} />
-              ) : null}
-              <NoticeButton
-                onClick={handleRetry}
-                data-testid="install-update-emails-retry"
-              >
-                Try again
-              </NoticeButton>
-            </>
-          }
-        >
-          {error.copy}
-        </Notice>
-      )}
+      <ErrorBanner
+        className=""
+        error={error?.copy}
+        {...(error?.details === undefined ? {} : { details: error.details })}
+        onRetry={handleRetry}
+        testId="install-update-emails-error"
+      />
       {state.kind === 'loading' ? (
         <DelayedLoadingPlaceholder>
           <Skeleton

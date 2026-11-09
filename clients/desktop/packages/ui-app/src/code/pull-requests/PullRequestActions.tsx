@@ -633,15 +633,15 @@ export function PullRequestActions({
             surfaceClassName="min-w-55 max-w-75"
             surfacePadding="card"
             content={
-              <>
-                <div className="mb-1 font-semibold fg-primary">
+              <div className="flex flex-col gap-1">
+                <div className="font-semibold fg-primary">
                   Merge conflicts detected
                 </div>
                 <span className="fg-secondary">
                   Click to have an agent handle resolving the conflicts then
                   commit and push the resolved merge
                 </span>
-              </>
+              </div>
             }
           >
             <HeaderActionButton

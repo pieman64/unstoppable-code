@@ -109,6 +109,7 @@ export function createCloudProjectFence(
         send(() => client.updateSelection(instanceId, selection, context)),
       events: (projectId, after) =>
         send(() => client.events(projectId, after, context)),
+      list: (device) => send(() => client.list(device, context)),
       detach: (instanceId, fence) =>
         send(() => client.detach(instanceId, fence, context)),
     };

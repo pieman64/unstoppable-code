@@ -33,12 +33,12 @@ import {
 } from '@canopy/protocol';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { normalizeAgentArtifactCarryByTurn } from '@canopy/desktop-shared/lib/agent-artifacts';
-import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
   DEFAULT_CODEX_SPEED,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import { isClaudeTerminalEligibleChatTab } from '@/lib/chat-provider';
 import { getEffectiveClaudeChatInterfaceMode } from '@/lib/claude-tui-chats';
 import { draftHasContent } from '@/lib/chat-draft-content';

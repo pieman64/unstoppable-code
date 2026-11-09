@@ -8,8 +8,10 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
+    "./app-errors/classification": "./src/app-errors/classification.ts",
     "./feedback-report": "./src/feedback-report.ts",
     "./app-errors": "./src/app-errors/index.ts",
+    "./app-errors/ipc-rejection": "./src/app-errors/ipc-rejection.ts",
     "./file-image-save": "./src/file-image-save.ts",
     "./file-save-conflict": "./src/file-save-conflict.ts",
     "./approvals": "./src/approvals.ts",
@@ -27,6 +29,7 @@
     "./canopy-core/core/ledger": "./src/canopy-core/core/ledger/index.ts",
     "./canopy-core/worker": "./src/canopy-core/worker/index.ts",
     "./file-path": "./src/file-path.ts",
+    "./chat-targets": "./src/chat-targets.ts",
     "./plan-tool-input": "./src/plan-tool-input.ts",
     "./turn-files": "./src/turn-files.ts",
     "./safe-relative-path": "./src/safe-relative-path.ts",
@@ -90,6 +93,7 @@
     "./archive-retention": "./src/archive-retention/index.ts",
     "./suggestions": "./src/suggestions/index.ts",
     "./onboarding-tips": "./src/onboarding-tips/index.ts",
+    "./claude-mods": "./src/claude-mods/index.ts",
     "./chat-detail": "./src/chat-detail/index.ts",
     "./experiments": "./src/experiments/index.ts",
     "./feature-flags": "./src/feature-flags/index.ts",
@@ -181,7 +185,9 @@
     "./marketplace": "./src/marketplace/index.ts",
     "./uuid": "./src/uuid.ts",
     "./value-redaction": "./src/value-redaction.ts",
-    "./copilot-recipient": "./src/copilot-recipient.ts"
+    "./copilot-recipient": "./src/copilot-recipient.ts",
+    "./remote-control": "./src/remote-control/index.ts",
+    "./remote-control/channels": "./src/remote-control/channels.ts"
   },
   "dependencies": {
     "zod": "4.3.6"

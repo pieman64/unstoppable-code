@@ -1,7 +1,7 @@
 import type {
   BrowserScrollDirection,
   BrowserScrollEffect,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import type { ScrollState } from '../frames/scroll-state';
 import type { ActionLaneContext } from './action-lane';
 import type { BrowserCdpSend } from './actionability';

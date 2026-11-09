@@ -473,6 +473,7 @@ export function registerTerminalHandlers(
         getWindow: isAppAdvisorLaunch
           ? accessors.getAppAdvisorWindow
           : accessors.getMainWindow,
+        fromRemoteBridge: launchedFrom !== null,
       });
       if (response.initialPromptSubmitted === true) {
         noteChatDriver(request.chatId, launchedFrom);

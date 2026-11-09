@@ -28,11 +28,12 @@ import {
   withAgentArtifacts,
 } from '@canopy/desktop-shared/lib/agent-artifacts';
 import { isDelegationReadAction } from './delegation-read-actions';
+import { isAdvisorDelegationControlAction } from './advisor-delegation-control';
+import { isAdvisorPipelineAction } from './advisor-pipeline-actions';
+import { isAdvisorCatalogAction } from './advisor-catalog-actions';
+import { isAdvisorFileTreeAction } from './advisor-file-tree-actions';
 import type { AppAdvisorCodeGraphAction } from '@canopy/desktop-shared/types/app-advisor-code-graph';
-import type { CanopyInjectedToolKey } from '@canopy/desktop-shared/lib/canopy-injected-tools';
-import { getChatStateService } from '../services/chat-state-service';
-import { sendToWindow } from '../lib/window-send';
-import { mainWindowOnlyToolSurfaces } from '../canopy-tools/show-files-runtime';
+import type { CanopyInjectedToolKey } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { AppAdvisorBrowserAction } from '@canopy/desktop-shared/types';
 import { randomUUID } from 'node:crypto';
 import { getDataDir } from '../lib/paths';
@@ -40,8 +41,6 @@ import type { BrowserWindow } from 'electron';
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
-  IPC_CHANNELS,
-  SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
   type AgentProviderType,
   type ApprovalMode,
   type ApprovalRule,
@@ -94,9 +93,27 @@ import type { PipelineYamlReadResult } from '../canopy-tools/pipeline-yaml-reade
 import {
   getCachedAppAdvisorUiStateForChat,
   requestAppAdvisorRendererTool,
+  takeAppAdvisorAnswerProvenance,
   requestCurrentAppAdvisorUiStateThroughLease,
 } from '../ipc/app-advisor';
+import { AskUserDismissedError } from '../lib/ask-user-outcomes';
 import { isRecord } from '../lib/type-guards';
+import {
+  dispatchAdvisorWorktreeAction,
+  isAdvisorWorktreeAction,
+} from './advisor-worktree-actions';
+import {
+  dispatchAdvisorWorkspaceAction,
+  isAdvisorWorkspaceAction,
+} from './advisor-workspace-actions';
+import {
+  dispatchAdvisorChatRead,
+  isAdvisorChatReadAction,
+} from './advisor-chat-reads';
+import {
+  dispatchAdvisorChatSetting,
+  isAdvisorChatSettingAction,
+} from './advisor-chat-settings';
 import { withAppAdvisorListUiEnvelope } from './list-ui-envelope';
 import { getPipelineFailureDebugContext } from '../services/pipelines-service';
 import { logMainProcessWarn } from '../lib/main-process-logging';
@@ -104,7 +121,10 @@ import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { getAppAdvisorWatcherService } from './watchers';
 import { resolveGitHubRepositoryCandidates } from '../lib/github-repository-context';
 import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
-import { requestShowFilesThroughInterfaceTool } from '../canopy-tools/show-files-runtime';
+import {
+  mainWindowOnlyToolSurfaces,
+  requestShowFilesThroughInterfaceTool,
+} from '../canopy-tools/show-files-runtime';
 import {
   boundAppAdvisorInterfaceTools,
   presentAppAdvisorAction,
@@ -450,25 +470,10 @@ export function createAppAdvisorToolRuntime(
     // its own window.
     settingsWindow: () => surfaces.getMainWindow(),
     appAdvisorPipelineWindow: surfaces.getMainWindow,
-    setAutoArchiveForCurrentChat: async (enabled): Promise<void> => {
-      const data = {
-        type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
-        enabled,
-      } as const;
-      await getChatStateService().ingestProviderEvent({
-        ...destination,
-        data,
-        mutationId: `app-advisor:auto-archive:${randomUUID()}`,
-      });
-      // Canonical metadata commits before the turn's presentation control is
-      // revealed, including when the agent explicitly disables archiving.
-      const event = { ...destination, data };
-      sendToWindow(surfaces.getMainWindow(), IPC_CHANNELS.chatEvent, event);
-      sendToWindow(
-        surfaces.getAppAdvisorWindow(),
-        IPC_CHANNELS.chatEvent,
-        event,
-      );
+    autoArchiveChat: {
+      projectId: destination.projectId,
+      worktreeId: destination.worktreeId,
+      chatId: destination.chatId,
     },
     ...(context?.canFork === false
       ? {}
@@ -547,17 +552,24 @@ export function createAppAdvisorToolRuntime(
             destination.chatId,
           );
         }
+        const answeredBy = takeAppAdvisorAnswerProvenance(requestId);
         if (!response.ok || !response.answer) {
           if (response.error?.code === 'timeout') {
             throw new Error('ask_user_timeout');
           }
-          throw new Error(response.error?.message ?? 'User dismissed');
+          // A window that could not show the question is not a dismissal.
+          if (response.error?.code === 'surface_unavailable')
+            throw new Error(response.error.message);
+          throw new AskUserDismissedError(
+            response.error?.message ?? 'User dismissed',
+          );
         }
         answers.push({
           questionId: response.answer.questionId,
           question: response.answer.question,
           selectedOptions: response.answer.selectedOptions,
           freeformText: response.answer.freeformText,
+          answeredBy,
         });
       }
       return answers;
@@ -583,7 +595,6 @@ export function createAppAdvisorToolRuntime(
         },
         originChatTabId: destination.chatId,
         bound,
-        remoteFallbackSurfaces: surfaces,
         ...(signal ? { signal } : {}),
       }),
 
@@ -608,7 +619,6 @@ export function createAppAdvisorToolRuntime(
             ? { cwd: getAppAdvisorHomeDir() }
             : {}),
         },
-        surfaces,
       );
     },
 
@@ -728,6 +738,158 @@ export function createAppAdvisorToolRuntime(
         const { dispatchDelegationReadAction } =
           await import('./delegation-read-actions');
         return { ...(await dispatchDelegationReadAction(action)), requestId };
+      }
+      if (isAdvisorDelegationControlAction(action)) {
+        // CAN-6000: a delegate's live run is stopped by core.operation.cancel
+        // on its core.agent.subagent.run, never by an id from the action.
+        const [
+          { dispatchAdvisorDelegationControl },
+          { mainAdvisorDelegationControlHost },
+        ] = await Promise.all([
+          import('./advisor-delegation-control'),
+          import('./advisor-delegation-control-host'),
+        ]);
+        return {
+          ...(await dispatchAdvisorDelegationControl(
+            action,
+            mainAdvisorDelegationControlHost({ chatId: destination.chatId }),
+          )),
+          requestId,
+        };
+      }
+      if (isAdvisorFileTreeAction(action)) {
+        // CAN-6006: the explorer's mutation owners as the advisor chat, with
+        // only worker.filesystem.write; a delete always goes to the Trash.
+        const [
+          { dispatchAdvisorFileTreeAction },
+          { mainAdvisorFileTreeActionHost },
+        ] = await Promise.all([
+          import('./advisor-file-tree-actions'),
+          import('./advisor-file-tree-actions-host'),
+        ]);
+        return {
+          ...(await dispatchAdvisorFileTreeAction(
+            action,
+            mainAdvisorFileTreeActionHost({ chatId: destination.chatId }),
+          )),
+          requestId,
+        };
+      }
+      if (isAdvisorCatalogAction(action)) {
+        // CAN-6002: agents and collections on the window's owners;
+        // marketplace writes through core.catalog.source.*.
+        const [
+          { dispatchAdvisorCatalogAction },
+          { mainAdvisorCatalogActionHost },
+        ] = await Promise.all([
+          import('./advisor-catalog-actions'),
+          import('./advisor-catalog-actions-host'),
+        ]);
+        return {
+          ...(await dispatchAdvisorCatalogAction(
+            action,
+            mainAdvisorCatalogActionHost({
+              chatId: destination.chatId,
+              idempotencyKey: `app-advisor-action:${destination.chatId}:${requestId}:catalog`,
+              getWindow: surfaces.getMainWindow,
+              requestUserAnswers: (questions) =>
+                runtime.requestUserAnswers(
+                  questions,
+                  signal ? { signal } : undefined,
+                ),
+            }),
+          )),
+          requestId,
+        };
+      }
+      if (isAdvisorPipelineAction(action)) {
+        // CAN-6001: each reads only the execution main resolves; a send names
+        // only the report or plan path main read for it.
+        const [
+          { dispatchAdvisorPipelineAction },
+          { mainAdvisorPipelineActionHost },
+          { mainAdvisorChatReadHost },
+        ] = await Promise.all([
+          import('./advisor-pipeline-actions'),
+          import('./advisor-pipeline-actions-host'),
+          import('./advisor-chat-read-host'),
+        ]);
+        const reads = mainAdvisorChatReadHost({
+          chatId: destination.chatId,
+          readUiState: async () => {
+            const envelope = await runtime.requestUiState();
+            return envelope.revision === 0 ? null : envelope.snapshot;
+          },
+        });
+        const host = mainAdvisorPipelineActionHost({
+          getWindow: surfaces.getMainWindow,
+          readTabs: (projectId, worktreeId) =>
+            reads.readTabs(projectId, worktreeId),
+          sendToChat: async (target, text) => {
+            const authorized = await resolveAuthorizedChat(
+              {
+                projectId: target.projectId,
+                taskId: target.worktreeId,
+                chatId: target.chatId,
+              },
+              { kind: 'app_advisor', chatId: destination.chatId },
+            );
+            if (!authorized.row.capabilities.canSend)
+              throw new Error('This chat cannot receive messages.');
+            await dispatchAgentChatSend(
+              chatSendActionSchema.parse({
+                type: 'projects.send_message',
+                ...authorized.address,
+                text,
+              }),
+              {
+                caller: { kind: 'app_advisor', source: destination },
+                watcherDestination: destination,
+                toolUseId: requestId,
+                surfaces,
+              },
+            );
+          },
+          revealChat: async (target) => {
+            await presentAppAdvisorAction({
+              action: {
+                type: 'worktree-chat.open_tab',
+                projectId: target.projectId,
+                worktreeId: target.worktreeId,
+                chatId: target.chatId,
+              },
+              requestId: `${requestId}:reveal`,
+              destination,
+              boundTools: await boundInterfaceTools(),
+              ...(signal ? { signal } : {}),
+            });
+          },
+          createAdvisorChat: async ({ title, text }) => {
+            const created = await dispatchAdvisorChatAction(
+              { type: 'advisor-chat.create_entry', title, text },
+              destination,
+              surfaces,
+              requestId,
+            );
+            if (
+              !created.ok ||
+              !isRecord(created.result) ||
+              typeof created.result.chatId !== 'string' ||
+              typeof created.result.workEntryId !== 'string'
+            )
+              throw new Error(
+                created.error?.message ?? "Couldn't create the debug chat.",
+              );
+            return {
+              workEntryId: created.result.workEntryId,
+              chatId: created.result.chatId,
+            };
+          },
+        });
+        return {
+          ...(await dispatchAdvisorPipelineAction(action, host)),
+          requestId,
+        };
       }
       if (
         action.type === 'bots.list' ||
@@ -1039,7 +1201,6 @@ export function createAppAdvisorToolRuntime(
               requestId,
               destination,
               boundTools: await boundInterfaceTools(),
-              remoteFallbackSurfaces: surfaces,
               ...(signal ? { signal } : {}),
             });
             if (!response.ok) return { ...response, requestId };
@@ -1222,6 +1383,173 @@ export function createAppAdvisorToolRuntime(
           },
         );
         return { ...result, requestId };
+      }
+      if (isAdvisorChatSettingAction(action)) {
+        // CAN-5999 part 2: model, thinking, plan and speed changes through
+        // core.chat.update. A change its guard sends to the window is
+        // applied there through the main window's lease, never headless.
+        const { mainAdvisorChatSettingsHost } =
+          await import('./advisor-chat-settings-host');
+        return dispatchAdvisorChatSetting(
+          action,
+          mainAdvisorChatSettingsHost({
+            chatId: destination.chatId,
+            readUiState: async () => {
+              const envelope = await runtime.requestUiState();
+              return envelope.revision === 0 ? null : envelope.snapshot;
+            },
+            getMainWindow: surfaces.getMainWindow,
+            hasPresentationLease: async () =>
+              (await boundInterfaceTools()).includes('ui.app_advisor.present'),
+            presentInMainWindow: async (settingAction) =>
+              presentAppAdvisorAction({
+                action: settingAction,
+                requestId: `${requestId}:present`,
+                destination,
+                boundTools: await boundInterfaceTools(),
+                guarded: true,
+                ...(signal ? { signal } : {}),
+              }),
+          }),
+          {
+            requestId,
+            idempotencyKey: `app-advisor-action:${destination.chatId}:${requestId}:settings`,
+          },
+        );
+      }
+      if (isAdvisorChatReadAction(action)) {
+        // CAN-5999: chat history, tab, plugin, Cowork project and workspace
+        // item reads in main. A target the action leaves out comes from the
+        // main window's UI state through its lease, never a cached one.
+        const { mainAdvisorChatReadHost } =
+          await import('./advisor-chat-read-host');
+        return dispatchAdvisorChatRead(
+          action,
+          mainAdvisorChatReadHost({
+            chatId: destination.chatId,
+            readUiState: async () => {
+              const envelope = await runtime.requestUiState();
+              // Revision 0 is the fallback state: no window answered.
+              return envelope.revision === 0 ? null : envelope.snapshot;
+            },
+          }),
+          requestId,
+        );
+      }
+      if (isAdvisorWorkspaceAction(action)) {
+        // CAN-5998: project, organization project, sidebar group and
+        // tracked-plan reads and the sidebar group writes, from main's own
+        // owners on the action's target.
+        const { mainAdvisorWorkspaceActionHost } =
+          await import('./advisor-workspace-action-host');
+        return dispatchAdvisorWorkspaceAction(
+          action,
+          mainAdvisorWorkspaceActionHost({ chatId: destination.chatId }),
+          requestId,
+        );
+      }
+      if (isAdvisorWorktreeAction(action)) {
+        // CAN-5997: worktree settings, creation and fix-chat starts in main
+        // on the action's target; selecting the worktree is a best-effort
+        // presentation through the main window's lease.
+        const { mainAdvisorWorktreeActionHost } =
+          await import('./advisor-worktree-action-host');
+        const host = mainAdvisorWorktreeActionHost({
+          getMainWindow: surfaces.getMainWindow,
+          selectWorktree: async (projectId, worktreeId) => {
+            try {
+              await presentAppAdvisorAction({
+                action: { type: 'worktree.select', projectId, worktreeId },
+                requestId: `${requestId}:select`,
+                destination,
+                boundTools: await boundInterfaceTools(),
+                ...(signal ? { signal } : {}),
+              });
+            } catch {
+              // Selecting is presentation; the action's result never depends on it.
+            }
+          },
+        });
+        return dispatchAdvisorWorktreeAction(action, host, {
+          requestId,
+          keyFor: (step) =>
+            `app-advisor-action:${destination.chatId}:${requestId}:${step}`,
+        });
+      }
+      if (action.type === 'worktree.set_base_branch') {
+        // CAN-6024: the main base-branch flow worktree chats' SetBaseBranch
+        // uses, on the requested worktree; an open PR's choice is asked in
+        // this chat.
+        const { setWorktreeBaseBranchForAgent } =
+          await import('../canopy-tools/set-base-branch-runtime');
+        return setWorktreeBaseBranchForAgent({
+          target: {
+            projectId: action.projectId,
+            worktreeId: action.worktreeId,
+          },
+          chatId: destination.chatId,
+          baseBranch: action.baseBranch,
+          ...(action.repoId ? { repoId: action.repoId } : {}),
+          requestUserAnswers: (questions) =>
+            runtime.requestUserAnswers(
+              questions,
+              signal ? { signal } : undefined,
+            ),
+          toolUseId: requestId,
+          ...(signal ? { signal } : {}),
+        });
+      }
+      if (
+        action.type === 'hook.pause' ||
+        action.type === 'hook.resume' ||
+        action.type === 'tracked-plan.import'
+      ) {
+        // CAN-5829: the main handlers worktree chats use, on the requested
+        // worktree, instead of the renderer. Deferred like the dispatchers
+        // above.
+        const { projectId, worktreeId, ...worktreeAction } = action;
+        const [{ isCoworkWorkspace }, { dispatchWorktreeAction }] =
+          await Promise.all([
+            import('../lib/workspace-registry'),
+            import('../canopy-tools/worktree-actions'),
+          ]);
+        if (
+          action.type !== 'tracked-plan.import' &&
+          isCoworkWorkspace(projectId)
+        )
+          return {
+            requestId,
+            ok: false,
+            error: {
+              code: 'unsupported_action',
+              message: `Project ${projectId} is a cowork project and has no git worktrees.`,
+            },
+          };
+        try {
+          const result = await dispatchWorktreeAction(
+            { action: worktreeAction },
+            {
+              projectId,
+              worktreeId,
+              chatId: destination.chatId,
+              cwd: getAppAdvisorHomeDir(),
+              executionScope: 'worktree',
+              planInitiationSource: 'app_advisor',
+              getWindow: surfaces.getMainWindow,
+              ...(signal ? { signal } : {}),
+            },
+          );
+          return { ...result, requestId };
+        } catch (cause) {
+          return {
+            requestId,
+            ok: false,
+            error: {
+              code: 'execution_failed',
+              message: cause instanceof Error ? cause.message : String(cause),
+            },
+          };
+        }
       }
       if (action.type === 'workspace.find_repository_owner') {
         // The Add project dialog's create-time nudge, read-only, answered in

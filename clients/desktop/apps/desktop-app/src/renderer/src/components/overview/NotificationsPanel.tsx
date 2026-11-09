@@ -1,6 +1,7 @@
+import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
 import type { JSX, KeyboardEvent, MouseEvent } from 'react';
-import type { Notification } from '@/stores/githubStore';
-import { useGitHubStore } from '@/stores/githubStore';
+import type { Notification } from '@/stores/toastStore';
+import { useToastStore } from '@/stores/toastStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -16,16 +17,16 @@ import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posth
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useCoworkEntryLabel } from '@/components/shared/useCoworkEntryLabel';
 
-function badgeClasses(type: Notification['type']): string {
+function badgeTone(type: Notification['type']): BadgeTone {
   switch (type) {
     case 'error':
-      return 'border-line-destructive/40 bg-destructive-subtle fg-destructive';
+      return 'danger';
     case 'success':
-      return 'border-line-positive/40 bg-success-subtle fg-success';
+      return 'success';
     case 'warning':
-      return 'border-line-attention/40 bg-warning-subtle fg-warning';
+      return 'warning';
     default:
-      return 'border-fg-info/40 bg-info-subtle fg-info';
+      return 'info';
   }
 }
 
@@ -54,9 +55,9 @@ export function NotificationsPanel({
 }: {
   showAllContexts?: boolean;
 }): JSX.Element {
-  const notifications = useGitHubStore((state) => state.notifications);
+  const notifications = useToastStore((state) => state.notifications);
   const { isInContext } = useContextScopedWorkspaces();
-  const dismissNotification = useGitHubStore(
+  const dismissNotification = useToastStore(
     (state) => state.dismissNotification,
   );
   const visibleNotifications = notifications.filter(
@@ -182,11 +183,9 @@ function NotificationCard({
       }`}
     >
       <div className="flex items-center gap-2">
-        <span
-          className={`shrink-0 inline-flex items-center rounded-full border px-2 py-0.5 text-3xs font-medium ${badgeClasses(notification.type)}`}
-        >
+        <Badge tone={badgeTone(notification.type)}>
           {badgeLabel(notification)}
-        </span>
+        </Badge>
         <div className="min-w-0 flex-1 text-2xs font-mono fg-secondary truncate">
           <span className={POSTHOG_REPLAY_MASK_CLASS}>
             {meta?.workspaceName ?? ''}

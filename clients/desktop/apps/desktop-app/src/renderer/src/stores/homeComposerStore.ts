@@ -1,6 +1,9 @@
-import { isOpenCodeModel } from '@canopy/desktop-shared/lib/opencode-models';
-import { isCopilotModel } from '@canopy/desktop-shared/lib/copilot-models';
-import { isCursorModel } from '@canopy/desktop-shared/lib/cursor-models';
+import { type InlineFailure } from '@/lib/inline-app-error';
+import { formatWorktreePrepareFailure } from '@canopy/ui-shared';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import { isOpenCodeModel } from '@canopy/execution-engine/lib/opencode-models';
+import { isCopilotModel } from '@canopy/execution-engine/lib/copilot-models';
+import { isCursorModel } from '@canopy/execution-engine/lib/cursor-models';
 import { create } from 'zustand';
 import type {
   ApprovalMode,
@@ -15,6 +18,7 @@ import type {
   HomeDiscoveryTarget,
   PluginSelectionTombstones,
   RepoFileIndex,
+  SidebarItem,
   ThinkingLevel,
   WorktreeDiscovery,
 } from '@canopy/desktop-shared/types';
@@ -36,7 +40,7 @@ import {
   codexSpeedFastMode,
   codexSpeedFromFastMode,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import { createEmptySelections } from '@/lib/pluginSelections';
 import {
   subtractPluginSelections,
@@ -593,6 +597,57 @@ export function defaultNewWorktreeBaseTarget(
   };
 }
 
+/**
+ * Whether an immediate Home send would create its worktree from the source's
+ * current branch (git's `HEAD`), the only start point an unborn source branch
+ * cannot supply. Existing worktrees, explicit bases and existing branch, PR or
+ * issue branches have their own start point. A new issue branch without a base
+ * starts from `origin/{defaultBranch}` when main knows one, so only a missing
+ * default leaves it on `HEAD`. Multi-repo creation is left to the backend: the
+ * branch-target state describes only the canonical source.
+ */
+export function homeSendUsesSourceHead({
+  projectType,
+  branchTarget,
+  newWorktreeBaseTarget,
+  branches,
+  defaultBranch,
+}: {
+  projectType: SidebarItem['type'] | undefined;
+  branchTarget: HomeBranchTarget;
+  newWorktreeBaseTarget: HomeNewWorktreeBaseTarget | null;
+  branches: readonly BranchEntry[];
+  defaultBranch: string | null | undefined;
+}): boolean {
+  if (projectType !== 'single-repo') return false;
+  if (branchTarget.kind === 'new-worktree')
+    return newWorktreeBaseTarget === null;
+  if (branchTarget.kind !== 'linear-issue' || defaultBranch?.trim())
+    return false;
+  return (
+    createOptionsForBranchTarget(branchTarget, branches)?.branchName !==
+    undefined
+  );
+}
+
+/** Preflight failures, by identity, so a committed refresh clears only these. */
+const sourceNoCommitsFailures = new WeakSet<InlineFailure>();
+
+/** The draft's send error when the source branch is verified to have no commits. */
+export function sourceNoCommitsSendFailure(
+  sourceName: string | undefined,
+): InlineFailure {
+  const failure: InlineFailure = {
+    error: formatWorktreePrepareFailure({
+      reason: 'source-no-commits',
+      ...(sourceName ? { sourceName } : {}),
+      hasDetails: false,
+    }),
+  };
+  sourceNoCommitsFailures.add(failure);
+  return failure;
+}
+
 function isCoworkWorkspaceId(workspaceId: string): boolean {
   const project = useProjectsStore
     .getState()
@@ -751,7 +806,7 @@ interface HomeComposerData {
    */
   draftGeneration: number;
   isSending: boolean;
-  sendError: string | null;
+  sendError: InlineFailure | null;
   /** Whether the current send error can be retried without changing the draft. */
   sendErrorRetryable: boolean;
   /**
@@ -765,6 +820,13 @@ interface HomeComposerData {
     message: string;
     focus: boolean;
   } | null;
+  /**
+   * CAN-6019: the current send error is an external Cowork project whose
+   * folder is missing. `failure` is the exact `sendError` it recovers, so any
+   * writer that replaces the error retires these actions without clearing
+   * them itself. The renderer holds the project id, never the folder path.
+   */
+  sendErrorMissingFolder: HomeMissingFolderRecovery | null;
   branchTargets: HomeBranchTargetsResponse | null;
   branchTargetsLoading: boolean;
   discovery: WorktreeDiscovery | null;
@@ -861,6 +923,53 @@ interface HomeComposerData {
   linkRetryGeneration: number;
 }
 
+/** Home adds why a folder goes missing to main's one-sentence notice. */
+const MISSING_FOLDER_HINT = 'It may have been moved or renamed.';
+
+export interface HomeMissingFolderRecovery {
+  projectId: string;
+  folderName: string;
+  failure: InlineFailure;
+}
+
+/**
+ * The error and its recovery, to set together: main's one sentence names the
+ * folder, and Home adds why it may be gone.
+ */
+export function missingFolderSendError(missing: {
+  projectId: string;
+  folderName: string;
+  message: string;
+}): {
+  sendError: InlineFailure;
+  sendErrorRetryable: false;
+  sendErrorChooseModel: null;
+  sendErrorMissingFolder: HomeMissingFolderRecovery;
+} {
+  const failure: InlineFailure = {
+    error: `${missing.message} ${MISSING_FOLDER_HINT}`,
+  };
+  return {
+    sendError: failure,
+    sendErrorRetryable: false,
+    sendErrorChooseModel: null,
+    sendErrorMissingFolder: {
+      projectId: missing.projectId,
+      folderName: missing.folderName,
+      failure,
+    },
+  };
+}
+
+/** The missing-folder recovery for exactly the error Home shows now. */
+export function currentMissingFolderRecovery(state: {
+  sendError: InlineFailure | null;
+  sendErrorMissingFolder: HomeMissingFolderRecovery | null;
+}): HomeMissingFolderRecovery | null {
+  const recovery = state.sendErrorMissingFolder;
+  return recovery && recovery.failure === state.sendError ? recovery : null;
+}
+
 function createInitialData(): HomeComposerData {
   return {
     workspaceId: null,
@@ -888,6 +997,7 @@ function createInitialData(): HomeComposerData {
     sendError: null,
     sendErrorRetryable: false,
     sendErrorChooseModel: null,
+    sendErrorMissingFolder: null,
     branchTargets: null,
     branchTargetsLoading: false,
     discovery: null,
@@ -1146,7 +1256,7 @@ export interface HomeComposerState extends HomeComposerData {
    * failures today and available to B5's send orchestrator for send
    * failures — `selectWorkspace` and `reset` both clear it.
    */
-  setSendError: (error: string | null) => void;
+  setSendError: (error: string | InlineFailure | null) => void;
   /**
    * Loads branch targets for the currently selected workspace via
    * `window.api.homeListBranchTargets`. Guarded against stale responses: if
@@ -1188,6 +1298,7 @@ export interface HomeComposerState extends HomeComposerData {
 }
 
 let nextHomeAttachmentImportId = 1;
+let branchTargetsRequest = 0;
 
 export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
   ...createInitialData(),
@@ -1227,6 +1338,7 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
       sendError: null,
       sendErrorRetryable: false,
       sendErrorChooseModel: null,
+      sendErrorMissingFolder: null,
       pendingGitHubConnectResume: null,
       scheduledSendDraft: null,
       pendingAttachmentImportIds: [],
@@ -1298,11 +1410,20 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
       branchTarget: target,
       pendingAttachmentImportIds: [],
       draftGeneration: state.draftGeneration + 1,
+      ...(state.sendError && sourceNoCommitsFailures.has(state.sendError)
+        ? { sendError: null }
+        : {}),
     }));
   },
 
   setNewWorktreeBaseTarget: (target): void => {
-    set({ newWorktreeBaseTarget: target });
+    set((state) => ({
+      newWorktreeBaseTarget: target,
+      draftGeneration: state.draftGeneration + 1,
+      ...(state.sendError && sourceNoCommitsFailures.has(state.sendError)
+        ? { sendError: null }
+        : {}),
+    }));
   },
 
   setSelectedRepoId: (selectedRepoId): void => {
@@ -1351,7 +1472,11 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
     if (model !== previousModel) set({ executionHarness: undefined });
     // An accepted replacement resolves a model refusal and its action.
     if (sendErrorChooseModel && model !== previousModel)
-      set({ sendError: null, sendErrorChooseModel: null });
+      set({
+        sendError: null,
+        sendErrorChooseModel: null,
+        sendErrorMissingFolder: null,
+      });
     // Picking a concrete model IS the exit from Auto, on Home exactly as in an
     // ongoing chat.
     set({ modelSelectionMode: undefined });
@@ -1582,13 +1707,15 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
 
   setSendError: (error): void => {
     set({
-      sendError: error,
+      sendError: typeof error === 'string' ? { error } : error,
       sendErrorRetryable: false,
       sendErrorChooseModel: null,
+      sendErrorMissingFolder: null,
     });
   },
 
   loadBranchTargets: async (): Promise<void> => {
+    const request = ++branchTargetsRequest;
     const requestedWorkspaceId = get().workspaceId;
     if (!requestedWorkspaceId) {
       set({ branchTargets: null, branchTargetsLoading: false });
@@ -1602,20 +1729,25 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
       response = await window.api.homeListBranchTargets({
         workspaceId: requestedWorkspaceId,
       });
-    } catch {
+    } catch (error) {
+      // Home still offers the fallback targets; record the failed read.
+      reportClientAppError(error);
       response = FALLBACK_BRANCH_TARGETS;
     }
 
-    if (get().workspaceId !== requestedWorkspaceId) {
-      // The user selected a different workspace while this request was in
-      // flight — drop the stale response instead of clobbering state for
-      // the workspace that is now active.
+    if (
+      request !== branchTargetsRequest ||
+      get().workspaceId !== requestedWorkspaceId
+    ) {
+      // A newer refresh or a new selection owns the result, including a
+      // switch away and back to the same workspace while this read waited.
       return;
     }
 
     const project = useProjectsStore
       .getState()
       .projects.find((candidate) => candidate.id === requestedWorkspaceId);
+    const { sendError } = get();
     set({
       branchTargets: response,
       branchTargetsLoading: false,
@@ -1624,6 +1756,13 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
           ? (get().newWorktreeBaseTarget ??
             defaultNewWorktreeBaseTarget(response))
           : null,
+      // A first commit made outside the app clears the preflight block. An
+      // unknown result (absent) clears it too; the backend still classifies.
+      ...(sendError &&
+      response.headUnborn !== true &&
+      sourceNoCommitsFailures.has(sendError)
+        ? { sendError: null }
+        : {}),
     });
   },
 
@@ -1675,7 +1814,9 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
         ...(force ? { force: true } : {}),
       });
       discovery = response.discovery;
-    } catch {
+    } catch (error) {
+      // Discovery is best effort; Home works without it. Record the failure.
+      reportClientAppError(error);
       discovery = null;
     }
 
@@ -1727,7 +1868,9 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
         ...(force ? { force: true } : {}),
       });
       fileIndex = response.repos;
-    } catch {
+    } catch (error) {
+      // File mentions work without the index; record the failed read.
+      reportClientAppError(error);
       fileIndex = null;
     }
 

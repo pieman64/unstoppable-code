@@ -3,7 +3,7 @@ import type {
   AuthDependencyFailure,
   CanopyAuthFailureEventData,
 } from '@canopy/protocol/auth-recovery';
-import type { UsageInitiationSource } from '@canopy/desktop-shared/types/observability';
+import type { UsageInitiationSource } from '@canopy/execution-engine/types/observability';
 import {
   isAutoResumeSafeToolName,
   isBackgroundInitiationSource,

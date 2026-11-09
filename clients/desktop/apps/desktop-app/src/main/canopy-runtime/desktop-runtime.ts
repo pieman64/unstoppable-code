@@ -1,3 +1,5 @@
+import { createCoworkFolderAdapter } from './cowork-folder-adapter';
+import { createDesktopWorktreeGitAdapter } from './worker-git-worktree-adapter';
 import { CoreHelperRuns } from '@canopy/core-runtime/node/agent/helpers';
 import { CoreSignInRuns } from '@canopy/core-runtime/node/agent/sign-in';
 import { AdvisorActionRuns } from '@canopy/core-runtime/node/agent/advisor';
@@ -31,6 +33,7 @@ import {
   WORKER_CATALOG_INSTRUCTION_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
   type CanopyStreamCursor,
+  type OperationRecord,
   type CanopyInstructionDefinitionMap,
   type CanopyQueryHandlerMap,
   type CanopyQueryParams,
@@ -116,6 +119,7 @@ import { stopSubagentNatively } from '../agent-runs/subagent-native-stop';
 import { respondToChatQuestion } from '../chat-questions/respond';
 import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
 import { installQuestionTurnWaits } from '../chat-questions/question-turn-waits';
+import { installApprovalTurnWaits } from '../approvals/approval-turn-waits';
 import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage';
 import { createCoreChatEventsAdapter } from './core-chat-events-adapter';
 import { createChatEventReplayLog } from './chat-event-replay-log';
@@ -130,6 +134,7 @@ import { validateId } from '../lib/validation';
 import { logMainProcessError } from '../lib/main-process-logging';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 import { createCoreChatCommandAdapter } from './core-chat-command-adapter';
+import { assertAutoArchivePatchOnly } from './auto-archive-principal-guard';
 import {
   createDesktopChatArchiveEffects,
   withChatArchiveEffects,
@@ -173,9 +178,30 @@ import { createDesktopWorkspaceTextItemProviders } from './core-workspace-note-i
 import { createCoreInitiatedWorkSourceAdapter } from './core-initiated-work-source-adapter';
 import { createCoreExecutionAdapter } from './core-execution-adapter';
 import { createCoreTerminalSettingsAdapter } from './core-terminal-settings-adapter';
+import {
+  createCoreConfigAdapter,
+  type CoreConfigHost,
+} from './core-config-adapter';
+import {
+  createCoreMemoryAdapter,
+  type CoreMemoryHost,
+} from './core-memory-adapter';
+import {
+  createCoreWatcherAdapter,
+  type CoreWatcherHost,
+} from './core-watcher-adapter';
+import {
+  createCoreDeferredToolsAdapter,
+  type CoreDeferredToolsHost,
+} from './core-deferred-tools-adapter';
+import {
+  createCoreChatVisualStageAdapter,
+  type CoreChatVisualStageHost,
+} from './core-chat-visual-stage-adapter';
 import { createCoreCatalogAdapter } from './core-catalog-adapter';
 import { createWorkerCatalogAdapter } from './worker-catalog-adapter';
 import { createDesktopMaterializationResolver } from './catalog-materialization-host';
+import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
 import {
   DESKTOP_QUERY_DEFINITIONS,
   type DesktopQueryDefinitions,
@@ -231,6 +257,8 @@ import {
 } from './worker-git-adapter';
 import { createWorkerGitCommitPushAdapter } from './worker-git-commit-push-adapter';
 import { createWorkerGitSyncWriteAdapter } from './worker-git-sync-adapter';
+import { createWorkerGitLocalMutationAdapter } from './worker-git-local-mutations-adapter';
+import { registerLocalGitMutationDispatcher } from './worker-git-local-mutations-dispatch';
 import { createWorkerGitMergeAdapter } from './worker-git-merge-adapter';
 import type {
   WorkerGitBranchListHost,
@@ -353,6 +381,25 @@ import {
   type DesktopEntryMutationPlatform,
   type LegacyTextFileSave,
 } from './worker-filesystem-mutation-adapter';
+import {
+  createInterfaceToolProvenance,
+  type InterfaceToolProvenanceIngest,
+} from './interface-tools/interface-tool-provenance';
+
+/** Deferred: observability loads after the runtime it records. */
+const loadInterfaceToolProvenanceIngest =
+  async (): Promise<InterfaceToolProvenanceIngest> => {
+    const { getExecutionObservabilityIngest } =
+      await import('../observability/ingest');
+    return {
+      noteInterfaceToolCallDelivered: (...args): void =>
+        getExecutionObservabilityIngest().noteInterfaceToolCallDelivered(
+          ...args,
+        ),
+      recordInterfaceToolCall: (...args): void =>
+        getExecutionObservabilityIngest().recordInterfaceToolCall(...args),
+    };
+  };
 
 export interface CreateDesktopRuntimeOptions {
   services?: WorkerFilesystemServices;
@@ -393,6 +440,16 @@ export interface CreateDesktopRuntimeOptions {
   terminalSettingsStore?: TerminalSettingsStore;
   /** Host behind `core.catalog.*`; tests may inject one. */
   catalogHost?: CoreCatalogHost;
+  /** Namespace reads behind `core.config.get`; tests may inject them. */
+  configHost?: CoreConfigHost;
+  /** Local memory behind `core.memory.*`; tests may inject one. */
+  memoryHost?: CoreMemoryHost;
+  /** Watcher service behind `core.initiatedWork.watcher.*`; tests may inject one. */
+  watcherHost?: CoreWatcherHost;
+  /** Catalog and reload lifecycle behind `core.agent.deferredTools.*`; tests may inject one. */
+  deferredToolsHost?: CoreDeferredToolsHost;
+  /** Staging writer behind `core.chat.visual.stage`; tests may inject one. */
+  visualStageHost?: CoreChatVisualStageHost;
   /** Worker host behind `worker.catalog.*` and the resolver behind materialization; tests may inject them. */
   workerCatalogHost?: WorkerCatalogHost;
   catalogMaterializationResolver?: CatalogMaterializationResolver;
@@ -745,6 +802,14 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
   readonly catalogMaterializationReader: WorkerCatalogMaterializationReader;
   /** App Advisor writes as keyed operations (CAN-4133). */
   readonly appAdvisorActions: AdvisorActionRuns;
+  /**
+   * In process: the operation once it ends, or a rejection when the signal
+   * stops the wait. App Advisor's marketplace refresh waits on it (CAN-6002).
+   */
+  waitForOperation(
+    operationId: string,
+    signal?: AbortSignal,
+  ): Promise<OperationRecord>;
   /** Worktree summary generations (CAN-4114): each a core.summary.regenerate operation that survives restart. */
   readonly summarySchedule: CoreSummarySchedule;
   /** Deferred-tool reloads (CAN-4127): the core drives search/load reloads and their resume. */
@@ -1252,13 +1317,27 @@ export function createDesktopRuntime(
       : (): CoreChatSettingsHost | null => options.chatSettingsHost ?? null,
     chatCommandKeys,
   );
-  const chatCommandsAdapter = withChatArchiveEffects(
+  const chatCommandsWithEffects = withChatArchiveEffects(
     commandAdapter,
     getChatStateCommandPort,
     options.chatArchiveEffects === undefined
       ? createDesktopChatArchiveEffects()
       : options.chatArchiveEffects,
   );
+  const chatCommandsAdapter = {
+    instructions: {
+      ...chatCommandsWithEffects.instructions,
+      'core.chat.update': (
+        params: unknown,
+        context: CanopyHandlerContext,
+      ): ReturnType<
+        (typeof chatCommandsWithEffects.instructions)['core.chat.update']
+      > => {
+        assertAutoArchivePatchOnly(context.caller, params);
+        return chatCommandsWithEffects.instructions['core.chat.update'](params);
+      },
+    },
+  };
   const chatTransferAdapter = createCoreChatTransferAdapter(
     options.chatTransferHost,
   );
@@ -1311,6 +1390,15 @@ export function createDesktopRuntime(
   const executionAdapter = createCoreExecutionAdapter();
   const terminalSettingsAdapter = createCoreTerminalSettingsAdapter(
     options.terminalSettingsStore,
+  );
+  const configAdapter = createCoreConfigAdapter(options.configHost);
+  const memoryAdapter = createCoreMemoryAdapter(options.memoryHost);
+  const watcherAdapter = createCoreWatcherAdapter(options.watcherHost);
+  const deferredToolsAdapter = createCoreDeferredToolsAdapter(
+    options.deferredToolsHost,
+  );
+  const visualStageAdapter = createCoreChatVisualStageAdapter(
+    options.visualStageHost,
   );
   const observabilityReadModel = options.observabilityReadModel;
   const observabilityAdapter = createCoreObservabilityAdapter(
@@ -1387,6 +1475,12 @@ export function createDesktopRuntime(
     options.workerGitDiffHost,
     options.workerGitBranchWriteHost,
   );
+  const workerGitLocalMutationAdapter: DesktopDomainAdapter = {
+    instructions: {
+      ...createWorkerGitLocalMutationAdapter(),
+      ...createDesktopWorktreeGitAdapter(),
+    },
+  };
   const workerGitMergeAdapter: DesktopDomainAdapter = {
     instructions: createWorkerGitMergeAdapter(options.workerGitMergeHost),
   };
@@ -1509,6 +1603,11 @@ export function createDesktopRuntime(
     summaryAdapter,
     coreSearchAdapter,
     terminalSettingsAdapter,
+    configAdapter,
+    memoryAdapter,
+    watcherAdapter,
+    deferredToolsAdapter,
+    visualStageAdapter,
     catalogAdapter,
     workspaceInstructionsAdapter,
     workspaceItemsAdapter,
@@ -1525,6 +1624,7 @@ export function createDesktopRuntime(
     workerGitAdapter,
     workerGitSyncAdapter,
     workerGitMergeAdapter,
+    workerGitLocalMutationAdapter,
     integrationAdapter,
     pullRequestAdapter,
     workerPipelineAdapter,
@@ -1534,14 +1634,20 @@ export function createDesktopRuntime(
     operationQueriesAndInstructions,
     ...(options.adapters ?? []),
   ];
+  const coworkFolderAdapter = createCoworkFolderAdapter();
   const queries: Partial<CanopyDispatcherHandlerMap<DesktopQueryDefinitions>> =
     {
       ...builtInHandlers,
       ...workspaceAdapter,
+      'core.workspace.cowork.folder.check':
+        coworkFolderAdapter['core.workspace.cowork.folder.check'],
     };
   const instructions: Partial<
     CanopyDispatcherInstructionHandlerMap<DesktopInstructionDefinitions>
-  > = {};
+  > = {
+    'core.workspace.cowork.send.rollback':
+      coworkFolderAdapter['core.workspace.cowork.send.rollback'],
+  };
   const streams: Partial<
     CanopyDispatcherStreamHandlerMap<typeof CANOPY_STREAM_DEFINITIONS>
   > = {
@@ -1661,7 +1767,7 @@ export function createDesktopRuntime(
         watchAdapter.handlers,
         mutationAdapter,
       ),
-      owned('core.workspace', workspaceAdapter),
+      owned('core.workspace', workspaceAdapter, coworkFolderAdapter),
       owned('core.chat.events', chatEventsAdapter.handlers),
       ownedAdapter('core.chat.turn', turnAdapter),
       ownedAdapter('core.chat.question', questionAdapter),
@@ -1673,6 +1779,11 @@ export function createDesktopRuntime(
       ownedAdapter('core.summary', summaryAdapter),
       ownedAdapter('core.search', coreSearchAdapter),
       ownedAdapter('core.terminal.settings', terminalSettingsAdapter),
+      ownedAdapter('core.config', configAdapter),
+      ownedAdapter('core.memory', memoryAdapter),
+      ownedAdapter('core.initiatedWork.watcher', watcherAdapter),
+      ownedAdapter('core.agent.deferredTools', deferredToolsAdapter),
+      ownedAdapter('core.chat.visual.stage', visualStageAdapter),
       ownedAdapter('core.catalog', catalogAdapter),
       ownedAdapter('worker.catalog', workerCatalogAdapter),
       ownedAdapter('core.workspace.instructions', workspaceInstructionsAdapter),
@@ -1707,6 +1818,7 @@ export function createDesktopRuntime(
         workerGitAdapter.instructions,
         workerGitSyncAdapter.instructions,
         workerGitMergeAdapter.instructions,
+        workerGitLocalMutationAdapter.instructions,
       ),
       ownedAdapter('core.integration', integrationAdapter),
       ownedAdapter('core.pullRequest', pullRequestAdapter),
@@ -1803,6 +1915,7 @@ export function createDesktopRuntime(
     resolver:
       options.catalogMaterializationResolver ??
       createDesktopMaterializationResolver(),
+    secrets: getDesktopExecutionSecrets(),
   });
   const appAdvisorActions = new AdvisorActionRuns({
     operations: operationAdapter.service,
@@ -1824,6 +1937,7 @@ export function createDesktopRuntime(
   });
   chatTurnRunsRef.current = chatTurnRuns;
   installQuestionTurnWaits(getDesktopChatWaits());
+  installApprovalTurnWaits(getDesktopChatWaits());
   const subagentRuns = new CoreSubagentRuns({
     operations: operationAdapter.service,
     localWorker,
@@ -1831,11 +1945,20 @@ export function createDesktopRuntime(
       logMainProcessWarn(`[subagent-runs] ${context} failed`, error),
     stopNative: stopSubagentNatively,
   });
+  // CAN-5828: the turn's audit entry records which lease answered.
+  const provenance = createInterfaceToolProvenance({
+    load: loadInterfaceToolProvenanceIngest,
+    onError: (error, context): void =>
+      logMainProcessWarn(`[interface-tools] ${context} failed`, error),
+  });
   const interfaceTools = new InterfaceToolRegistry({
     onError: (error, context): void =>
       logMainProcessWarn(`[interface-tools] ${context} failed`, error),
-    onDelivered: (event): void =>
-      logMainProcessDebug('[interface-tools] delivered', event),
+    onDelivered: (event): void => {
+      logMainProcessDebug('[interface-tools] delivered', event);
+      provenance.onDelivered(event);
+    },
+    onSettled: (event): void => provenance.onSettled(event),
   });
   setSessionInterfaceToolRegistry(interfaceTools);
   const deferredToolReloads =
@@ -2450,6 +2573,8 @@ export function createDesktopRuntime(
     catalogMaterializations,
     catalogMaterializationReader: workerCatalogAdapter.reader,
     appAdvisorActions,
+    waitForOperation: (operationId: string, signal?: AbortSignal) =>
+      operationAdapter.service.waitForTerminal(operationId, signal),
     summarySchedule,
     deferredToolReloads,
     chatTurnRuns,
@@ -2468,6 +2593,7 @@ export function createDesktopRuntime(
     ),
     shutdown: async (): Promise<void> => {
       shuttingDown = true;
+      releaseLocalGitMutationDispatcher();
       deferredToolReloads.close();
       setDeferredToolReloads(null);
       if (activeDesktopRuntime === desktopDispatcher)
@@ -2704,5 +2830,7 @@ export function createDesktopRuntime(
   catalogDispatcher = desktopDispatcher;
   lifecycleEffects.dispatcher = desktopDispatcher;
   activeDesktopRuntime = desktopDispatcher;
+  const releaseLocalGitMutationDispatcher =
+    registerLocalGitMutationDispatcher(desktopDispatcher);
   return desktopDispatcher;
 }

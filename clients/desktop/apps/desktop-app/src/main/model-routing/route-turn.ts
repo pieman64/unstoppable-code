@@ -26,7 +26,7 @@ import {
 import {
   isGatewayRoutableModel,
   resolveGatewayModelEntry,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isCodexModelAvailableToAccount } from '@canopy/desktop-shared/lib/default-model-lane';
 import { isProviderNativelyAuthenticatedForRouting } from '../auth/provider-auth-state';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';

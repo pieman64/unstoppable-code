@@ -1,3 +1,16 @@
+import {
+  toAppError,
+  createAppErrorHandler,
+  type AppErrorHandler,
+  type AppErrorReport,
+  type AppErrorReportOptions,
+  type AppErrorRecord,
+} from '@canopy/protocol/app-errors';
+import {
+  APP_ERROR_POSTHOG_EVENT,
+  APP_ERROR_VIEW_POSTHOG_EVENT,
+  buildAppErrorPostHogProperties,
+} from '../app-error-telemetry';
 import { loadRequiredNodeModule } from '@canopy/desktop-shared/node/lib/packaged-module-loader';
 import { randomUUID } from 'node:crypto';
 import type { PostHog } from 'posthog-node';
@@ -5,7 +18,7 @@ import type * as PostHogNodeModule from 'posthog-node';
 import type {
   PostHogInstallLaunch,
   PostHogSessionState,
-} from '@canopy/desktop-shared/types/observability';
+} from '@canopy/execution-engine/types/observability';
 import { isPostHogSessionState } from '../posthog-session';
 import { sanitizePostHogEvent } from '../posthog-privacy';
 import {
@@ -69,22 +82,49 @@ function forwardPostHogOperation(
       'background',
       options,
     );
-    if (
-      !operation ||
-      !posthogOperationCaptureEnabled ||
-      posthogInitializationUnavailable ||
-      posthogShutdownRequested
-    )
-      return;
-    if (!posthog || !posthogAnonymousId) {
-      if (pendingPostHogOperations.length >= MAX_PENDING_POSTHOG_OPERATIONS) {
-        pendingPostHogOperations.shift();
-      }
-      pendingPostHogOperations.push(operation);
-      return;
-    }
-    captureDesktopPostHogOperation(operation);
+    if (!operation) return;
+    forwardGatedPostHogEvent(operation);
   });
+}
+
+function isPostHogErrorEvent(event: string): boolean {
+  return (
+    event === '$exception' ||
+    event === APP_ERROR_POSTHOG_EVENT ||
+    event === APP_ERROR_VIEW_POSTHOG_EVENT
+  );
+}
+
+/** Operations and `$set` also need the LaunchDarkly capture flag. */
+function isPostHogFlagGatedProductEvent(event: string): boolean {
+  return isDesktopPostHogOperationEvent(event) || event === '$set';
+}
+
+/** Each category's epoch, stamped at capture and checked at delivery. */
+function postHogEpochFor(event: string): number {
+  if (isPostHogErrorEvent(event)) return posthogErrorsEpoch;
+  return isPostHogFlagGatedProductEvent(event)
+    ? posthogEventsEpoch
+    : posthogLaunchEventsEpoch;
+}
+
+function forwardGatedPostHogEvent(operation: PostHogOperationEvent): void {
+  if (
+    !(isPostHogErrorEvent(operation.event)
+      ? posthogErrorsCaptureEnabled
+      : posthogEventsCaptureEnabled) ||
+    posthogInitializationUnavailable ||
+    posthogShutdownRequested
+  )
+    return;
+  if (!posthog || !posthogAnonymousId) {
+    if (pendingPostHogOperations.length >= MAX_PENDING_POSTHOG_OPERATIONS) {
+      pendingPostHogOperations.shift();
+    }
+    pendingPostHogOperations.push(operation);
+    return;
+  }
+  captureDesktopPostHogOperation(operation);
 }
 
 export function startDesktopOperation(
@@ -116,7 +156,7 @@ export function failDesktopOperation(
 }
 
 /** Main-process errors reach PostHog `$exception` through the observability
- * port. Gated by the same capture flag and epoch as operations. */
+ * port. Gated by the errors flag and epoch, independent of product events. */
 export function captureDesktopInstrumentationError(
   error: unknown,
   options?: DesktopInstrumentationErrorOptions,
@@ -137,9 +177,23 @@ let posthogShutdown: Promise<void> | undefined;
 let posthogShutdownRequested = false;
 let posthogSession: PostHogSessionState | undefined;
 let posthogPlatformProperties: PostHogPlatformProperties = {};
-let posthogOperationCaptureEnabled = false;
+/** Operations, `$set`, and other LaunchDarkly-gated product events. */
+let posthogEventsCaptureEnabled = false;
+/** `$exception` and the app-error events. */
+let posthogErrorsCaptureEnabled = false;
+/** Product events the LaunchDarkly kill switch does not gate. */
+let posthogLaunchEventsCaptureEnabled = false;
 let posthogInitializationUnavailable = false;
-let posthogOperationEpoch = 0;
+let posthogEventsEpoch = 0;
+let posthogLaunchEventsEpoch = 0;
+let posthogErrorsEpoch = 0;
+/** A policy restart starts a new client, not a new launch. */
+let posthogAppStartCaptured = false;
+/** Read by the launch's first client and kept for a later `app_start`. */
+let posthogInstallLaunch: PostHogInstallLaunch | undefined;
+let posthogInstallLaunchRead = false;
+/** Serializes policy shutdowns and re-initializations. */
+let posthogLifecycle: Promise<void> = Promise.resolve();
 const POSTHOG_OPERATION_EPOCH_KEY = '__canopy_operation_epoch';
 const MAX_PENDING_POSTHOG_OPERATIONS = 100;
 const pendingPostHogOperations: PostHogOperationEvent[] = [];
@@ -191,20 +245,24 @@ async function sendPostHogRequest(
         typeof message.event !== 'string'
       )
         return [];
+      // Errors follow Error reports; every other event follows Usage
+      // analytics. Operations and `$set` also need the LaunchDarkly capture
+      // flag; launch events such as `desktop:app_start` do not. An event
+      // without its category's epoch, such as one posthog-node sends on its
+      // own, is dropped.
+      const permitted = isPostHogErrorEvent(message.event)
+        ? posthogErrorsCaptureEnabled
+        : isPostHogFlagGatedProductEvent(message.event)
+          ? posthogEventsCaptureEnabled
+          : posthogLaunchEventsCaptureEnabled;
       if (
-        !isDesktopPostHogOperationEvent(message.event) &&
-        message.event !== '$set' &&
-        message.event !== '$exception'
-      )
-        return [message];
-      if (
-        !posthogOperationCaptureEnabled ||
+        !permitted ||
         !('properties' in message) ||
         typeof message.properties !== 'object' ||
         message.properties === null ||
         !(POSTHOG_OPERATION_EPOCH_KEY in message.properties) ||
         message.properties[POSTHOG_OPERATION_EPOCH_KEY] !==
-          posthogOperationEpoch
+          postHogEpochFor(message.event)
       )
         return [];
       if (
@@ -227,30 +285,69 @@ async function sendPostHogRequest(
   }
 }
 
+export interface DesktopPostHogCapturePolicy {
+  /** LaunchDarkly capture flag ∧ effective Usage analytics. */
+  events: boolean;
+  /** LaunchDarkly capture flag ∧ effective Error reports. */
+  errors: boolean;
+  /**
+   * Effective Usage analytics alone, for launch events such as
+   * `desktop:app_start` that the LaunchDarkly kill switch does not gate.
+   */
+  launchEvents: boolean;
+}
+
 /**
- * Applies the LaunchDarkly PostHog capture flag to forwarded operations and
- * exceptions. Closed until the host supplies its first flag snapshot.
+ * Applies the combined LaunchDarkly flag and usage-data policy to forwarded
+ * operations, product events, and errors. Closed until the host supplies its
+ * first policy. Narrowing a category bumps its epoch and drops its queue;
+ * re-enabling events republishes `$set` and re-enabling errors drains the
+ * exception buffer.
  */
-export function setDesktopPostHogOperationCaptureEnabled(
-  enabled: boolean,
+export function setDesktopPostHogCapturePolicy(
+  policy: DesktopPostHogCapturePolicy,
 ): void {
   posthogCaptureFlagKnown = true;
-  posthogOperationCaptureEnabled = enabled;
-  if (!enabled) {
+  const eventsNarrowed = posthogEventsCaptureEnabled && !policy.events;
+  // Separate so the LaunchDarkly kill switch alone never drops a queued
+  // `desktop:app_start`.
+  const launchEventsNarrowed =
+    posthogLaunchEventsCaptureEnabled && !policy.launchEvents;
+  posthogEventsCaptureEnabled = policy.events;
+  posthogLaunchEventsCaptureEnabled = policy.launchEvents;
+  posthogErrorsCaptureEnabled = policy.errors;
+  if (launchEventsNarrowed) posthogLaunchEventsEpoch += 1;
+  if (eventsNarrowed || launchEventsNarrowed || !policy.events) {
     posthogOperations.discardAcquisitionStarts();
-    posthogOperationEpoch += 1;
-    pendingPostHogOperations.length = 0;
-    pendingPostHogExceptions.length = 0;
-  } else {
-    publishPostHogAccount();
-    drainPendingPostHogExceptions();
+    if (eventsNarrowed) posthogEventsEpoch += 1;
+    removePendingPostHogOperations((event) => !isPostHogErrorEvent(event));
   }
+  if (!policy.errors) {
+    mainAppErrorHandler?.dispose();
+    mainAppErrorHandler = undefined;
+    posthogErrorsEpoch += 1;
+    removePendingPostHogOperations(isPostHogErrorEvent);
+    pendingPostHogExceptions.length = 0;
+  }
+  if (policy.launchEvents) captureDesktopPostHogAppStart();
+  if (policy.events) publishPostHogAccount();
+  if (policy.errors) drainPendingPostHogExceptions();
+}
+
+function removePendingPostHogOperations(
+  matches: (event: string) => boolean,
+): void {
+  const kept = pendingPostHogOperations.filter(
+    (operation) => !matches(operation.event),
+  );
+  pendingPostHogOperations.length = 0;
+  pendingPostHogOperations.push(...kept);
 }
 
 /** Eligibility for durable product milestones. Never consume one while capture is off. */
 export function isDesktopPostHogOperationCaptureEnabled(): boolean {
   return Boolean(
-    posthogOperationCaptureEnabled &&
+    posthogEventsCaptureEnabled &&
     posthog &&
     posthogAnonymousId &&
     !posthogInitializationUnavailable &&
@@ -271,18 +368,18 @@ export async function getDesktopPostHogEmailDomain(): Promise<string | null> {
 function publishPostHogAccount(): void {
   const domain = posthogAccount?.domain;
   if (
-    !posthogOperationCaptureEnabled ||
+    !posthogEventsCaptureEnabled ||
     domain === undefined ||
     !posthog ||
     !posthogAnonymousId ||
     posthogShutdownRequested ||
     (domain === publishedPostHogAccountDomain &&
-      posthogOperationEpoch === publishedPostHogAccountEpoch)
+      posthogEventsEpoch === publishedPostHogAccountEpoch)
   )
     return;
   captureDesktopPostHogEvent('$set');
   publishedPostHogAccountDomain = domain;
-  publishedPostHogAccountEpoch = posthogOperationEpoch;
+  publishedPostHogAccountEpoch = posthogEventsEpoch;
 }
 
 export function getDesktopPostHogSession(): PostHogSessionState {
@@ -325,8 +422,11 @@ export function initializePostHogMain(
   getInstallLaunch?: () => Promise<PostHogInstallLaunch>,
   getHostPlatform?: () => PostHogHostPlatform,
 ): Promise<DesktopInstrumentationInitResult> {
+  const lifecycle = posthogLifecycle;
   return (posthogInitialization ??=
     (async (): Promise<DesktopInstrumentationInitResult> => {
+      // A policy shutdown in flight finishes before a new client starts.
+      await lifecycle;
       try {
         const result = await initializePostHogMainClient(
           getAnonymousId,
@@ -379,7 +479,11 @@ async function initializePostHogMainClient(
     ) {
       throw new Error('PostHog anonymous identity is unavailable');
     }
-    const installLaunch = await readPostHogInstallLaunch(getInstallLaunch);
+    // Install facts describe the launch, so only its first client reads them.
+    if (!posthogInstallLaunchRead) {
+      posthogInstallLaunchRead = true;
+      posthogInstallLaunch = await readPostHogInstallLaunch(getInstallLaunch);
+    }
     posthogPlatformProperties = readPostHogPlatformProperties(getHostPlatform);
     const sdk = loadRequiredNodeModule<typeof PostHogNodeModule>({
       moduleId: 'posthog-node',
@@ -422,30 +526,17 @@ async function initializePostHogMainClient(
         reason: 'shutdown',
       };
     }
-    captureDesktopPostHogEvent('desktop:app_start', {
-      ...(config.appVersion === undefined
-        ? {}
-        : { app_version: config.appVersion }),
-      ...(config.releaseChannel === undefined
-        ? {}
-        : { release_channel: config.releaseChannel }),
-      ...(installLaunch === undefined
-        ? {}
-        : {
-            is_first_launch: installLaunch.isFirstLaunch,
-            is_reinstall: installLaunch.isReinstall,
-            ...(typeof installLaunch.isInvitedInstall === 'boolean'
-              ? { is_invited_install: installLaunch.isInvitedInstall }
-              : {}),
-          }),
-    });
+    captureDesktopPostHogAppStart();
     publishPostHogAccount();
-    if (posthogOperationCaptureEnabled) {
-      for (const operation of pendingPostHogOperations) {
+    for (const operation of pendingPostHogOperations) {
+      if (
+        isPostHogErrorEvent(operation.event)
+          ? posthogErrorsCaptureEnabled
+          : posthogEventsCaptureEnabled
+      )
         captureDesktopPostHogOperation(operation);
-      }
-      drainPendingPostHogExceptions();
     }
+    drainPendingPostHogExceptions();
     return { enabled: true, provider: 'posthog' };
   } catch (error) {
     return {
@@ -454,6 +545,44 @@ async function initializePostHogMainClient(
       reason: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * `desktop:app_start` follows Usage analytics alone, once per process: when
+ * the first client starts with launch events open, or when they open later in
+ * that launch, so a session that began with analytics off keeps its install
+ * facts.
+ */
+function captureDesktopPostHogAppStart(): void {
+  if (
+    posthogAppStartCaptured ||
+    !posthogLaunchEventsCaptureEnabled ||
+    !posthog ||
+    !posthogAnonymousId ||
+    posthogShutdownRequested ||
+    posthogShutdown
+  )
+    return;
+  posthogAppStartCaptured = true;
+  const config = getDesktopInstrumentationConfig();
+  const installLaunch = posthogInstallLaunch;
+  captureDesktopPostHogEvent('desktop:app_start', {
+    ...(config.appVersion === undefined
+      ? {}
+      : { app_version: config.appVersion }),
+    ...(config.releaseChannel === undefined
+      ? {}
+      : { release_channel: config.releaseChannel }),
+    ...(installLaunch === undefined
+      ? {}
+      : {
+          is_first_launch: installLaunch.isFirstLaunch,
+          is_reinstall: installLaunch.isReinstall,
+          ...(typeof installLaunch.isInvitedInstall === 'boolean'
+            ? { is_invited_install: installLaunch.isInvitedInstall }
+            : {}),
+        }),
+  });
 }
 
 /** Launch facts are best-effort; a failed read never blocks startup. */
@@ -471,10 +600,7 @@ async function readPostHogInstallLaunch(
 function captureDesktopPostHogOperation(
   operation: PostHogOperationEvent,
 ): void {
-  captureDesktopPostHogEvent(operation.event, {
-    ...operation.properties,
-    [POSTHOG_OPERATION_EPOCH_KEY]: posthogOperationEpoch,
-  });
+  captureDesktopPostHogEvent(operation.event, operation.properties);
 }
 
 /** Explicit product events. Operations reach PostHog only through the
@@ -493,7 +619,7 @@ export function captureDesktopPostHogEvent(
   const distinctId = posthogAnonymousId;
   safelyInvoke(() => {
     const domain =
-      posthogOperationCaptureEnabled && event !== 'desktop:app_start'
+      posthogEventsCaptureEnabled && event !== 'desktop:app_start'
         ? posthogAccount?.domain
         : undefined;
     const sanitized = sanitizePostHogEvent({
@@ -506,19 +632,19 @@ export function captureDesktopPostHogEvent(
         $is_identified: false,
         ...(domain !== undefined && {
           email_domain: domain,
-          ...(event === '$set' && {
-            $set: { email_domain: domain },
-            [POSTHOG_OPERATION_EPOCH_KEY]: posthogOperationEpoch,
-          }),
+          ...(event === '$set' && { $set: { email_domain: domain } }),
         }),
+        // Every event carries its category's epoch so `sendPostHogRequest`
+        // drops anything captured before a later narrowing.
+        [POSTHOG_OPERATION_EPOCH_KEY]: postHogEpochFor(event),
       },
     });
     posthog?.capture({ distinctId, event, properties: sanitized?.properties });
   });
 }
 
-/** Buffers while the SDK, anonymous id or first flag snapshot is pending;
- * drops when capture is off. The epoch lets `sendPostHogRequest` discard
+/** Buffers while the SDK, anonymous id or first policy is pending; drops
+ * when error capture is off. The epoch lets `sendPostHogRequest` discard
  * an exception captured before a later off/on toggle. */
 function captureDesktopPostHogException(
   error: unknown,
@@ -528,10 +654,10 @@ function captureDesktopPostHogException(
     posthogShutdownRequested ||
     posthogShutdown ||
     posthogInitializationUnavailable ||
-    (posthogCaptureFlagKnown && !posthogOperationCaptureEnabled)
+    (posthogCaptureFlagKnown && !posthogErrorsCaptureEnabled)
   )
     return;
-  if (!posthog || !posthogAnonymousId || !posthogOperationCaptureEnabled) {
+  if (!posthog || !posthogAnonymousId || !posthogErrorsCaptureEnabled) {
     if (pendingPostHogExceptions.length >= MAX_PENDING_POSTHOG_EXCEPTIONS) {
       pendingPostHogExceptions.shift();
     }
@@ -542,8 +668,7 @@ function captureDesktopPostHogException(
 }
 
 function drainPendingPostHogExceptions(): void {
-  if (!posthog || !posthogAnonymousId || !posthogOperationCaptureEnabled)
-    return;
+  if (!posthog || !posthogAnonymousId || !posthogErrorsCaptureEnabled) return;
   for (const { error, context } of pendingPostHogExceptions.splice(0)) {
     sendDesktopPostHogException(error, context);
   }
@@ -559,7 +684,11 @@ function sendDesktopPostHogException(
   }
   posthogExceptionsSent += 1;
   const distinctId = posthogAnonymousId;
-  const domain = posthogAccount?.domain;
+  // The account domain and person profile follow Usage analytics, not Error
+  // reports, as they do for product events.
+  const domain = posthogEventsCaptureEnabled
+    ? posthogAccount?.domain
+    : undefined;
   safelyInvoke(() => {
     // `before_send` runs `sanitizePostHogEvent`, which also sanitizes the
     // SDK-built `$exception_*` properties.
@@ -570,12 +699,19 @@ function sendDesktopPostHogException(
       $process_person_profile: domain !== undefined,
       $is_identified: false,
       ...(domain !== undefined && { email_domain: domain }),
-      [POSTHOG_OPERATION_EPOCH_KEY]: posthogOperationEpoch,
+      [POSTHOG_OPERATION_EPOCH_KEY]: posthogErrorsEpoch,
     });
   });
 }
 
 async function flushDesktopPostHog(): Promise<void> {
+  disposeMainAppErrorHandler();
+  if (!posthogShutdownRequested && mainAppErrorsDroppedOverCap > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `PostHog app error cap reached; ${mainAppErrorsDroppedOverCap} main error records were not sent.`,
+    );
+  }
   // The fatal path flushes twice; warn only on the first.
   if (!posthogShutdownRequested && posthogExceptionsDroppedOverCap > 0) {
     // eslint-disable-next-line no-console
@@ -613,4 +749,128 @@ function shutdownDesktopPostHogClient(): Promise<void> {
   return (posthogShutdown ??= posthog.shutdown(5_000).catch(() => {
     // Best-effort shutdown flush.
   }));
+}
+
+/**
+ * Shut the client down because the member's usage-data policy turned both
+ * product events and error reports off. Unlike the quit path, a later
+ * `initializePostHogMain` can start a new client. Serialized with
+ * initialization so rapid toggles never leave two clients. Sends no event.
+ */
+export function suspendPostHogMain(): Promise<void> {
+  const initialization = posthogInitialization;
+  posthogInitialization = undefined;
+  posthogLifecycle = posthogLifecycle.then(async (): Promise<void> => {
+    if (!initialization) return;
+    await initialization.catch(() => undefined);
+    // Quit owns the client from here.
+    if (posthogShutdownRequested) return;
+    const client = posthog;
+    posthogAccount?.dispose();
+    posthogAccount = undefined;
+    posthog = undefined;
+    posthogAnonymousId = undefined;
+    posthogInitializationUnavailable = false;
+    publishedPostHogAccountDomain = undefined;
+    publishedPostHogAccountEpoch = undefined;
+    pendingPostHogOperations.length = 0;
+    pendingPostHogExceptions.length = 0;
+    await client?.shutdown(5_000).catch(() => {
+      // Best-effort shutdown flush.
+    });
+  });
+  // A failed suspend must not leave every later start awaiting a rejection.
+  posthogLifecycle = posthogLifecycle.catch(() => undefined);
+  return posthogLifecycle;
+}
+
+let mainAppErrorHandler: AppErrorHandler | undefined;
+let mainAppErrorHandlerDisposed = false;
+const MAX_MAIN_APP_ERROR_ADMISSIONS = 100;
+let mainAppErrorAdmissions = 0;
+let mainAppErrorsDroppedOverCap = 0;
+
+function captureMainAppError(record: AppErrorRecord): void {
+  if (
+    !posthogErrorsCaptureEnabled ||
+    posthogInitializationUnavailable ||
+    posthogShutdownRequested ||
+    posthogShutdown
+  )
+    return;
+  if (mainAppErrorAdmissions >= MAX_MAIN_APP_ERROR_ADMISSIONS) {
+    mainAppErrorsDroppedOverCap++;
+    return;
+  }
+  // Admission includes closing summaries and precedes queueing. Ownership is
+  // local recording, not an acknowledgement of telemetry delivery.
+  mainAppErrorAdmissions++;
+  forwardGatedPostHogEvent({
+    event: APP_ERROR_POSTHOG_EVENT,
+    properties: buildAppErrorPostHogProperties(record),
+  });
+}
+
+function createMainAppErrorHandler(appVersion: string): AppErrorHandler {
+  return createAppErrorHandler({
+    host: 'main',
+    appVersion,
+    sinks: [captureMainAppError],
+    scheduler: {
+      schedule(callback, delayMs): () => void {
+        const timer = setTimeout(callback, delayMs);
+        timer.unref();
+        return (): void => clearTimeout(timer);
+      },
+    },
+  });
+}
+
+const disposedMainAppErrorHandler: AppErrorHandler = {
+  report(value, options): AppErrorReport | undefined {
+    const error = toAppError(value, options);
+    return error ? { error, disposition: 'none' } : undefined;
+  },
+  flush(): void {},
+  dispose(): void {},
+};
+
+const captureDisabledMainAppErrorHandler: AppErrorHandler = {
+  ...disposedMainAppErrorHandler,
+  report(value, options): AppErrorReport | undefined {
+    const report = disposedMainAppErrorHandler.report(value, options);
+    if (!report || report.error.kind === 'input' || report.error.recordedBy)
+      return report;
+    // Preserve local ownership without retaining or emitting disabled-period data.
+    return { ...report, error: { ...report.error, recordedBy: 'main' } };
+  },
+};
+
+export function getMainAppErrorHandler(): AppErrorHandler {
+  if (mainAppErrorHandlerDisposed)
+    return mainAppErrorHandler ?? disposedMainAppErrorHandler;
+  if (!posthogErrorsCaptureEnabled) return captureDisabledMainAppErrorHandler;
+  if (!mainAppErrorHandler) {
+    try {
+      mainAppErrorHandler = createMainAppErrorHandler(
+        getDesktopInstrumentationConfig().appVersion ?? 'unknown',
+      );
+    } catch {
+      mainAppErrorHandler = createMainAppErrorHandler('unknown');
+    }
+  }
+  return mainAppErrorHandler;
+}
+
+export function reportMainAppError(
+  value: unknown,
+  options?: AppErrorReportOptions,
+): AppErrorReport | undefined {
+  return getMainAppErrorHandler().report(value, options);
+}
+
+export function disposeMainAppErrorHandler(): void {
+  if (mainAppErrorHandlerDisposed) return;
+  mainAppErrorHandlerDisposed = true;
+  mainAppErrorHandler?.dispose();
 }

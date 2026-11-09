@@ -851,126 +851,134 @@ export function CommandPalette({
       {/* The palette's own keys: Escape closes from anywhere inside, even a
           focused result row, which the dialog's Escape leaves to the list. */}
       <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleKeyDown}>
-        <div className="border-b">
-          <SearchField
-            ref={inputRef}
-            size="lg"
-            value={query}
-            onValueChange={(next): void => {
-              setQuery(next);
-              setErrorMessage(null);
-              selectedItemIdRef.current = null;
-              setSelectedIndex(0);
-            }}
-            // Escape closes the palette at once (the dialog's handler); the
-            // nested button clears the query.
-            clearOnEscape={false}
-            aria-label="Search"
-            placeholder="Search chats, workspaces, plugins, settings, and more"
-            data-testid="command-palette-input"
-            clearTestId="command-palette-clear"
-            // The scope hint names its key as a cap, in the same quiet ink
-            // as the legend below; it never reads as a button.
-            trailing={
-              <span
-                data-testid="command-palette-mode-hint"
-                className="inline-flex shrink-0 items-center gap-1.25 text-xs whitespace-nowrap fg-quaternary"
-                aria-live="polite"
-                data-mode={commandsOnly ? 'commands' : 'all'}
-              >
-                {commandsOnly ? (
-                  'Commands only'
-                ) : (
-                  <>
-                    {/* The spaces keep the text "Type > for commands" for
-                        screen readers; the flex gap sets the visual spacing. */}
-                    Type{' '}
-                    <Kbd
-                      shortcut={shortcutKeys('palette-commands-prefix')}
-                      data-testid="command-palette-mode-hint-key"
-                    />{' '}
-                    for commands
-                  </>
-                )}
-              </span>
-            }
-          />
-        </div>
-        {/* Session replay records the results; a transcript or plan snippet
-            row blocks its own snippet (`PaletteResultRow`). */}
-        <div className="max-h-96 min-h-0 overflow-y-auto">
-          {flatItems.length === 0 ? (
-            <SearchEmptyState
-              testId="command-palette-empty"
-              title="Nothing matches your search."
-              actionLabel={query === '' ? undefined : 'Clear search'}
-              onAction={(): void => {
-                setQuery('');
+        <div className="flex min-h-0 flex-col gap-0">
+          <div className="shrink-0 border-b">
+            <SearchField
+              ref={inputRef}
+              size="lg"
+              value={query}
+              onValueChange={(next): void => {
+                setQuery(next);
                 setErrorMessage(null);
                 selectedItemIdRef.current = null;
                 setSelectedIndex(0);
-                inputRef.current?.focus();
               }}
-              actionTestId="command-palette-empty-clear"
-            />
-          ) : (
-            <ul role="listbox" aria-label="Results" className="px-2 py-1">
-              {ranking.sections.map((section, sectionIdx) => (
-                <li
-                  key={section.id}
-                  data-testid="command-palette-section"
-                  data-palette-section={section.id}
+              // Escape closes the palette at once (the dialog's handler); the
+              // nested button clears the query.
+              clearOnEscape={false}
+              aria-label="Search"
+              placeholder="Search chats, workspaces, plugins, settings, and more"
+              data-testid="command-palette-input"
+              clearTestId="command-palette-clear"
+              // The scope hint names its key as a cap, in the same quiet ink
+              // as the legend below; it never reads as a button.
+              trailing={
+                <span
+                  data-testid="command-palette-mode-hint"
+                  className="inline-flex shrink-0 items-center gap-1.25 text-xs whitespace-nowrap fg-quaternary"
+                  aria-live="polite"
+                  data-mode={commandsOnly ? 'commands' : 'all'}
                 >
-                  <div className="px-2 pb-1 pt-3 text-2xs font-semibold fg-secondary">
-                    {section.label}
-                  </div>
-                  <ul role="group" aria-label={section.label}>
-                    {section.items.map((ranked, itemIdx) => {
-                      const index = sectionOffsets[sectionIdx] + itemIdx;
-                      return (
-                        <PaletteResultRow
-                          key={ranked.item.id}
-                          item={ranked.item}
-                          titleIndices={ranked.titleIndices}
-                          index={index}
-                          isSelected={index === selectedIndex}
-                          onHover={handleHover}
-                          onActivate={handleActivate}
-                          registerRef={registerRef}
-                        />
-                      );
-                    })}
-                    {section.truncated > 0 &&
-                      ((): JSX.Element => {
-                        const index =
-                          sectionOffsets[sectionIdx] + section.items.length;
-                        const entry = flatItems[index];
+                  {commandsOnly ? (
+                    'Commands only'
+                  ) : (
+                    <>
+                      {/* The spaces keep the text "Type > for commands" for
+                        screen readers; the flex gap sets the visual spacing. */}
+                      Type{' '}
+                      <Kbd
+                        shortcut={shortcutKeys('palette-commands-prefix')}
+                        data-testid="command-palette-mode-hint-key"
+                      />{' '}
+                      for commands
+                    </>
+                  )}
+                </span>
+              }
+            />
+          </div>
+          {/* Session replay records the results; a transcript or plan snippet
+            row blocks its own snippet (`PaletteResultRow`). */}
+          <div className="max-h-96 min-h-0 overflow-y-auto">
+            {flatItems.length === 0 ? (
+              <SearchEmptyState
+                testId="command-palette-empty"
+                title="Nothing matches your search."
+                actionLabel={query === '' ? undefined : 'Clear search'}
+                onAction={(): void => {
+                  setQuery('');
+                  setErrorMessage(null);
+                  selectedItemIdRef.current = null;
+                  setSelectedIndex(0);
+                  inputRef.current?.focus();
+                }}
+                actionTestId="command-palette-empty-clear"
+              />
+            ) : (
+              <ul role="listbox" aria-label="Results" className="px-2 py-1">
+                {ranking.sections.map((section, sectionIdx) => (
+                  <li
+                    key={section.id}
+                    data-testid="command-palette-section"
+                    data-palette-section={section.id}
+                  >
+                    <div className="px-2 pb-1 pt-3 text-2xs font-semibold fg-secondary">
+                      {section.label}
+                    </div>
+                    <ul role="group" aria-label={section.label}>
+                      {section.items.map((ranked, itemIdx) => {
+                        const index = sectionOffsets[sectionIdx] + itemIdx;
                         return (
-                          <li
-                            ref={(node): void => registerRef(index, node)}
-                            key={`show-more:${section.id}`}
-                          >
-                            <ListRow
-                              role="option"
-                              aria-selected={index === selectedIndex}
-                              selected={index === selectedIndex}
-                              data-testid="command-palette-show-more"
-                              onMouseEnter={(): void => handleHover(index)}
-                              onClick={(): void => activateEntry(entry)}
-                            >
-                              Show {section.truncated} more
-                            </ListRow>
-                          </li>
+                          <PaletteResultRow
+                            key={ranked.item.id}
+                            item={ranked.item}
+                            titleIndices={ranked.titleIndices}
+                            index={index}
+                            isSelected={index === selectedIndex}
+                            onHover={handleHover}
+                            onActivate={handleActivate}
+                            registerRef={registerRef}
+                          />
                         );
-                      })()}
-                  </ul>
-                </li>
-              ))}
-            </ul>
-          )}
+                      })}
+                      {section.truncated > 0 &&
+                        ((): JSX.Element => {
+                          const index =
+                            sectionOffsets[sectionIdx] + section.items.length;
+                          const entry = flatItems[index];
+                          return (
+                            <li
+                              ref={(node): void => registerRef(index, node)}
+                              key={`show-more:${section.id}`}
+                            >
+                              <ListRow
+                                role="option"
+                                aria-selected={index === selectedIndex}
+                                selected={index === selectedIndex}
+                                data-testid="command-palette-show-more"
+                                onMouseEnter={(): void => handleHover(index)}
+                                onClick={(): void => activateEntry(entry)}
+                              >
+                                Show {section.truncated} more
+                              </ListRow>
+                            </li>
+                          );
+                        })()}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
-        <ErrorBanner error={errorMessage} className="mx-3 mb-3" />
-        <KeyHintFooter hints={pickerKeyHints('open')} />
+        <div className="flex shrink-0 flex-col gap-3">
+          {errorMessage && (
+            <div className="px-3">
+              <ErrorBanner error={errorMessage} className="" />
+            </div>
+          )}
+          <KeyHintFooter hints={pickerKeyHints('open')} />
+        </div>
       </div>
     </DialogModal>
   );

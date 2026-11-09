@@ -22,7 +22,7 @@ import '@xyflow/react/dist/style.css';
 import type {
   Pipeline,
   ExecutionState,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   buildDefinitionFlow,
   buildExecutionFlow,

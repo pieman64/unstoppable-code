@@ -1,3 +1,4 @@
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -20,6 +21,7 @@ import {
 import { linuxUpdateCopy } from '@canopy/desktop-shared/lib/linux-update-copy';
 import { isCliPathManagementPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import {
+  Stack,
   BusyLabel,
   Button,
   ConfirmDialog,
@@ -272,6 +274,7 @@ export function CanopyTab(): JSX.Element {
   const [hasSavedPat, setHasSavedPat] = useState(false);
   const [auditRetentionDays, setAuditRetentionDays] = useState(7);
   const [autoDownloadUpdates, setAutoDownloadUpdates] = useState(true);
+  const [automaticUpdateChecks, setAutomaticUpdateChecks] = useState(true);
   const [dataDirStatus, setDataDirStatus] = useState<
     PreferencesLoadResult['__dataDir'] | null
   >(null);
@@ -335,6 +338,7 @@ export function CanopyTab(): JSX.Element {
       .then((prefs) => {
         setAuditRetentionDays(prefs.auditRetentionDays);
         setAutoDownloadUpdates(prefs.autoDownloadUpdates);
+        setAutomaticUpdateChecks(prefs.automaticUpdateChecks);
         setDataDirStatus(prefs.__dataDir ?? null);
       })
       .catch(() => {
@@ -642,7 +646,7 @@ export function CanopyTab(): JSX.Element {
         <ConfirmDialog
           title="Use primary data folder?"
           message={
-            <div className="space-y-3">
+            <Stack gap="item">
               <p>
                 This creates a new default primary data folder at{' '}
                 <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
@@ -660,7 +664,7 @@ export function CanopyTab(): JSX.Element {
                 </code>
                 .
               </p>
-            </div>
+            </Stack>
           }
           confirmLabel="Create and restart"
           busyLabel="Creating…"
@@ -702,10 +706,7 @@ export function CanopyTab(): JSX.Element {
           dataTestId="settings-update-version-picker-modal"
           overlayClassName="z-modal"
         >
-          <div
-            className="space-y-4"
-            data-testid="settings-update-version-picker"
-          >
+          <Stack gap="group" data-testid="settings-update-version-picker">
             <form
               className="flex gap-2"
               onSubmit={(event): void => {
@@ -732,7 +733,7 @@ export function CanopyTab(): JSX.Element {
               </Button>
             </form>
 
-            <ErrorBanner error={versionError} className="" />
+            <ErrorBanner className="" error={versionError} />
 
             <Surface variant="outline" className="overflow-hidden">
               <div
@@ -801,7 +802,7 @@ export function CanopyTab(): JSX.Element {
                 <BusyLabel busy={versionLoading}>Load more</BusyLabel>
               </Button>
             </div>
-          </div>
+          </Stack>
         </DialogModal>
       )}
 
@@ -980,7 +981,7 @@ export function CanopyTab(): JSX.Element {
               <div
                 className={
                   window.platform === 'linux'
-                    ? 'text-xs fg-secondary select-text break-words space-y-2'
+                    ? 'flex flex-col gap-2 text-xs fg-secondary select-text break-words'
                     : 'text-xs fg-secondary'
                 }
                 data-testid={
@@ -992,7 +993,7 @@ export function CanopyTab(): JSX.Element {
                 {window.platform === 'linux' &&
                   updateState.info?.manualDownload &&
                   linuxCopy.apt && (
-                    <div className="space-y-2">
+                    <Stack gap="inline">
                       <p>{linuxCopy.apt.introduction}</p>
                       <code
                         className={`block font-mono ${POSTHOG_REPLAY_BLOCK_CLASS}`}
@@ -1000,7 +1001,7 @@ export function CanopyTab(): JSX.Element {
                         {linuxCopy.apt.command}
                       </code>
                       <p>{linuxCopy.apt.bootstrap}</p>
-                    </div>
+                    </Stack>
                   )}
                 <p>
                   {window.platform === 'linux'
@@ -1105,6 +1106,32 @@ export function CanopyTab(): JSX.Element {
               }
             />
           )}
+          {/* Every platform: the Linux timers call the same check. A change
+              applies at the updater's next tick; turning it back on does not
+              check at once. The manual check above still works. */}
+          <SettingsRow
+            label="Check for updates automatically"
+            htmlFor="settings-automatic-update-checks"
+            description="Look for new versions at launch and every few hours. Turn off to check only when you choose."
+            control={
+              <ToggleSwitch
+                id="settings-automatic-update-checks"
+                checked={automaticUpdateChecks}
+                label="Check for updates automatically"
+                onChange={(nextValue) => {
+                  const previous = automaticUpdateChecks;
+                  setAutomaticUpdateChecks(nextValue);
+                  void window.api
+                    .savePreferences({ automaticUpdateChecks: nextValue })
+                    .catch((error: unknown) => {
+                      setAutomaticUpdateChecks(previous);
+                      reportClientAppError(error);
+                    });
+                }}
+                dataTestId="settings-automatic-update-checks"
+              />
+            }
+          />
           {window.platform !== 'linux' && (
             <SettingsRow
               label="Download updates automatically"
@@ -1114,6 +1141,9 @@ export function CanopyTab(): JSX.Element {
                 <ToggleSwitch
                   id="settings-auto-download-updates"
                   checked={autoDownloadUpdates}
+                  // Locked while automatic checks are off; the stored choice
+                  // is kept and still applies after a manual check.
+                  disabled={!automaticUpdateChecks}
                   label="Download updates automatically"
                   onChange={(nextValue) => {
                     setAutoDownloadUpdates(nextValue);

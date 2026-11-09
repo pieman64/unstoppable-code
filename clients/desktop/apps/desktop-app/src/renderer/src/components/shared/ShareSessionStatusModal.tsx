@@ -7,7 +7,7 @@ import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { brandText } from '@/lib/brand';
 import { shareSessionAction } from '@/lib/shareSessionAction';
 import { useShareSessionStatusStore } from '@/stores/shareSessionStatusStore';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { Stack, ErrorBanner } from '@canopy/ui-shared/components';
 
 export function ShareSessionStatusModal(): JSX.Element | null {
   const target = useShareSessionStatusStore((state) => state.target);
@@ -32,41 +32,45 @@ export function ShareSessionStatusModal(): JSX.Element | null {
       maxWidth="md"
       dataTestId="share-session-status-modal"
     >
-      <div className="space-y-4">
+      <Stack gap="group">
         {status.phase === 'sharing' && (
           <div
             className="flex items-center gap-3"
             data-testid="share-session-status-sharing"
           >
             <LoadingSpinner />
-            <div>
+            <Stack gap="tight">
               <p className="text-s font-medium fg-primary">
                 Uploading a secure session snapshot…
               </p>
-              <p className="mt-1 text-xs fg-secondary">
+              <p className="text-xs fg-secondary">
                 Keep {brandText.appName} open until the upload finishes.
               </p>
-            </div>
+            </Stack>
           </div>
         )}
 
         {status.phase === 'success' && (
-          <div data-testid="share-session-status-success">
-            <p className="text-s font-medium fg-primary">
-              Session snapshot exported
-            </p>
-            <p className="mt-1 text-xs fg-secondary">
-              It is now available from <strong>Import session…</strong> in a
-              compatible project signed in to this {brandText.appName} Cloud
-              account. This private export does not create a public link.
-            </p>
-            <p className="mt-3 truncate text-xs fg-secondary">
-              {status.response.title} ·{' '}
-              {formatByteSize(status.response.sizeBytes)}
-            </p>
+          <Stack gap="group" data-testid="share-session-status-success">
+            <Stack gap="item">
+              <Stack gap="tight">
+                <p className="text-s font-medium fg-primary">
+                  Session snapshot exported
+                </p>
+                <p className="text-xs fg-secondary">
+                  It is now available from <strong>Import session…</strong> in a
+                  compatible project signed in to this {brandText.appName} Cloud
+                  account. This private export does not create a public link.
+                </p>
+              </Stack>
+              <p className="truncate text-xs fg-secondary">
+                {status.response.title} ·{' '}
+                {formatByteSize(status.response.sizeBytes)}
+              </p>
+            </Stack>
             {status.response.warnings.length > 0 && (
               <ul
-                className="mt-4 list-disc space-y-1 rounded-lg border border-line-attention/30 bg-warning-subtle px-7 py-2 text-xs fg-secondary"
+                className="flex flex-col list-disc rounded-lg border border-line-attention/30 bg-warning-subtle px-7 py-2 text-xs fg-secondary gap-1"
                 data-testid="share-session-status-warnings"
               >
                 {status.response.warnings.map((warning, index) => (
@@ -74,7 +78,7 @@ export function ShareSessionStatusModal(): JSX.Element | null {
                 ))}
               </ul>
             )}
-          </div>
+          </Stack>
         )}
 
         {status.phase === 'error' && (
@@ -112,7 +116,7 @@ export function ShareSessionStatusModal(): JSX.Element | null {
             )}
           </div>
         )}
-      </div>
+      </Stack>
     </DialogModal>
   );
 }

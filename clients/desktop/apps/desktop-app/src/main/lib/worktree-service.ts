@@ -1,4 +1,6 @@
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import { worktreeSourceFailure } from '@canopy/core-runtime/node/git';
+import { isNativeError } from 'node:util/types';
 import {
   consumeW5Metadata,
   prepareW5Metadata,
@@ -910,7 +912,9 @@ function isNodeErrorCode(error: unknown, code: string): boolean {
 }
 
 function normalizeError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
+  return error instanceof Error || isNativeError(error)
+    ? error
+    : new Error(String(error));
 }
 
 function getErrorMessage(error: unknown): string {
@@ -966,14 +970,19 @@ function isWorktreeRemovalTimeoutError(error: unknown): boolean {
 function createSetupFailureHealthIssue(
   worktreePath: string,
   error: Error,
+  sourceRepoId?: string,
 ): WorktreeHealthIssue {
+  const failure = worktreeSourceFailure(error);
   return {
     status: 'broken',
     code: 'git-error',
-    message: 'Worktree setup failed.',
+    message: failure
+      ? 'The source branch has no commits yet.'
+      : 'Worktree setup failed.',
     checkedAt: new Date().toISOString(),
     worktreePath,
     gitError: getErrorMessage(error),
+    ...(failure ? { failureReason: failure.failureReason, sourceRepoId } : {}),
   };
 }
 
@@ -3444,7 +3453,9 @@ async function createAdmittedSingleRepoWorktree(
         projectId: options.workspaceId,
         worktreeId: reservation.id,
         error: getErrorMessage(normalizedError),
-        failureReason: storageUnavailable ? 'storage-unavailable' : undefined,
+        failureReason: storageUnavailable
+          ? 'storage-unavailable'
+          : worktreeSourceFailure(normalizedError)?.failureReason,
         healthIssue,
       });
       throw normalizedError;
@@ -4204,9 +4215,16 @@ async function createAdmittedMultiRepoWorktree(
               }`,
           )
           .join('\n');
-        throw new Error(
+        const combined = new Error(
           `${failed.length} repos failed worktree creation:\n${reasons}`,
         );
+        const classifications = failed.map((failure) =>
+          worktreeSourceFailure(failure.reason),
+        );
+        if (classifications.every((failure) => failure !== undefined)) {
+          Object.assign(combined, classifications[0]);
+        }
+        throw combined;
       }
 
       // See the single-repo path above. Automatic desktop setup owns the
@@ -4335,6 +4353,11 @@ async function createAdmittedMultiRepoWorktree(
       const healthIssue = createSetupFailureHealthIssue(
         worktreeDir,
         normalizedError,
+        includedRepos.find(
+          (repo) =>
+            repo.repoPath ===
+            worktreeSourceFailure(normalizedError)?.sourceRepoPath,
+        )?.id,
       );
       let storageUnavailable = isSetupStorageUnavailable(error);
       // A thrown write cannot prove staleness; false confirms the reservation is gone.
@@ -4352,7 +4375,12 @@ async function createAdmittedMultiRepoWorktree(
         projectId: options.workspaceId,
         worktreeId: reservation.id,
         error: getErrorMessage(normalizedError),
-        failureReason: storageUnavailable ? 'storage-unavailable' : undefined,
+        failureReason: storageUnavailable
+          ? 'storage-unavailable'
+          : worktreeSourceFailure(normalizedError)?.failureReason,
+        ...(storageUnavailable || !healthIssue.sourceRepoId
+          ? {}
+          : { sourceRepoId: healthIssue.sourceRepoId }),
         healthIssue,
       });
       throw normalizedError;

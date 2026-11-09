@@ -21,7 +21,7 @@ import {
   type QueuedGalleryState,
   type RecurringNoticeGalleryState,
 } from './messageBubbleStateGalleryData';
-import { Heading, Surface } from '@canopy/ui-shared/components';
+import { Stack, Heading, Surface } from '@canopy/ui-shared/components';
 
 /**
  * Dev-only reference page rendering the real chat message components
@@ -42,17 +42,23 @@ interface MessageStateRowProps {
 
 function MessageStateRow({ state }: MessageStateRowProps): JSX.Element {
   return (
-    <div data-testid={`bubble-gallery-row-${state.id}`} className="min-w-0">
-      <p className="text-xs font-medium fg-primary">{state.title}</p>
-      <p className="mt-0.5 mb-2 text-xs leading-relaxed fg-secondary">
-        {state.description}
-      </p>
+    <Stack
+      data-testid={`bubble-gallery-row-${state.id}`}
+      gap="inline"
+      className="min-w-0"
+    >
+      <div className="flex flex-col gap-0">
+        <p className="text-xs font-medium fg-primary">{state.title}</p>
+        <p className="mt-0.5 text-xs leading-relaxed fg-secondary">
+          {state.description}
+        </p>
+      </div>
       <ChatMessageItem
         message={state.message}
         chatPendingQuestions={[]}
         onResetToPoint={state.withRevert ? noopAsync : undefined}
       />
-    </div>
+    </Stack>
   );
 }
 
@@ -75,6 +81,7 @@ function QueuedStateRow({ state }: QueuedStateRowProps): JSX.Element {
           onEdit: noop,
           onClear: noop,
           onInterrupt: noop,
+          ...(state.scheduledWorkflow ? { onOpenWorkflow: noop } : {}),
         }
       : undefined;
   // Same mapping as the live transcript; gallery rows never sit behind a
@@ -82,11 +89,17 @@ function QueuedStateRow({ state }: QueuedStateRowProps): JSX.Element {
   const forceAction = queuedRowForceAction(state.message, 'recoverable');
   const turnPhase = queuedRowTurnPhase(state.message, 'recoverable');
   return (
-    <div data-testid={`bubble-gallery-row-${state.id}`} className="min-w-0">
-      <p className="text-xs font-medium fg-primary">{state.title}</p>
-      <p className="mt-0.5 mb-2 text-xs leading-relaxed fg-secondary">
-        {state.description}
-      </p>
+    <Stack
+      data-testid={`bubble-gallery-row-${state.id}`}
+      gap="inline"
+      className="min-w-0"
+    >
+      <div className="flex flex-col gap-0">
+        <p className="text-xs font-medium fg-primary">{state.title}</p>
+        <p className="mt-0.5 text-xs leading-relaxed fg-secondary">
+          {state.description}
+        </p>
+      </div>
       <QueuedMessageBubble
         message={state.message}
         index={0}
@@ -102,7 +115,7 @@ function QueuedStateRow({ state }: QueuedStateRowProps): JSX.Element {
         canForce={state.canForce}
         scheduled={scheduled}
       />
-    </div>
+    </Stack>
   );
 }
 
@@ -119,11 +132,17 @@ interface RecurringNoticeRowProps {
 
 function RecurringNoticeRow({ state }: RecurringNoticeRowProps): JSX.Element {
   return (
-    <div data-testid={`bubble-gallery-row-${state.id}`} className="min-w-0">
-      <p className="text-xs font-medium fg-primary">{state.title}</p>
-      <p className="mt-0.5 mb-2 text-xs leading-relaxed fg-secondary">
-        {state.description}
-      </p>
+    <Stack
+      data-testid={`bubble-gallery-row-${state.id}`}
+      gap="inline"
+      className="min-w-0"
+    >
+      <div className="flex flex-col gap-0">
+        <p className="text-xs font-medium fg-primary">{state.title}</p>
+        <p className="mt-0.5 text-xs leading-relaxed fg-secondary">
+          {state.description}
+        </p>
+      </div>
       <ScheduledAutomationsNoticeView
         automations={state.automations}
         onRunNow={inertMutation}
@@ -131,7 +150,7 @@ function RecurringNoticeRow({ state }: RecurringNoticeRowProps): JSX.Element {
         onEdit={inertHandler}
         onManage={inertHandler}
       />
-    </div>
+    </Stack>
   );
 }
 
@@ -150,13 +169,16 @@ function GallerySection({
     <Surface
       data-testid={`bubble-gallery-section-${messageSectionSlug(title)}`}
       variant="inset"
+      gap="group"
       padding="default"
     >
-      <Heading level={2} variant="title">
-        {title}
-      </Heading>
-      <p className="mt-1 text-xs leading-relaxed fg-secondary">{description}</p>
-      <div className="mt-4 flex flex-col gap-5">{children}</div>
+      <Stack gap="tight">
+        <Heading level={2} variant="title">
+          {title}
+        </Heading>
+        <p className="text-xs leading-relaxed fg-secondary">{description}</p>
+      </Stack>
+      <Stack gap="block">{children}</Stack>
     </Surface>
   );
 }
@@ -193,8 +215,8 @@ function MessageBubbleStateGalleryContent(): JSX.Element {
     >
       <PageTitlebar />
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-12">
-        <div className="mx-auto max-w-5xl space-y-8">
-          <div className="space-y-2">
+        <div className="flex flex-col mx-auto max-w-5xl gap-8">
+          <Stack gap="inline">
             <Heading level={1} variant="page">
               Message Bubbles
             </Heading>
@@ -204,7 +226,7 @@ function MessageBubbleStateGalleryContent(): JSX.Element {
               bubble to reveal its action cluster. This page is only reachable
               in dev and E2E builds.
             </p>
-          </div>
+          </Stack>
 
           <GallerySection
             title="User bubbles"

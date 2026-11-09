@@ -1,12 +1,16 @@
-import { type JSX, useCallback } from 'react';
+import { type JSX, useCallback, useState } from 'react';
 import type { LaunchAtLoginStatus } from '@canopy/desktop-shared/types';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   Notice,
   NoticeButton,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { brandText } from '@/lib/brand';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { resolvePlatformText } from '@/lib/platform-text';
 import { uiText } from '@/lib/ui-text';
 import {
@@ -16,6 +20,12 @@ import {
 import { SettingsRow } from './SettingsLayout';
 
 const TOGGLE_ID = 'settings-launch-at-login-toggle';
+
+function failureCopy(requested: boolean): string {
+  return requested
+    ? 'Could not turn this on. Try again.'
+    : 'Could not turn this off. Try again.';
+}
 
 function rendererPlatform(): LaunchAtLoginStatus['platform'] {
   const platform = typeof window !== 'undefined' ? window.platform : undefined;
@@ -31,6 +41,9 @@ function rendererPlatform(): LaunchAtLoginStatus['platform'] {
  */
 export function LaunchAtLoginSection(): JSX.Element | null {
   const { status, hydrated, busy, error } = useLaunchAtLoginStatus();
+  // The store records that a round trip failed; the reason behind Copy
+  // details comes from the rejection this toggle saw.
+  const [failure, setFailure] = useState<InlineFailure | null>(null);
   // The status names the platform the OS answered for (the E2E fake can
   // impersonate Windows); before it loads, the renderer's own platform keeps
   // the first paint from showing the wrong label.
@@ -51,10 +64,14 @@ export function LaunchAtLoginSection(): JSX.Element | null {
 
   const handleChange = useCallback((next: boolean): void => {
     // The store records a failed round trip for the error line below.
+    setFailure(null);
     useLaunchAtLoginStore
       .getState()
       .setEnabled(next)
-      .catch(() => undefined);
+      .catch((caught: unknown) => {
+        const appError = toAppError(resolveClientAppError(caught));
+        if (appError) setFailure(inlineFailure(appError, failureCopy(next)));
+      });
   }, []);
 
   const openSystemSettings = useCallback((): void => {
@@ -105,29 +122,33 @@ export function LaunchAtLoginSection(): JSX.Element | null {
           on.
         </Notice>
       )}
-      {error !== null && (
-        <Notice
-          intent="destructive"
-          data-testid="launch-at-login-error"
-          actions={
-            platform === 'win32' ? (
-              // The usual cause on Windows is the Startup apps switch in
-              // Windows Settings or Task Manager, which only the user can
-              // flip back.
-              <NoticeButton
-                onClick={openSystemSettings}
-                data-testid="launch-at-login-open-startup-apps"
-              >
-                Open Startup apps
-              </NoticeButton>
-            ) : undefined
-          }
-        >
-          {error.requested
-            ? 'Could not turn this on. Try again.'
-            : 'Could not turn this off. Try again.'}
-        </Notice>
-      )}
+      <DesktopErrorBanner
+        className=""
+        error={
+          error === null
+            ? null
+            : error.reason === 'failed' && failure !== null
+              ? failure.error
+              : failureCopy(error.requested)
+        }
+        {...(error?.reason === 'failed' && failure?.details !== undefined
+          ? { details: failure.details }
+          : {})}
+        testId="launch-at-login-error"
+        secondaryAction={
+          platform === 'win32' ? (
+            // The usual cause on Windows is the Startup apps switch in
+            // Windows Settings or Task Manager, which only the user can
+            // flip back.
+            <NoticeButton
+              onClick={openSystemSettings}
+              data-testid="launch-at-login-open-startup-apps"
+            >
+              Open Startup apps
+            </NoticeButton>
+          ) : undefined
+        }
+      />
     </SettingsRow>
   );
 }

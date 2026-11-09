@@ -1,3 +1,7 @@
+import {
+  assertCoworkChatRootPresent,
+  CoworkFolderMissingError,
+} from '../lib/cowork-folder-guard';
 import { randomUUID } from 'node:crypto';
 import {
   parseChatSendAction,
@@ -24,7 +28,7 @@ import {
 import { isAutomationRunSource } from './automation-run-source';
 import { resolveAuthorizedChat } from '../project-discovery/chat-target';
 import type { BotChatAddress } from '@canopy/desktop-shared/lib/bot-discovery';
-import { mergeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
+import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import type { ChatReadScope } from '../project-discovery/chat-target';
 import type { PersistedChatTab } from '@canopy/desktop-shared/types';
 import type { ProjectDiscoveryCaller } from '../project-discovery';
@@ -206,8 +210,10 @@ export class AgentChatSendError extends Error {
   constructor(
     readonly code: AgentSendRefusalCode,
     message: string,
+    cause?: Error,
   ) {
     super(message);
+    if (cause) Object.defineProperty(this, 'cause', { value: cause });
     this.name = 'AgentChatSendError';
   }
 }
@@ -232,6 +238,8 @@ export async function dispatchAgentChatSend(
   try {
     return await send(action, context);
   } catch (error) {
+    if (error instanceof CoworkFolderMissingError)
+      throw new AgentChatSendError(error.code, error.message, error);
     if (isAgentSenderContextError(error)) {
       const hidden =
         error.code === 'owner_boundary' ||
@@ -355,6 +363,10 @@ async function send(
       'unsupported_action',
       'Setup queuing is only supported for code targets.',
     );
+  await assertCoworkChatRootPresent(
+    target.scope.workspaceId,
+    target.scope.worktreeId,
+  );
   // A pipeline is not a chat: it may report back to the chat that started it.
   if (
     source &&

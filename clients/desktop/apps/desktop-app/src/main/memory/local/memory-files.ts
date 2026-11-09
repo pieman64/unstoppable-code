@@ -19,7 +19,7 @@ import {
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
-import { isPathInside } from '@canopy/desktop-shared/node/lib/path-safety';
+import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 
 // Owner-only permissions for memory data at rest. Node accepts `mode` on all
 // platforms; on Windows it is effectively a no-op, which is the intended

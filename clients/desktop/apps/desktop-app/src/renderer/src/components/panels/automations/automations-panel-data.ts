@@ -19,7 +19,8 @@ import {
   resolveAutomationPipelineTarget,
 } from '@canopy/desktop-shared/lib/automation-pipeline-target';
 import type { RunFeedInput } from '@/lib/workflows/run-feed';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
+import { workflowScheduleDestination } from '@canopy/desktop-shared/lib/workflow-schedule-destination';
 
 /** Scope the panel filters by: the owning workspace and (optionally) worktree. */
 export interface AutomationsPanelScope {
@@ -117,6 +118,11 @@ function ownedGlobalWorkflowInputs(
 }
 
 function activityWorkspaceId(activity: ScheduledActivity): string | undefined {
+  // CAN-5782: a workflow schedule runs where its destination points.
+  const destination = workflowScheduleDestination(activity);
+  if (destination?.kind === 'chat_action')
+    return automationActionWorkspaceId(destination.action);
+  if (destination?.kind === 'inputs') return destination.projectId;
   return (
     automationActionWorkspaceId(activity.action) ??
     ownedGlobalWorkflowInputs(activity)?.project_id
@@ -128,6 +134,10 @@ function activityWorkspaceId(activity: ScheduledActivity): string | undefined {
  * Work Entry in a cowork one, which never narrows to a worktree.
  */
 function activityWorktreeId(activity: ScheduledActivity): string | undefined {
+  const destination = workflowScheduleDestination(activity);
+  if (destination?.kind === 'chat_action')
+    return automationActionWorktreeId(destination.action);
+  if (destination?.kind === 'inputs') return destination.taskId;
   return (
     automationActionWorktreeId(activity.action) ??
     ownedGlobalWorkflowInputs(activity)?.task_id

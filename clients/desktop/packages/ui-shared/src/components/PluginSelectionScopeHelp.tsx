@@ -33,7 +33,7 @@ export function PluginSelectionScopeHelp(): JSX.Element {
         content={
           <div className="flex flex-col gap-1 text-xs">
             <p className="font-medium fg-primary">How project defaults work</p>
-            <ul className="list-disc space-y-0.5 pl-4 fg-secondary">
+            <ul className="list-disc flex flex-col gap-0.5 pl-4 fg-secondary">
               {SCOPE_GUIDANCE.map((line) => (
                 <li key={line}>{line}</li>
               ))}

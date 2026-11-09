@@ -1,4 +1,6 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import {
+  Stack,
   Button,
   DelayedLoadingPlaceholder,
   Heading,
@@ -353,18 +355,20 @@ export function RecommendedPluginsSettingsPanel({
           const status = describeRowStatus(item);
           return (
             <li key={item.key} className="flex items-start gap-3 p-3 text-xs">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium fg-primary">
-                    {item.displayName}
-                  </span>
-                  <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
-                    {item.kind === 'claude_plugin' ? 'plugin' : item.kind}
-                  </span>
+              <Stack gap="tight" className="min-w-0 flex-1">
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium fg-primary">
+                      {item.displayName}
+                    </span>
+                    <Badge>
+                      {item.kind === 'claude_plugin' ? 'plugin' : item.kind}
+                    </Badge>
+                  </div>
+                  <div className="fg-secondary">{item.displaySource}</div>
                 </div>
-                <div className="mt-0.5 fg-secondary">{item.displaySource}</div>
                 <div
-                  className={`mt-1 text-2xs ${
+                  className={`text-2xs ${
                     status.tone === 'positive'
                       ? 'fg-success-strong'
                       : status.tone === 'warn'
@@ -375,17 +379,17 @@ export function RecommendedPluginsSettingsPanel({
                   {status.label}
                 </div>
                 {item.installState === 'unavailable' && !item.optedOut && (
-                  <p className="mt-1 text-2xs fg-secondary">
+                  <p className="text-2xs fg-secondary">
                     Install this manually from Plugins or Skills, then return
                     here to select it by default.
                   </p>
                 )}
                 {state?.error && (
-                  <p className="mt-1 text-2xs fg-destructive-strong">
+                  <p className="text-2xs fg-destructive-strong">
                     {state.error}
                   </p>
                 )}
-              </div>
+              </Stack>
               {action && (
                 <Button
                   size="compact"
@@ -425,7 +429,7 @@ export function RecommendedPluginsSettingsPanel({
     }
     return (
       <Surface variant="outline" padding="compact">
-        <div className="space-y-2">
+        <div className="flex flex-col gap-2">
           {headerCopy}
           <p className="text-xs fg-secondary">
             Select a worktree to inspect canopy.json recommendations.
@@ -441,7 +445,7 @@ export function RecommendedPluginsSettingsPanel({
     }
     return (
       <Surface variant="outline" padding="compact">
-        <div className="space-y-2">
+        <div className="flex flex-col gap-2">
           {headerCopy}
           <DelayedLoadingPlaceholder slowNote="Still loading recommendations…">
             <Skeleton
@@ -460,7 +464,7 @@ export function RecommendedPluginsSettingsPanel({
   if (loadState.kind === 'error') {
     return (
       <Surface variant="outline" padding="compact">
-        <div className="space-y-2">
+        <div className="flex flex-col gap-2">
           {headerCopy}
           <p className="text-xs fg-destructive-strong">{loadState.message}</p>
         </div>
@@ -478,7 +482,7 @@ export function RecommendedPluginsSettingsPanel({
     }
     return (
       <Surface variant="outline" padding="compact">
-        <div className="space-y-2">
+        <div className="flex flex-col gap-2">
           {headerCopy}
           <p className="text-xs fg-secondary">
             No recommended plugins are declared in the selected canopy.json.
@@ -490,7 +494,7 @@ export function RecommendedPluginsSettingsPanel({
 
   return (
     <Surface variant="outline" padding="compact">
-      <div className="space-y-2">
+      <div className="flex flex-col gap-2">
         {headerCopy}
         {renderRowList(loadState.items)}
       </div>

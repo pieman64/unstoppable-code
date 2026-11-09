@@ -5,6 +5,7 @@ import {
   LoadingSpinner,
   loadedSmoothMarkdown,
   Markdown,
+  PipelineSourceLabel,
   SlashCommandAvailabilityTag,
   SlashCommandAvailableDivider,
   SlashCommandGroupHeading,
@@ -629,6 +630,22 @@ export function StatusPartsSpecimen(): JSX.Element {
       <StuckAgentSection />
       <StartingPointSection />
       <StartChatSummarySection />
+      <SpecimenPanel title="Workflow source metadata">
+        <SpecimenGrid min={160}>
+          {['Bundled', 'Custom', 'Project', 'Shared', 'Curated', 'Local'].map(
+            (label) => (
+              <SpecimenCell key={label} label={label}>
+                <PipelineSourceLabel>{label}</PipelineSourceLabel>
+              </SpecimenCell>
+            ),
+          )}
+          <SpecimenCell label="Long provenance" wide>
+            <PipelineSourceLabel>
+              Project workflow from the release automation collection
+            </PipelineSourceLabel>
+          </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
       <StatusLabelSection />
       <StoreBadgeSection />
       <SlashCommandSection />

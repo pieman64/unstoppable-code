@@ -14,7 +14,10 @@ import {
   type ChatSendMessageRequest,
   type PersistedChatTab,
 } from './types';
-import { DEFAULT_CODEX_SPEED, readCodexSpeedRecord } from './lib/codex-speed';
+import {
+  DEFAULT_CODEX_SPEED,
+  readCodexSpeedRecord,
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   sessionApprovalWithinTurn,
   type TurnApproval,

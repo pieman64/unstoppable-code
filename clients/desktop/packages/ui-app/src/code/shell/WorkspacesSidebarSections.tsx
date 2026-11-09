@@ -67,6 +67,7 @@ import {
   SIDEBAR_ROW_GRID_CLASSNAME,
   SIDEBAR_ROW_LEADING_SLOT_CLASSNAME,
   SIDEBAR_ROW_TEXT_INSET_CLASSNAME,
+  SidebarToggleRow,
   WorktreeRow,
   type WorktreeRowProps,
   type WorktreeRowPrStatus,
@@ -75,7 +76,6 @@ import {
 } from '@canopy/ui-shared/components';
 import {
   ArchiveIcon,
-  ChevronDownMediumIcon,
   Lock,
   RefreshIcon,
   ShareIcon,
@@ -2506,7 +2506,7 @@ export function WorkspacesSidebarSections({
                   ? creatingPlaceholder
                   : null}
                 {/* One stack: 1px between its rows; the list spaces stacks. */}
-                <div className="space-y-px">
+                <div className="flex flex-col gap-px">
                   {renderRow(group.node.worktree, false)}
                   {group.children.length > 0 && (
                     <div
@@ -2514,7 +2514,9 @@ export function WorkspacesSidebarSections({
                       // are spaced; the outer wrapper keeps the row gap from
                       // surrounding rows.
                       className={
-                        worktreeRowGap === 'hairline' ? 'space-y-px' : undefined
+                        worktreeRowGap === 'hairline'
+                          ? 'flex flex-col gap-px'
+                          : undefined
                       }
                       data-testid="worktree-branch-group-children"
                       data-parent-worktree-id={group.node.id}
@@ -3226,12 +3228,14 @@ export function WorkspacesSidebarSections({
                       data-testid="archived-worktrees-section"
                       data-archived-workspace-id={workspace.localId}
                     >
-                      <button
-                        type="button"
-                        data-testid={testIds?.archivedWorktreesToggle?.(
+                      <SidebarToggleRow
+                        label={`Archived (${archivedItemCount})`}
+                        expanded={archivedIsExpanded}
+                        leading={<ArchiveIcon size="sm" />}
+                        testId={testIds?.archivedWorktreesToggle?.(
                           workspace.localId,
                         )}
-                        onClick={(): void => {
+                        onToggle={(): void => {
                           const nextExpanded = !archivedIsExpanded;
                           if (onArchivedExpandedChange) {
                             onArchivedExpandedChange(
@@ -3245,25 +3249,7 @@ export function WorkspacesSidebarSections({
                             }));
                           }
                         }}
-                        className="focus-ring flex h-7 w-full items-center gap-1.5 rounded-row px-1.5 text-left text-s font-normal fg-tertiary hover:bg-subtle hover:fg-primary"
-                        aria-expanded={archivedIsExpanded}
-                      >
-                        <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
-                          <ArchiveIcon size="sm" />
-                        </span>
-                        <span className="inline-flex min-w-0 items-center gap-1">
-                          <span className="truncate">
-                            Archived ({archivedItemCount})
-                          </span>
-                          <ChevronDownMediumIcon
-                            size={16}
-                            className={`shrink-0 ${
-                              archivedIsExpanded ? '' : '-rotate-90'
-                            }`}
-                            aria-hidden="true"
-                          />
-                        </span>
-                      </button>
+                      />
                       {archivedIsExpanded &&
                         (archivedItems === undefined ? (
                           <div className="flex items-center gap-2 px-2 py-1.5">
@@ -3271,7 +3257,7 @@ export function WorkspacesSidebarSections({
                               'loading' && <LoadingSpinner tone="secondary" />}
                           </div>
                         ) : (
-                          <div className="space-y-0.5">
+                          <div className="flex flex-col gap-0.5">
                             {archivedItems.map((entry) => (
                               <div
                                 key={entry.id}
@@ -3401,7 +3387,7 @@ export function WorkspacesSidebarSections({
       <PendingProjectRows projects={pendingProjects} />
       {additionalRows}
       {partitions.hidden.length > 0 && (
-        <div className="pt-1">
+        <div className="pt-1 flex flex-col gap-1">
           <HiddenItemsRow
             label="Hidden projects"
             count={partitions.hidden.length}
@@ -3412,7 +3398,7 @@ export function WorkspacesSidebarSections({
             dataTestId={testIds?.hiddenWorkspacesToggle}
           />
           {hiddenWorkspacesExpanded && (
-            <div className="mt-1 space-y-1 opacity-80">
+            <div className="flex flex-col gap-1 opacity-80">
               {partitions.hidden.map((workspace, index) =>
                 renderWorkspace(
                   workspace,

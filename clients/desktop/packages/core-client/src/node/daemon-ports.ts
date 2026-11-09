@@ -14,6 +14,7 @@ export interface CanopyRuntimeDescriptor {
   /** Inclusive protocol major range. */
   readonly protocolRange: { readonly min: number; readonly max: number };
   readonly buildVersion: string;
+  readonly secureStorageLayout?: string;
   readonly tokenRef: string;
 }
 

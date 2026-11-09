@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { CodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
+import type { CodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
 import type { CodexSpeedControl } from './useCodexSpeedControl';
 
 /**

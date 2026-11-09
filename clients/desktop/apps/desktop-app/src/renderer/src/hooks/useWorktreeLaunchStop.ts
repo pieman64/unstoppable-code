@@ -1,5 +1,6 @@
 import { useCallback, type MouseEvent } from 'react';
 import { useShallow } from 'zustand/shallow';
+import { stopWorktreeScript } from '@/components/worktree/worktree-launch';
 import { isScriptRunActive, useScriptsStore } from '@/stores/scriptsStore';
 
 export interface WorktreeLaunchStop {
@@ -35,40 +36,13 @@ export function useWorktreeLaunchStop(
       return { launchScriptKey: null, isLaunchStopping: false };
     }),
   );
-  const markScriptStopping = useScriptsStore((state) => state.markStopping);
   const stopLaunch = useCallback(
     (event: MouseEvent<HTMLButtonElement>): void => {
       event.stopPropagation();
       if (!launchScriptKey || isLaunchStopping) return;
-      if (!markScriptStopping(projectId, worktreeId, launchScriptKey)) return;
-      void window.api
-        .stopScript({ projectId, worktreeId, scriptKey: launchScriptKey })
-        .then((response) => {
-          const scriptsState = useScriptsStore.getState();
-          if (response) {
-            scriptsState.completeRun(
-              projectId,
-              worktreeId,
-              launchScriptKey,
-              response,
-            );
-            return;
-          }
-          scriptsState.completeStaleRun(projectId, worktreeId, launchScriptKey);
-        })
-        .catch(() => {
-          useScriptsStore
-            .getState()
-            .completeStaleRun(projectId, worktreeId, launchScriptKey);
-        });
+      stopWorktreeScript(projectId, worktreeId, launchScriptKey);
     },
-    [
-      launchScriptKey,
-      isLaunchStopping,
-      markScriptStopping,
-      projectId,
-      worktreeId,
-    ],
+    [launchScriptKey, isLaunchStopping, projectId, worktreeId],
   );
   return { launchScriptKey, isLaunchStopping, stopLaunch };
 }

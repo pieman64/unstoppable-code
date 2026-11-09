@@ -8,7 +8,7 @@ import type {
   DelegationModelDiscovery,
 } from '@canopy/protocol/delegation/discovery';
 import { discoverDelegationModels } from '@canopy/desktop-shared/node/delegation/discovery';
-import { resolveAnthropicMockEnvOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   getAuthoritativeConfiguredModel,
   listAuthoritativeConfiguredModels,

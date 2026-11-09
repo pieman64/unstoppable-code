@@ -17,7 +17,7 @@
 //     browserEventSubscription.ts` routes both `'snapshot'` and `'load-failed'`
 //     events to `browserStore.applySnapshot(event.snapshot)`.
 //   - Payload type: `BrowserEvent` / `BrowserSessionSnapshot` in
-//     `packages/desktop-shared/src/types/browser.ts`.
+//     `packages/execution-engine/src/types/browser.ts`.
 
 /**
  * The exact IPC channel the main process broadcasts `BrowserEvent`s on. Mirrors
@@ -74,7 +74,7 @@ export async function injectBrowserSnapshot(electronApp, snapshot) {
  * Spec 10 / PR 808). Defaults describe a ready, non-loading session; pass
  * `loading: true` for the in-flight state, or `failed: true` (and/or an error)
  * for the failed state. Shape follows `BrowserSessionSnapshot` in
- * `packages/desktop-shared/src/types/browser.ts`.
+ * `packages/execution-engine/src/types/browser.ts`.
  *
  * @param {object} [options]
  * @param {boolean} [options.loading] navigation in flight (`status: 'loading'`)

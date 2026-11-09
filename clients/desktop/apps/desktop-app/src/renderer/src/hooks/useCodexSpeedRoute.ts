@@ -6,12 +6,12 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import type { CodexSpeedRouteFacts } from '@canopy/desktop-shared/lib/codex-speed-availability';
+import type { CodexSpeedRouteFacts } from '@canopy/execution-engine/lib/codex-speed-availability';
 import {
   isCodexSpeedReadRouteRequest,
   isCodexSpeedRouteFacts,
 } from '@canopy/desktop-shared/lib/codex-speed-route';
-import type { ReadCodexSpeedRouteRequest } from '@canopy/desktop-shared/types/codex-speed-capabilities';
+import type { ReadCodexSpeedRouteRequest } from '@canopy/execution-engine/types/codex-speed-capabilities';
 import { useCodexSpeedStore } from '../stores/codexSpeedStore';
 import { useEnvironmentsStore } from '../stores/environmentsStore';
 import {

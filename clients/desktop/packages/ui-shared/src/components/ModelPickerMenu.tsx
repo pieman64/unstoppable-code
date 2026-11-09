@@ -342,6 +342,8 @@ export interface ModelPickerMenuProps {
   readonly agentsPosition?: 'first' | 'last';
   /** Host-owned pinned footer. Receives normal and modal close hand-offs. */
   readonly footer?: (controls: ModelPickerMenuControls) => ReactNode;
+  /** Owns 4px before a margin-free footer. Omitted keeps legacy markup. */
+  readonly footerGap?: 'tight';
   readonly menuId?: string;
   readonly testIdPrefix?: string;
   readonly uniformTestIds?: boolean;
@@ -889,6 +891,7 @@ export function ModelPickerMenu({
   placeholderLabel,
   agentsPosition = 'first',
   footer,
+  footerGap,
   menuId,
   testIdPrefix = 'model',
   uniformTestIds = false,
@@ -3491,7 +3494,9 @@ export function ModelPickerMenu({
                     : null}
                 </PickerMenuList>
               )}
-              {footer?.({ closeMenu, dismissMenu })}
+              <ModelPickerFooter gap={footerGap}>
+                {footer?.({ closeMenu, dismissMenu })}
+              </ModelPickerFooter>
             </div>
           </div>
         ) : (
@@ -3596,11 +3601,28 @@ export function ModelPickerMenu({
                 </div>
               </div>
             ))}
-            {footer?.({ closeMenu, dismissMenu })}
+            <ModelPickerFooter gap={footerGap}>
+              {footer?.({ closeMenu, dismissMenu })}
+            </ModelPickerFooter>
           </>
         ),
       )}
     </div>
+  );
+}
+
+function ModelPickerFooter({
+  gap,
+  children,
+}: {
+  readonly gap?: 'tight';
+  readonly children?: ReactNode;
+}): JSX.Element | null {
+  if (children == null || typeof children === 'boolean') return null;
+  return gap === 'tight' ? (
+    <div className="pt-1 empty:pt-0">{children}</div>
+  ) : (
+    <>{children}</>
   );
 }
 

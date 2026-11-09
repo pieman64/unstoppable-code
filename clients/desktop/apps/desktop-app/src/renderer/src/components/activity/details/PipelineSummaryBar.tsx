@@ -1,5 +1,5 @@
 import { useState, type JSX } from 'react';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import { formatTimingTimestamp } from '@/lib/pipelineTiming';
 import { buildEventInputs } from '@/lib/pipelineDetailsView';
 import { ChevronIcon, HookIcon } from '@canopy/ui-shared/icons';
@@ -80,6 +80,7 @@ export function PipelineSummaryBar({
 
   return (
     <Surface
+      gap="item"
       // A container, so the facts reflow with the width the bar is given (a
       // narrow panel, a rail, a zoomed window), not the window's width.
       variant="group"
@@ -122,9 +123,9 @@ export function PipelineSummaryBar({
       </div>
 
       <Button
+        className="self-start"
         variant="ghost"
         size="compact"
-        className="mt-3"
         onClick={(): void => setExpanded((prev) => !prev)}
         aria-expanded={expanded}
         data-testid="pipeline-summary-more"
@@ -134,7 +135,7 @@ export function PipelineSummaryBar({
       </Button>
 
       {expanded && (
-        <div className="mt-3">
+        <div className="">
           <Divider />
           <div className="pt-3">
             <FactList

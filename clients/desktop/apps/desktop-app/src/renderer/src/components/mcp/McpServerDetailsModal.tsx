@@ -1,8 +1,9 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import { useEffect, useState, type JSX } from 'react';
 import type {
   DetectedMcpServerInfo,
   McpServerDataView,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import type {
   MarketplaceInfo,
   PluginInfo,
@@ -160,9 +161,7 @@ export function McpServerDetailsModal({
   const titleNode = (
     <span className="flex items-center gap-2">
       <span className="truncate">{server.displayName}</span>
-      <span className="rounded bg-secondary px-1.5 py-0.5 text-3xs font-medium fg-secondary">
-        {server.type === 'http' ? 'HTTP' : 'Command'}
-      </span>
+      <Badge>{server.type === 'http' ? 'HTTP' : 'Command'}</Badge>
     </span>
   );
 

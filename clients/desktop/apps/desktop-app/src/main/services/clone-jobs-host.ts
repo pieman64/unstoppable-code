@@ -6,6 +6,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { CloneJobRegistry } from './clone-jobs';
 import { sendToWebContents } from '../lib/web-contents-send';
+import { stopUntrackedWorkspaceClones } from '../lib/workspace-service';
 
 let registry: CloneJobRegistry | undefined;
 
@@ -30,7 +31,11 @@ export function getCloneJobs(): CloneJobRegistry {
   return registry;
 }
 
-/** Stop in-flight clones and remove their partial checkouts before quit. */
+/**
+ * Stop in-flight clones before quit. Clone jobs also remove their partial
+ * checkouts; clones without a job keep theirs for launch recovery.
+ */
 export async function shutdownCloneJobs(): Promise<void> {
+  stopUntrackedWorkspaceClones();
   await registry?.shutdown();
 }

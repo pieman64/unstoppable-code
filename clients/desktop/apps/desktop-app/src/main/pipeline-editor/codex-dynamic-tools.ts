@@ -29,7 +29,9 @@ import {
   pipelineOpenJsonSchema,
   pipelineSetYamlJsonSchema,
 } from './definitions';
+import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
 import type { PipelineEditorToolRuntime } from './runtime';
+import { isPipelineEditorToolAdvertised } from './tool-advertisement';
 import { executePipelineEditorTool } from './tool-executor';
 
 const descriptions = {
@@ -60,8 +62,13 @@ const schemas = {
   load_deferred_tools: loadDeferredToolsJsonSchema,
 } as const;
 
-export function buildPipelineEditorDynamicToolSpecs(): DynamicToolSpec[] {
-  return PIPELINE_EDITOR_TOOL_ENTRIES.map((entry) =>
+/** Tools that need the editor window are listed only when the session bound them (CAN-5822). */
+export function buildPipelineEditorDynamicToolSpecs(options: {
+  interfaceTools: readonly InterfaceToolName[];
+}): DynamicToolSpec[] {
+  return PIPELINE_EDITOR_TOOL_ENTRIES.filter((entry) =>
+    isPipelineEditorToolAdvertised(entry.canonicalKey, options.interfaceTools),
+  ).map((entry) =>
     defineCodexFunctionToolSpec({
       name: entry.codexToolName,
       description: descriptions[entry.canonicalKey],

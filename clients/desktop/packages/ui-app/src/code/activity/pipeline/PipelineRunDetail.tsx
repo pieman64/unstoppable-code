@@ -245,7 +245,7 @@ export function PipelineRunDetail({
             </div>
           </Surface>
           <div
-            className="flex min-h-0 min-w-0 flex-1 flex-col"
+            className="flex min-h-0 min-w-0 flex-1 flex-col gap-1"
             // `portal-*` testids are preserved verbatim from the inline
             // detail this replaces so existing web and Electron coverage
             // keeps selecting the same surfaces.
@@ -265,7 +265,7 @@ export function PipelineRunDetail({
             />
             {log.truncated === true && (
               <p
-                className="mt-1 text-3xs fg-secondary"
+                className="text-3xs fg-secondary"
                 data-testid="pipeline-run-detail-log-truncated"
               >
                 Showing the end of this step&apos;s output.

@@ -1,4 +1,4 @@
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 
 /** A row of the owned pipelines table: local pipelines and shared references. */
 export type PipelineCatalogEntry = PipelineInfo;

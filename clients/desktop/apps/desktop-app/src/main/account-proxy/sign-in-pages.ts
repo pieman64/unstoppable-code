@@ -5,7 +5,7 @@ import type { AccountProxySignInProvider } from '@canopy/desktop-shared/types/ac
 export const ACCOUNT_PROXY_SIGN_IN_TIMEOUT_MS = 10 * 60_000;
 
 /** The proxy's sign-in state, as CLIProxyAPI generates it. */
-export const ACCOUNT_PROXY_SIGN_IN_STATE_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+export { ACCOUNT_PROXY_SIGN_IN_STATE_PATTERN } from '@canopy/protocol/remote-control';
 
 /** Compares two sign-in states in constant time. */
 export function sameAccountProxySignInState(

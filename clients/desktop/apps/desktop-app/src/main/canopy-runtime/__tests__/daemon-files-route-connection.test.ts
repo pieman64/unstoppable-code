@@ -577,3 +577,46 @@ it.each(['commit_and_push', 'push'] as const)(
     expect(harness.connectionsFactory).not.toHaveBeenCalled();
   },
 );
+
+it.each([
+  'worker.git.worktree.add',
+  'worker.git.worktree.remove',
+  'worker.git.worktree.prune',
+] as const)(
+  '%s makes no daemon contact even with the Files connection ready',
+  async (name) => {
+    harness = await createRouteHarness({});
+    const scope = { workspaceId: 'absent', worktreeId: 'task' };
+    const caller: CanopyCallerDescriptor = {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'test',
+      authorityId: 'local-desktop',
+      interfaceKind: 'desktop',
+      grants: ['worker.git.write'],
+    };
+    if (name === 'worker.git.worktree.add')
+      await expect(
+        harness.runtime.instruction(
+          name,
+          { scope, branch: 'topic' },
+          { caller },
+        ),
+      ).rejects.toBeDefined();
+    else
+      await expect(
+        harness.runtime.instruction(
+          name,
+          {
+            scope:
+              name === 'worker.git.worktree.prune'
+                ? { workspaceId: 'absent' }
+                : scope,
+          },
+          { caller },
+        ),
+      ).rejects.toBeDefined();
+    expect(harness.daemon.names()).toEqual([]);
+    expect(harness.connectionsFactory).not.toHaveBeenCalled();
+    expect(harness.hostContext).not.toHaveBeenCalled();
+  },
+);

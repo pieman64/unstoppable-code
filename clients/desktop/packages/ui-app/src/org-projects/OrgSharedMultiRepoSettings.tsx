@@ -4,7 +4,7 @@ import type {
   SharedMultiRepoCreationStatus,
   SharedMultiRepoEntryPoint,
 } from '@canopy/protocol/org-projects';
-import { Button } from '@canopy/ui-shared/components';
+import { Stack, Button } from '@canopy/ui-shared/components';
 import {
   OrgSharedMultiRepoSetup,
   type OrgSharedMultiRepoSetupProps,
@@ -32,7 +32,7 @@ export function OrgSharedMultiRepoSettings({
   );
   const [started, setStarted] = useState(false);
   return (
-    <div className="space-y-3">
+    <Stack gap="item">
       {!started && (
         <div
           className="flex flex-wrap gap-2"
@@ -68,6 +68,6 @@ export function OrgSharedMultiRepoSettings({
         onSubmitted={() => setStarted(true)}
         onReady={(status) => onReady(status, mode)}
       />
-    </div>
+    </Stack>
   );
 }

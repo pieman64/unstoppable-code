@@ -1,5 +1,5 @@
-import { backgroundExecutionDeniedMessage } from '../../../lib/automation-context-copy';
-import type { ResourceContextInput } from '../../../lib/resource-context-policy';
+import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/automation-context-copy';
+import type { ResourceContextInput } from '@canopy/execution-engine/lib/resource-context-policy';
 import { createHash } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
@@ -7,12 +7,12 @@ import type {
   ChildPipelineAuthorization,
   Pipeline,
   PipelinePreferenceLocator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import { getStoredPipelinePathWithSource } from '@canopy/desktop-shared/pipelines/store';
-import { isPathInside } from '../../lib/path-safety';
+import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 import { getBundledPipelinesDir } from '../config-paths';
-import type { PipelinePackageCapabilityOverlay } from '../../../types/pipeline';
+import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/types/pipeline';
 
 export interface ResolvedChildPipeline {
   pipeline: Pipeline;
@@ -34,7 +34,7 @@ export interface PipelineResourceParent {
   pipelineSource?: { cwd: string; filePath: string };
 }
 
-export type { ChildPipelineAuthorization } from '@canopy/desktop-shared/types/pipeline';
+export type { ChildPipelineAuthorization } from '@canopy/execution-engine/types/pipeline';
 
 /** Bind the resolved definition to the exact parent lookup, never just a basename. */
 export function childPipelineAuthorization(

@@ -3,7 +3,7 @@ import type {
   BrowserAgentToolArguments,
 } from '@canopy/protocol/delegation/browser-agent';
 import type { BrowserAutomationCommand } from '../types';
-import type { BrowserElementTarget } from '../types/browser';
+import type { BrowserElementTarget } from '@canopy/execution-engine/types/browser';
 
 export interface BrowserAgentScrollMapping {
   command: Extract<BrowserAutomationCommand, { kind: 'scroll' }>;

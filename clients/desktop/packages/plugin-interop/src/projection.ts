@@ -70,6 +70,7 @@ interface ProjectionSource {
   skills: PluginSkillMember[];
   commands: PluginMarkdownMember[];
   agents: PluginMarkdownMember[];
+  hasMods: boolean;
 }
 
 interface CompatibilityMcpServer {
@@ -158,6 +159,7 @@ function buildSource(
     skills: inventory.skills,
     commands: inventory.commands,
     agents: inventory.agents,
+    hasMods: (inventory.mods?.length ?? 0) > 0,
   };
 }
 
@@ -1052,6 +1054,11 @@ function buildCompatibilityReadme(options: {
   return lines.join('\n');
 }
 
+/** The notice a Codex chat shows for a Claude plugin that contains a Mod. */
+export function claudeModCodexWarning(pluginName: string): string {
+  return `Plugin "${pluginName}" contains a Claude Mod. Its mod runs in Claude chats only.`;
+}
+
 export function projectClaudePluginForCodex(
   input: ProjectClaudePluginForCodexInput,
 ): ProjectClaudePluginForCodexResult {
@@ -1066,6 +1073,7 @@ export function projectClaudePluginForCodex(
   const notes: string[] = [];
   const projectedSkills: string[] = [];
   const generatedSkillNames = new Map<string, string>();
+  if (source.hasMods) warnings.push(claudeModCodexWarning(source.pluginName));
   for (const skill of source.skills) {
     emitSourceSkill({
       source,

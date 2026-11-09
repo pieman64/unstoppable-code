@@ -24,7 +24,7 @@ import {
   isCustomAccountMcpServerKey,
   legacyAccountMcpConnectionId,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import type { AccountMcpConnection } from '@canopy/desktop-shared/types/mcp-servers';
+import type { AccountMcpConnection } from '@canopy/execution-engine/types/mcp-servers';
 import {
   resolveAccountMcpProxyTarget,
   type AccountMcpConnectionTarget,
@@ -57,7 +57,7 @@ import {
 import {
   isCodexConfig,
   type CodexConfig,
-} from '@canopy/desktop-shared/lib/codex-model-config';
+} from '@canopy/execution-engine/lib/codex-model-config';
 import { sanitizeEnvVars } from '@canopy/desktop-shared/lib/mcp-security';
 import {
   getMcpHttpAuthDefault,
@@ -120,7 +120,7 @@ import type {
   McpHttpAuthPreference,
   PreferencesData,
 } from '@canopy/desktop-shared/types';
-import type { PipelinePackageCapabilityOverlay } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/types/pipeline';
 import { DEFAULT_MCP_HTTP_AUTH_HANDLER } from '@canopy/desktop-shared/types';
 import { readCollectionConfig } from '../collections/collection-store';
 import type {
@@ -128,8 +128,8 @@ import type {
   McpServerDefinitionData,
   McpServerFile,
   McpServerIndexEntry,
-} from '@canopy/desktop-shared/types/mcp-servers';
-import { normalizeMcpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
+import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import type {
   MarketplaceInfo,
   PluginProviderFacet,
@@ -137,6 +137,7 @@ import type {
   PluginManifest,
 } from '@canopy/desktop-shared/types/plugins';
 import { createGeneratedSkillName } from './codex-plugin-compat';
+import { scanPluginMods } from './plugin-scanner';
 import {
   installPlugin,
   loadMarketplaces,
@@ -152,12 +153,34 @@ import {
   resolvePluginHttpHeaders,
   type PluginMcpAuthIdentity,
 } from './plugin-mcp-auth';
-import { projectClaudePluginWithoutMcpServers } from './claude-plugin-projection';
-import { isPluginInstallRoot } from './claude-enabled-plugins';
+import {
+  projectClaudePluginForLaunch,
+  projectClaudePluginWithoutMcpServers,
+} from './claude-plugin-projection';
+import {
+  isPluginInstallRoot,
+  registeredClaudePluginId,
+} from './claude-enabled-plugins';
 import { probeMcpHttpOAuthRequirement } from '../mcp/oauth-probe';
 import { migratePluginMcpOAuthToken } from '../mcp/oauth-token-store';
 import { getDesktopCodexCapabilityStore } from '../codex/capability-store';
 import { materializeCodexPluginsOffMain } from './codex-plugin-materialization-runner';
+import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
+import {
+  evaluateClaudeModAdmission,
+  inspectClaudePluginHooks,
+  type ClaudeModAdmissionDecision,
+  type ClaudeModPluginInput,
+} from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+import {
+  resolveClaudeModAdmissionContext,
+  resolveClaudeModConfigDirectory,
+  type ClaudeModAdmissionContext,
+} from '../agents/claude-mod-admission-launch';
+import {
+  isSkippedClaudeMod,
+  type SkippedClaudeMod,
+} from '@canopy/desktop-shared/types/claude-mod-admission';
 
 interface SdkPluginConfig {
   type: 'local';
@@ -293,6 +316,15 @@ export interface ResolvePluginsOptions {
   mcpHttpProxyService?: McpHttpProxyServiceForResolver;
   mcpStdioBroker?: McpStdioBrokerForResolver;
   sessionId?: string;
+  /** Actual cwd and settings sources for a fresh Claude launch decision. */
+  cwd?: string;
+  settingSources?: readonly SettingSource[];
+  /**
+   * A per-launch host policy snapshot. An explicitly present `undefined`
+   * means the caller already checked the flag and it is off; omitting this
+   * property asks the resolver to read a fresh context itself.
+   */
+  claudeModAdmissionContext?: ClaudeModAdmissionContext;
   proxyOperationTimeoutMs?: number;
   runtimeDirs?: {
     rootDir: string;
@@ -366,6 +398,62 @@ function proxyOperationTimeoutMs(
   );
 }
 
+function claudeModPluginIdentity(
+  pluginPath: string,
+  index: number,
+  resolvedPlugins: readonly PluginResolvedPath[],
+  registeredPluginId: (catalogPluginId: string) => string,
+): ClaudeModPluginInput {
+  const installPath = path.resolve(pluginPath);
+  const resolved = resolvedPlugins.find(
+    (candidate) =>
+      candidate.provider === 'claude' &&
+      path.resolve(candidate.pluginPath) === installPath,
+  );
+  if (resolved) {
+    return {
+      // Consent keys a natively installed plugin by its registered name.
+      pluginId: registeredPluginId(
+        `${resolved.pluginName}@${resolved.marketplaceId}`,
+      ),
+      installPath,
+    };
+  }
+
+  const inspection = inspectClaudePluginHooks(installPath);
+  const manifestName =
+    inspection.success && typeof inspection.manifest?.name === 'string'
+      ? inspection.manifest.name
+      : undefined;
+  const safeName =
+    manifestName && /^[^@\s/\\]+$/.test(manifestName)
+      ? manifestName
+      : `local-${index + 1}`;
+  return { pluginId: `${safeName}@inline`, installPath };
+}
+
+function addSkippedClaudeMod(
+  entries: SkippedClaudeMod[],
+  entry: SkippedClaudeMod,
+): void {
+  if (!isSkippedClaudeMod(entry)) return;
+  if (
+    entries.some(
+      (existing) =>
+        existing.pluginId === entry.pluginId &&
+        existing.source === entry.source &&
+        existing.reason === entry.reason,
+    )
+  ) {
+    return;
+  }
+  entries.push(entry);
+}
+
+function claudeModPluginKey(plugin: ClaudeModPluginInput): string {
+  return `${plugin.pluginId}\0${plugin.installPath ?? ''}`;
+}
+
 interface McpProxyRouteScope {
   sessionId: string | null;
   routeKey?: string;
@@ -381,8 +469,24 @@ export interface InheritedPluginBinding {
 }
 
 export interface ResolvedPlugins {
+  claudeModAdmission?: {
+    settings?: {
+      enabledPlugins?: Record<string, false>;
+    };
+    skippedMods: readonly SkippedClaudeMod[];
+  };
   inheritedPluginBindings?: readonly InheritedPluginBinding[];
   sdkPlugins: SdkPluginConfig[];
+  /**
+   * Claude purposes: `sdkPlugins` with each plugin's id, so a later launch
+   * decision (discovery, helpers) checks consent for the plugin the person
+   * allowed. A bare path reads as an `@inline` plugin nobody allowed.
+   */
+  identifiedSdkPlugins?: (SdkPluginConfig & {
+    pluginId: string;
+    /** The installed copy a projected `path` was made from. */
+    sourcePath?: string;
+  })[];
   skillPluginDir: string | null;
   selectedCapabilityRoots: CodexSelectedCapabilityRoot[];
   /**
@@ -1061,6 +1165,21 @@ export async function resolvePlugins(
   let publishMs = 0;
   const purpose = options?.purpose ?? 'claude-session';
   const codexPurpose = isCodexPluginResolutionPurpose(purpose);
+  const hasPrecomputedClaudeModContext =
+    options !== undefined &&
+    Object.prototype.hasOwnProperty.call(options, 'claudeModAdmissionContext');
+  let claudeModAdmissionContext: ClaudeModAdmissionContext | undefined;
+  if (hasPrecomputedClaudeModContext) {
+    claudeModAdmissionContext = options?.claudeModAdmissionContext;
+  } else if (purpose === 'claude-session') {
+    claudeModAdmissionContext = await resolveClaudeModAdmissionContext({
+      cwd: options?.cwd ?? process.cwd(),
+      settingSources: options?.settingSources,
+    });
+  }
+  let claudeModAdmission: ResolvedPlugins['claudeModAdmission'];
+  let claudeModAdmissionDecision: ClaudeModAdmissionDecision | undefined;
+  let selectedClaudeModInputs: ClaudeModPluginInput[] = [];
   const warnings: string[] = [];
   const cursorNotices: string[] = [];
   const sdkPlugins: SdkPluginConfig[] = [];
@@ -1186,9 +1305,27 @@ export async function resolvePlugins(
       ];
     },
   );
+  let marketplaces: MarketplaceInfo[] = [];
+  // Each projected plugin copy, by the install it was made from.
+  const projectionSources = new Map<string, string>();
+  // Claude's config folder, resolved once, on the first plugin id named.
+  let registeredLookupDir: string | undefined;
+  const registeredPluginId = (catalogPluginId: string): string => {
+    registeredLookupDir ??=
+      claudeModAdmissionContext?.claudeConfigDir ??
+      resolveClaudeModConfigDirectory({
+        environment: { runtime: 'agent', workspaceId: projectId },
+        cwd: options?.cwd ?? process.cwd(),
+      });
+    return registeredClaudePluginId(
+      catalogPluginId,
+      marketplaces,
+      registeredLookupDir,
+    );
+  };
   if (effectiveRefs.pluginRefs.length > 0) {
     const cacheResult = await loadMarketplaces();
-    const marketplaces: MarketplaceInfo[] =
+    marketplaces =
       cacheResult.success && cacheResult.data
         ? cacheResult.data.marketplaces
         : [];
@@ -1337,6 +1474,26 @@ export async function resolvePlugins(
     }
   }
 
+  if (purpose === 'claude-session' && claudeModAdmissionContext?.enabled) {
+    selectedClaudeModInputs = sdkPlugins.map((plugin, index) =>
+      claudeModPluginIdentity(
+        plugin.path,
+        index,
+        resolvedPlugins,
+        registeredPluginId,
+      ),
+    );
+    const decision = evaluateClaudeModAdmission({
+      ...claudeModAdmissionContext,
+      selectedPlugins: selectedClaudeModInputs,
+    });
+    claudeModAdmissionDecision = decision;
+    claudeModAdmission = {
+      ...(decision.settings ? { settings: decision.settings } : {}),
+      skippedMods: decision.skippedMods,
+    };
+  }
+
   selectionMs = Date.now() - stageStartedAt;
   stageStartedAt = Date.now();
   const rawStandaloneMcpServers = await resolveStandaloneMcpServers(
@@ -1431,7 +1588,94 @@ export async function resolvePlugins(
         )
       : emptyCursorCapabilityProjection();
 
-  if (purpose === 'claude-session' && pluginsWithMcpServers.size > 0) {
+  if (purpose === 'claude-session' && claudeModAdmissionContext?.enabled) {
+    const selectedByPath = new Map(
+      selectedClaudeModInputs.flatMap((plugin) =>
+        plugin.installPath ? [[plugin.installPath, plugin] as const] : [],
+      ),
+    );
+    const stripKeys = new Set(
+      (claudeModAdmissionDecision?.stripSelectedPlugins ?? []).map(
+        claudeModPluginKey,
+      ),
+    );
+    const mcpPaths = new Set(
+      Array.from(pluginsWithMcpServers, (pluginPath) =>
+        path.resolve(pluginPath),
+      ),
+    );
+    const projectionRootDir = path.join(
+      options?.runtimeDirs?.claudePluginDir ??
+        getChatSkillPluginDir(projectId, worktreeId, chatId),
+      'projected-plugins',
+    );
+    const failedPaths = new Set<string>();
+    for (const sdkPlugin of sdkPlugins) {
+      const sourcePath = path.resolve(sdkPlugin.path);
+      const selected = selectedByPath.get(sourcePath);
+      const removeModules =
+        selected !== undefined && stripKeys.has(claudeModPluginKey(selected));
+      const removeMcpServers = mcpPaths.has(sourcePath);
+      if (!removeModules && !removeMcpServers) continue;
+      // With no Mod to strip, remove MCP servers exactly as flag-off does; an
+      // admitted Mod's digest already refused any symlink in its tree.
+      const mcpOnlySource = removeModules
+        ? undefined
+        : resolvedPlugins.find(
+            (plugin) => path.resolve(plugin.pluginPath) === sourcePath,
+          );
+      const projectedPath = mcpOnlySource
+        ? projectClaudePluginWithoutMcpServers({
+            sourcePluginPath: mcpOnlySource.pluginPath,
+            marketplaceId: mcpOnlySource.marketplaceId,
+            pluginName: mcpOnlySource.pluginName,
+            projectionRootDir,
+            warnings,
+          })
+        : projectClaudePluginForLaunch({
+            sourcePluginPath: sourcePath,
+            projectionRootDir,
+            removeModules,
+            removeMcpServers,
+          });
+      if (projectedPath) {
+        projectionSources.set(projectedPath, sourcePath);
+        sdkPlugin.path = projectedPath;
+        continue;
+      }
+
+      failedPaths.add(sourcePath);
+      const pluginId = selected?.pluginId ?? 'unknown@inline';
+      warnings.push(
+        `Claude plugin projection failed for selected plugin "${pluginId}"; it was omitted from this launch.`,
+      );
+      if (removeModules && selected) {
+        const skippedMods = [...(claudeModAdmission?.skippedMods ?? [])];
+        const sourceSkipped = skippedMods.find(
+          (entry) =>
+            entry.pluginId === selected.pluginId && entry.source === 'selected',
+        );
+        addSkippedClaudeMod(skippedMods, {
+          pluginId: selected.pluginId,
+          source: 'selected',
+          contentDigest: sourceSkipped?.contentDigest ?? null,
+          reason: 'projection-failed',
+        });
+        claudeModAdmission = {
+          ...(claudeModAdmission?.settings
+            ? { settings: claudeModAdmission.settings }
+            : {}),
+          skippedMods,
+        };
+      }
+    }
+    for (let index = sdkPlugins.length - 1; index >= 0; index--) {
+      const plugin = sdkPlugins[index];
+      if (plugin && failedPaths.has(path.resolve(plugin.path))) {
+        sdkPlugins.splice(index, 1);
+      }
+    }
+  } else if (purpose === 'claude-session' && pluginsWithMcpServers.size > 0) {
     const projectionRootDir = path.join(
       options?.runtimeDirs?.claudePluginDir ??
         getChatSkillPluginDir(projectId, worktreeId, chatId),
@@ -1450,6 +1694,7 @@ export async function resolvePlugins(
       });
       for (const sdkPlugin of sdkPlugins) {
         if (sdkPlugin.path === plugin.pluginPath) {
+          projectionSources.set(projectedPath, plugin.pluginPath);
           sdkPlugin.path = projectedPath;
         }
       }
@@ -1544,8 +1789,27 @@ export async function resolvePlugins(
   });
 
   return {
+    ...(claudeModAdmission ? { claudeModAdmission } : {}),
     inheritedPluginBindings,
     sdkPlugins: validatedSdkPlugins,
+    ...(codexPurpose
+      ? {}
+      : {
+          identifiedSdkPlugins: validatedSdkPlugins.map((plugin, index) => {
+            // A projection keeps the identity of the install it was made from.
+            const sourcePath = projectionSources.get(plugin.path);
+            return {
+              ...plugin,
+              pluginId: claudeModPluginIdentity(
+                sourcePath ?? plugin.path,
+                index,
+                resolvedPlugins,
+                registeredPluginId,
+              ).pluginId,
+              ...(sourcePath ? { sourcePath } : {}),
+            };
+          }),
+        }),
     skillPluginDir,
     selectedCapabilityRoots,
     codexMcpServers,
@@ -3534,6 +3798,16 @@ export function buildCursorCapabilityProjection(
     );
     warnings.push(...memberWarnings);
     cursorNotices.push(...memberWarnings);
+    if (
+      scanPluginMods(
+        plugin.pluginPath,
+        loadPluginManifest(plugin.pluginPath, plugin.provider),
+      ).length > 0
+    ) {
+      cursorNotices.push(
+        `Plugin "${plugin.pluginName}" has a mod. Its mod runs in Claude chats only.`,
+      );
+    }
     for (const member of members) {
       const source: CursorInvocationSource = {
         kind: member.kind,

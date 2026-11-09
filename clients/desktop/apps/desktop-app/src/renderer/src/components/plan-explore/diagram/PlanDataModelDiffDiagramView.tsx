@@ -21,6 +21,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
+  Stack,
   Badge,
   type BadgeTone,
   Button,
@@ -267,175 +268,209 @@ function SelectedEntityDetail({
       aria-label="Entity detail"
       data-testid="data-model-selected-entity-detail"
     >
-      <div className="mb-1 flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1.5">
-          {style && (
-            <Badge size="compact" tone={style.tone}>
-              {style.label}
-            </Badge>
-          )}
-          <Heading level={4} variant="title" truncate className="min-w-0">
-            {data.name}
-          </Heading>
-          {data.kind && <Badge size="compact">{data.kind}</Badge>}
-        </div>
-        <Button
-          variant="ghost"
-          size="compact"
-          iconOnly
-          onClick={onClose}
-          aria-label="Close entity detail"
-        >
-          <AppCatalogCloseIcon size="sm" />
-        </Button>
-      </div>
-      {data.detail && (
-        <p className="mb-2 whitespace-pre-wrap text-xs fg-primary">
-          {data.detail}
-        </p>
-      )}
-      {data.changeNote && (
-        <p className="mb-2 text-xs italic fg-secondary">{data.changeNote}</p>
-      )}
-      {data.fields.length > 0 && (
-        <div className="mb-2">
-          <p className="mb-1 text-3xs font-medium fg-secondary">Fields</p>
-          <ul className="flex flex-col gap-0.5">
-            {data.fields.map((field) => {
-              const fieldChange = data.fieldChanges?.[field.id];
-              const fieldStyle = fieldChange
-                ? CHANGE_STYLES[fieldChange]
-                : undefined;
-              const keyChip = field.kind ? FIELD_KIND_CHIP[field.kind] : null;
-              return (
-                <li
-                  key={field.id}
-                  className="flex items-center gap-1.5 text-2xs"
-                >
-                  {fieldStyle && (
-                    <Badge size="compact" tone={fieldStyle.tone}>
-                      {fieldStyle.label}
-                    </Badge>
-                  )}
-                  {keyChip && <Badge size="compact">{keyChip}</Badge>}
-                  <span className="font-medium fg-primary">{field.name}</span>
-                  {field.type && (
-                    <span className="font-mono text-3xs fg-secondary">
-                      {field.type}
-                    </span>
-                  )}
-                  {field.nullable === true && (
-                    <span className="text-3xs fg-secondary">nullable</span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-      {entity.relationships.length > 0 && (
-        <div className="mb-2">
-          <p className="mb-1 text-3xs font-medium fg-secondary">
-            Relationships
-          </p>
-          <ul className="flex flex-col gap-0.5">
-            {entity.relationships.map((relationship) => {
-              const cardinality = cardinalityText(relationship.cardinality);
-              return (
-                <li
-                  key={relationship.id}
-                  className="flex items-center gap-1 text-2xs fg-primary"
-                >
-                  <span className="fg-secondary">
-                    {relationship.direction === 'out' ? '→' : '←'}
-                  </span>
-                  <span className="font-medium">{relationship.otherName}</span>
-                  {relationship.label && (
-                    <span className="fg-secondary">{relationship.label}</span>
-                  )}
-                  {cardinality && (
-                    <span className="font-mono text-3xs fg-secondary">
-                      {cardinality}
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-      {data.files && data.files.length > 0 && (
-        <div className="mb-2">
-          <p className="mb-1 text-3xs font-medium fg-secondary">Files</p>
-          <ul className="flex flex-col gap-0.5">
-            {data.files.map((file) => (
-              <li key={file} className="truncate font-mono text-2xs fg-primary">
-                {file}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {data.planNodeIds && data.planNodeIds.length > 0 && (
-        <div>
-          <p className="mb-1 text-3xs font-medium fg-secondary">Plan nodes</p>
-          <ul className="flex flex-wrap gap-1">
-            {data.planNodeIds.map((id) => (
-              <li key={id} className="font-mono text-3xs fg-secondary">
-                {id}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {onAddNodeComment && (
-        <div className="mt-3">
-          <Divider />
-          <div className="pt-2">
-            {composing ? (
-              <div className="flex flex-col gap-1.5">
-                <TextArea
-                  aria-label="Comment"
-                  value={body}
-                  onChange={(e): void => setBody(e.target.value)}
-                  placeholder="Comment on this entity…"
-                  rows={3}
-                  autoFocus
-                  data-testid="plan-node-comment-input"
-                />
-                <div className="flex items-center justify-end gap-1.5">
-                  <Button
-                    size="compact"
-                    onClick={(): void => {
-                      setComposing(false);
-                      setBody('');
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="primary"
-                    size="compact"
-                    onClick={handleSave}
-                    disabled={body.trim().length === 0}
-                    data-testid="plan-node-comment-save"
-                  >
-                    Save comment
-                  </Button>
-                </div>
+      <Stack gap="item">
+        <Stack gap="tight">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-1.5">
+              {style && (
+                <Badge size="compact" tone={style.tone}>
+                  {style.label}
+                </Badge>
+              )}
+              <Heading level={4} variant="title" truncate className="min-w-0">
+                {data.name}
+              </Heading>
+              {data.kind && <Badge size="compact">{data.kind}</Badge>}
+            </div>
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
+              onClick={onClose}
+              aria-label="Close entity detail"
+            >
+              <AppCatalogCloseIcon size="sm" />
+            </Button>
+          </div>
+          <div
+            className={
+              Boolean(
+                data.detail ||
+                data.changeNote ||
+                data.fields.length ||
+                entity.relationships.length ||
+                data.files?.length ||
+                data.planNodeIds?.length,
+              ) && !Boolean(data.planNodeIds?.length)
+                ? 'flex flex-col gap-2 pb-2'
+                : 'flex flex-col gap-2'
+            }
+          >
+            {data.detail && (
+              <p className="whitespace-pre-wrap text-xs fg-primary">
+                {data.detail}
+              </p>
+            )}
+            {data.changeNote && (
+              <p className="text-xs italic fg-secondary">{data.changeNote}</p>
+            )}
+            {data.fields.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <p className="text-3xs font-medium fg-secondary">Fields</p>
+                <ul className="flex flex-col gap-0.5">
+                  {data.fields.map((field) => {
+                    const fieldChange = data.fieldChanges?.[field.id];
+                    const fieldStyle = fieldChange
+                      ? CHANGE_STYLES[fieldChange]
+                      : undefined;
+                    const keyChip = field.kind
+                      ? FIELD_KIND_CHIP[field.kind]
+                      : null;
+                    return (
+                      <li
+                        key={field.id}
+                        className="flex items-center gap-1.5 text-2xs"
+                      >
+                        {fieldStyle && (
+                          <Badge size="compact" tone={fieldStyle.tone}>
+                            {fieldStyle.label}
+                          </Badge>
+                        )}
+                        {keyChip && <Badge size="compact">{keyChip}</Badge>}
+                        <span className="font-medium fg-primary">
+                          {field.name}
+                        </span>
+                        {field.type && (
+                          <span className="font-mono text-3xs fg-secondary">
+                            {field.type}
+                          </span>
+                        )}
+                        {field.nullable === true && (
+                          <span className="text-3xs fg-secondary">
+                            nullable
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
               </div>
-            ) : (
-              <Button
-                size="compact"
-                onClick={(): void => setComposing(true)}
-                data-testid="plan-node-add-comment"
-              >
-                + Add comment
-              </Button>
+            )}
+            {entity.relationships.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <p className="text-3xs font-medium fg-secondary">
+                  Relationships
+                </p>
+                <ul className="flex flex-col gap-0.5">
+                  {entity.relationships.map((relationship) => {
+                    const cardinality = cardinalityText(
+                      relationship.cardinality,
+                    );
+                    return (
+                      <li
+                        key={relationship.id}
+                        className="flex items-center gap-1 text-2xs fg-primary"
+                      >
+                        <span className="fg-secondary">
+                          {relationship.direction === 'out' ? '→' : '←'}
+                        </span>
+                        <span className="font-medium">
+                          {relationship.otherName}
+                        </span>
+                        {relationship.label && (
+                          <span className="fg-secondary">
+                            {relationship.label}
+                          </span>
+                        )}
+                        {cardinality && (
+                          <span className="font-mono text-3xs fg-secondary">
+                            {cardinality}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+            {data.files && data.files.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <p className="text-3xs font-medium fg-secondary">Files</p>
+                <ul className="flex flex-col gap-0.5">
+                  {data.files.map((file) => (
+                    <li
+                      key={file}
+                      className="truncate font-mono text-2xs fg-primary"
+                    >
+                      {file}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {data.planNodeIds && data.planNodeIds.length > 0 && (
+              <Stack gap="tight">
+                <p className="text-3xs font-medium fg-secondary">Plan nodes</p>
+                <ul className="flex flex-wrap gap-1">
+                  {data.planNodeIds.map((id) => (
+                    <li key={id} className="font-mono text-3xs fg-secondary">
+                      {id}
+                    </li>
+                  ))}
+                </ul>
+              </Stack>
             )}
           </div>
-        </div>
-      )}
+        </Stack>
+        {onAddNodeComment && (
+          <div className="">
+            <Divider />
+            <div className="pt-2">
+              {composing ? (
+                <div className="flex flex-col gap-1.5">
+                  <TextArea
+                    aria-label="Comment"
+                    value={body}
+                    onChange={(e): void => setBody(e.target.value)}
+                    placeholder="Comment on this entity…"
+                    rows={3}
+                    autoFocus
+                    data-testid="plan-node-comment-input"
+                  />
+                  <div className="flex items-center justify-end gap-1.5">
+                    <Button
+                      size="compact"
+                      onClick={(): void => {
+                        setComposing(false);
+                        setBody('');
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="compact"
+                      onClick={handleSave}
+                      disabled={body.trim().length === 0}
+                      data-testid="plan-node-comment-save"
+                    >
+                      Save comment
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  size="compact"
+                  onClick={(): void => setComposing(true)}
+                  data-testid="plan-node-add-comment"
+                >
+                  + Add comment
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </Stack>
     </PaneSheet>
   );
 }
@@ -869,14 +904,14 @@ export const PlanDataModelDiffDiagram = forwardRef<
           <ErrorState
             space="panel"
             message={
-              <>
+              <Stack as="span" gap="tight">
                 Couldn’t generate the diagram.
                 {artifact?.error && (
-                  <span className="mt-1 block max-w-sm text-xs fg-secondary">
+                  <span className="block max-w-sm text-xs fg-secondary">
                     {artifact.error}
                   </span>
                 )}
-              </>
+              </Stack>
             }
             onRetry={onGenerate}
             retrying={isGenerating}

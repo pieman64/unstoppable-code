@@ -1,9 +1,10 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { type JSX, type ReactNode, useEffect, useMemo, useState } from 'react';
 import type {
   PipelineInfo,
   PipelineExecutionScope,
   PipelineTriggerType,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { RefreshSpinner } from '../shared/loading/spinners/RefreshSpinner';
 import { PageTitlebar } from '../shared/PageTitlebar';
 import { WorkflowsPageHeader } from '../workflows/WorkflowsPageHeader';
@@ -108,6 +109,7 @@ function parseTriggerFilter(value: string): PipelineTriggerType | 'all' {
     case 'dispatch':
     case 'plan_ready':
     case 'task_ready':
+    case 'workflow':
       return value;
     default:
       return 'all';
@@ -291,6 +293,25 @@ export function PipelineListView({
   const sharedInitialLoading =
     cloudReady && sharedState.loading && sharedState.rows.length === 0;
 
+  const emptyState = filtered.length === 0 &&
+    allPipelines.length === 0 &&
+    !error &&
+    !sharedInitialLoading && (
+      <EmptyState
+        icon={<AppCatalogPipelineIcon size="xl" className="fg-secondary" />}
+        title="No workflows yet"
+        subtitle="Create your first workflow to get started"
+        action={
+          <CreatePipelineSplitButton
+            onStartInterview={onStartInterview}
+            onBuildManually={onCreateNew}
+            interviewPending={interviewPending}
+            testIdPrefix="pipeline-empty-create-new"
+          />
+        }
+      />
+    );
+
   return (
     <div
       className="page-scroll-gutter h-full overflow-auto"
@@ -327,241 +348,238 @@ export function PipelineListView({
           }
         />
 
-        <WorkflowsTabPanel>
-          {/* Toolbar: search + filters */}
-          <div className="mb-4 mt-4 flex items-center gap-2 flex-wrap">
-            <SearchField
-              value={search}
-              onValueChange={setSearch}
-              placeholder="Search workflows…"
-              aria-label="Search workflows"
-              data-testid="pipeline-search"
-              className="flex-1 min-w-45"
-            />
-            <SettingsSelect
-              width="fit"
-              value={sourceFilter}
-              onValueChange={setSourceFilter}
-              data-testid="pipeline-source-filter"
-              aria-label="Filter by source"
-              options={[
-                { value: 'all', label: 'All sources' },
-                ...PIPELINE_SOURCES.filter(
-                  (source) => source !== 'curated',
-                ).map((source) => ({
-                  value: source,
-                  label: PIPELINE_SOURCE_META[source].label,
-                })),
-              ]}
-            />
-            <SettingsSelect
-              width="fit"
-              value={triggerFilter}
-              onValueChange={(value) =>
-                setTriggerFilter(parseTriggerFilter(value))
-              }
-              data-testid="pipeline-trigger-filter"
-              aria-label="Filter by trigger type"
-              options={[
-                { value: 'all', label: 'All triggers' },
-                ...TRIGGER_TYPES.map((trigger) => ({
-                  value: trigger,
-                  label: TRIGGER_META[trigger].label,
-                })),
-              ]}
-            />
-          </div>
-
-          <div className="mb-4">
-            <SettingsSelect
-              width="fit"
-              data-testid="pipeline-scope-filter"
-              aria-label="Filter by execution scope"
-              value={scopeFilter}
-              onValueChange={(value) =>
-                setScopeFilter(
-                  PIPELINE_EXECUTION_SCOPES.find((scope) => scope === value) ??
-                    'all',
-                )
-              }
-              options={[
-                { value: 'all', label: 'All execution scopes' },
-                ...PIPELINE_EXECUTION_SCOPES.map((scope) => ({
-                  value: scope,
-                  label: PIPELINE_EXECUTION_SCOPE_META[scope].label,
-                })),
-              ]}
-            />
-          </div>
-          {/* Loading */}
-          {loading && filtered.length === 0 && (
-            <div className="flex items-center justify-center py-16">
-              <p className="text-s fg-secondary">Loading workflows…</p>
+        <WorkflowsTabPanel className="flex flex-col pt-4">
+          <Stack gap="group">
+            {/* Toolbar: search + filters */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <SearchField
+                value={search}
+                onValueChange={setSearch}
+                placeholder="Search workflows…"
+                aria-label="Search workflows"
+                data-testid="pipeline-search"
+                className="flex-1 min-w-45"
+              />
+              <SettingsSelect
+                width="fit"
+                value={sourceFilter}
+                onValueChange={setSourceFilter}
+                data-testid="pipeline-source-filter"
+                aria-label="Filter by source"
+                options={[
+                  { value: 'all', label: 'All sources' },
+                  ...PIPELINE_SOURCES.filter(
+                    (source) => source !== 'curated',
+                  ).map((source) => ({
+                    value: source,
+                    label: PIPELINE_SOURCE_META[source].label,
+                  })),
+                ]}
+              />
+              <SettingsSelect
+                width="fit"
+                value={triggerFilter}
+                onValueChange={(value) =>
+                  setTriggerFilter(parseTriggerFilter(value))
+                }
+                data-testid="pipeline-trigger-filter"
+                aria-label="Filter by trigger type"
+                options={[
+                  { value: 'all', label: 'All triggers' },
+                  ...TRIGGER_TYPES.map((trigger) => ({
+                    value: trigger,
+                    label: TRIGGER_META[trigger].label,
+                  })),
+                ]}
+              />
             </div>
-          )}
 
-          {/* Error */}
-          <ErrorBanner error={error} className="mb-6" />
-
-          {actionError && (
-            <div className="mb-6" data-testid="pipeline-list-action-error">
-              <Notice intent="destructive">{actionError}</Notice>
+            <div>
+              <SettingsSelect
+                width="fit"
+                data-testid="pipeline-scope-filter"
+                aria-label="Filter by execution scope"
+                value={scopeFilter}
+                onValueChange={(value) =>
+                  setScopeFilter(
+                    PIPELINE_EXECUTION_SCOPES.find(
+                      (scope) => scope === value,
+                    ) ?? 'all',
+                  )
+                }
+                options={[
+                  { value: 'all', label: 'All execution scopes' },
+                  ...PIPELINE_EXECUTION_SCOPES.map((scope) => ({
+                    value: scope,
+                    label: PIPELINE_EXECUTION_SCOPE_META[scope].label,
+                  })),
+                ]}
+              />
             </div>
-          )}
-
-          {(!loading || filtered.length > 0) && (
-            <>
-              {/* Table */}
-              {filtered.length > 0 && (
-                <DataTableFrame
-                  testId="pipelines-table"
-                  caption="Workflows"
-                  layout="fixed"
-                  minWidth="56.25rem"
-                >
-                  <DataTableHead>
-                    <DataTableHeaderCell>Workflow</DataTableHeaderCell>
-                    <DataTableHeaderCell width="8rem">
-                      Source
-                    </DataTableHeaderCell>
-                    <DataTableHeaderCell width="8rem">
-                      Scope
-                    </DataTableHeaderCell>
-                    <DataTableHeaderCell width="7rem">
-                      Triggers
-                    </DataTableHeaderCell>
-                    {/* Fits the widest row: 6 actions (toggle, share link,
-                      edit/view, share, duplicate, delete) on a shared row
-                      with delete rights =
-                      6*26px + 5*2px gap + 24px cell padding = 190px. */}
-                    <DataTableHeaderCell width="13rem" align="right">
-                      Actions
-                    </DataTableHeaderCell>
-                  </DataTableHead>
-                  <DataTableBody>
-                    {filtered.map((p) => (
-                      <PipelineTableRow
-                        key={`${p.source}:${p.id}`}
-                        pipeline={p}
-                        enabled={!disabledPipelineIds.has(p.id)}
-                        onToggleEnabled={(enabled) =>
-                          onToggleEnabled(p.id, enabled)
-                        }
-                        onEdit={onEdit}
-                        onDelete={() => handleRowDelete(p)}
-                        onDuplicate={onDuplicate}
-                        onShare={onShare}
-                        sharePending={sharePendingId === `${p.source}:${p.id}`}
-                      />
-                    ))}
-                  </DataTableBody>
-                </DataTableFrame>
-              )}
-
-              <div
-                className="mt-4 flex flex-wrap items-center gap-3 text-xs fg-secondary"
-                data-testid="pipeline-list-status"
-              >
-                <span>
-                  {filtered.length} loaded{' '}
-                  {filtered.length === 1 ? 'workflow' : 'workflows'}
-                </span>
-              </div>
-              {/* No results from active filters */}
-              {filtered.length === 0 &&
-                allPipelines.length > 0 &&
-                hasActiveFilters &&
-                !sharedInitialLoading && (
-                  <p className="py-12 text-center text-s fg-secondary">
-                    No workflows match the current filters.
-                  </p>
-                )}
-
-              {/* Shared-cloud status + affordances */}
-              {showShared && (
-                <div className="mt-4" data-testid="shared-pipelines-section">
-                  {cloudReady && showShared && (
-                    <ErrorBanner
-                      error={sharedState.error}
-                      className="mb-2"
-                      onRetry={() => void onSharedRefresh()}
-                    />
-                  )}
-                  {cloudReady && showShared && (
-                    <div className="flex items-center justify-between gap-2">
-                      {sharedState.error ? (
-                        <span />
-                      ) : sharedState.loading &&
-                        sharedState.rows.length === 0 ? (
-                        <p className="text-xs fg-secondary">
-                          Loading shared workflows…
-                        </p>
-                      ) : (
-                        <span />
-                      )}
-                      <div className="flex items-center gap-3">
-                        {sharedState.nextCursor && (
-                          <Button
-                            size="compact"
-                            onClick={() => void onLoadMoreShared()}
-                            disabled={sharedState.loadingMore}
-                          >
-                            <BusyLabel busy={sharedState.loadingMore}>
-                              Load more shared
-                            </BusyLabel>
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="compact"
-                          onClick={() => void onSharedRefresh()}
-                        >
-                          Refresh shared
-                        </Button>
-                      </div>
+            <Stack gap="section">
+              {((loading && filtered.length === 0) || error) && (
+                <div>
+                  {/* Loading */}
+                  {loading && filtered.length === 0 && (
+                    <div className="flex items-center justify-center py-16">
+                      <p className="text-s fg-secondary">Loading workflows…</p>
                     </div>
                   )}
-                  {!cloudReady && !sharedState.cloudLoading && (
-                    <div className="flex items-center gap-3">
-                      <p className="text-xs fg-secondary">
-                        No {brandText.appName} Cloud account configured — shared
-                        and curated workflows are unavailable.
-                      </p>
-                      <Button size="compact" onClick={onOpenAccountSettings}>
-                        Open account settings
-                      </Button>
-                    </div>
-                  )}
+
+                  {/* Error */}
+                  <ErrorBanner error={error} className="" />
                 </div>
               )}
 
-              {/* Empty state: no pipelines from any source (and the shared
+              {actionError && (
+                <div data-testid="pipeline-list-action-error">
+                  <Notice intent="destructive">{actionError}</Notice>
+                </div>
+              )}
+
+              {(!loading || filtered.length > 0) && (
+                <Stack gap="group">
+                  {/* Table */}
+                  {filtered.length > 0 && (
+                    <DataTableFrame
+                      testId="pipelines-table"
+                      caption="Workflows"
+                      layout="fixed"
+                      minWidth="56.25rem"
+                    >
+                      <DataTableHead>
+                        <DataTableHeaderCell>Workflow</DataTableHeaderCell>
+                        <DataTableHeaderCell width="8rem">
+                          Source
+                        </DataTableHeaderCell>
+                        <DataTableHeaderCell width="8rem">
+                          Scope
+                        </DataTableHeaderCell>
+                        <DataTableHeaderCell width="7rem">
+                          Triggers
+                        </DataTableHeaderCell>
+                        {/* Fits the widest row: 6 actions (toggle, share link,
+                      edit/view, share, duplicate, delete) on a shared row
+                      with delete rights =
+                      6*26px + 5*2px gap + 24px cell padding = 190px. */}
+                        <DataTableHeaderCell width="13rem" align="right">
+                          Actions
+                        </DataTableHeaderCell>
+                      </DataTableHead>
+                      <DataTableBody>
+                        {filtered.map((p) => (
+                          <PipelineTableRow
+                            key={`${p.source}:${p.id}`}
+                            pipeline={p}
+                            enabled={!disabledPipelineIds.has(p.id)}
+                            onToggleEnabled={(enabled) =>
+                              onToggleEnabled(p.id, enabled)
+                            }
+                            onEdit={onEdit}
+                            onDelete={() => handleRowDelete(p)}
+                            onDuplicate={onDuplicate}
+                            onShare={onShare}
+                            sharePending={
+                              sharePendingId === `${p.source}:${p.id}`
+                            }
+                          />
+                        ))}
+                      </DataTableBody>
+                    </DataTableFrame>
+                  )}
+
+                  <div>
+                    <div
+                      className="flex flex-wrap items-center gap-3 text-xs fg-secondary"
+                      data-testid="pipeline-list-status"
+                    >
+                      <span>
+                        {filtered.length} loaded{' '}
+                        {filtered.length === 1 ? 'workflow' : 'workflows'}
+                      </span>
+                    </div>
+                    {/* No results from active filters */}
+                    {filtered.length === 0 &&
+                      allPipelines.length > 0 &&
+                      hasActiveFilters &&
+                      !sharedInitialLoading && (
+                        <p className="py-12 text-center text-s fg-secondary">
+                          No workflows match the current filters.
+                        </p>
+                      )}
+
+                    {!showShared && emptyState}
+                  </div>
+                  {/* Shared-cloud status + affordances */}
+                  {showShared && (
+                    <div data-testid="shared-pipelines-section">
+                      <Stack gap="inline">
+                        {cloudReady && showShared && (
+                          <ErrorBanner
+                            error={sharedState.error}
+                            className=""
+                            onRetry={() => void onSharedRefresh()}
+                          />
+                        )}
+                        {cloudReady && showShared && (
+                          <div className="flex items-center justify-between gap-2">
+                            {sharedState.error ? (
+                              <span />
+                            ) : sharedState.loading &&
+                              sharedState.rows.length === 0 ? (
+                              <p className="text-xs fg-secondary">
+                                Loading shared workflows…
+                              </p>
+                            ) : (
+                              <span />
+                            )}
+                            <div className="flex items-center gap-3">
+                              {sharedState.nextCursor && (
+                                <Button
+                                  size="compact"
+                                  onClick={() => void onLoadMoreShared()}
+                                  disabled={sharedState.loadingMore}
+                                >
+                                  <BusyLabel busy={sharedState.loadingMore}>
+                                    Load more shared
+                                  </BusyLabel>
+                                </Button>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="compact"
+                                onClick={() => void onSharedRefresh()}
+                              >
+                                Refresh shared
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                        {!cloudReady && !sharedState.cloudLoading && (
+                          <div className="flex items-center gap-3">
+                            <p className="text-xs fg-secondary">
+                              No {brandText.appName} Cloud account configured —
+                              shared and curated workflows are unavailable.
+                            </p>
+                            <Button
+                              size="compact"
+                              onClick={onOpenAccountSettings}
+                            >
+                              Open account settings
+                            </Button>
+                          </div>
+                        )}
+                      </Stack>
+                      {emptyState}
+                    </div>
+                  )}
+
+                  {/* Empty state: no pipelines from any source (and the shared
                 first page isn't still loading). */}
-              {filtered.length === 0 &&
-                allPipelines.length === 0 &&
-                !error &&
-                !sharedInitialLoading && (
-                  <EmptyState
-                    icon={
-                      <AppCatalogPipelineIcon
-                        size="xl"
-                        className="fg-secondary"
-                      />
-                    }
-                    title="No workflows yet"
-                    subtitle="Create your first workflow to get started"
-                    action={
-                      <CreatePipelineSplitButton
-                        onStartInterview={onStartInterview}
-                        onBuildManually={onCreateNew}
-                        interviewPending={interviewPending}
-                        testIdPrefix="pipeline-empty-create-new"
-                      />
-                    }
-                  />
-                )}
-            </>
-          )}
+                </Stack>
+              )}
+            </Stack>
+          </Stack>
           <PipelineTemplatesSection
             catalog={{
               ...curated,

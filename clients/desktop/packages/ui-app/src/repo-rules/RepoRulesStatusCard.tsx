@@ -3,7 +3,12 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import type { RepoRulesStatus } from '@canopy/protocol/repo-rules';
 import { useCanopyClient } from '@canopy/app-state';
-import { Button, ErrorBanner, Heading } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ErrorBanner,
+  Heading,
+  Stack,
+} from '@canopy/ui-shared/components';
 import { CapabilityGate } from '../capability/CapabilityGate';
 import { Surface } from '@canopy/ui-shared/components';
 
@@ -130,7 +135,7 @@ function RepoRulesStatusCardBody({
         data-testid="project-settings-repo-rules"
       >
         <div className="flex min-h-10 items-center justify-between gap-6">
-          <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="min-w-0 flex-1 flex flex-col gap-0.5">
             <div className="text-s font-medium fg-primary">Cursor rules</div>
             <p
               className="text-xs text-pretty fg-secondary"
@@ -167,22 +172,25 @@ function RepoRulesStatusCardBody({
   }
   return (
     <Surface
+      gap="item"
       variant="outline"
       padding="default"
       data-testid="project-settings-repo-rules"
     >
-      <Heading level={3} variant="title">
-        Cursor rules
-      </Heading>
-      <p
-        className="mt-1 text-xs fg-secondary"
-        role="status"
-        data-testid="project-settings-repo-rules-status"
-      >
-        {statusLine}
-      </p>
-      {error ? <ErrorBanner className="mt-3" error={error} /> : null}
-      <div className="mt-3 flex flex-wrap gap-2">
+      <Stack gap="tight">
+        <Heading level={3} variant="title">
+          Cursor rules
+        </Heading>
+        <p
+          className="text-xs fg-secondary"
+          role="status"
+          data-testid="project-settings-repo-rules-status"
+        >
+          {statusLine}
+        </p>
+      </Stack>
+      {error ? <ErrorBanner error={error} /> : null}
+      <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
           onClick={onReview}

@@ -26,6 +26,7 @@ import {
   rejectRequest,
   resolveRequest,
 } from '../../mcp/pending-requests';
+import { installApprovalTurnWaits } from '../../approvals/approval-turn-waits';
 import { installQuestionTurnWaits } from '../question-turn-waits';
 
 jest.mock('../../canopy-runtime/chat-turn-stop', () => ({
@@ -67,7 +68,7 @@ let operations: CoreOperationAdapter;
 let runtime: DesktopCanopyDispatcher;
 let seen: string[];
 beforeEach(() => {
-  resetDesktopChatWaitsForTest();
+  resetDesktopChatWaitsForTest({ noClientMode: 'wait' });
   root = mkdtempSync(join(tmpdir(), 'question-turn-waits-'));
   operations = createCoreOperationAdapter({
     ledgerPath: () => join(root, 'ledger.sqlite'),
@@ -152,6 +153,9 @@ it('timeout, cancellation and failure resolve as expired, cancelled and cancelle
 });
 
 it('only question waits reach the turn seam', async () => {
+  // The runtime also reports approval waits (CAN-4129); this covers the
+  // question bridge alone.
+  installApprovalTurnWaits(getDesktopChatWaits())();
   const run = await liveRun();
   const lifecycle = getDesktopChatWaits();
   lifecycle.open({

@@ -46,13 +46,13 @@ import {
   type PersistedChatMessage,
   type PortalChatMessage,
 } from '@canopy/desktop-shared/types';
-import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
-import { applyAgentSessionCodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
+import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
+import { applyAgentSessionCodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
 import { turnSessionApprovalRules } from '@canopy/desktop-shared/lib/send-approval-narrowing';
 import {
   appendUserOverallPreferencesBlock,
   buildUserOverallPreferencesBlock,
-} from '@canopy/desktop-shared/lib/global-instructions';
+} from '@canopy/execution-engine/lib/global-instructions';
 import { validateId } from '../lib/validation';
 import { buildSubmittedMessageText } from '../lib/chat-submitted-message';
 import { recordChatEventDropped } from '../lib/chat-event-drop-diagnostics';

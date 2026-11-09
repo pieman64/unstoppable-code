@@ -26,7 +26,7 @@ import {
   type W5MaintenanceDecisionRefusal,
   type W5MaintenanceDecisionResult,
 } from './w5-maintenance-decisions';
-import type { W5Diagnosis } from './w5-maintenance-diagnosis';
+import type { W5Diagnosis, W5DiagnosisScope } from './w5-maintenance-diagnosis';
 
 export type {
   W5MaintenanceDecision,
@@ -114,6 +114,10 @@ export type W5MaintenanceResult =
 
 /** Trusted cold maintenance composition only; never the admitted app host. */
 export interface W5MaintenanceContext extends W5BackupContext {
+  /** Trusted migration qualification, not available to ordinary recovery launches. */
+  readonly offlineMigration?: () => Promise<void>;
+  /** Internal-root settlement checks W5 ownership, not unrelated app payloads. */
+  readonly diagnosisScope?: W5DiagnosisScope;
   readonly platform: Pick<
     PlatformServices,
     'supervision' | 'secureFiles' | 'endpoints'
@@ -192,9 +196,14 @@ export async function runW5Maintenance(
       ? readW5MaintenanceDecisions(request.decisions)
       : null;
   if (request.mode === 'resolve' && !decisions) refuse('invalid-request');
-  // TRANSITIONAL: remove when Windows maintenance qualification adds win32
-  // host registration.
-  if (hostOperatingSystem() === 'win32') refuse('platform-unsupported');
+  // Windows has no general host registration. The offline migration window
+  // requires native cold proof plus CAN-5786's startup guard, never resolve.
+  if (
+    hostOperatingSystem() === 'win32' &&
+    (!context.offlineMigration || request.mode !== 'reopen')
+  )
+    refuse('platform-unsupported');
+  await context.offlineMigration?.();
   signal?.throwIfAborted();
   if (context.host.workersStarted !== 0) refuse('writer-active');
   const { dataRoot, platform } = context;
@@ -215,14 +224,21 @@ export async function runW5Maintenance(
     if (resolve(dataRoot) !== dataRoot) refuse('runtime-unavailable');
     await privateDirectory(dataRoot);
     await privateDirectory(runtime);
-    runtimeIdentity = await lstat(runtime);
+    runtimeIdentity =
+      hostOperatingSystem() === 'win32'
+        ? await lstat(runtime, { bigint: true })
+        : await lstat(runtime);
   } catch {
     refuse('runtime-unavailable');
   }
   const { dev, ino } = runtimeIdentity;
   async function verifyRuntime(): Promise<void> {
+    await context.offlineMigration?.();
     await privateDirectory(runtime);
-    const current = await lstat(runtime);
+    const current =
+      hostOperatingSystem() === 'win32'
+        ? await lstat(runtime, { bigint: true })
+        : await lstat(runtime);
     if (current.dev !== dev || current.ino !== ino)
       refuse('runtime-unavailable');
   }
@@ -392,6 +408,7 @@ export async function runW5Maintenance(
             signal: inspectionSignal,
           }),
         secureFiles: platform.secureFiles,
+        offlineMigration: context.offlineMigration,
         signal,
       });
     } catch (error) {
@@ -415,7 +432,7 @@ export async function runW5Maintenance(
     if (!(await isW5MaintenanceHeld(exclusive, dataRoot))) refuse('claim-lost');
     // Local import keeps SQLite and offline scans off the desktop startup graph.
     const { diagnoseW5State } = await import('./w5-maintenance-diagnosis');
-    const diagnosis = await diagnoseW5State(dataRoot);
+    const diagnosis = await diagnoseW5State(dataRoot, context.diagnosisScope);
     signal?.throwIfAborted();
     if (!(await isW5MaintenanceHeld(exclusive, dataRoot))) refuse('claim-lost');
     if (request.mode === 'diagnose') return { mode: 'diagnose', diagnosis };
@@ -425,7 +442,7 @@ export async function runW5Maintenance(
       await stopWriter();
       if (!(await isW5MaintenanceHeld(exclusive, dataRoot)))
         refuse('claim-lost');
-      const after = await diagnoseW5State(dataRoot);
+      const after = await diagnoseW5State(dataRoot, context.diagnosisScope);
       if (!(await isW5MaintenanceHeld(exclusive, dataRoot)))
         refuse('claim-lost');
       return { mode: 'reopen', diagnosis: after };
@@ -446,7 +463,7 @@ export async function runW5Maintenance(
       );
       const diagnoseAfter = async (): Promise<W5Diagnosis> => {
         await requireHeld();
-        const after = await diagnoseW5State(dataRoot);
+        const after = await diagnoseW5State(dataRoot, context.diagnosisScope);
         await requireHeld();
         return after;
       };

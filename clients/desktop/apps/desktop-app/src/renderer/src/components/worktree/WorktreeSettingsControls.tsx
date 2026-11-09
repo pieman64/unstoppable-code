@@ -1,4 +1,4 @@
-import { Heading, Surface } from '@canopy/ui-shared/components';
+import { Stack, Heading, Surface } from '@canopy/ui-shared/components';
 import {
   Button,
   RichHoverTooltip,
@@ -68,7 +68,7 @@ export function SourceLocalToggle({
   trailing,
 }: SourceLocalToggleProps): JSX.Element {
   return (
-    <div className="mb-4 flex min-w-0 items-center gap-3">
+    <div className="flex min-w-0 items-center gap-3">
       <SegmentedControl<SettingsScope>
         label="Settings source"
         value={mode}
@@ -87,17 +87,17 @@ export function SourceLocalToggle({
  * workspace-settings modals, shown on hover or focus of the help icon.
  */
 const SETTINGS_HELP_CONTENT: ReactNode = (
-  <>
+  <Stack gap="inline">
     <p className="text-xs fg-primary">
       Project configuration can be source controlled or overridden locally.
       Local overrides always take priority.
     </p>
-    <p className="mt-2 text-xs fg-secondary">
+    <p className="text-xs fg-secondary">
       Select a worktree to view and edit the configuration present in that
       worktree. The default branch is used as a reference only and any source
       controlled edits must be applied via a worktree.
     </p>
-  </>
+  </Stack>
 );
 
 interface SaveLocalButtonProps {
@@ -170,46 +170,52 @@ export function WorkspaceHealthIssuesBlock({
   return (
     <>
       <Surface variant="group" padding="default">
-        <div className="text-s">
-          <div className="font-medium fg-primary">Project health</div>
-          <div className="mt-1 text-xs fg-secondary">
-            {brandText.appName} compares this project&apos;s tracked state
-            against the evaluated <code>canopy.json</code>.
-          </div>
-          {driftWorktree && (
-            <div className="mt-3 text-xs fg-secondary">
-              Worktree{' '}
-              <span className="font-medium fg-primary">{driftWorktree.id}</span>{' '}
-              · Branch{' '}
-              <span className="font-medium fg-primary">
-                {driftWorktree.branchName}
-              </span>
-            </div>
-          )}
+        <div className="flex flex-col gap-2 text-s">
+          <Stack gap="item">
+            <Stack gap="tight">
+              <div className="font-medium fg-primary">Project health</div>
+              <div className="text-xs fg-secondary">
+                {brandText.appName} compares this project&apos;s tracked state
+                against the evaluated <code>canopy.json</code>.
+              </div>
+            </Stack>
+            {driftWorktree && (
+              <div className="text-xs fg-secondary">
+                Worktree{' '}
+                <span className="font-medium fg-primary">
+                  {driftWorktree.id}
+                </span>{' '}
+                · Branch{' '}
+                <span className="font-medium fg-primary">
+                  {driftWorktree.branchName}
+                </span>
+              </div>
+            )}
+          </Stack>
           {healthData.driftTargetPath && (
-            <div className="mt-2 break-all text-xs fg-secondary">
+            <div className="break-all text-xs fg-secondary">
               {healthData.driftTargetPath}
             </div>
           )}
         </div>
       </Surface>
-      <div className="space-y-2">
+      <Stack gap="inline">
         {healthData.driftIssues.map((issue) => (
           <Surface
             variant="outline"
             key={`${issue.code}-${issue.repoId ?? 'workspace'}`}
           >
             <div
-              className={`px-3 py-2 text-xs ${workspaceHealthIssueClassName(issue.blocking)}`}
+              className={`flex flex-col gap-1 px-3 py-2 text-xs ${workspaceHealthIssueClassName(issue.blocking)}`}
             >
               <div className="font-medium">
                 {issue.blocking ? 'Blocking issue' : 'Warning'}
               </div>
-              <div className="mt-1">{issue.message}</div>
+              <div>{issue.message}</div>
             </div>
           </Surface>
         ))}
-      </div>
+      </Stack>
     </>
   );
 }
@@ -484,7 +490,7 @@ export function SettingsDirectoryCard({
 }: SettingsDirectoryCardProps): JSX.Element {
   const dirPath = path.replace(/\/+$/, '');
   return (
-    <Surface variant="outline" padding="default">
+    <Surface variant="outline" gap="tight" padding="default">
       <div className="flex items-center justify-between gap-2">
         <Heading level={3} variant="title">
           Directory
@@ -496,7 +502,7 @@ export function SettingsDirectoryCard({
         />
       </div>
       <p
-        className="mt-1 truncate font-mono text-xs fg-secondary"
+        className="truncate font-mono text-xs fg-secondary"
         style={{ direction: 'rtl', textAlign: 'left' }}
         title={dirPath}
       >
@@ -524,15 +530,15 @@ export function AlwaysShowWorkspaceCard({
   return (
     <Surface variant="outline" padding="default">
       <div className="flex items-center justify-between">
-        <div>
+        <Stack gap="tight">
           <Heading level={3} variant="title">
             Always show project
           </Heading>
-          <p className="mt-1 text-xs fg-secondary">
+          <p className="text-xs fg-secondary">
             Keep the project in the worktree panel even when there are no{' '}
             {workspaceKind === 'cowork' ? 'work entries' : 'active worktrees'}
           </p>
-        </div>
+        </Stack>
         <ToggleField
           checked={checked}
           onChange={onChange}

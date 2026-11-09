@@ -2,7 +2,7 @@ import type {
   AgentProviderType,
   ChatModel,
 } from '@canopy/desktop-shared/types';
-import { resolveAnthropicMockEnvOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import type { AgentProvider } from '../agents/types';
 import type { ClaudeCompatibleInvocation } from '../agents/claude-session';
 import { assertAgentWorkerContext } from './agent-worker-context';

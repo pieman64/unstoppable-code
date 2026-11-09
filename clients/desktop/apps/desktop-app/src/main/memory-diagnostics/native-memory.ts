@@ -35,8 +35,10 @@ export interface NativeMemorySummary {
 const MEMORY_INFRA_CATEGORY = 'disabled-by-default-memory-infra';
 // The scheduler dumps once when tracing starts; the long period keeps it to one.
 const DUMP_PERIOD_MS = 10 * 60 * 1000;
-// shortcut: fixed wait; Electron exposes no dump-complete signal. Raise it if field reports show missingProcessIds.
+// Electron exposes no dump-complete signal. Keep the common case short.
 export const NATIVE_DUMP_WAIT_MS = 3000;
+// Chromium waits up to 15 seconds for a slow process before publishing dumps.
+const NATIVE_DUMP_RETRY_WAIT_MS = 17_000;
 const MAX_ALLOCATOR_DEPTH = 3;
 // Code-defined names such as `v8` and `blink_gc` only. Ids, hashes and
 // addresses (`tile_manager_0`, `isolate_0x…`, `ResourceProvider_0x…`,
@@ -326,38 +328,47 @@ export async function captureNativeMemory(
   waitMs: number,
 ): Promise<NativeMemorySummary> {
   const startedAt = Date.now();
-  await contentTracing.startRecording({
-    included_categories: [MEMORY_INFRA_CATEGORY],
-    memory_dump_config: {
-      triggers: [{ mode: 'detailed', periodic_interval_ms: DUMP_PERIOD_MS }],
-    },
-  });
-  try {
-    if (waitMs > 0) {
-      await new Promise((resolveWait) => setTimeout(resolveWait, waitMs));
-    }
-    const writtenPath = await contentTracing.stopRecording(tracePath);
-    const trace = await readFile(writtenPath);
-    const processes = summarizeMemoryInfraTrace(trace);
-    const dumped = new Set(processes.map((entry) => entry.pid));
-    return {
-      captured: true,
-      unavailableReason: null,
-      durationMs: Date.now() - startedAt,
-      processes,
-      missingProcessIds: appMetrics
-        .map((metric) => metric.pid)
-        .filter((pid) => !dumped.has(pid)),
-    };
-  } finally {
+  let processes: NativeMemoryProcess[] = [];
+  for (const attemptWaitMs of [waitMs, NATIVE_DUMP_RETRY_WAIT_MS]) {
+    await contentTracing.startRecording({
+      included_categories: [MEMORY_INFRA_CATEGORY],
+      memory_dump_config: {
+        triggers: [{ mode: 'detailed', periodic_interval_ms: DUMP_PERIOD_MS }],
+      },
+    });
     try {
-      await rm(tracePath, { force: true, maxRetries: 3 });
-    } catch {
-      // Thrown from finally on purpose: it replaces any capture result.
-      // eslint-disable-next-line no-unsafe-finally
-      throw new NativeMemoryTraceCleanupError(
-        'The native memory trace could not be deleted.',
-      );
+      if (attemptWaitMs > 0) {
+        await new Promise((resolveWait) =>
+          setTimeout(resolveWait, attemptWaitMs),
+        );
+      }
+      const writtenPath = await contentTracing.stopRecording(tracePath);
+      const trace = await readFile(writtenPath);
+      processes = summarizeMemoryInfraTrace(trace);
+    } finally {
+      try {
+        await rm(tracePath, { force: true, maxRetries: 3 });
+      } catch {
+        // Thrown from finally on purpose: it replaces any capture result.
+        // eslint-disable-next-line no-unsafe-finally
+        throw new NativeMemoryTraceCleanupError(
+          'The native memory trace could not be deleted.',
+        );
+      }
     }
+    if (processes.length > 0) break;
   }
+  const dumped = new Set(processes.map((entry) => entry.pid));
+  return {
+    captured: processes.length > 0,
+    unavailableReason:
+      processes.length > 0
+        ? null
+        : 'No process memory dumps were recorded after retrying.',
+    durationMs: Date.now() - startedAt,
+    processes,
+    missingProcessIds: appMetrics
+      .map((metric) => metric.pid)
+      .filter((pid) => !dumped.has(pid)),
+  };
 }

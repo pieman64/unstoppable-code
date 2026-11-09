@@ -202,15 +202,28 @@ const SKILL_INSTALL_UPDATE_NOTE =
 
 /** What installing a shared skill does, said before the reader installs it. */
 export function shareInstallSkillEffect(scope: SkillInstallScope): string {
-  return shareInstallSkillEffectParts(scope)
-    .map((part) => part.text)
-    .join('');
+  return joinShareInstallCopyParts(shareInstallSkillEffectParts(scope));
+}
+
+/**
+ * One segment of install-review copy. A `name` part is identifying text the
+ * host renders with its replay protection.
+ */
+export interface ShareInstallCopyPart {
+  readonly kind: 'copy' | 'name';
+  readonly text: string;
+}
+
+function joinShareInstallCopyParts(
+  parts: readonly ShareInstallCopyPart[],
+): string {
+  return parts.map((part) => part.text).join('');
 }
 
 /** Keep context names separate so hosts can protect identifying text in replay. */
 export function shareInstallSkillEffectParts(
   scope: SkillInstallScope,
-): readonly { readonly kind: 'copy' | 'name'; readonly text: string }[] {
+): readonly ShareInstallCopyPart[] {
   switch (scope.kind) {
     case 'all-contexts':
       return [
@@ -249,6 +262,170 @@ export function shareInstallSkillEffectParts(
         },
       ];
   }
+}
+
+// CAN-5219: an installed plugin offered over the chat the reader came from.
+// "Turn on" because the chat's plugin picker controls activation, not
+// addition; the chat title is quoted because it is user-authored, and it is a
+// separate `name` part so hosts can mask it in replay.
+
+/**
+ * Longest chat title quoted in a label, in code points. Sized so the label
+ * fits the install review's action row beside its ⋯ menu.
+ */
+export const SHARE_INSTALL_CHAT_TITLE_MAX_LENGTH = 30;
+
+/** The trimmed title, cut to the limit with an ellipsis. Counts code points. */
+export function truncateShareInstallChatTitle(title: string): string {
+  const points = Array.from(title.trim());
+  if (points.length <= SHARE_INSTALL_CHAT_TITLE_MAX_LENGTH) {
+    return points.join('');
+  }
+  const cut = points.slice(0, SHARE_INSTALL_CHAT_TITLE_MAX_LENGTH - 1).join('');
+  return `${cut.trimEnd()}…`;
+}
+
+/** Label for turning an installed plugin on in a chat; `''` means untitled. */
+export function shareInstallTurnOnInChatLabelParts(
+  chatTitle: string,
+): readonly ShareInstallCopyPart[] {
+  const name = truncateShareInstallChatTitle(chatTitle);
+  return name
+    ? [
+        { kind: 'copy', text: 'Turn on in “' },
+        { kind: 'name', text: name },
+        { kind: 'copy', text: '”' },
+      ]
+    : [{ kind: 'copy', text: 'Turn on in this chat' }];
+}
+
+/** {@link shareInstallTurnOnInChatLabelParts} joined as plain text. */
+export function shareInstallTurnOnInChatLabel(chatTitle: string): string {
+  return joinShareInstallCopyParts(
+    shareInstallTurnOnInChatLabelParts(chatTitle),
+  );
+}
+
+export const SHARE_INSTALL_TURNING_ON_LABEL = 'Turning on…';
+
+/** Why turning a plugin on in the originating chat did not happen. */
+export type ShareInstallTurnOnInChatFailure = 'stale' | 'busy' | 'failed';
+
+export function shareInstallTurnOnInChatFailureCopy(
+  reason: ShareInstallTurnOnInChatFailure,
+): string {
+  switch (reason) {
+    case 'stale':
+      return "That chat is no longer open. Turn the plugin on from the chat's plugins.";
+    case 'busy':
+      // Matches the desktop chat plugin editor's busy sentence.
+      return 'Wait for this chat to finish before changing plugins.';
+    case 'failed':
+      return "Couldn't turn the plugin on in that chat. Turn it on from the chat's plugins.";
+  }
+}
+
+/**
+ * A marketplace that ships with the app rather than one the reader adds
+ * (`builtin:app`, `codex-builtin:<id>`).
+ */
+function isBuiltInMarketplaceOrigin(origin: string): boolean {
+  return origin === 'builtin:app' || origin.startsWith('codex-builtin:');
+}
+
+const PLUGIN_INSTALL_CONTEXT_NOTE = 'Available in every context.';
+
+/**
+ * The marketplace as the plugin's copy names it. Any non-built-in origin is
+ * shown verbatim, matching the Source row on the shared plugin's detail.
+ * Callers pass a non-empty origin.
+ */
+function pluginMarketplaceParts(
+  marketplaceOrigin: string,
+): readonly ShareInstallCopyPart[] {
+  return isBuiltInMarketplaceOrigin(marketplaceOrigin)
+    ? [{ kind: 'copy', text: 'the built-in marketplace' }]
+    : [{ kind: 'name', text: marketplaceOrigin }];
+}
+
+/**
+ * What installing a shared plugin does, said before the reader installs it
+ * (CAN-5017). Marketplaces and plugin installs are device-wide.
+ */
+export function shareInstallPluginEffectParts(
+  marketplaceOrigin: string,
+): readonly ShareInstallCopyPart[] {
+  if (isBuiltInMarketplaceOrigin(marketplaceOrigin)) {
+    return [
+      {
+        kind: 'copy',
+        text: `Installs this plugin from the built-in marketplace. ${PLUGIN_INSTALL_CONTEXT_NOTE}`,
+      },
+    ];
+  }
+  return [
+    { kind: 'copy', text: 'Adds the ' },
+    { kind: 'name', text: marketplaceOrigin },
+    {
+      kind: 'copy',
+      text: ` marketplace to this device if it isn't there yet, then installs this plugin from it. ${PLUGIN_INSTALL_CONTEXT_NOTE}`,
+    },
+  ];
+}
+
+/** {@link shareInstallPluginEffectParts} as plain text. */
+export function shareInstallPluginEffect(marketplaceOrigin: string): string {
+  return joinShareInstallCopyParts(
+    shareInstallPluginEffectParts(marketplaceOrigin),
+  );
+}
+
+/** The review's status after Install installed the shared plugin. */
+export function shareInstallPluginInstalledStatusParts(
+  marketplaceOrigin: string,
+): readonly ShareInstallCopyPart[] {
+  return [
+    { kind: 'copy', text: 'Installed from ' },
+    ...pluginMarketplaceParts(marketplaceOrigin),
+    { kind: 'copy', text: '.' },
+  ];
+}
+
+/** {@link shareInstallPluginInstalledStatusParts} as plain text. */
+export function shareInstallPluginInstalledStatus(
+  marketplaceOrigin: string,
+): string {
+  return joinShareInstallCopyParts(
+    shareInstallPluginInstalledStatusParts(marketplaceOrigin),
+  );
+}
+
+/**
+ * The review's status when the shared plugin was already installed: found
+ * when the review opened, or found by Install with nothing left to install.
+ */
+export function shareInstallPluginAlreadyAvailableStatusParts(
+  marketplaceOrigin: string,
+  { installAttempted }: { readonly installAttempted: boolean },
+): readonly ShareInstallCopyPart[] {
+  return [
+    { kind: 'copy', text: 'Already available from ' },
+    ...pluginMarketplaceParts(marketplaceOrigin),
+    {
+      kind: 'copy',
+      text: installAttempted ? '. Nothing new was installed.' : '.',
+    },
+  ];
+}
+
+/** {@link shareInstallPluginAlreadyAvailableStatusParts} as plain text. */
+export function shareInstallPluginAlreadyAvailableStatus(
+  marketplaceOrigin: string,
+  options: { readonly installAttempted: boolean },
+): string {
+  return joinShareInstallCopyParts(
+    shareInstallPluginAlreadyAvailableStatusParts(marketplaceOrigin, options),
+  );
 }
 
 /**

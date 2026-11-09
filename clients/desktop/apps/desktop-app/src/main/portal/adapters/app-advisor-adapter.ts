@@ -1,4 +1,4 @@
-import { isModelHarness } from '@canopy/desktop-shared/model-harnesses';
+import { isModelHarness } from '@canopy/execution-engine/model-harnesses';
 import { isSidebarItemGroupId } from '@canopy/protocol/sidebar';
 import { isCopilotRuntimeAvailable } from '../../copilot/runtime-availability';
 import { broadcastPreferencesSynced } from '../../lib/preferences-broadcast';
@@ -1039,7 +1039,11 @@ function settleAskUserQuestion(
   chatId: string,
   answer: AppAdvisorAskUserAnswer | null,
 ): void {
-  if (!completeAppAdvisorAskUserRequest(requestId, chatId, answer)) {
+  if (
+    !completeAppAdvisorAskUserRequest(requestId, chatId, answer, {
+      agentOriginated: context.origin !== undefined,
+    })
+  ) {
     context.fail(
       command,
       'not_found',

@@ -22,7 +22,7 @@ import type {
   PipelinePluginCollectionPreference,
   PipelinePluginDefaultPreviewItem,
   PipelinePreferenceLocator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   UnifiedTableBadge,
   UnifiedTablePipelineDerivedRow,

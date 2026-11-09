@@ -42,9 +42,18 @@ import {
   discardUnpublishedOpenCodeFork,
 } from '../opencode/fork-session';
 import { sendToWindow } from '../lib/window-send';
-import { requestAppAdvisorRendererTool } from '../ipc/app-advisor';
+import {
+  getSessionInterfaceToolRegistry,
+  interfaceToolAudience,
+} from '../agents/interface-tool-binding';
+import { presentAppAdvisorAction } from '../app-advisor/presentation-tools';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import { activeAgentCoreOperations } from './active-agent-core-operations';
+import {
+  AGENT_CHAT_INTERFACE_TEXTS,
+  agentChatInterfacePresent,
+} from './agent-chat-interface';
 import type { AppAdvisorToolRuntimeSurfaces } from '../app-advisor/runtime';
-import { mainWindowOnlyToolSurfaces } from './show-files-runtime';
 import type { WorktreeActionRuntime } from './worktree-actions';
 import { isClaudeChainUuid } from '@canopy/desktop-shared/lib/claude-fork-resume-point';
 import { closeRejectedSplitAgentStartup } from '../services/split-agent-startup';
@@ -100,6 +109,21 @@ function claudeSplitForkAnchor(
           : FORK_SIBLING_TOOL_RESULT,
     })),
   };
+}
+
+/**
+ * CAN-5830: a branched agent's prompt counts as queued only when the core
+ * send applied it; a refused send fails the start, so its cleanup runs.
+ */
+export function assertBranchedPromptQueued(receipt: {
+  outcome: string;
+  reason?: string;
+}): void {
+  if (receipt.outcome === 'applied' || receipt.outcome === 'already_applied')
+    return;
+  throw new Error(
+    receipt.reason ?? 'Could not queue the branched agent prompt.',
+  );
 }
 
 /** Starts a separate user-visible chat; never waits for its agent turn. */
@@ -158,6 +182,24 @@ export async function startSplitAgent(
   if (kind === 'start_branched_agent' && config?.type === 'cowork') {
     throw new Error('Starting a branched agent requires a worktree chat.');
   }
+  // CAN-5830 D9: a branched agent starts only while a person can see it,
+  // before anything is created.
+  if (
+    kind === 'start_branched_agent' &&
+    !agentChatInterfacePresent({
+      projectId,
+      worktreeId: sourceWorktreeId,
+      chatId: sourceChatId,
+      action: {
+        type: 'worktree-chat.send_message',
+        projectId,
+        worktreeId: sourceWorktreeId,
+        chatId: sourceChatId,
+        text: 'Continue',
+      },
+    })
+  )
+    throw new Error(AGENT_CHAT_INTERFACE_TEXTS.needsWindow);
   await drainCurrentSessionEvents({
     projectId,
     worktreeId: sourceWorktreeId,
@@ -521,30 +563,50 @@ export async function startSplitAgent(
       }
       runtime.signal?.throwIfAborted();
       if (kind === 'start_branched_agent') {
-        // The renderer's send reaches main's chat send, which holds it while
-        // the new worktree's Git setup runs.
-        const response = await requestAppAdvisorRendererTool(
+        // Main's chat send holds the prompt while the new worktree's Git
+        // setup runs (CAN-5830); the reveal is a best-effort presentation.
+        const commandId = `agent-branched-send:${chatId}`;
+        const receipt = await activeAgentCoreOperations(
+          'chatActions',
+        ).instruction(
+          'core.chat.message.send',
           {
-            kind: 'dispatch_action',
-            requestId: randomUUID(),
-            originWorktreeId: sourceWorktreeId,
-            originChatTabId: sourceChatId,
-            hostSend: 'start_branched_agent',
-            action: {
-              type: 'worktree-chat.send_message',
-              projectId: destinationProjectId,
-              worktreeId,
-              chatId,
-              text: 'Continue',
-            },
+            scope: { workspaceId: destinationProjectId, worktreeId },
+            commandId,
+            chatId,
+            messageId: randomUUID(),
+            text: 'Continue',
+            _meta: { idempotencyKey: commandId },
           },
-          mainWindowOnlyToolSurfaces(runtime.getWindow),
+          {
+            caller: {
+              principalId: 'local-desktop-user',
+              clientInstanceId: `agent-action:${sourceChatId}`,
+              authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+              interfaceKind: 'mcp',
+              grants: ['core.chat.write'],
+            },
+            metadata: { idempotencyKey: commandId },
+          },
         );
-        if (!response.ok)
-          throw new Error(
-            response.error?.message ??
-              'Could not queue the branched agent prompt.',
-          );
+        assertBranchedPromptQueued(receipt);
+        await presentAppAdvisorAction({
+          action: {
+            type: 'worktree-chat.open_tab',
+            projectId: destinationProjectId,
+            worktreeId,
+            chatId,
+          },
+          destination: {
+            projectId: projectId,
+            worktreeId: sourceWorktreeId,
+            chatId: sourceChatId,
+          },
+          boundTools:
+            getSessionInterfaceToolRegistry()?.availableFor(
+              interfaceToolAudience(sourceChatId),
+            ) ?? [],
+        }).catch(() => undefined);
       } else {
         const dispatch = await buildExistingTabDispatchOptions(
           destinationProjectId,

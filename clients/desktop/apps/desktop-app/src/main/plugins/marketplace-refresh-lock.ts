@@ -5,7 +5,7 @@ import path from 'node:path';
 import {
   ensurePrivateLockDirectory,
   withOwnerLockFile,
-} from '@canopy/desktop-shared/node/lib/owner-lock-file';
+} from '@canopy/execution-engine/node/lib/owner-lock-file';
 import { getDataDir } from '../lib/paths';
 
 const LOCK_MAX_WAIT_MS = 10 * 60 * 1000;

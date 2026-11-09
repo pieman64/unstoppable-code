@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, type JSX, type ReactNode } from 'react';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { Heading, WindowPage } from '@canopy/ui-shared/components';
+import { Surface, Heading, WindowPage } from '@canopy/ui-shared/components';
 import { SidebarNavRow } from '@/components/sidebar/SidebarNavRow';
 import { SidebarPageNav } from '@/components/sidebar/SidebarPageNav';
 import { useSidebarPageHandoffStore } from '@/stores/sidebarPageHandoffStore';
@@ -126,8 +126,9 @@ export function ProjectSettingsFrame<T extends string>({
         </div>
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="electron-drag h-11.5 shrink-0" />
-          <div
-            className="relative flex min-h-0 flex-1 flex-col bg-base"
+          <Surface
+            variant="pane"
+            className="relative flex min-h-0 flex-1 flex-col"
             data-settings-card=""
             data-testid="project-settings-content"
           >
@@ -137,7 +138,7 @@ export function ProjectSettingsFrame<T extends string>({
             >
               {children}
             </div>
-          </div>
+          </Surface>
         </div>
       </div>
     </WindowPage>

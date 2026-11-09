@@ -11,9 +11,9 @@ import {
   DialogFormField,
   DialogModal,
   TextInput,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { MarketplaceSourceAddPreview } from './MarketplaceSourceAddPreview';
-import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 const ADD_SOURCE_LEAD = 'Add a Claude or Codex marketplace.';
 export interface MarketplaceSourceAddDialogProps {
@@ -134,13 +134,12 @@ export function MarketplaceSourceAddDialog({
         )}
 
         {visibleError && (
-          <p
-            className={`text-s fg-destructive ${REPLAY_BLOCK_CLASS}`}
-            role="status"
-            data-testid="cloud-marketplace-add-error"
-          >
-            {visibleError}
-          </p>
+          <ErrorBanner
+            className=""
+            error={visibleError}
+            blockMessageFromReplay
+            testId="cloud-marketplace-add-error"
+          />
         )}
 
         {review !== null && phase !== 'complete' && (

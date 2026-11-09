@@ -1,4 +1,4 @@
-import type { BrowserLocatorCandidate } from '@canopy/desktop-shared/types/browser';
+import type { BrowserLocatorCandidate } from '@canopy/execution-engine/types/browser';
 import type { BrowserPageModel, PageModelNode } from './model-types';
 
 const TEST_ID_ATTRIBUTES = ['data-testid', 'data-test', 'data-cy'];

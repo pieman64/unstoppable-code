@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { chmod, lstat, mkdir, realpath } from 'node:fs/promises';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
+import { observeStoragePathSync } from './storage-path-observation';
 import { hostOperatingSystem } from './host-platform';
 import { flushDirectory } from './directory-flush';
 import type { W5ProcessFileLock } from '@canopy/core-runtime/node/w5/commit-log/apply';
@@ -54,15 +55,6 @@ function sqliteBusy(error: unknown): boolean {
   return errcode === 5 || errcode === 6;
 }
 
-/** Resolve existing parents too, so a not-yet-created file has one identity. */
-async function canonical(path: string): Promise<string> {
-  try {
-    return await realpath(path);
-  } catch (error) {
-    if (code(error) !== 'ENOENT' || dirname(path) === path) throw error;
-    return join(await canonical(dirname(path)), basename(path));
-  }
-}
 function identity(path: string): string {
   const os = hostOperatingSystem();
   // Conservative on case-sensitive macOS volumes: extra exclusion is safe.
@@ -86,10 +78,13 @@ export async function withW5ProcessFileLocks<T>(
   const timeout = options.timeoutMs ?? 5_000;
   if (!Number.isFinite(timeout) || timeout < 0)
     throw new Error('Invalid W5 lock timeout');
-  const root = await canonical(resolve(options.dataRoot));
+  const root = observeStoragePathSync(resolve(options.dataRoot)).canonicalPath;
   const resources = new Map<string, string>();
   for (const path of paths)
-    resources.set(identity(await canonical(resolve(path))), path);
+    resources.set(
+      identity(observeStoragePathSync(resolve(path)).canonicalPath),
+      path,
+    );
   const runtime = join(root, 'runtime');
   await ensureW5PrivateRuntimeDirectory(runtime);
   const directory = join(runtime, 'locks');
@@ -139,10 +134,13 @@ export async function withW5ProcessFileLocks<T>(
 /** One acquisition layer at the worker that actually decides and applies. */
 export function worktreeListProcessLock(dataRoot: string): W5ProcessFileLock {
   return async (paths, work) => {
-    const root = await canonical(resolve(dataRoot));
+    const root = observeStoragePathSync(resolve(dataRoot)).canonicalPath;
     const applicable: string[] = [];
     for (const path of paths) {
-      const parts = relative(root, await canonical(resolve(path))).split(sep);
+      const parts = relative(
+        root,
+        observeStoragePathSync(resolve(path)).canonicalPath,
+      ).split(sep);
       if (
         parts.length === 3 &&
         identity(parts[0] ?? '') === 'workspaces' &&
@@ -177,7 +175,7 @@ export async function acquireW5DesktopDeleteGate(
   dataRoot: string,
   kind: 'desktop' | 'delete',
 ): Promise<W5DesktopDeleteGate> {
-  const root = await canonical(resolve(dataRoot));
+  const root = observeStoragePathSync(resolve(dataRoot)).canonicalPath;
   const directory = join(root, 'runtime', 'locks');
   await ensureW5PrivateRuntimeDirectory(join(root, 'runtime'));
   await ensureW5PrivateRuntimeDirectory(directory);

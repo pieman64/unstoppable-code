@@ -141,34 +141,36 @@ export function OnlyMemberEmptyState({
         title={`You're the only person in ${organizationName}.`}
         subtitle={`A teammate has to join ${organizationName} before you can share this with them.`}
         action={
-          <div className="space-y-2">
-            {/* Invite or Manage members: whichever shows is the one primary. */}
-            {canInvite ? (
-              <OrganizationInviteButton
-                testId="shared-container-invite-modal-invite-teammate"
-                onClick={() => {
-                  if (!account?.account?.id) return;
-                  setInviting({
-                    accountId: account.account.id,
-                    target: personal
-                      ? {
-                          kind: 'personal',
-                          personalOrganizationId: organizationId,
-                        }
-                      : { kind: 'team', organizationId, organizationName },
-                  });
-                }}
-              />
-            ) : (
-              <Button
-                variant="primary"
-                size="compact"
-                data-testid="shared-container-invite-modal-manage-members"
-                onClick={handleOpenMembers}
-              >
-                {`Manage members in ${organizationName}`}
-              </Button>
-            )}
+          <div className="flex flex-col gap-2">
+            <div>
+              {/* Invite or Manage members: whichever shows is the one primary. */}
+              {canInvite ? (
+                <OrganizationInviteButton
+                  testId="shared-container-invite-modal-invite-teammate"
+                  onClick={() => {
+                    if (!account?.account?.id) return;
+                    setInviting({
+                      accountId: account.account.id,
+                      target: personal
+                        ? {
+                            kind: 'personal',
+                            personalOrganizationId: organizationId,
+                          }
+                        : { kind: 'team', organizationId, organizationName },
+                    });
+                  }}
+                />
+              ) : (
+                <Button
+                  variant="primary"
+                  size="compact"
+                  data-testid="shared-container-invite-modal-manage-members"
+                  onClick={handleOpenMembers}
+                >
+                  {`Manage members in ${organizationName}`}
+                </Button>
+              )}
+            </div>
             <ErrorBanner
               className=""
               error={openFailed ? 'Could not open that page. Try again.' : null}

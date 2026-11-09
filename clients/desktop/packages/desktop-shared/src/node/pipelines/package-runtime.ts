@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import type {
   PipelinePackageCapabilityOverlay,
   PipelinePackageExecutionSnapshot,
-} from '../../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { PipelinePackageManifestV1 } from '@canopy/protocol/pipelines';
 import {
   CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,

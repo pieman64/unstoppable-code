@@ -1,4 +1,4 @@
-import type { ShellType } from '@canopy/desktop-shared/types/pipeline';
+import type { ShellType } from '@canopy/execution-engine/types/pipeline';
 
 /**
  * Resolve the default shell for renderer-side pipeline normalization.

@@ -25,7 +25,7 @@ export function FormSectionHeading({
   id,
 }: FormSectionHeadingProps): JSX.Element {
   return (
-    <div className="mb-2">
+    <div>
       <Heading level={3} variant="title" id={id}>
         {title}
       </Heading>

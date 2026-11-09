@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { getRawOpenCodeModelId } from '@canopy/desktop-shared/lib/opencode-models';
+import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import { clearPresentationTurn } from '../canopy-tools/presentation-state';
 import type { BrowserWindow } from 'electron';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
@@ -49,7 +49,7 @@ import type { ActivityLiveBgTask } from '@canopy/desktop-shared/types/activity-p
 import {
   isGatewayOnlyModel,
   resolveGatewayModelEntry,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import {
   cleanupChatSkillPluginDir,
@@ -108,7 +108,7 @@ import {
   resolveSessionWorkOwner,
 } from './work-owner';
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import { appendUserOverallPreferencesBlock } from '@canopy/desktop-shared/lib/global-instructions';
+import { appendUserOverallPreferencesBlock } from '@canopy/execution-engine/lib/global-instructions';
 import {
   assertWorkspaceTargetRuntimeStartAllowed,
   withWorkspaceTargetRuntimeStartReservation,
@@ -121,6 +121,7 @@ import {
 import { isE2eBuild } from '../lib/e2e-gate';
 import { notifySteeringEligibilityChanged } from './steering-eligibility-events';
 import { setAppliedApprovalReader } from '../approvals/live-approval-modes';
+import { shouldReloadForClaudeModChange } from './claude-mod-admission-session';
 import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
 
 export { isAgentContinuationEvent } from '../lib/chat-turn-audit';
@@ -289,6 +290,7 @@ export type SessionRecreateReason =
   | 'plugins'
   | 'managed_delegation'
   | 'codex_preferences'
+  | 'claude_mods'
   | 'account'
   | 'organization'
   | 'unspecified';
@@ -651,16 +653,6 @@ async function createProvider(
   // (CAN-4116 Claude; CAN-4117 Codex).
   const workerRuntime = await workerProviderRuntimeFor(harness);
   if (workerRuntime) return workerRuntime.providerFor(providerType, getWindow);
-  if (harness === 'copilot') {
-    const { CopilotProvider } = await import('./copilot-session');
-    return new CopilotProvider();
-  }
-  if (harness === 'cursor') {
-    // Defer the ACP SDK and Cursor process/hook runtime until Cursor is used.
-    // The packaged Electron main smoke exercises this lazy resolution path.
-    const { CursorProvider } = await import('./cursor-session');
-    return new CursorProvider();
-  }
   throw new Error(`No provider runtime serves the ${harness} harness.`);
 }
 
@@ -3986,6 +3978,21 @@ export function markCodexSessionsForNextTurnRecreation(
     if (scope !== 'all' && scope !== sessionScope) continue;
 
     markSessionEntryForNextTurnRecreation(key, entry, 'codex_preferences');
+  }
+}
+
+/**
+ * Reload Claude sessions at their next turn after a Mod admission change, so
+ * the relaunch decides admission again. `skipped` reaches only sessions whose
+ * launch skipped a Mod; a change that can turn a Mod off reaches every one.
+ */
+export function markClaudeSessionsForModAdmissionChange(
+  scope: 'skipped' | 'all',
+): void {
+  for (const [key, entry] of Array.from(sessions.entries())) {
+    if (entry.executionHarness !== 'claude') continue;
+    if (!shouldReloadForClaudeModChange(key, scope)) continue;
+    markSessionEntryForNextTurnRecreation(key, entry, 'claude_mods');
   }
 }
 

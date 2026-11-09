@@ -1,3 +1,4 @@
+import { Badge } from './Badge';
 import type {
   CSSProperties,
   DragEvent,
@@ -191,12 +192,13 @@ export function FileTreeRow({
         </span>
       )}
       {badge !== undefined && badge !== null && (
-        <span
-          className="ml-auto shrink-0 rounded-sm border px-1 text-3xs fg-secondary"
+        <Badge
+          size="compact"
+          className="ml-auto"
           data-testid="file-tree-row-badge"
         >
           {badge}
-        </span>
+        </Badge>
       )}
     </>
   );

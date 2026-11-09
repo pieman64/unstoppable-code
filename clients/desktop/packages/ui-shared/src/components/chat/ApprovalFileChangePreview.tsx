@@ -1,3 +1,4 @@
+import { Badge } from '../Badge';
 import { useMemo, type JSX } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Button } from '../Button';
@@ -98,11 +99,10 @@ function ChangeRow({ row }: { row: ApprovalFileChangeRow }): JSX.Element {
         </span>
       )}
       {row.endingMarker && (
-        <span
-          data-testid="approval-file-change-ending"
-          className="shrink-0 select-none rounded bg-fg-primary/[0.08] px-1 font-sans text-3xs fg-secondary"
-        >
-          {ENDING_LABEL[row.endingMarker]}
+        <span className="inline-flex shrink-0 select-none font-sans">
+          <Badge size="compact" data-testid="approval-file-change-ending">
+            {ENDING_LABEL[row.endingMarker]}
+          </Badge>
         </span>
       )}
     </li>

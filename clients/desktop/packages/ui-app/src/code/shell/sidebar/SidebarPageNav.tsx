@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, type JSX, type ReactNode, type Ref } from 'react';
-import { SidebarNavRow } from '@canopy/ui-shared/components';
+import { Stack, SidebarNavRow } from '@canopy/ui-shared/components';
 import { BackIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { SidebarScrollArea } from './SidebarScrollArea';
 
@@ -95,9 +95,7 @@ export function SidebarPageNav({
             ref={backButtonRef}
             onClick={onBack}
             data-testid={backTestId}
-            // Web gives every button a hand cursor; Back keeps the arrow like
-            // the rail rows below it.
-            className="cursor-default text-left"
+            className="text-left"
             tone="secondary"
             icon={<BackIcon size={16} />}
           >
@@ -155,11 +153,17 @@ export function SidebarPageNavGroup({
     );
   }
   return (
-    <section aria-labelledby={headingId} className="mt-3" data-testid={testId}>
+    <Stack
+      aria-labelledby={headingId}
+      as="section"
+      gap="tight"
+      className="mt-3"
+      data-testid={testId}
+    >
       <div id={headingId} className="px-2 text-xs font-normal fg-tertiary">
         {label}
       </div>
-      <div className="mt-1 flex flex-col gap-px">{children}</div>
-    </section>
+      <div className="flex flex-col gap-px">{children}</div>
+    </Stack>
   );
 }

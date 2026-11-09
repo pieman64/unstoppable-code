@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { getMcpServerFilePath } from '../lib/paths';
-import type { McpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
+import type { McpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import { MCP_SERVER_CHANNELS } from '@canopy/desktop-shared/constants/mcp-server-channels';
 
 // Keep native presentation and unrelated runtime hosts outside this backend

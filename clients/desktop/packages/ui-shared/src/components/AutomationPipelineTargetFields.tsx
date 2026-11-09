@@ -3,7 +3,7 @@ import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
 import { ChoiceField } from './Choice';
 import { Notice, NoticeButton } from './Notice';
 import { TRY_AGAIN_LABEL } from './useRetry';
-import { Select, type SelectOption } from './Field';
+import { Select, type SelectOption, FieldError } from './Field';
 
 /**
  * Where a pipeline automation on a project runs. A pipeline with no project
@@ -172,13 +172,13 @@ export function AutomationPipelineTaskField({
         />
       )}
       {stale && (
-        <p
-          role="alert"
-          className="text-xs fg-destructive"
+        <FieldError
+          id={`${testIdPrefix}-task-stale`}
+          announce
           data-testid={`${testIdPrefix}-task-stale`}
         >
           {AUTOMATION_PIPELINE_TASK_STALE}
-        </p>
+        </FieldError>
       )}
     </div>
   );

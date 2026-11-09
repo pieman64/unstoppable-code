@@ -100,7 +100,7 @@ function unavailableBody(state: ShareUnavailableState): JSX.Element {
       ? (state.organizationNames ?? [])
       : [];
   return (
-    <div className="space-y-2 text-center">
+    <div className="flex flex-col text-center gap-2">
       <p className="text-m font-semibold fg-primary">
         {state.reason === 'no-activity'
           ? 'This session can no longer be shared'

@@ -13,7 +13,7 @@
     "**/*.ts",
     "**/*.mts",
     "../../src/brand-defines.d.ts",
-    "../../../../packages/desktop-shared/src/build-constants.d.ts",
+    "../../../../packages/execution-engine/src/build-constants.d.ts",
     "../../../../packages/desktop-instrumentation/src/build-constants.d.ts"
   ]
 }

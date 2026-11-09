@@ -6,7 +6,7 @@ import type {
 import type {
   ExecutionSummary,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { pipelineSharePath } from '@canopy/protocol/pipelines';
 import {
@@ -24,11 +24,12 @@ import {
   type WorkflowLibrarySource,
   type WorkflowStepGlyph,
   type WorkflowTriggerKind,
+  WORKFLOW_NO_PROJECT,
   withoutAutomationOwnedPipelines,
 } from '@canopy/ui-app/workflows';
 import { canDuplicateAutomation } from './automation-duplicate';
 import { automationLibraryKey } from './run-feed';
-import { automationProjectId } from './schedule-filter';
+import { activityProjectId } from './schedule-filter';
 
 /**
  * The desktop Library rows (CAN-3981): a pure projection over what the
@@ -470,7 +471,7 @@ function projectAutomationRow(
   const sharer = installed ? input.sharerForInstalled?.(activity) : undefined;
   const attention = automationAttention(activity, chain, input);
   const next = input.nextRun(activity, new Date(input.now));
-  const projectId = automationProjectId(activity.action);
+  const projectId = activityProjectId(activity);
   const projectName = projectId ? input.projectName(projectId) : undefined;
   const lastRun: WorkflowLibraryRow['lastRun'] = runningActivityIds.has(
     activity.id,
@@ -562,6 +563,142 @@ function projectSharedAutomationRow(
   };
 }
 
+/**
+ * The schedules of each workflow page (CAN-5782), by pipeline: every record
+ * the projection marks with `workflowSchedule`.
+ */
+export function workflowPageSchedules(
+  activities: readonly ScheduledActivity[],
+): ReadonlyMap<string, readonly ScheduledActivity[]> {
+  const byPipeline = new Map<string, ScheduledActivity[]>();
+  for (const activity of activities) {
+    const pipelineId = activity.workflowSchedule?.pipelineId;
+    if (pipelineId === undefined) continue;
+    const list = byPipeline.get(pipelineId) ?? [];
+    list.push(activity);
+    byPipeline.set(pipelineId, list);
+  }
+  return byPipeline;
+}
+
+/**
+ * The record a workflow page's Library row stands on: the owner, which
+ * carries the converted chat action, else the oldest schedule.
+ */
+export function workflowPageRowActivity(
+  schedules: readonly ScheduledActivity[],
+): ScheduledActivity | undefined {
+  return (
+    schedules.find((activity) => activity.workflowSchedule?.owner === true) ??
+    [...schedules].sort((a, b) =>
+      a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0,
+    )[0]
+  );
+}
+
+/**
+ * One row for a workflow page with several schedules: "N schedules", how
+ * many are on and no switch of its own, the earliest next run among those
+ * on, and the latest last run. Its filters match any schedule: every trigger
+ * kind and project, and the first schedule's warning when its own has none.
+ */
+function projectWorkflowPageRow(
+  schedules: readonly ScheduledActivity[],
+  rowActivity: ScheduledActivity,
+  runningActivityIds: ReadonlySet<string>,
+  input: LibraryProjectionInput,
+): WorkflowLibraryRow {
+  const row = projectAutomationRow(rowActivity, runningActivityIds, input);
+  const scheduleRows = schedules.map((activity) =>
+    activity === rowActivity
+      ? row
+      : projectAutomationRow(activity, runningActivityIds, input),
+  );
+  const attention =
+    row.attention ??
+    scheduleRows.find((entry) => entry.attention !== undefined)?.attention;
+  const on = schedules.filter((activity) => activity.enabled);
+  const now = new Date(input.now);
+  const nextRuns = on.flatMap((activity) => {
+    const next = input.nextRun(activity, now);
+    return next ? [next.getTime()] : [];
+  });
+  const nextRunAt = nextRuns.length > 0 ? Math.min(...nextRuns) : undefined;
+  const running = schedules.some((activity) =>
+    runningActivityIds.has(activity.id),
+  );
+  const latest = schedules
+    .flatMap((activity) =>
+      activity.lastResult
+        ? [
+            {
+              state: activity.lastResult.status,
+              at: parseTime(activity.lastResult.completedAt),
+            },
+          ]
+        : [],
+    )
+    .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))[0];
+  const { nextRunAt: _nextRunAt, lastRun: _lastRun, ...rest } = row;
+  void _nextRunAt;
+  void _lastRun;
+  return {
+    ...rest,
+    triggers: [...new Set([row, ...scheduleRows].flatMap((e) => e.triggers))],
+    triggerText: `${String(schedules.length)} schedules`,
+    ...(attention ? { attention } : {}),
+    scheduleProjectIds: [
+      ...new Set(
+        scheduleRows.map((entry) => entry.projectId ?? WORKFLOW_NO_PROJECT),
+      ),
+    ],
+    enabled: on.length > 0,
+    scheduleCounts: { on: on.length, total: schedules.length },
+    ...(running
+      ? { lastRun: { state: 'running' as const } }
+      : latest
+        ? { lastRun: latest }
+        : {}),
+    ...(nextRunAt !== undefined ? { nextRunAt } : {}),
+    actions: row.actions.filter((action) => action !== 'toggle'),
+  };
+}
+
+/**
+ * What a Library Delete on an automation row removes (CAN-5782), for its
+ * confirmation. Main deletes it in one write and refuses a running schedule
+ * itself; this only says so before the person confirms.
+ */
+export type WorkflowDeletePlan =
+  | { ok: true; schedules: readonly ScheduledActivity[] }
+  | { ok: false; error: string };
+
+export const WORKFLOW_DELETE_RUNNING =
+  'A schedule is running. Delete the workflow after the run finishes.';
+
+/**
+ * A workflow page's row is the workflow (Decision 6), so Delete removes all
+ * of its schedules and its pipeline; a run in any of them refuses it.
+ */
+export function workflowDeletePlan(
+  activity: ScheduledActivity,
+  activities: readonly ScheduledActivity[],
+  runningActivityIds: ReadonlySet<string>,
+): WorkflowDeletePlan {
+  const pipelineId = activity.workflowSchedule?.pipelineId;
+  if (pipelineId === undefined) return { ok: true, schedules: [activity] };
+  const schedules = activities.filter(
+    (entry) => entry.workflowSchedule?.pipelineId === pipelineId,
+  );
+  if (
+    schedules.length > 1 &&
+    schedules.some((entry) => runningActivityIds.has(entry.id))
+  ) {
+    return { ok: false, error: WORKFLOW_DELETE_RUNNING };
+  }
+  return { ok: true, schedules };
+}
+
 /** Every Library row for the current context, automations then pipelines. */
 export function projectLibraryRows(
   input: LibraryProjectionInput,
@@ -580,16 +717,42 @@ export function projectLibraryRows(
         activity.installedFrom ? [activity.installedFrom.remoteId] : [],
       ),
     );
+  // CAN-5782: a workflow page is one row, however many schedules it has;
+  // its pipeline doesn't get a row of its own while it has any.
+  const pages = workflowPageSchedules(input.activities);
+  const folded = new Set<string>();
+  const pageRows: WorkflowLibraryRow[] = [];
+  for (const schedules of pages.values()) {
+    const rowActivity = workflowPageRowActivity(schedules);
+    if (rowActivity === undefined) continue;
+    for (const activity of schedules) folded.add(activity.id);
+    pageRows.push(
+      schedules.length === 1
+        ? projectAutomationRow(rowActivity, runningActivityIds, input)
+        : projectWorkflowPageRow(
+            schedules,
+            rowActivity,
+            runningActivityIds,
+            input,
+          ),
+    );
+  }
+  const hiddenPipelineIds = new Set([
+    ...(input.ownedPipelineIds ?? []),
+    ...pages.keys(),
+  ]);
   return [
-    ...input.activities.map((activity) =>
-      projectAutomationRow(activity, runningActivityIds, input),
-    ),
+    ...input.activities
+      .filter((activity) => !folded.has(activity.id))
+      .map((activity) =>
+        projectAutomationRow(activity, runningActivityIds, input),
+      ),
+    ...pageRows,
     ...input.sharedAutomations
       .filter((share) => !installedRemoteIds.has(share.remoteId))
       .map((share) => projectSharedAutomationRow(share, input)),
-    ...withoutAutomationOwnedPipelines(
-      input.pipelines,
-      input.ownedPipelineIds ?? new Set(),
-    ).map((pipeline) => projectPipelineRow(pipeline, input, latest)),
+    ...withoutAutomationOwnedPipelines(input.pipelines, hiddenPipelineIds).map(
+      (pipeline) => projectPipelineRow(pipeline, input, latest),
+    ),
   ];
 }

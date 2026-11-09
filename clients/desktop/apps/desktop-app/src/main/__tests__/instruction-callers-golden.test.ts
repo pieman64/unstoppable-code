@@ -6,6 +6,7 @@
 // platform the desktop alias and restore helpers default to can be set to
 // win32 (no changed caller passes a platform itself).
 import type * as FsPromises from 'node:fs/promises';
+import type { SourceChangeGit } from '../canopy-runtime/worker-git-worktree-adapter';
 import type * as InstructionFiles from '../lib/instruction-files';
 import type * as HardLinkHelpers from './helpers/host-independent-hard-links';
 
@@ -511,6 +512,14 @@ describe('single-repo to multi-repo conversion (workspace-type-conversion)', () 
 });
 
 describe('source change instruction apply (workspace-source-change-apply)', () => {
+  const unexpectedGitEffect = (): never => {
+    throw new Error('Existing-target instruction edits must not mutate Git.');
+  };
+  const git: SourceChangeGit = {
+    createWorktree: unexpectedGitEffect,
+    removeWorktree: unexpectedGitEffect,
+    bestEffortPruneWorktrees: unexpectedGitEffect,
+  };
   const WORKSPACE_ID = 'multi';
   const WORKTREE_ID = 'wt-one';
 
@@ -579,6 +588,7 @@ describe('source change instruction apply (workspace-source-change-apply)', () =
           claudeMd,
         },
         () => null,
+        git,
       ),
     );
     expect({
@@ -599,6 +609,7 @@ describe('source change instruction apply (workspace-source-change-apply)', () =
           workspaceScripts: { dev: 'pnpm dev' },
         },
         () => null,
+        git,
       ),
     );
     expect({

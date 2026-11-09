@@ -27,6 +27,7 @@ import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { getWorktreeBranchDisplayName } from '@/lib/worktreeDisplayName';
 import { getChatTabLabel } from '@/lib/chatTabLabel';
 import {
+  Stack,
   Button,
   DelayedLoadingPlaceholder,
   FormField,
@@ -290,10 +291,7 @@ export function AutomationChatTargetPicker({
   );
 
   return (
-    <div
-      className="flex flex-col gap-2"
-      data-testid="automations-form-chat-target"
-    >
+    <Stack gap="inline" data-testid="automations-form-chat-target">
       <FormField label={containerLabel}>
         {(control) => {
           const select = (
@@ -383,8 +381,9 @@ export function AutomationChatTargetPicker({
         )}
       </FormField>
       {complete && !isNewChat && !unavailable ? (
-        <div className="text-xs">
+        <div className="flex flex-col text-xs gap-1">
           <Button
+            className="self-start"
             variant="link"
             onClick={(): void => {
               setOpenChatError(null);
@@ -414,16 +413,15 @@ export function AutomationChatTargetPicker({
           >
             Open {CHAT_UNIT_LABEL.toLowerCase()}
           </Button>
-          <ErrorBanner error={openChatError} className="mt-1" />
+          <ErrorBanner className="" error={openChatError} />
         </div>
       ) : null}
       {unavailable ? (
-        <p
-          className="text-2xs fg-destructive"
-          data-testid="automations-form-chat-target-unavailable"
-        >
-          {AUTOMATION_CHAT_TARGET_UNAVAILABLE_ERROR}
-        </p>
+        <ErrorBanner
+          className=""
+          error={AUTOMATION_CHAT_TARGET_UNAVAILABLE_ERROR}
+          testId="automations-form-chat-target-unavailable"
+        />
       ) : complete && isNewChat ? (
         <p className="text-2xs fg-secondary">
           Each run starts a new {CHAT_UNIT_LABEL.toLowerCase()} in this{' '}
@@ -435,6 +433,6 @@ export function AutomationChatTargetPicker({
           and plugins.
         </p>
       )}
-    </div>
+    </Stack>
   );
 }

@@ -1,4 +1,4 @@
-import type { ExecutionState } from '../../../types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 
 /**
  * Whole-run pause accounting for the pipeline run clock.

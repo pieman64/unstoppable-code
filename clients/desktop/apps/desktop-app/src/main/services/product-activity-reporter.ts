@@ -3,7 +3,7 @@ import { clampId } from '@canopy/desktop-shared/lib/telemetry-mapping';
 import type {
   AgentAuditEntry,
   AgentAuditEventType,
-} from '@canopy/desktop-shared/types/observability';
+} from '@canopy/execution-engine/types/observability';
 import { MAX_TELEMETRY_CLIENT_ID_LENGTH } from '@canopy/protocol/telemetry';
 import {
   clearProductActivityRetryTimers,
@@ -14,12 +14,17 @@ import {
   resolveWorkOwnerOrganization,
 } from '../lib/work-owner';
 import { getObservabilityService } from '../observability';
+import {
+  getEffectiveUsageDataPolicy,
+  getUsageDataPolicy,
+} from '../lib/usage-data-policy';
 
 /**
  * Reports each observed chat-turn start as desktop product activity
  * (CAN-3561). This is basic usage analytics, separate from activity sharing:
- * it is deliberately not gated on the sharing scopes or an organization's
- * sharing policy.
+ * it is not gated on the sharing scopes or an organization's sharing policy,
+ * but on the member's Active use count choice as narrowed by the selected
+ * organization's usage-data policy.
  *
  * Automation, hook, and Remote Control turns arrive as the same audit entry
  * types as interactive turns, so they are counted too.
@@ -43,6 +48,7 @@ const MAX_SEEN_TURN_IDS = 2_000;
 interface ReporterLifecycle {
   readonly seen: Set<string>;
   unsubscribe: () => void;
+  unsubscribePolicy: () => void;
 }
 
 let lifecycle: ReporterLifecycle | null = null;
@@ -79,6 +85,16 @@ async function reportTurn(
   const organizationExternalId = await ownerOrganizationFor(entry);
   // Disposed, or disposed and re-initialized, while the owner resolved.
   if (lifecycle !== current) return;
+  // Active use count may have turned off while the owner resolved, and the
+  // organization that owns this turn may prohibit it even when another
+  // context is selected.
+  if (
+    !getUsageDataPolicy().allowsForOrganization(
+      'activeUseSignal',
+      organizationExternalId,
+    )
+  )
+    return;
   await reportDesktopChatTurnActivity({
     turnKey: turnKeyFor(entry.id),
     organizationExternalId,
@@ -103,6 +119,10 @@ function observeEntry(
     const oldest = current.seen.values().next().value;
     if (oldest !== undefined) current.seen.delete(oldest);
   }
+  // The member's Active use count choice, narrowed by the selected
+  // organization's policy. Checked after `seen` so a turn that started while
+  // off is never reported by a later re-emission once the signal turns on.
+  if (!getEffectiveUsageDataPolicy().activeUseSignal) return;
 
   // Detached: the observability callback never waits on ownership or network.
   void reportTurn(current, entry).catch(() => undefined);
@@ -113,12 +133,19 @@ export function initializeProductActivityReporter(): void {
   const current: ReporterLifecycle = {
     seen: new Set(),
     unsubscribe: (): void => undefined,
+    unsubscribePolicy: (): void => undefined,
   };
   lifecycle = current;
   current.unsubscribe = getObservabilityService().subscribe((event) => {
     if (event.type !== 'entries') return;
     for (const entry of event.entries) observeEntry(current, entry);
   });
+  // Turning Active use count off also cancels a report waiting to retry or
+  // resolving credentials. Its turn stays in `seen`, so it is dropped for good.
+  const unsubscribePolicy = getUsageDataPolicy().subscribe((snapshot) => {
+    if (!snapshot.effective.activeUseSignal) clearProductActivityRetryTimers();
+  });
+  current.unsubscribePolicy = unsubscribePolicy;
 }
 
 export function disposeProductActivityReporter(): void {
@@ -127,6 +154,7 @@ export function disposeProductActivityReporter(): void {
   lifecycle = null;
   if (current) {
     current.unsubscribe();
+    current.unsubscribePolicy();
     current.seen.clear();
   }
   clearProductActivityRetryTimers();

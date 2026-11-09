@@ -7,8 +7,8 @@
 // the proxy route, and nothing is retried at another speed.
 
 import { isRecord } from '../lib/type-guards';
-import { parseCodexSpeedCatalogWireModel } from '@canopy/desktop-shared/lib/codex-speed-availability';
-import type { CodexSpeedCatalogModel } from '@canopy/desktop-shared/types/codex-speed-capabilities';
+import { parseCodexSpeedCatalogWireModel } from '@canopy/execution-engine/lib/codex-speed-availability';
+import type { CodexSpeedCatalogModel } from '@canopy/execution-engine/types/codex-speed-capabilities';
 import {
   setCodexSpeedRouteCatalogSource,
   type CodexSpeedRouteCatalogFetch,

@@ -27,7 +27,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OpenCodeConnectionStatus } from '@canopy/desktop-shared/types/opencode-connection';
-import type { OpenCodeModelEntry } from '@canopy/desktop-shared/types/opencode-models';
+import type { OpenCodeModelEntry } from '@canopy/execution-engine/types/opencode-models';
 import {
   initOpenCodeModels,
   resolveRuntimeModel,
@@ -35,7 +35,7 @@ import {
 import {
   enrichOpenCodeModels,
   openCodeModelsFromConfig,
-} from '@canopy/desktop-shared/lib/opencode-models';
+} from '@canopy/execution-engine/lib/opencode-models';
 import {
   getOpenCodeRuntimeRootDir,
   getOpenCodeRuntimeStateDir,

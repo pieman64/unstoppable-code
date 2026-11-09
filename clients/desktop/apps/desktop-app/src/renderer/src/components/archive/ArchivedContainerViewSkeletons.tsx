@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
-import { ListRow, Skeleton } from '@canopy/ui-shared/components';
-import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import { Surface, ListRow, Skeleton } from '@canopy/ui-shared/components';
+import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
 import { ArchivedAttachmentRow } from './ArchivedAttachmentRow';
 import { ArchivedExecutionRow } from './ArchivedExecutionRow';
 
@@ -34,17 +34,19 @@ export function ArchivedNavListSkeleton({
 }): JSX.Element {
   return (
     <div className="flex min-h-0 flex-1">
-      <div className="w-64 shrink-0 border-r p-2">
-        <Skeleton loading label={label} testId={testId}>
-          <div className="flex flex-col">
-            {SAMPLE_NAV_ROWS.map((title) => (
-              <ListRow key={title} onClick={noop}>
-                {title}
-              </ListRow>
-            ))}
-          </div>
-        </Skeleton>
-      </div>
+      <Surface variant="section" boundary="right" className="w-64 shrink-0">
+        <div className="shrink-0 p-2">
+          <Skeleton loading label={label} testId={testId}>
+            <div className="flex flex-col">
+              {SAMPLE_NAV_ROWS.map((title) => (
+                <ListRow key={title} onClick={noop}>
+                  {title}
+                </ListRow>
+              ))}
+            </div>
+          </Skeleton>
+        </div>
+      </Surface>
     </div>
   );
 }

@@ -4,7 +4,7 @@ import {
   damagedCopiesOf,
   damagedCopyPath,
   pruneDamagedCopies,
-} from '@canopy/desktop-shared/node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import { writeFileAtomically } from './atomic-file';
 import { logMainProcessWarn } from './main-process-logging';
 import { getHookQueueDir } from './paths';

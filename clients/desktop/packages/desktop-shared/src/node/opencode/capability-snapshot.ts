@@ -1,4 +1,4 @@
-import { isSyntacticallyValidModelId } from '../../lib/model-id';
+import { isSyntacticallyValidModelId } from '@canopy/execution-engine/lib/model-id';
 import { createHash, randomUUID } from 'node:crypto';
 import { capabilityFiles } from '../capabilities/file-snapshot';
 import {
@@ -63,17 +63,19 @@ export interface OpenCodeCapabilitySnapshot {
   runtime: unknown;
   contextDigest: string;
   providerSettingsDigest: string;
+  nativeConnectionDigest?: string;
   inferenceRouteDigest?: string;
   inferenceSelection?: OpenCodeInferenceSelection;
   files: Record<string, string>;
   mcp: readonly { name: string; identity: unknown; tools: readonly Tool[] }[];
 }
 export interface OpenCodeCapabilityBinding {
-  /** Older hosts must reject managed authority or model-transition metadata they cannot verify. */
-  version: 1 | 2 | 3;
+  /** Older hosts must reject authority/connection metadata they cannot verify. */
+  version: 1 | 2 | 3 | 4;
   sessionId: string;
   digest: string;
   generation: number;
+  nativeConnectionDigest?: string;
   inferenceRouteDigest?: string;
   inferenceSelection?: OpenCodeInferenceSelection;
 }
@@ -121,7 +123,10 @@ export async function readOpenCodeCapabilityBinding(
   const value: unknown = JSON.parse(text);
   if (
     !record(value) ||
-    (value.version !== 1 && value.version !== 2 && value.version !== 3) ||
+    (value.version !== 1 &&
+      value.version !== 2 &&
+      value.version !== 3 &&
+      value.version !== 4) ||
     value.sessionId !== sessionId ||
     typeof value.digest !== 'string' ||
     !/^[a-f0-9]{64}$/.test(value.digest) ||
@@ -133,12 +138,21 @@ export async function readOpenCodeCapabilityBinding(
       'OpenCode capability binding is invalid. Start a new chat.',
     );
   if (
-    value.version !== 1
+    value.version === 2 || value.version === 3
       ? typeof value.inferenceRouteDigest !== 'string' ||
         !/^[a-f0-9]{64}$/.test(value.inferenceRouteDigest)
       : value.inferenceRouteDigest !== undefined
   )
     throw new Error('OpenCode inference binding is invalid. Start a new chat.');
+  if (
+    value.version === 4
+      ? typeof value.nativeConnectionDigest !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(value.nativeConnectionDigest)
+      : value.nativeConnectionDigest !== undefined
+  )
+    throw new Error(
+      "Couldn't verify this saved OpenCode connection. Start a new chat.",
+    );
   if (
     value.version === 3
       ? !isInferenceSelection(value.inferenceSelection)
@@ -166,6 +180,10 @@ export async function readOpenCodeCapabilityBinding(
     throw new Error(
       'OpenCode inference binding changed on disk. Start a new chat.',
     );
+  if (snapshot.nativeConnectionDigest !== value.nativeConnectionDigest)
+    throw new Error(
+      "Couldn't verify this saved OpenCode connection. Start a new chat.",
+    );
   if (
     openCodeCapabilityDigest(snapshot.inferenceSelection) !==
     openCodeCapabilityDigest(value.inferenceSelection)
@@ -181,6 +199,9 @@ export async function readOpenCodeCapabilityBinding(
     sessionId,
     digest: value.digest,
     generation: value.generation,
+    ...(typeof value.nativeConnectionDigest === 'string'
+      ? { nativeConnectionDigest: value.nativeConnectionDigest }
+      : {}),
     ...(typeof value.inferenceRouteDigest === 'string'
       ? { inferenceRouteDigest: value.inferenceRouteDigest }
       : {}),
@@ -216,6 +237,12 @@ export async function saveOpenCodeCapabilitySnapshot(
   signal: AbortSignal,
 ): Promise<OpenCodeCapabilityBinding> {
   if (
+    snapshot.nativeConnectionDigest !== undefined &&
+    (!/^[a-f0-9]{64}$/.test(snapshot.nativeConnectionDigest) ||
+      snapshot.inferenceRouteDigest !== undefined)
+  )
+    throw new Error("Couldn't save the OpenCode connection. Start a new chat.");
+  if (
     snapshot.inferenceRouteDigest !== undefined &&
     !/^[a-f0-9]{64}$/.test(snapshot.inferenceRouteDigest)
   )
@@ -228,11 +255,16 @@ export async function saveOpenCodeCapabilitySnapshot(
     throw new Error('OpenCode inference selection is invalid.');
   const digest = openCodeCapabilityDigest(snapshot);
   const binding: OpenCodeCapabilityBinding = {
-    version: snapshot.inferenceSelection
-      ? 3
-      : snapshot.inferenceRouteDigest
-        ? 2
-        : 1,
+    version: snapshot.nativeConnectionDigest
+      ? 4
+      : snapshot.inferenceSelection
+        ? 3
+        : snapshot.inferenceRouteDigest
+          ? 2
+          : 1,
+    ...(snapshot.nativeConnectionDigest
+      ? { nativeConnectionDigest: snapshot.nativeConnectionDigest }
+      : {}),
     ...(snapshot.inferenceSelection
       ? { inferenceSelection: { ...snapshot.inferenceSelection } }
       : {}),

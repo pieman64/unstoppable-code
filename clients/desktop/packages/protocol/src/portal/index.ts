@@ -1,3 +1,4 @@
+import type { CoworkFolderMissing } from '../canopy-core/core/workspace/cowork-folder';
 export * from './w5-recovery';
 import type { W5RecoveryStatus } from './w5-recovery';
 import type {
@@ -23,6 +24,7 @@ import type { WorkerFilesystemRootsListResult } from '../canopy-core/worker/file
 import type { TurnFileRecord } from '../turn-files';
 import type { SuggestionsUpdate } from '../suggestions';
 import type { OnboardingTipsUpdate } from '../onboarding-tips';
+import type { ClaudeModsGetArgs, ClaudeModsUpdate } from '../claude-mods';
 import type { ChatPlanReviewApproval } from '../canopy-core/chat-plan-review';
 export {
   TrackedPlanImplementationInputSchema,
@@ -306,6 +308,8 @@ export type PortalCommandType =
   | 'portal.suggestions.update'
   | 'portal.onboarding_tips.get'
   | 'portal.onboarding_tips.update'
+  | 'portal.claude_mods.get'
+  | 'portal.claude_mods.update'
   | 'portal.script_actions.list'
   | 'portal.script_actions.rescan'
   | 'portal.script_actions.review'
@@ -485,6 +489,8 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.suggestions.update',
   'portal.onboarding_tips.get',
   'portal.onboarding_tips.update',
+  'portal.claude_mods.get',
+  'portal.claude_mods.update',
   'portal.script_actions.list',
   'portal.script_actions.rescan',
   'portal.script_actions.review',
@@ -700,6 +706,8 @@ export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.suggestions.update',
     'portal.onboarding_tips.get',
     'portal.onboarding_tips.update',
+    'portal.claude_mods.get',
+    'portal.claude_mods.update',
     'portal.workspace.claude_md.get',
     'portal.script_actions.list',
     'portal.script_actions.rescan',
@@ -2845,7 +2853,9 @@ export interface PortalQuestionControl {
  * - `multiSelect` — whether more than one option may be chosen;
  * - `optionDescriptions` — optional per-option helper text (index-aligned);
  * - `allowOther` — whether a freeform "other" answer is permitted;
- * - `secret` — whether the answer is sensitive and must be redacted for display.
+ * - `secret` — whether the answer is sensitive and must be redacted for display;
+ * - `keepTextOnPick` — a picked option leaves the composer's typed text as it
+ *   is, for a provider that cannot take both.
  */
 export interface PortalAskUserQuestion extends PortalQuestionControl {
   id?: string;
@@ -2856,6 +2866,7 @@ export interface PortalAskUserQuestion extends PortalQuestionControl {
   optionDescriptions?: string[];
   allowOther?: boolean;
   secret?: boolean;
+  keepTextOnPick?: boolean;
 }
 
 /**
@@ -3220,6 +3231,11 @@ export interface PortalPluginCatalogHookMember {
   command?: string;
 }
 
+export interface PortalPluginCatalogModMember {
+  module: string;
+  hooksFile: string;
+}
+
 export interface PortalPluginCatalogMcpMember {
   name: string;
   type: 'command' | 'http';
@@ -3243,6 +3259,8 @@ export interface PortalPluginCatalogMemberInventory {
   /** Absent on catalogs produced before REG-2841 compatibility version 5. */
   apps?: PortalPluginCatalogMarkdownMember[];
   hooks: PortalPluginCatalogHookMember[];
+  /** Absent on catalogs produced before Mod member inventory support. */
+  mods?: PortalPluginCatalogModMember[];
   mcpServers: PortalPluginCatalogMcpMember[];
   lspServers: PortalPluginCatalogLspMember[];
 }
@@ -5631,6 +5649,8 @@ export interface PortalCommandPayloadMap {
   'portal.suggestions.update': SuggestionsUpdate;
   'portal.onboarding_tips.get': PortalOnboardingTipsGetPayload;
   'portal.onboarding_tips.update': OnboardingTipsUpdate;
+  'portal.claude_mods.get': ClaudeModsGetArgs;
+  'portal.claude_mods.update': ClaudeModsUpdate;
   'portal.script_actions.list': ScriptActionsListRequest;
   'portal.script_actions.rescan': ScriptActionsContext;
   'portal.script_actions.review': ScriptActionsReviewRequest;
@@ -5961,7 +5981,11 @@ export interface PortalCommandFailedPayload {
   response?: { code: string; message: string };
   commandId: string;
   sequenceNumber: number;
-  error: { code: string; message: string };
+  error: {
+    code: string;
+    message: string;
+    coworkFolderMissing?: CoworkFolderMissing;
+  };
   retryable?: boolean;
   generatedAt: string;
 }
@@ -7776,6 +7800,19 @@ export interface PortalChatAccountSwitchData {
 }
 
 /**
+ * Payload data carried inside a {@link PortalChatPart} with
+ * `kind: 'mods_skipped'`: a Claude launch skipped plugins' Mods while Mod
+ * admission was on. Mirrors the desktop transcript's `claude_mods_skipped`
+ * block; path-free.
+ */
+export interface PortalChatModsSkippedData {
+  /** Epoch ms when the launch started. */
+  occurredAt: number;
+  /** Each skipped plugin's Claude id and the launch decision's reason. */
+  mods: { pluginId: string; reason: string }[];
+}
+
+/**
  * Auto-routing attribution carried on a `turn_timer` part's `data`, alongside
  * its timing fields: the model Auto picked for that turn. Producers stamp it
  * only on routed turns, so renderers show the "Picked by model routing" chip the
@@ -7846,7 +7883,8 @@ export interface PortalChatPart {
     | 'steering'
     | 'prompt_source'
     | 'compaction'
-    | 'account_switch';
+    | 'account_switch'
+    | 'mods_skipped';
   /** Free-form per-part data; shape depends on `kind`. */
   data?: unknown;
   /**
@@ -10061,6 +10099,14 @@ export const PORTAL_CAPABILITY_SUGGESTIONS = 'suggestions_v1';
  * through `portal.onboarding_tips.get` and `portal.onboarding_tips.update`.
  */
 export const PORTAL_CAPABILITY_ONBOARDING_TIPS = 'onboarding_tips_v1';
+
+/**
+ * The paired desktop reads and changes Claude Mod admission (allowed Mods and
+ * the "turn off every Mod" switch) through `portal.claude_mods.get` and
+ * `portal.claude_mods.update`. Older desktops lack it, so browsers show no Mod
+ * controls.
+ */
+export const PORTAL_CAPABILITY_CLAUDE_MOD_ADMISSION = 'claude_mod_admission_v1';
 
 /**
  * `portal.onboarding_tips.get` takes no arguments; both commands complete

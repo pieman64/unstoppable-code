@@ -7,7 +7,7 @@ import { parseMcpToolName } from '@canopy/desktop-shared/lib/turn-utils';
 import {
   getCanonicalCanopyToolKey,
   type CanopyInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   buildManagedMcpServerIdentityDigest,
   readManagedMcpServerNameDigest,

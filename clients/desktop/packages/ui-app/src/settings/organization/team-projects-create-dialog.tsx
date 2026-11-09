@@ -1,5 +1,6 @@
 'use client';
 
+import { Dot } from '@canopy/ui-shared/components/Badge';
 import { useEffect, useRef, useState, type JSX } from 'react';
 import {
   Button,
@@ -27,7 +28,6 @@ import {
   CopyDetailsButton,
   Heading,
 } from '@canopy/ui-shared/components';
-import { SIDEBAR_INDICATOR_BLUE } from '@canopy/ui-shared/lib';
 import { FilterIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   ORG_PROJECT_LIMITS,
@@ -485,9 +485,9 @@ function RepositoryFilterMenu({
         onClick={(): void => setOpen((current) => !current)}
       />
       {active && (
-        <span
-          aria-hidden="true"
-          className={`pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full ${SIDEBAR_INDICATOR_BLUE.background}`}
+        <Dot
+          tone="filter"
+          className="pointer-events-none absolute right-0.5 top-0.5"
         />
       )}
       <FloatingPickerMenu

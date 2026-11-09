@@ -2,6 +2,7 @@ import { load } from 'js-yaml';
 import { app } from 'electron';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { linuxUpdateCopy } from '@canopy/desktop-shared/lib/linux-update-copy';
+import { restoreStartupEnvironmentForRelaunch } from '@canopy/desktop-shared/pipelines/config-paths';
 import {
   detectLinuxInstallSource,
   installedLinuxPackageArchitecture,
@@ -430,6 +431,7 @@ async function runInstallUpdate(): Promise<void> {
       if (beforeInstallUpdate) {
         await beforeInstallUpdate();
       }
+      restoreStartupEnvironmentForRelaunch();
       getAutoUpdater().quitAndInstall();
     } catch (error) {
       throw handleUpdaterError(error);
@@ -953,6 +955,28 @@ async function shouldAutoDownloadUpdates(): Promise<boolean> {
   }
 }
 
+/**
+ * Automatic checks follow the "Check for updates automatically" preference,
+ * read on every timer tick so a change applies without a restart. A read
+ * failure keeps checking. Manual checks never consult it.
+ */
+async function shouldCheckAutomatically(): Promise<boolean> {
+  try {
+    const preferences = await readPreferencesFile();
+    return preferences.automaticUpdateChecks;
+  } catch {
+    // Unlike usage data, an update check carries no usage data and keeps
+    // security fixes arriving, so an unreadable choice falls back to the
+    // default rather than closing.
+    return true;
+  }
+}
+
+async function runAutomaticCheck(): Promise<void> {
+  if (!(await shouldCheckAutomatically())) return;
+  await checkForUpdates();
+}
+
 async function maybeStartBackgroundDownload(): Promise<void> {
   if (updateState.phase !== 'available') {
     return;
@@ -1074,7 +1098,7 @@ function scheduleInitialCheck(): void {
 
   startupTimer = setTimeout(() => {
     startupTimer = null;
-    void checkForUpdates().catch(() => {
+    void runAutomaticCheck().catch(() => {
       // The service state/event already captures the failure.
     });
   }, INITIAL_CHECK_DELAY_MS);
@@ -1097,7 +1121,7 @@ function scheduleAutomaticChecks(): void {
   }
 
   periodicTimer = setInterval(() => {
-    void checkForUpdates().catch(() => {
+    void runAutomaticCheck().catch(() => {
       // The service state/event already captures the failure.
     });
   }, PERIODIC_CHECK_INTERVAL_MS);

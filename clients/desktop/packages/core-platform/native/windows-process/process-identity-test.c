@@ -1,9 +1,28 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <psapi.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+
+static int cold_same_object(HANDLE left, HANDLE right);
+static void native_handle_fixture(void) {
+  HANDLE original, duplicate, reopened;
+  original = CreateFileW(L"NUL", FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                         NULL, OPEN_EXISTING, 0, NULL);
+  assert(original != INVALID_HANDLE_VALUE);
+  assert(DuplicateHandle(GetCurrentProcess(), original, GetCurrentProcess(), &duplicate,
+                         0, FALSE, DUPLICATE_SAME_ACCESS));
+  assert(cold_same_object(original, duplicate));
+  assert(CloseHandle(original));
+  reopened = CreateFileW(L"NUL", FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                         NULL, OPEN_EXISTING, 0, NULL);
+  assert(reopened != INVALID_HANDLE_VALUE);
+  assert(!cold_same_object(reopened, duplicate));
+  assert(CloseHandle(reopened));
+  assert(CloseHandle(duplicate));
+}
 
 static DWORD open_error, waits[2];
 static int opened, closed, waited, queried, time_ok, close_ok;
@@ -80,6 +99,16 @@ static int fake_flush(FILE *stream) {
   ++flushes;
   return flush_ok ? 0 : EOF;
 }
+static DWORD enumerated_pid, enumerated_bytes;
+static int enumeration_ok = 1;
+static BOOL fake_enumerate(DWORD *pids, DWORD capacity, DWORD *bytes) {
+  assert(capacity == 100001 * sizeof(DWORD));
+  pids[0] = enumerated_pid;
+  *bytes = enumerated_bytes;
+  return enumeration_ok;
+}
+#undef EnumProcesses
+#define EnumProcesses fake_enumerate
 #define printf fake_printf
 #define puts fake_puts
 #define fflush fake_flush
@@ -134,6 +163,52 @@ static int run(const char *argument) {
   return dispatch(2, argv);
 }
 int main(void) {
+  native_handle_fixture();
+  enumerated_pid = 4242; enumerated_bytes = sizeof(DWORD);
+  assert(!cold_pid_absent(4242)); /* Also refuses a reused PID. */
+  enumerated_pid = 1234;
+  assert(cold_pid_absent(4242));
+  assert(!cold_pid_absent(0) && !cold_pid_absent(4));
+  enumerated_bytes = 0;
+  assert(!cold_pid_absent(4242));
+  enumerated_bytes = 100001 * sizeof(DWORD);
+  assert(!cold_pid_absent(4242));
+  enumerated_bytes = 3;
+  assert(!cold_pid_absent(4242));
+  enumerated_bytes = sizeof(DWORD); enumeration_ok = 0;
+  assert(!cold_pid_absent(4242));
+
+  {
+    const WCHAR *nonfiles[] = { L"\\Device\\KsecDD", L"\\Device\\CNG", L"\\Device\\USBPDO-6", L"\\FileSystem\\Filters\\FltMgrMsg", L"\\KernelObjects\\fixture" };
+    const WCHAR *filesystems[] = { L"\\Device\\HarddiskVolume3\\path", L"\\Device\\Harddisk0\\DR0", L"\\Device\\CdRom0", L"\\Device\\Floppy0", L"\\Device\\VhdHardDisk1", L"\\Device\\Ramdisk0", L"\\Device\\Mup\\server\\share", L"\\Device\\LanmanRedirector\\server", L"\\Device\\WebDavRedirector", L"\\Device\\UnknownRedirector-6\\file", L"\\Device\\CustomVolume\\file" };
+    WCHAR alias[] = L"\\Device\\CustomVolume";
+    COLD_FILE_HOSTS hosts = {0};
+    size_t i;
+    hosts.complete = 1;
+    hosts.names[0] = alias; hosts.count = 1;
+    for (i = 0; i < sizeof nonfiles / sizeof *nonfiles; ++i)
+      assert(cold_nonfile_object(nonfiles[i], wcslen(nonfiles[i]), FILE_READ_DATA, &hosts));
+    for (i = 0; i < sizeof filesystems / sizeof *filesystems; ++i)
+      assert(!cold_nonfile_object(filesystems[i], wcslen(filesystems[i]), FILE_READ_DATA, &hosts));
+    assert(!cold_nonfile_object(alias, wcslen(alias), FILE_READ_DATA, &hosts));
+    hosts.complete = 0;
+    for (i = 0; i < sizeof nonfiles / sizeof *nonfiles; ++i)
+      assert(!cold_nonfile_object(nonfiles[i], wcslen(nonfiles[i]), FILE_READ_DATA, &hosts));
+  }
+  {
+    const WCHAR *safe[] = { L"\\Device\\Harddisk0\\DR0", L"\\Device\\Harddisk123\\DR45", L"\\Device\\HarddiskVolume3" };
+    const WCHAR *unsafe[] = { L"\\Device\\Harddisk\\DR0", L"\\Device\\Harddisk0\\DR", L"\\Device\\Harddisk0\\DR0\\file", L"\\Device\\HarddiskVolume", L"\\Device\\HarddiskVolume3\\file", L"\\Device\\HarddiskVolume3extra", L"\\Device\\Nsi" };
+    DWORD data[] = { FILE_READ_DATA, FILE_WRITE_DATA, FILE_APPEND_DATA, GENERIC_READ, GENERIC_WRITE, GENERIC_ALL };
+    size_t i, j;
+    for (i = 0; i < sizeof safe / sizeof *safe; ++i) {
+      assert(cold_metadata_device(safe[i], wcslen(safe[i]), FILE_READ_ATTRIBUTES | SYNCHRONIZE));
+      for (j = 0; j < sizeof data / sizeof *data; ++j)
+        assert(!cold_metadata_device(safe[i], wcslen(safe[i]), FILE_READ_ATTRIBUTES | data[j]));
+    }
+    for (i = 0; i < sizeof unsafe / sizeof *unsafe; ++i)
+      assert(!cold_metadata_device(unsafe[i], wcslen(unsafe[i]), FILE_READ_ATTRIBUTES));
+  }
+
   ULONGLONG ticks;
   int index;
   DWORD pid;

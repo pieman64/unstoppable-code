@@ -79,6 +79,7 @@ import {
   type WorkflowLastRun,
 } from '@canopy/ui-shared';
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
+import { sourceLabelProvider } from '@canopy/ui-shared/lib/unified-plugin-entry';
 export { marketplaceTitleCase } from '@canopy/ui-shared';
 import { MCP_BRAND_LOGOS } from '@canopy/ui-shared/lib/mcp-brand-logos';
 import {
@@ -105,7 +106,9 @@ import {
   githubOwner,
   mcpEndpointKey,
   pluginPackageKey,
+  marketplacePluginCatalogKeys,
   pluginSourceLabel,
+  shareRefCatalogKey,
 } from './pluginProvenance';
 import { normalizeShareContentHash } from './share-content-hash';
 
@@ -132,6 +135,7 @@ export interface UnifiedMarketplacePluginInput extends Pick<
   | 'homepage'
   | 'externalSource'
   | 'globalInstallStatus'
+  | 'codexCompatDisabled'
   | 'parked'
 > {
   marketplaceId: string;
@@ -165,7 +169,7 @@ export interface UnifiedBundledMcpServerInput {
 export interface UnifiedMarketplaceInput
   extends
     Pick<MarketplaceInfo, 'id' | 'name' | 'curated'>,
-    Partial<Pick<MarketplaceInfo, 'sourceType' | 'sourceUrl'>> {
+    Partial<Pick<MarketplaceInfo, 'sourceType' | 'sourceUrl' | 'builtIn'>> {
   plugins: UnifiedMarketplacePluginInput[];
 }
 
@@ -1390,14 +1394,17 @@ function installedPluginFacts(
       ? { version }
       : {};
   }
-  const installed = [status.claude, status.codex].filter(
+  // Turning Codex compatibility off leaves the generated copy's install status
+  // in place, but Codex no longer runs it.
+  const codex = plugin?.codexCompatDisabled === true ? undefined : status.codex;
+  const installed = [status.claude, codex].filter(
     (provider) => provider?.installed === true,
   );
   const version = installed[0]?.version;
   return {
     installedHarnesses: {
       claude: status.claude?.installed === true,
-      codex: status.codex?.installed === true,
+      codex: codex?.installed === true,
     },
     ...(version && installed.every((provider) => provider?.version === version)
       ? { version }
@@ -1722,6 +1729,12 @@ function pipelineWorkflowFacets(
             kind,
             label: 'Task ready',
             explainer: 'Runs when a task is marked ready',
+          };
+        case 'workflow':
+          return {
+            kind,
+            label: 'Workflow',
+            explainer: 'Runs from the Workflows page and its schedules',
           };
       }
     }),
@@ -2154,12 +2167,72 @@ function buildSharedAgentEntries(
   );
 }
 
+/**
+ * A shared plugin carries no logo of its own, so it shows its catalog
+ * listing's. Joined on the ref's catalog and plugin name, never on the display
+ * name, so a same-named plugin from another catalog lends it nothing.
+ */
+function sharedPluginCatalogFacts(
+  plugins: readonly SharedPluginSummary[],
+  marketplaces: readonly UnifiedMarketplaceInput[],
+): (
+  plugin: SharedPluginSummary,
+) => Pick<
+  UnifiedPluginEntry,
+  'logoUrl' | 'bundledLogo' | 'brandMark' | 'sharedSourceProvider'
+> {
+  const listings = new Map<
+    string,
+    {
+      marketplace: UnifiedMarketplaceInput;
+      plugin: UnifiedMarketplacePluginInput;
+    }
+  >();
+  if (plugins.length > 0) {
+    for (const marketplace of marketplaces) {
+      for (const plugin of marketplace.plugins) {
+        for (const key of marketplacePluginCatalogKeys(
+          marketplace,
+          plugin.name,
+        )) {
+          if (!listings.has(key)) listings.set(key, { marketplace, plugin });
+        }
+      }
+    }
+  }
+  return (shared) => {
+    const refProvider =
+      shared.ref.type === 'codex_plugin'
+        ? 'Codex'
+        : shared.ref.type === 'claude_plugin'
+          ? 'Claude'
+          : undefined;
+    const key = shareRefCatalogKey(shared.ref);
+    const listing = key === undefined ? undefined : listings.get(key);
+    const provider =
+      refProvider ??
+      (listing &&
+        sourceLabelProvider(
+          pluginSourceLabel(listing.marketplace, listing.plugin),
+        ));
+    return {
+      ...(listing
+        ? marketplacePluginLogo(listing.marketplace.id, listing.plugin)
+        : {}),
+      ...(provider ? { sharedSourceProvider: provider } : {}),
+    };
+  };
+}
+
 function buildSharedPluginEntries(
   plugins: SharedPluginSummary[],
+  marketplaces: readonly UnifiedMarketplaceInput[],
 ): UnifiedPluginEntry[] {
+  const catalogFacts = sharedPluginCatalogFacts(plugins, marketplaces);
   return plugins.map(
     (plugin): UnifiedPluginEntry => ({
       id: `plugin:shared:${plugin.externalId}`,
+      ...catalogFacts(plugin),
       kind: 'plugin',
       origin: 'shared',
       name: plugin.name,
@@ -3254,7 +3327,10 @@ export function buildUnifiedPluginEntries(
       marketplacePackageKeys(inputs.marketplaces),
     ),
     ...buildPluginSkillEntries(inputs.marketplaces, curatedPlugins.entries),
-    ...buildSharedPluginEntries(inputs.sharedPlugins ?? []),
+    ...buildSharedPluginEntries(
+      inputs.sharedPlugins ?? [],
+      inputs.marketplaces,
+    ),
     ...buildCuratedPipelineEntries(inputs.curatedPipelines ?? []),
   ];
   const entries = attachPluginProvenance(linkSameAppPlugins(assembled), {

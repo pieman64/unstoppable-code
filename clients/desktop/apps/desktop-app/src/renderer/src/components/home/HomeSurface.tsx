@@ -1,3 +1,15 @@
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import {
+  inlineFailure,
+  inlineFailureText,
+  type InlineFailure,
+} from '@/lib/inline-app-error';
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { Button } from '@canopy/ui-shared/components/Button';
 import { Heading, Surface } from '@canopy/ui-shared/components';
 import { getPlanModeHintStore } from '@/lib/planModeHint';
 import { getGitHubStarPromptStore } from '@/lib/githubStarPrompt';
@@ -11,7 +23,6 @@ import { HomeWorkspaceReadiness } from './HomeWorkspaceReadiness';
 import { useDesktopFilesGuestGate } from '@/hooks/useDesktopFilesGuestGate';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import { useComposerMenu } from '@/hooks/useComposerMenu';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
   buildComposerCommands,
   getComposerAction,
@@ -19,6 +30,7 @@ import {
 import {
   requestComposerAction,
   requestModelPickerOpen,
+  requestWorkspacePickerOpen,
 } from '@/lib/composerShortcutRequests';
 import {
   useCallback,
@@ -81,7 +93,6 @@ import {
   orgWithoutPlanTitle,
 } from '@/lib/organizationPlan';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
-import { useGitHubStore } from '@/stores/githubStore';
 import {
   getHomeScope,
   resolveHomeContextRebind,
@@ -106,7 +117,9 @@ import {
   defaultNewWorktreeBaseTarget,
   homeBranchTargetsEqual,
   isGitHubConnectResumeFresh,
+  currentMissingFolderRecovery,
 } from '@/stores/homeComposerStore';
+import { readRemoteControlContext } from '@/stores/remoteControlStore';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import {
   HOME_COMPOSER_KEY,
@@ -148,7 +161,7 @@ import { HomeBelowComposerGallery } from './HomeBelowComposerGallery';
 import { HomeContinueSection } from './HomeContinueSection';
 import { isHomeBelowComposerGalleryEnabled } from './home-below-composer-gallery-flag';
 import { ModelGatewayKeyBanner } from '@/components/chat/ModelGatewayKeyBanner';
-import { resolveOrgGatewayOrganizationId } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { resolveOrgGatewayOrganizationId } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { useHomeEffectiveModelSettings } from './useHomeEffectiveModelSettings';
 import { HomeWorkspacePicker } from './HomeWorkspacePicker';
 import { HomeBranchPicker } from './HomeBranchPicker';
@@ -274,7 +287,19 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
   const setWorkspaceContext = useWorkspaceContextStore(
     (state) => state.setContext,
   );
-  const addToast = useGitHubStore((state) => state.addToast);
+  // Back to Personal failed; shown beside the notice that offered it.
+  const [personalSwitchError, setPersonalSwitchError] =
+    useState<InlineFailure | null>(null);
+  const switchToPersonal = (): void => {
+    setPersonalSwitchError(null);
+    void setWorkspaceContext({ kind: 'personal' }).catch((error: unknown) => {
+      const appError = toAppError(resolveClientAppError(error));
+      if (!appError) return;
+      setPersonalSwitchError(
+        inlineFailure(appError, 'Couldn’t switch to Personal.'),
+      );
+    });
+  };
 
   const belowComposerGallery =
     variant === 'page' && isHomeBelowComposerGalleryEnabled();
@@ -294,9 +319,11 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
     mode,
     model,
     thinkingLevel,
+    isSending,
     sendError,
     sendErrorRetryable,
     sendErrorChooseModel,
+    missingFolderRecovery,
     scheduledSendDraft,
     branchTarget,
     newWorktreeBaseTarget,
@@ -321,9 +348,11 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
       mode: s.mode,
       model: s.model,
       thinkingLevel: s.thinkingLevel,
+      isSending: s.isSending,
       sendError: s.sendError,
       sendErrorRetryable: s.sendErrorRetryable,
       sendErrorChooseModel: s.sendErrorChooseModel,
+      missingFolderRecovery: currentMissingFolderRecovery(s),
       scheduledSendDraft: s.scheduledSendDraft,
       branchTarget: s.branchTarget,
       newWorktreeBaseTarget: s.newWorktreeBaseTarget,
@@ -347,6 +376,43 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
       loadFileIndex: s.loadFileIndex,
     })),
   );
+
+  // CAN-6019: Locate folder's progress, for the missing-folder notice it was
+  // pressed on. Any other notice ignores it.
+  const [locateFolder, setLocateFolder] = useState<{
+    failure: InlineFailure;
+    status: 'opening' | 'failed';
+  } | null>(null);
+  const locateFolderStatus =
+    missingFolderRecovery &&
+    locateFolder?.failure === missingFolderRecovery.failure
+      ? locateFolder.status
+      : null;
+  // Like Show in Finder, reveal is blocked while controlling another computer.
+  const canLocateFolder =
+    readRemoteControlContext().mode !== 'remote' &&
+    typeof window.api.chatProject.revealFolderLocation === 'function';
+  const locateMissingFolder = (): void => {
+    if (!missingFolderRecovery) return;
+    const { failure, projectId } = missingFolderRecovery;
+    setLocateFolder({ failure, status: 'opening' });
+    // Reveals the folder, or its nearest existing parent; the notice and
+    // draft stay either way, so the person can send again once it's back.
+    window.api.chatProject.revealFolderLocation({ projectId }).then(
+      () => {
+        setLocateFolder((current) =>
+          current?.failure === failure ? null : current,
+        );
+      },
+      () => {
+        setLocateFolder((current) =>
+          current?.failure === failure
+            ? { failure, status: 'failed' }
+            : current,
+        );
+      },
+    );
+  };
 
   // CAN-3606: a link in a chat draft previews its worktree destination.
   useHomeLinkTargetSync();
@@ -388,7 +454,9 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
       try {
         const preferences = await window.api.loadPreferences();
         mruWorkspaceId = preferences.lastActiveContext?.workspaceId ?? null;
-      } catch {
+      } catch (error) {
+        // Without preferences the seed falls back to the first workspace.
+        reportClientAppError(error);
         mruWorkspaceId = null;
       }
 
@@ -421,6 +489,33 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
       : page === 'main' || page === 'kanban';
   }
   const surfaceVisible = isSurfaceVisible(activePage);
+  useEffect(() => {
+    if (!surfaceVisible || !workspaceId) return;
+    // A first commit often happens outside this window. Refresh the advisory
+    // warning on return and on Git updates, without polling committed repos.
+    const refreshUnbornSource = (): void => {
+      const state = useHomeComposerStore.getState();
+      if (
+        state.workspaceId === workspaceId &&
+        state.branchTargets?.headUnborn === true &&
+        !state.branchTargetsLoading &&
+        !state.isSending
+      )
+        void state.loadBranchTargets();
+    };
+    const stopBranch = window.api.onWorktreeBranchChanged((event) => {
+      if (event.projectId === workspaceId) refreshUnbornSource();
+    });
+    const stopReady = window.api.onWorktreeGitReady((event) => {
+      if (event.projectId === workspaceId) refreshUnbornSource();
+    });
+    window.addEventListener('focus', refreshUnbornSource);
+    return (): void => {
+      stopBranch();
+      stopReady();
+      window.removeEventListener('focus', refreshUnbornSource);
+    };
+  }, [surfaceVisible, workspaceId]);
   const [editorValue, setEditorValue] = useState<Descendant[]>(() =>
     initialHomeComposerEditorValue(scopingContext),
   );
@@ -1068,9 +1163,10 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
         }
         store.addAttachments(imported);
         store.setSendError(null);
-      } catch {
+      } catch (error) {
+        const appError = toAppError(resolveClientAppError(error));
         const store = useHomeComposerStore.getState();
-        if (!isCurrent()) return;
+        if (!appError || !isCurrent()) return;
         if (
           isHomeAttachmentImportCurrent(
             target,
@@ -1081,7 +1177,9 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
             store.draftGeneration,
           )
         ) {
-          store.setSendError('Failed to import attachments. Please try again.');
+          store.setSendError(
+            inlineFailure(appError, 'Couldn’t add the attachments.'),
+          );
         }
       } finally {
         useHomeComposerStore.getState().finishAttachmentImport(importToken);
@@ -1313,166 +1411,205 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
         shellTestId="home-composer-shell"
         rhythm="spacious"
         above={
-          <>
-            <div className={homeHeadingComposerGap()}>
-              <Heading
-                level={1}
-                variant="display"
-                data-testid="home-heading"
-                className="min-w-0 text-center"
-              >
-                {heading}
-              </Heading>
-            </div>
-            {/* An organization with no active plan has nothing to send to:
-                  the explanation and its action sit above the (disabled)
-                  composer, not inside it. */}
-            {orgWithoutPlan && (
-              <Notice
-                data-testid="home-composer-org-without-plan"
-                intent="attention"
-                title={orgWithoutPlanTitle(orgWithoutPlan.organizationName)}
-                className="pointer-events-auto mb-3"
-                actions={
-                  orgWithoutPlan.canChoosePlan ? (
+          <div className={homeHeadingComposerGap()}>
+            <Heading
+              level={1}
+              variant="display"
+              data-testid="home-heading"
+              className="min-w-0 text-center"
+            >
+              {heading}
+            </Heading>
+          </div>
+        }
+        aboveNotices={[
+          // Notice rows stay outside the composer; their frame owns the boundary.
+          orgWithoutPlan && (
+            <Notice
+              key="organization-plan"
+              data-testid="home-composer-org-without-plan"
+              intent="attention"
+              title={orgWithoutPlanTitle(orgWithoutPlan.organizationName)}
+              className="pointer-events-auto"
+              actions={
+                orgWithoutPlan.canChoosePlan ? (
+                  <NoticeButton
+                    variant="primary"
+                    data-testid="home-composer-choose-plan"
+                    onClick={(): void => {
+                      openOrganizationBillingPage(
+                        orgWithoutPlan.organizationId,
+                      );
+                    }}
+                  >
+                    {CHOOSE_ORG_PLAN_LABEL}
+                  </NoticeButton>
+                ) : (
+                  <NoticeButton
+                    data-testid="home-composer-back-to-personal"
+                    onClick={switchToPersonal}
+                  >
+                    Back to Personal
+                  </NoticeButton>
+                )
+              }
+            >
+              {orgWithoutPlan.canChoosePlan
+                ? CHOOSE_ORG_PLAN_COPY
+                : askOwnerToChoosePlanCopy(orgWithoutPlan.organizationName)}
+            </Notice>
+          ),
+          orgWithoutPlan && personalSwitchError ? (
+            <DesktopErrorBanner
+              key="personal-switch-error"
+              testId="home-composer-personal-switch-error"
+              className="pointer-events-auto"
+              error={personalSwitchError.error}
+              {...(personalSwitchError.details === undefined
+                ? {}
+                : { details: personalSwitchError.details })}
+              onRetry={switchToPersonal}
+              onDismiss={(): void => setPersonalSwitchError(null)}
+            />
+          ) : null,
+          missingFolderRecovery ? (
+            // CAN-6019: an external project's folder moved or was renamed.
+            // Locate folder only reveals where it was; it doesn't repoint
+            // the project. No retry: sending again checks the folder afresh.
+            <Notice
+              key="send-error"
+              data-testid="home-composer-error"
+              intent="destructive"
+              title="Couldn’t send"
+              className="pointer-events-auto"
+              announceDetail
+              {...(locateFolderStatus === 'failed'
+                ? { detail: 'Couldn’t open the folder location.' }
+                : {})}
+              actions={
+                <>
+                  {canLocateFolder && (
                     <NoticeButton
                       variant="primary"
-                      data-testid="home-composer-choose-plan"
-                      onClick={(): void => {
-                        openOrganizationBillingPage(
-                          orgWithoutPlan.organizationId,
-                        );
-                      }}
+                      data-testid="home-composer-error-locate-folder"
+                      busy={locateFolderStatus === 'opening'}
+                      busyLabel="Opening…"
+                      onClick={locateMissingFolder}
                     >
-                      {CHOOSE_ORG_PLAN_LABEL}
+                      Locate folder
                     </NoticeButton>
-                  ) : (
-                    <NoticeButton
-                      data-testid="home-composer-back-to-personal"
-                      onClick={(): void => {
-                        void setWorkspaceContext({ kind: 'personal' }).catch(
-                          (): void => {
-                            addToast(
-                              "Couldn't switch context. Try again.",
-                              'error',
-                            );
-                          },
-                        );
-                      }}
-                    >
-                      Back to Personal
-                    </NoticeButton>
-                  )
-                }
-              >
-                {orgWithoutPlan.canChoosePlan
-                  ? CHOOSE_ORG_PLAN_COPY
-                  : askOwnerToChoosePlanCopy(orgWithoutPlan.organizationName)}
-              </Notice>
-            )}
-            {/* A failed send is one of the heading's notices: it hangs above
-                  the composer context, as on the web New Task hero. */}
-            {sendError && sendErrorChooseModel?.message === sendError ? (
-              // CAN-5021: a refused model keeps the whole draft in the
-              // composer; the primary action opens its model picker.
-              <FirstSendFailedNotice
-                data-testid="home-composer-error"
-                title="Couldn’t send"
-                message={sendError}
-                onChooseModel={() => requestModelPickerOpen({ scope: 'home' })}
-                focusKey={
-                  surfaceVisible && sendErrorChooseModel.focus
-                    ? sendErrorChooseModel.failureId
-                    : null
-                }
-                className="pointer-events-auto mb-3"
-              />
-            ) : sendError ? (
-              <Notice
-                data-testid="home-composer-error"
-                intent="destructive"
-                title="Couldn’t send"
-                className="pointer-events-auto mb-3"
-                actions={
-                  sendErrorRetryable ? (
-                    <NoticeButton
-                      variant="primary"
-                      data-testid="home-composer-retry"
-                      onClick={() => handleSend()}
-                    >
-                      Try again
-                    </NoticeButton>
-                  ) : undefined
-                }
-              >
-                {/* Send failures can echo git output and local paths. */}
-                <span
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} block max-h-24 overflow-y-auto whitespace-pre-wrap break-words`}
-                >
-                  {sendError}
-                </span>
-              </Notice>
-            ) : null}
-            {/* The composer's top drawer frames the composer's tip (the
-                  draft's plan hint, CAN-4008) and the project/worktree/branch
-                  selectors, and tucks under the elevated composer (`z-20`). */}
-            {(showComposerContext || planModeHint?.visible === true) && (
-              <ComposerDrawer
-                edge="top"
-                data-testid="home-composer-context-overhang"
-                className="pointer-events-auto z-10"
-              >
-                {planModeHint !== null ? (
-                  <PlanModeHint hint={planModeHint} />
-                ) : null}
-                <HomeComposerContextRow visible={showComposerContext}>
-                  {showWorkspacePicker && (
-                    <HomeWorkspacePicker
-                      commandOpenSignal={workspaceCommandOpenSignal}
-                      shortcutEnabled={variant === 'page'}
-                      onRestoreFocus={(): void => focusEditor(editor)}
-                    />
                   )}
-                  {selectionPickersVisible && showBranchPicker && (
-                    <HomeBranchPicker />
-                  )}
-                  {selectionPickersVisible && canRevealBranchPicker && (
-                    <button
-                      type="button"
-                      data-testid="home-branch-picker-see-more"
-                      aria-label={`${collapsedBranchSummary}. Choose a worktree or branch`}
-                      onClick={(): void =>
-                        useHomeComposerStore
-                          .getState()
-                          .setBranchPickerRevealed(true)
-                      }
-                      className="focus-ring inline-flex h-7 max-w-52 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs fg-secondary ring-1 ring-inset ring-line-base transition-colors hover:bg-subtle hover:fg-primary"
-                    >
-                      {/* The summary can be cut off: its text keeps a native
+                  <NoticeButton
+                    variant="secondary"
+                    data-testid="home-composer-error-choose-project"
+                    onClick={(): void => {
+                      requestWorkspacePickerOpen();
+                    }}
+                  >
+                    Choose another project
+                  </NoticeButton>
+                </>
+              }
+            >
+              {inlineFailureText(missingFolderRecovery.failure)}
+            </Notice>
+          ) : sendError &&
+            sendErrorChooseModel?.message === inlineFailureText(sendError) ? (
+            // CAN-5021: a refused model keeps the whole draft in the
+            // composer; the primary action opens its model picker.
+            <FirstSendFailedNotice
+              key="send-error"
+              data-testid="home-composer-error"
+              title="Couldn’t send"
+              message={inlineFailureText(sendError) ?? ''}
+              onChooseModel={() => requestModelPickerOpen({ scope: 'home' })}
+              focusKey={
+                surfaceVisible && sendErrorChooseModel.focus
+                  ? sendErrorChooseModel.failureId
+                  : null
+              }
+              className="pointer-events-auto"
+            />
+          ) : sendError ? (
+            <DesktopErrorBanner
+              key="send-error"
+              testId="home-composer-error"
+              className="pointer-events-auto"
+              error={sendError.error}
+              {...(sendError.details === undefined
+                ? {}
+                : { details: sendError.details })}
+              blockMessageFromReplay
+              {...(sendErrorRetryable
+                ? {
+                    onRetry: (): void => {
+                      void handleSend();
+                    },
+                    retrying: isSending,
+                  }
+                : {})}
+            />
+          ) : null,
+        ]}
+        aboveContext={
+          // Keep the plan hint, tray and picker drawer together above the composer.
+          (showComposerContext || planModeHint?.visible === true) && (
+            <ComposerDrawer
+              edge="top"
+              data-testid="home-composer-context-overhang"
+              className="pointer-events-auto z-10"
+            >
+              {planModeHint !== null ? (
+                <PlanModeHint hint={planModeHint} />
+              ) : null}
+              <HomeComposerContextRow visible={showComposerContext}>
+                {showWorkspacePicker && (
+                  <HomeWorkspacePicker
+                    commandOpenSignal={workspaceCommandOpenSignal}
+                    shortcutEnabled={variant === 'page'}
+                    onRestoreFocus={(): void => focusEditor(editor)}
+                  />
+                )}
+                {selectionPickersVisible && showBranchPicker && (
+                  <HomeBranchPicker />
+                )}
+                {selectionPickersVisible && canRevealBranchPicker && (
+                  <Button
+                    variant="secondary"
+                    size="compact"
+                    className="max-w-52"
+                    data-testid="home-branch-picker-see-more"
+                    aria-label={`${collapsedBranchSummary}. Choose a worktree or branch`}
+                    onClick={(): void =>
+                      useHomeComposerStore
+                        .getState()
+                        .setBranchPickerRevealed(true)
+                    }
+                  >
+                    {/* The summary can be cut off: its text keeps a native
                           title with the full value. */}
-                      <span className="truncate" title={collapsedBranchSummary}>
-                        {collapsedBranchSummary}
-                      </span>
-                      <ChevronDownMediumIcon size="sm" className="shrink-0" />
-                    </button>
-                  )}
-                  {selectionPickersVisible && showNewWorktreeBasePicker && (
-                    <HomeBaseBranchPicker />
-                  )}
-                  {selectionPickersVisible && childRepos.length > 0 && (
-                    <div data-testid="home-directory-picker">
-                      <DirectoryPicker
-                        currentRepoId={selectedRepoId}
-                        childRepos={childRepos}
-                        disabled={composerDisabled}
-                        onSelect={setSelectedRepoId}
-                      />
-                    </div>
-                  )}
-                </HomeComposerContextRow>
-              </ComposerDrawer>
-            )}
-          </>
+                    <span className="truncate" title={collapsedBranchSummary}>
+                      {collapsedBranchSummary}
+                    </span>
+                    <ChevronDownMediumIcon size="sm" className="shrink-0" />
+                  </Button>
+                )}
+                {selectionPickersVisible && showNewWorktreeBasePicker && (
+                  <HomeBaseBranchPicker />
+                )}
+                {selectionPickersVisible && childRepos.length > 0 && (
+                  <div data-testid="home-directory-picker">
+                    <DirectoryPicker
+                      currentRepoId={selectedRepoId}
+                      childRepos={childRepos}
+                      disabled={composerDisabled}
+                      onSelect={setSelectedRepoId}
+                    />
+                  </div>
+                )}
+              </HomeComposerContextRow>
+            </ComposerDrawer>
+          )
         }
         composer={
           <div>
@@ -1565,8 +1702,10 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                     <div className="inline-flex items-center gap-1 py-0.5 pl-2.5 pr-0.5 text-xs font-medium fg-secondary">
                       <span>Task planning</span>
                       <Tooltip label="Cancel task planning">
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost-quiet"
+                          size="sm"
+                          iconOnly
                           data-testid="home-task-plan-cancel"
                           aria-label="Cancel task planning"
                           disabled={composerDisabled}
@@ -1574,10 +1713,9 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                             useHomeComposerStore.getState().setMode('chat');
                             focusEditor(editor);
                           }}
-                          className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-sm fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary disabled:opacity-40"
                         >
                           <CloseMediumIcon size={16} aria-hidden="true" />
-                        </button>
+                        </Button>
                       </Tooltip>
                     </div>
                   </Surface>

@@ -12,7 +12,7 @@ import {
   getTriggerTypes,
   type Pipeline,
   type PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 const PROJECT_PIPELINE_ID_PREFIX = 'project--';
 

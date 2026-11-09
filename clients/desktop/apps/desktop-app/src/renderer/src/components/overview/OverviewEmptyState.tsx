@@ -7,7 +7,7 @@ import {
   PlusIcon as AppCatalogPlusIcon,
   MessageIcon as AppCatalogMessageIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { Heading, Surface } from '@canopy/ui-shared/components';
+import { Stack, Heading, Surface } from '@canopy/ui-shared/components';
 
 interface OverviewEmptyStateProps {
   onCreateWorkspace: () => void;
@@ -35,17 +35,19 @@ export function OverviewEmptyState({
       data-testid="overview-empty-state"
       className="flex flex-1 flex-col items-center justify-center p-8"
     >
-      <div className="w-full max-w-2xl text-center">
-        <Heading level={1} variant="page">
-          Welcome to {brandText.appName}
-        </Heading>
-        <p className="mt-2 text-s fg-secondary">
-          Create a project to put agents to work on your code, or start a chat
-          to think something through. Your activity across every project will
-          show up here.
-        </p>
+      <div className="flex flex-col w-full max-w-2xl text-center gap-8">
+        <Stack gap="inline">
+          <Heading level={1} variant="page">
+            Welcome to {brandText.appName}
+          </Heading>
+          <p className="text-s fg-secondary">
+            Create a project to put agents to work on your code, or start a chat
+            to think something through. Your activity across every project will
+            show up here.
+          </p>
+        </Stack>
 
-        <div className="mt-8 grid grid-cols-1 gap-4 text-left sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 text-left sm:grid-cols-2">
           {/* Code / workspace on-ramp */}
           <Surface as="section" variant="card">
             <div className="flex flex-col gap-3 p-5">

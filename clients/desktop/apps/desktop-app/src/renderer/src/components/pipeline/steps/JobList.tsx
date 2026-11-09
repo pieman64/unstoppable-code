@@ -14,9 +14,10 @@ import {
   SortableContext,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import type { Pipeline, Step } from '@canopy/desktop-shared/types/pipeline';
+import type { Pipeline, Step } from '@canopy/execution-engine/types/pipeline';
 import type { Selection } from '../../../hooks/usePipelineEditor';
 import {
+  Surface,
   Badge,
   Button,
   EmptyState,
@@ -180,14 +181,16 @@ export function JobList({
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b">
-        <Heading level={3} variant="label">
-          Jobs ({jobOrder.length})
-        </Heading>
-      </div>
+      <Surface variant="section" boundary="bottom">
+        <div className="flex items-center justify-between px-4 py-3">
+          <Heading level={3} variant="label">
+            Jobs ({jobOrder.length})
+          </Heading>
+        </div>
+      </Surface>
 
       {/* Job list */}
-      <div className="flex-1 overflow-auto p-4 space-y-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-4 [&>*]:shrink-0">
         {jobOrder.length === 0 ? (
           <EmptyState
             title="No jobs yet"

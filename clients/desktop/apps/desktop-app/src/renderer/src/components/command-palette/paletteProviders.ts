@@ -14,8 +14,8 @@ import {
   type WorktreeData,
   type WorktreeSummaryData,
 } from '@canopy/desktop-shared/types';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
-import type { AgentModelDefinition } from '@canopy/desktop-shared/types/agent-models';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
+import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
 import type { PluginInfo } from '@canopy/desktop-shared/types/plugins';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import type { SettingsSection } from '@/components/settings/SettingsNav';

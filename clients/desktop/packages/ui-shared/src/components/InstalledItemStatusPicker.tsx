@@ -1,5 +1,6 @@
 'use client';
 
+import { Button } from './Button';
 import { useId, useRef, useState, type JSX } from 'react';
 import type {
   InstalledItemStatus,
@@ -90,9 +91,6 @@ export interface InstalledItemStatusPickerProps {
   readonly targetKind?: InstalledItemTarget['kind'];
 }
 
-const TRIGGER_CLASS =
-  'focus-ring inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium whitespace-nowrap transition-colors';
-
 /**
  * The picker's trigger shape for a status that cannot change here: no menu
  * and no chevron, the disabled ink, and the reason on hover and keyboard
@@ -116,14 +114,15 @@ function DisabledStatusTrigger({
   const reasonId = useId();
   return (
     <Tooltip label={reason}>
-      <button
-        type="button"
+      <Button
+        variant="ghost-overlay"
+        size="compact"
+        touchArea="contained"
         data-testid={testId}
         data-status={status}
         aria-label={ariaLabel}
         aria-disabled="true"
         aria-describedby={reasonId}
-        className={`${TRIGGER_CLASS} cursor-not-allowed fg-disabled`}
       >
         <InstalledItemStatusIcon status={icon} disabled />
         {label}
@@ -132,7 +131,7 @@ function DisabledStatusTrigger({
         <span id={reasonId} className="sr-only">
           {reason}
         </span>
-      </button>
+      </Button>
     </Tooltip>
   );
 }
@@ -191,25 +190,28 @@ export function InstalledItemStatusPicker({
     );
   if (!interactive) {
     return (
-      <button
-        type="button"
+      <Button
+        variant="ghost-overlay"
+        size="compact"
+        touchArea="contained"
         data-testid={testId}
         data-status={status}
         aria-label={label}
         aria-disabled="true"
-        className={`${TRIGGER_CLASS} cursor-default fg-primary`}
       >
         <InstalledItemStatusIcon status={status} />
         {copy.label}
-      </button>
+      </Button>
     );
   }
 
   return (
     <>
-      <button
+      <Button
+        variant="ghost-overlay"
+        size="compact"
+        touchArea="contained"
         ref={triggerRef}
-        type="button"
         data-testid={testId}
         data-status={status}
         aria-label={label}
@@ -218,7 +220,6 @@ export function InstalledItemStatusPicker({
         aria-busy={busy || undefined}
         disabled={busy}
         onClick={(): void => setOpen((value) => !value)}
-        className={`${TRIGGER_CLASS} fg-primary hover:bg-subtle disabled:cursor-progress`}
       >
         {busy ? (
           <LoadingSpinner sizePx={14} decorative />
@@ -227,7 +228,7 @@ export function InstalledItemStatusPicker({
         )}
         {copy.label}
         <ChevronDownIcon size="sm" aria-hidden className="fg-tertiary" />
-      </button>
+      </Button>
       <FloatingMenu
         open={open}
         onOpenChange={setOpen}

@@ -13,6 +13,7 @@ import {
 import {
   PORTAL_CAPABILITY_SUGGESTIONS,
   PORTAL_CAPABILITY_ONBOARDING_TIPS,
+  PORTAL_CAPABILITY_CLAUDE_MOD_ADMISSION,
   PORTAL_CAPABILITY_SCRIPT_ACTIONS,
   readAutoResumeMetadata,
   readToolInterruption,
@@ -22,7 +23,7 @@ import {
   MAX_AGENT_ARTIFACT_METADATA_BYTES,
 } from '@canopy/protocol/agent-artifacts';
 import { readCodexAccountModelAccessFailure } from '@canopy/protocol/auth-recovery';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import { portalSnapshotWorkBudget } from './portal-snapshot-work-budget';
 import { portalFileReferences } from './portal-file-references';
 import { closePortalAssetTransfers } from '../services/portal-asset-service';
@@ -45,7 +46,7 @@ import { MODEL_LIBRARY_PORTAL_CAPABILITY } from '@canopy/protocol/models';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { BRAND } from '@canopy/brand/current';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
-import { getCanonicalCanopyToolKey } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { getCanonicalCanopyToolKey } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   PORTAL_EVENT_BATCH_MAX_BYTES,
   PORTAL_EVENT_BATCH_MAX_COUNT,
@@ -93,6 +94,7 @@ import {
   PORTAL_CAPABILITY_WORKTREE_RETENTION,
   PORTAL_CAPABILITY_FOREGROUND_WORKTREE_CHAT,
   type PortalChatPart,
+  type PortalChatModsSkippedData,
   PORTAL_CAPABILITY_CHAT_VISUALS,
   parseChatWatcherFiredInfo,
   readPortalChatPartVisual,
@@ -285,6 +287,8 @@ const PORTAL_SESSION_CAPABILITIES = {
   // `portal.onboarding_tips.get` / `.update` (onboarding-tips-adapter).
   [PORTAL_CAPABILITY_SUGGESTIONS]: true,
   [PORTAL_CAPABILITY_ONBOARDING_TIPS]: true,
+  // Mod admission state carries the feature flag; transport support is stable.
+  [PORTAL_CAPABILITY_CLAUDE_MOD_ADMISSION]: true,
   [PORTAL_CAPABILITY_COMMAND_ORIGIN]: true,
   [PORTAL_CAPABILITY_CHAT_CANCEL_TURN]: true,
   [PORTAL_CAPABILITY_DEFERRED_PLUGIN_POLICY]: true,
@@ -665,6 +669,31 @@ function compactWatcherFired(value: unknown): ChatWatcherFiredInfo | undefined {
   };
 }
 
+/** A `mods_skipped` part's mods, kept structured: string entries, at most 50. */
+function compactModsSkipped(value: unknown): PortalChatModsSkippedData['mods'] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .flatMap((entry) =>
+      isRecord(entry) &&
+      typeof entry.pluginId === 'string' &&
+      typeof entry.reason === 'string'
+        ? [
+            {
+              pluginId: truncatePortalString(
+                entry.pluginId,
+                PORTAL_OUTBOX_WATCHER_TEXT_MAX_CHARS,
+              ),
+              reason: truncatePortalString(
+                entry.reason,
+                PORTAL_OUTBOX_WATCHER_TEXT_MAX_CHARS,
+              ),
+            },
+          ]
+        : [],
+    )
+    .slice(0, 50);
+}
+
 /** A visual-bearing tool result reduced to its ids and reference. */
 function visualOnlyPortalPart(part: unknown): unknown[] {
   if (!isRecord(part) || part.kind !== 'tool_result') return [];
@@ -890,6 +919,21 @@ function compactPortalChatPart(
     );
     if (modelAccessFailure) data.modelAccessFailure = modelAccessFailure;
     else delete data.modelAccessFailure;
+    return { ...compactedPart, data };
+  }
+  if (
+    isRecord(part) &&
+    part.kind === 'mods_skipped' &&
+    isRecord(part.data) &&
+    isRecord(compactedPart) &&
+    isRecord(compactedPart.data)
+  ) {
+    // The skipped mods sit past the depth limit; keep them validated and
+    // structured so the Portal renders the skipped-Mod notice.
+    const data = { ...compactedPart.data };
+    const mods = compactModsSkipped(part.data.mods);
+    if (mods.length) data.mods = mods;
+    else delete data.mods;
     return { ...compactedPart, data };
   }
   if (

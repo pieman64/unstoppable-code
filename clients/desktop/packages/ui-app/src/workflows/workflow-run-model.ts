@@ -102,6 +102,7 @@ export type WorkflowRunStarter =
   | 'manual'
   | 'plan-approved'
   | 'task-ready'
+  | 'workflow'
   | 'app-advisor'
   | 'remote-control'
   | 'chat'
@@ -114,6 +115,7 @@ export const WORKFLOW_RUN_STARTERS: readonly WorkflowRunStarter[] = [
   'manual',
   'plan-approved',
   'task-ready',
+  'workflow',
   'app-advisor',
   'remote-control',
   'chat',
@@ -129,6 +131,7 @@ export const WORKFLOW_RUN_STARTER_LABELS: Readonly<
   manual: 'Manual',
   'plan-approved': 'Plan approved',
   'task-ready': 'Task ready',
+  workflow: 'Workflow',
   'app-advisor': ORCHESTRATOR_LABEL,
   'remote-control': 'Remote Control',
   chat: 'Chat',
@@ -148,6 +151,7 @@ export type WorkflowRunAction =
   | 'retry'
   | 'rerun'
   | 'open-library'
+  | 'open-workflow'
   | 'go-to-chat'
   | 'inspect'
   | 'hide';
@@ -160,6 +164,7 @@ export const WORKFLOW_RUN_ACTION_LABELS: Readonly<
   retry: 'Try again',
   rerun: 'Rerun',
   'open-library': 'Open in Library',
+  'open-workflow': 'Open workflow',
   'go-to-chat': 'Go to chat',
   inspect: 'Inspect',
   hide: 'Hide',
@@ -377,6 +382,7 @@ export function menuWorkflowRunActions(
   const primary = primaryWorkflowRunAction(actions);
   const order: readonly WorkflowRunAction[] = [
     'inspect',
+    'open-workflow',
     'open-library',
     'rerun',
     'retry',

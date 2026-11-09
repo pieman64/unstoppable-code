@@ -1,4 +1,7 @@
-import type { PublicSkillShareSnapshot } from '@canopy/protocol/share-deep-link';
+import type {
+  PublicSkillShareSnapshot,
+  ScopedShareProvenance,
+} from '@canopy/protocol/share-deep-link';
 import { resourceOwnerContext } from '@canopy/protocol/resource-owner';
 import { normalizePersonalOrganizationId } from '@canopy/protocol/workspace-context';
 import {
@@ -13,6 +16,12 @@ type SkillProvenanceFacts = Pick<
   'sharedBy' | 'authorUsername' | 'scopedShare' | 'sourceRemoteId'
 >;
 
+/** The attribution facts a skill or plugin snapshot carries. */
+interface ScopedShareFacts {
+  readonly sharedBy?: ScopedShareProvenance;
+  readonly authorUsername: string | null;
+}
+
 /** The account's explicit personal organization, compared as normalized ids. */
 function isPersonalOrganization(
   organizationId: string,
@@ -26,16 +35,16 @@ function isPersonalOrganization(
 }
 
 /**
- * Who shared a skill, who owns it, and who can see it (CAN-5017). A scoped
- * share's authenticated provenance wins over any public username; a public
- * share keeps its existing `Shared by <author>`.
+ * Who shared a skill or plugin, who owns it, and who can see it (CAN-5017).
+ * A scoped share's authenticated provenance wins over any public username; a
+ * public share keeps its existing `Shared by <author>`.
  *
  * Personal comes only from the account's explicit personal organization id,
  * never the selected context or an organization's name, and only for an
  * organization owner: a team audience stays a team.
  */
-export function skillShareAttribution(
-  snapshot: SkillProvenanceFacts,
+export function scopedShareAttribution(
+  snapshot: ScopedShareFacts,
   personalOrganizationId: string | null,
 ): readonly ShareAttributionPart[] {
   const provenance = snapshot.sharedBy;

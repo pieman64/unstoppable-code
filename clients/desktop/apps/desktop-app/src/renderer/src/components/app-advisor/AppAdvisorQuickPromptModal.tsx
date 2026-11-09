@@ -1,3 +1,4 @@
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   useEffect,
@@ -17,7 +18,9 @@ import {
   serializeEditorValue,
   type SlateEditorHandle,
 } from '@canopy/ui-rich/editor';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 
 interface AppAdvisorQuickPromptModalProps {
   onClose: () => void;
@@ -29,7 +32,7 @@ export function AppAdvisorQuickPromptModal({
   const editor = useMemo(() => createChatEditor(), []);
   const [value, setValue] = useState(createEmptyValue);
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<InlineFailure | null>(null);
   const editorRef = useRef<SlateEditorHandle | null>(null);
   const promptText = useMemo(
     () => serializeEditorValue(value).text.trim(),
@@ -50,11 +53,9 @@ export function AppAdvisorQuickPromptModal({
       await window.api.appAdvisor.ensureWindow({ quickPrompt: promptText });
       onClose();
     } catch (sendError) {
-      setError(
-        sendError instanceof Error
-          ? sendError.message
-          : 'Failed to send quick prompt.',
-      );
+      const appError = toAppError(resolveClientAppError(sendError));
+      if (appError)
+        setError(inlineFailure(appError, "Couldn't send the quick prompt."));
       setSending(false);
     }
   };
@@ -110,7 +111,17 @@ export function AppAdvisorQuickPromptModal({
           </Button>
         </span>
       </div>
-      <ErrorBanner error={error} className="mx-6 mb-3" />
+      {error && (
+        <div className="shrink-0 px-6 pb-3">
+          <DesktopErrorBanner
+            error={error?.error}
+            {...(error?.details === undefined
+              ? {}
+              : { details: error.details })}
+            className=""
+          />
+        </div>
+      )}
     </DialogModal>
   );
 }

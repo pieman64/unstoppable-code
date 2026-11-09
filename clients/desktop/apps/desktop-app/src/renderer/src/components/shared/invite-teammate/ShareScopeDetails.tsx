@@ -1,3 +1,4 @@
+import { Fieldset, Stack } from '@canopy/ui-shared/components';
 import type { JSX } from 'react';
 import type { SharedContainerSharePreview } from '@canopy/desktop-shared/types';
 import type { SharedContainerType } from '@canopy/protocol/shared-containers';
@@ -155,7 +156,7 @@ export function ShareScopeDetails({
         </p>
       )}
 
-      <ul className="list-disc space-y-0.5 pl-4 text-xs fg-secondary">
+      <ul className="flex flex-col list-disc pl-4 text-xs fg-secondary gap-0.5">
         {preview.repositories && preview.repositories.length > 1
           ? preview.repositories.map((repository) => (
               <li
@@ -220,64 +221,72 @@ export function ShareScopeDetails({
       )}
 
       {selectableFilePaths.length > 0 && (
-        <fieldset
-          className="space-y-1 pt-1"
+        <Fieldset
+          gap="inline"
+          legend={
+            <span className="text-xs font-medium fg-primary">
+              {isCoworkContainer
+                ? 'Files in this workspace'
+                : 'Files not in git'}
+            </span>
+          }
           data-testid="shared-container-invite-modal-file-scope"
         >
-          <legend className="text-xs font-medium fg-primary">
-            {isCoworkContainer ? 'Files in this workspace' : 'Files not in git'}
-          </legend>
-          {/*
+          <Stack gap="tight">
+            {/*
             The one sentence that tells the owner which direction a tick
             points: every file is included, so the checkbox is how a file
             is left out. Only a legacy Cowork allowlist reads the other way.
           */}
-          {!fileScopeIsAllowlist && (
-            <p
-              className="text-xs fg-secondary"
-              data-testid="shared-container-invite-modal-file-scope-hint"
-            >
-              These files are included. Untick any you would rather keep to
-              yourself.
-            </p>
-          )}
-          {candidateDirectories.length > 0 && (
-            <div
-              className="space-y-0.5 pb-1"
-              data-testid="shared-container-invite-modal-file-scope-folders"
-            >
-              {candidateDirectories.map((group) => {
-                const allIncluded = group.paths.every((path) =>
-                  includedFileSet.has(path),
-                );
-                const hasBudgetCappedFile = group.paths.some((path) =>
-                  budgetCappedFileSet.has(path),
-                );
-                return (
-                  <ChoiceField
-                    key={group.directory}
-                    label={
-                      <span className="break-all">
-                        {`${group.directory}/ (${group.paths.length} files)`}
-                      </span>
-                    }
-                    checked={allIncluded}
-                    disabled={fileScopeSaving || hasBudgetCappedFile}
-                    data-testid={`shared-container-invite-modal-file-scope-folder-${group.directory}`}
-                    onChange={(event) =>
-                      onDirectoryScopeChange(group.paths, event.target.checked)
-                    }
-                  />
-                );
-              })}
-              <p className="text-xs fg-secondary">
-                {fileScopeIsAllowlist
-                  ? 'Ticking a folder includes the files in it right now. Files you add to that folder later are not shared until you share again.'
-                  : 'Unticking a folder leaves out the files in it right now. Files you add to that folder later are shared the next time this publishes.'}
+            {!fileScopeIsAllowlist && (
+              <p
+                className="text-xs fg-secondary"
+                data-testid="shared-container-invite-modal-file-scope-hint"
+              >
+                These files are included. Untick any you would rather keep to
+                yourself.
               </p>
-            </div>
-          )}
-          {/*
+            )}
+            {candidateDirectories.length > 0 && (
+              <div
+                className="flex flex-col pb-1 gap-0.5"
+                data-testid="shared-container-invite-modal-file-scope-folders"
+              >
+                {candidateDirectories.map((group) => {
+                  const allIncluded = group.paths.every((path) =>
+                    includedFileSet.has(path),
+                  );
+                  const hasBudgetCappedFile = group.paths.some((path) =>
+                    budgetCappedFileSet.has(path),
+                  );
+                  return (
+                    <ChoiceField
+                      key={group.directory}
+                      label={
+                        <span className="break-all">
+                          {`${group.directory}/ (${group.paths.length} files)`}
+                        </span>
+                      }
+                      checked={allIncluded}
+                      disabled={fileScopeSaving || hasBudgetCappedFile}
+                      data-testid={`shared-container-invite-modal-file-scope-folder-${group.directory}`}
+                      onChange={(event) =>
+                        onDirectoryScopeChange(
+                          group.paths,
+                          event.target.checked,
+                        )
+                      }
+                    />
+                  );
+                })}
+                <p className="text-xs fg-secondary">
+                  {fileScopeIsAllowlist
+                    ? 'Ticking a folder includes the files in it right now. Files you add to that folder later are not shared until you share again.'
+                    : 'Unticking a folder leaves out the files in it right now. Files you add to that folder later are shared the next time this publishes.'}
+                </p>
+              </div>
+            )}
+            {/*
             Repository paths run deeper than the modal is wide, and this
             checkbox is the owner's decision about whether the file leaves
             their machine. An ellipsis would eat the basename that
@@ -286,35 +295,36 @@ export function ShareScopeDetails({
             to shrink below its content and overflows the dialog sideways
             (ChoiceField's text column carries it).
           */}
-          {selectableFilePaths.map((path) => {
-            const budgetCapped = budgetCappedFileSet.has(path);
-            return (
-              <ChoiceField
-                key={path}
-                label={<span className="break-all">{path}</span>}
-                checked={includedFileSet.has(path)}
-                disabled={fileScopeSaving || budgetCapped}
-                data-testid={`shared-container-invite-modal-file-review-${path}`}
-                onChange={(event) =>
-                  onFileScopeChange(path, event.target.checked)
-                }
-              />
-            );
-          })}
-          {preview.untrackedCandidateCount >
-            preview.untrackedCandidates.length && (
-            <p className="text-xs fg-secondary">
-              {isCoworkContainer
-                ? `Showing the first ${preview.untrackedCandidates.length} of ${preview.untrackedCandidateCount} files.`
-                : `Showing the first ${preview.untrackedCandidates.length} of ${preview.untrackedCandidateCount} untracked files.`}
-            </p>
-          )}
-        </fieldset>
+            {selectableFilePaths.map((path) => {
+              const budgetCapped = budgetCappedFileSet.has(path);
+              return (
+                <ChoiceField
+                  key={path}
+                  label={<span className="break-all">{path}</span>}
+                  checked={includedFileSet.has(path)}
+                  disabled={fileScopeSaving || budgetCapped}
+                  data-testid={`shared-container-invite-modal-file-review-${path}`}
+                  onChange={(event) =>
+                    onFileScopeChange(path, event.target.checked)
+                  }
+                />
+              );
+            })}
+            {preview.untrackedCandidateCount >
+              preview.untrackedCandidates.length && (
+              <p className="text-xs fg-secondary">
+                {isCoworkContainer
+                  ? `Showing the first ${preview.untrackedCandidates.length} of ${preview.untrackedCandidateCount} files.`
+                  : `Showing the first ${preview.untrackedCandidates.length} of ${preview.untrackedCandidateCount} untracked files.`}
+              </p>
+            )}
+          </Stack>
+        </Fieldset>
       )}
 
       {(preview.notes.length > 0 || preview.prompts.length > 0) && (
         <div
-          className="space-y-1 pt-1"
+          className="flex flex-col pt-1 gap-1"
           data-testid="shared-container-invite-modal-workspace-items"
         >
           <p className="text-xs fg-secondary">
@@ -323,11 +333,13 @@ export function ShareScopeDetails({
               : 'Included unless you untick them.'}
           </p>
           {preview.notes.length > 0 && (
-            <fieldset
-              className="space-y-1"
+            <Fieldset
+              gap="tight"
+              legend={
+                <span className="text-xs font-medium fg-primary">Notes</span>
+              }
               data-testid="shared-container-invite-modal-note-scope"
             >
-              <legend className="text-xs font-medium fg-primary">Notes</legend>
               {preview.notes.map((note) => (
                 <ChoiceField
                   key={note.id}
@@ -340,16 +352,16 @@ export function ShareScopeDetails({
                   }
                 />
               ))}
-            </fieldset>
+            </Fieldset>
           )}
           {preview.prompts.length > 0 && (
-            <fieldset
-              className="space-y-1"
+            <Fieldset
+              gap="tight"
+              legend={
+                <span className="text-xs font-medium fg-primary">Prompts</span>
+              }
               data-testid="shared-container-invite-modal-prompt-scope"
             >
-              <legend className="text-xs font-medium fg-primary">
-                Prompts
-              </legend>
               {preview.prompts.map((prompt) => (
                 <ChoiceField
                   key={prompt.id}
@@ -362,7 +374,7 @@ export function ShareScopeDetails({
                   }
                 />
               ))}
-            </fieldset>
+            </Fieldset>
           )}
         </div>
       )}
@@ -382,108 +394,112 @@ export function ShareScopeDetails({
         came from is still withheld as credential-shaped.
       */}
       {runSharingSupported && !isCoworkContainer && (
-        <fieldset
-          className="space-y-1 pt-1"
+        <Fieldset
+          gap="inline"
+          legend={
+            <span className="text-xs font-medium fg-primary">
+              Let your teammate run this
+            </span>
+          }
           data-testid="shared-container-invite-modal-run-scope"
         >
-          <legend className="text-xs font-medium fg-primary">
-            Let your teammate run this
-          </legend>
-          <ChoiceField
-            label="Share the commands that start this app. Your teammate decides whether to run them on their own machine."
-            checked={runSharingEnabled}
-            disabled={fileScopeSaving}
-            data-testid="shared-container-invite-modal-run-scope-toggle"
-            onChange={(event) => onRunSharingChange(event.target.checked)}
-          />
-          {runSharingEnabled && availableRunScripts.length === 0 && (
-            <p
-              className="text-xs fg-secondary"
-              data-testid="shared-container-invite-modal-run-scope-empty"
-            >
-              This project has no scripts to share yet. Add one in the Scripts
-              panel and it will show up here.
-            </p>
-          )}
-          {runSharingEnabled && availableRunScripts.length > 0 && (
-            <p className="text-xs fg-quaternary">
-              {`${includedRunScripts.length} of ${MAX_PUBLISHABLE_RUN_SCRIPTS} selected`}
-            </p>
-          )}
-          {runSharingEnabled &&
-            availableRunScripts.map((scriptName) => {
-              // A ticked script that produced no command means its command
-              // was dropped (an unredactable absolute path, or a
-              // safety-deny pattern refused at publish). Say so per row: a
-              // silently missing command is the difference between the
-              // recipient being able to start the app and not.
-              const selected = includedRunScripts.includes(scriptName);
-              const resolved =
-                preview.run?.commands.some(
-                  (command) => command.name === scriptName,
-                ) === true;
-              // The cap blocks new ticks only. An already-ticked row stays
-              // interactive so the publisher can always swap a selection
-              // without first hunting for something to untick.
-              const atCap =
-                !selected &&
-                includedRunScripts.length >= MAX_PUBLISHABLE_RUN_SCRIPTS;
-              return (
-                <div key={scriptName} className="space-y-0.5">
-                  <ChoiceField
-                    label={
-                      <span className="block truncate">
-                        {getScriptDisplayName(scriptName)}
-                      </span>
-                    }
-                    checked={selected}
-                    disabled={fileScopeSaving || atCap}
-                    data-testid={`shared-container-invite-modal-run-scope-${scriptName}`}
-                    onChange={(event) =>
-                      onRunScriptScopeChange(scriptName, event.target.checked)
-                    }
-                  />
-                  {selected && !resolved && (
-                    <p
-                      className="pl-6 text-xs fg-secondary"
-                      data-testid={`shared-container-invite-modal-run-scope-unresolved-${scriptName}`}
-                    >
-                      {`There is no ${getScriptDisplayName(scriptName)} command to share for this project yet.`}
-                    </p>
-                  )}
-                </div>
-              );
-            })}
-          {runSharingEnabled && preview.run && (
-            <div
-              className="space-y-0.5 pt-1"
-              data-testid="shared-container-invite-modal-run-env"
-            >
-              <p className="text-xs font-medium fg-primary">
-                Environment variable names, never values
+          <Stack gap="tight">
+            <ChoiceField
+              label="Share the commands that start this app. Your teammate decides whether to run them on their own machine."
+              checked={runSharingEnabled}
+              disabled={fileScopeSaving}
+              data-testid="shared-container-invite-modal-run-scope-toggle"
+              onChange={(event) => onRunSharingChange(event.target.checked)}
+            />
+            {runSharingEnabled && availableRunScripts.length === 0 && (
+              <p
+                className="text-xs fg-secondary"
+                data-testid="shared-container-invite-modal-run-scope-empty"
+              >
+                This project has no scripts to share yet. Add one in the Scripts
+                panel and it will show up here.
               </p>
-              {preview.run.requiredEnv.length === 0 ? (
-                <p className="text-xs fg-secondary">
-                  {`${brandText.appName} found no environment variable names to pass along. Your teammate may still need to configure the app themselves.`}
+            )}
+            {runSharingEnabled && availableRunScripts.length > 0 && (
+              <p className="text-xs fg-quaternary">
+                {`${includedRunScripts.length} of ${MAX_PUBLISHABLE_RUN_SCRIPTS} selected`}
+              </p>
+            )}
+            {runSharingEnabled &&
+              availableRunScripts.map((scriptName) => {
+                // A ticked script that produced no command means its command
+                // was dropped (an unredactable absolute path, or a
+                // safety-deny pattern refused at publish). Say so per row: a
+                // silently missing command is the difference between the
+                // recipient being able to start the app and not.
+                const selected = includedRunScripts.includes(scriptName);
+                const resolved =
+                  preview.run?.commands.some(
+                    (command) => command.name === scriptName,
+                  ) === true;
+                // The cap blocks new ticks only. An already-ticked row stays
+                // interactive so the publisher can always swap a selection
+                // without first hunting for something to untick.
+                const atCap =
+                  !selected &&
+                  includedRunScripts.length >= MAX_PUBLISHABLE_RUN_SCRIPTS;
+                return (
+                  <div key={scriptName} className="flex flex-col gap-0.5">
+                    <ChoiceField
+                      label={
+                        <span className="block truncate">
+                          {getScriptDisplayName(scriptName)}
+                        </span>
+                      }
+                      checked={selected}
+                      disabled={fileScopeSaving || atCap}
+                      data-testid={`shared-container-invite-modal-run-scope-${scriptName}`}
+                      onChange={(event) =>
+                        onRunScriptScopeChange(scriptName, event.target.checked)
+                      }
+                    />
+                    {selected && !resolved && (
+                      <p
+                        className="pl-6 text-xs fg-secondary"
+                        data-testid={`shared-container-invite-modal-run-scope-unresolved-${scriptName}`}
+                      >
+                        {`There is no ${getScriptDisplayName(scriptName)} command to share for this project yet.`}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            {runSharingEnabled && preview.run && (
+              <div
+                className="flex flex-col pt-1 gap-0.5"
+                data-testid="shared-container-invite-modal-run-env"
+              >
+                <p className="text-xs font-medium fg-primary">
+                  Environment variable names, never values
                 </p>
-              ) : (
-                <ul className="space-y-0.5 text-xs fg-secondary">
-                  {preview.run.requiredEnv.map((name) => (
-                    <li key={name} className="break-all">
-                      {name}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-          {runSharingEnabled && (
-            <p className="text-xs fg-secondary">
-              Running happens on your teammate's machine, with their own tools.
-              Nothing they change comes back to you.
-            </p>
-          )}
-        </fieldset>
+                {preview.run.requiredEnv.length === 0 ? (
+                  <p className="text-xs fg-secondary">
+                    {`${brandText.appName} found no environment variable names to pass along. Your teammate may still need to configure the app themselves.`}
+                  </p>
+                ) : (
+                  <ul className="flex flex-col text-xs fg-secondary gap-0.5">
+                    {preview.run.requiredEnv.map((name) => (
+                      <li key={name} className="break-all">
+                        {name}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            {runSharingEnabled && (
+              <p className="text-xs fg-secondary">
+                Running happens on your teammate's machine, with their own
+                tools. Nothing they change comes back to you.
+              </p>
+            )}
+          </Stack>
+        </Fieldset>
       )}
     </Disclosure>
   );

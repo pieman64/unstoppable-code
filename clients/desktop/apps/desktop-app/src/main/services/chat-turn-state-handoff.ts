@@ -468,6 +468,16 @@ export class ChatTurnStateHandoff {
     this.trimEntries(entry);
   }
 
+  /** Commit this chat's unacknowledged state now rather than on its fallback. */
+  public async flush(scope: ChatTurnStateHandoffScope): Promise<void> {
+    if (this.disposed) return;
+    const entry = this.entries.get(keyFor(scope));
+    if (!entry || entry.disposed) return;
+    this.cancelFallback(entry);
+    await this.processPending(entry);
+    await this.flushEntry(entry);
+  }
+
   /** Flush pending durable generations before the owning repository drains. */
   public async flushAll(): Promise<void> {
     if (this.disposed) return;

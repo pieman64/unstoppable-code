@@ -12,11 +12,22 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import {
+  acquireW5MaintenanceExclusion,
+  ensureW5HostMembership,
+  registerW5Host,
+} from '@canopy/desktop-shared/node/w5-host-cohort';
+import { internalRootFilesystemHost } from '@canopy/desktop-shared/node/internal-root-migration/filesystem-host';
 import type * as Storage from '@canopy/core-runtime/storage';
 import * as electron from 'electron';
 import * as maintenanceModule from '../w5-maintenance';
 import type * as Workers from '../../ledger/__tests__/fixtures/tsx-worker-threads';
+import { startedWorkers } from '../../ledger/__tests__/fixtures/tsx-worker-threads';
+import { W5CommitLog } from '@canopy/core-runtime/node/w5/commit-log';
+import { internalRootIdentity } from '@canopy/desktop-shared/node/internal-root-migration';
+import canopy from '../../../../../../brands/canopy/brand.json';
+import { settleInternalRootW5 } from '../internal-root-migration-maintenance';
 jest.mock('node:worker_threads', () =>
   jest
     .requireActual<
@@ -61,20 +72,32 @@ import { W5_RESOLVABLE_RESERVATION_OPERATIONS } from '../w5-maintenance-decision
 import type { W5Diagnosis } from '../w5-maintenance-diagnosis';
 
 jest.setTimeout(60_000);
-const posix = process.platform === 'win32' ? test.skip : test;
+// These cases resolve/diagnose general W5 state or use the POSIX chmod fault.
+// Windows supports only transaction-qualified migration reopen, exercised below.
+const generalPosixMaintenance = process.platform === 'win32' ? test.skip : test;
 const workerEntry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
 let root: string;
 let data: string;
+let temporary: string;
 let maintenanceFailures: unknown[];
 beforeEach(() => {
   maintenanceFailures = [];
-  data = realpathSync(mkdtempSync(join(tmpdir(), 'rx-')));
+  temporary = realpathSync(mkdtempSync(join(tmpdir(), 'rx-')));
+  data = temporary;
+  if (process.platform === 'win32') {
+    data = join(temporary, 'private');
+    const native = internalRootFilesystemHost(
+      resolve('.cache/native-owned-child/win32-x64/core-owned-child.node'),
+    ).windows;
+    if (!native) throw new Error('Windows custody helper required');
+    native.mkdir(data);
+  }
   root = join(data, 'workspaces');
   mkdirSync(root, { mode: 0o700 });
   mkdirSync(join(data, 'runtime'), { mode: 0o700 });
   writeFileSync(join(root, 'index.json'), '{"version":1,"workspaces":[]}');
 });
-afterEach(() => rmSync(data, { recursive: true, force: true }));
+afterEach(() => rmSync(temporary, { recursive: true, force: true }));
 
 async function maintenance(
   request: Parameters<typeof runW5Maintenance>[1],
@@ -190,8 +213,8 @@ async function crashReservedDaemon(): Promise<void> {
   }
 }
 
-posix(
-  'crash reservation → exclusive reopen → resolve → the daemon accepts a write',
+generalPosixMaintenance(
+  'crash reservation → exclusive reopen → resolve → the daemon accepts a write (POSIX general maintenance; disabled on Windows)',
   async () => {
     await crashReservedDaemon();
     const outcome = await runW5RecoveryLaunch({
@@ -212,8 +235,8 @@ posix(
   },
 );
 
-posix(
-  'the production history gate withholds every reservation class and rejects a forged release',
+generalPosixMaintenance(
+  'the production history gate withholds every reservation class and rejects a forged release (POSIX general maintenance; disabled on Windows)',
   async () => {
     expect(isW5ReservationReleaseQualified()).toBe(false);
     await crashReservedDaemon();
@@ -277,12 +300,12 @@ posix(
   },
 );
 
-posix.each([
+generalPosixMaintenance.each([
   { keyed: false, decision: 'retry-commit' as const },
   { keyed: true, decision: 'retry-commit' as const },
   { keyed: false, decision: 'abandon-commit' as const },
 ])(
-  'saved commit $decision (keyed=$keyed), with the real history gate',
+  'saved commit $decision (keyed=$keyed), with the real history gate (POSIX general maintenance; disabled on Windows)',
   async ({ keyed, decision }) => {
     const workspaceId = 'retry-target';
     const directory = join(root, workspaceId);
@@ -457,13 +480,8 @@ posix.each([
   },
 );
 
-posix.each([
-  'legacy',
-  'workspace_index',
-  'workspace_manifest',
-  'worktree_list',
-])(
-  'exposure-on with %s ownership consumes retained intent once without maintenance or a window',
+test.each(['legacy', 'workspace_index', 'workspace_manifest', 'worktree_list'])(
+  'exposure-on with %s ownership gates retained intent without maintenance or a window',
   async (legacyNamespace) => {
     const compiled = jest.requireActual<typeof Storage>(
       '@canopy/core-runtime/storage',
@@ -491,6 +509,25 @@ posix.each([
       expect(isW5RecoveryEntryEnabled()).toBe(true);
       expect(isW5DaemonFlipCompiled()).toBe(false);
       expect(isW5RecoveryAvailable()).toBe(false);
+      if (process.platform === 'win32') {
+        // Retained-intent UI admission is deliberately unavailable on Windows;
+        // migration-only reopen must not enable ordinary recovery or its writer.
+        await expect(writeW5RecoveryRequest(data)).rejects.toMatchObject({
+          reason: 'platform-unsupported',
+        });
+        expect(existsSync(w5RecoveryRequestPath(data))).toBe(false);
+        const retained = JSON.stringify({ version: 1, createdAt: Date.now() });
+        writeFileSync(w5RecoveryRequestPath(data), retained, { mode: 0o600 });
+        expect(await runDesktopW5RecoveryLaunch(data)).toBe(true);
+        expect(window).not.toHaveBeenCalled();
+        expect(writer).not.toHaveBeenCalled();
+        expect(shown).toHaveBeenCalledTimes(1);
+        expect(readFileSync(w5RecoveryRequestPath(data), 'utf8')).toBe(
+          retained,
+        );
+        expect(existsSync(w5RecoveryResultPath(data))).toBe(false);
+        return;
+      }
       // No-request startup remains a no-op even before ownership is handed over.
       expect(await runDesktopW5RecoveryLaunch(data)).toBe(true);
       expect(shown).not.toHaveBeenCalled();
@@ -543,8 +580,8 @@ posix.each([
   },
 );
 
-posix(
-  'a stuck unkeyed index commit can be abandoned without overwriting foreign bytes, then daemon writes resume',
+generalPosixMaintenance(
+  'a stuck unkeyed index commit can be abandoned without overwriting foreign bytes, then daemon writes resume (POSIX general maintenance; disabled on Windows)',
   async () => {
     const daemon = createDaemonW5Host({
       canonicalDataRoot: data,
@@ -667,5 +704,189 @@ posix(
     expect(readFileSync(join(root, 'index.json'), 'utf8')).toBe(foreign);
     expect(readFileSync(manifestPath, 'utf8')).toBe(manifest);
     await expectDaemonWriteResumes();
+  },
+);
+
+// Ordinary Windows diagnose/resolve/restore remains unavailable. Only the
+// transaction-qualified reopen path is exercised by CAN-5942's migration golden.
+(process.platform === 'win32' ? test : test.skip).each([
+  { source: 'offline_maintenance', mode: 'diagnose' },
+  { source: 'offline_maintenance', mode: 'reopen' },
+  { source: 'offline_maintenance', mode: 'restore', backupPath: 'not-used' },
+  {
+    source: 'offline_maintenance',
+    mode: 'resolve',
+    decisions: [{ kind: 'retry-commit', commitId: 1 }],
+  },
+] as const)(
+  'Windows ordinary $mode maintenance still refuses before worker admission',
+  async (request) => {
+    const context = createW5RecoveryMaintenanceContext(data, { workerEntry });
+    await expect(runW5Maintenance(context, request)).rejects.toMatchObject({
+      reason: 'platform-unsupported',
+    });
+    expect(context.host.workersStarted).toBe(0);
+  },
+);
+
+(process.platform === 'win32' ? test : test.skip)(
+  'offline qualification cannot enable Windows resolve or a writer without the native observer',
+  async () => {
+    const admission = jest.fn(() => Promise.resolve());
+    const context = createW5RecoveryMaintenanceContext(data, {
+      workerEntry,
+      offlineMigration: admission,
+    });
+    await expect(
+      runW5Maintenance(context, {
+        source: 'offline_maintenance',
+        mode: 'resolve',
+        decisions: [{ kind: 'retry-commit', commitId: 1 }],
+      }),
+    ).rejects.toMatchObject({ reason: 'platform-unsupported' });
+    expect(admission).not.toHaveBeenCalled();
+    await expect(
+      runW5Maintenance(context, {
+        source: 'offline_maintenance',
+        mode: 'reopen',
+      }),
+    ).rejects.toMatchObject({ reason: 'identity-unprovable' });
+    expect(context.host.workersStarted).toBe(0);
+  },
+);
+
+// Contract-level exclusion with a synthetic qualification, not a native cold
+// success receipt. The migration golden alone composes whole-user observation.
+test('offline exclusion blocks same-process W5 registration and releases its record', async () => {
+  const context = createW5RecoveryMaintenanceContext(data, {
+    windowsProcessPath: resolve(
+      '.cache/bin/win32-x64/canopy-process-identity.exe',
+    ),
+  });
+  const self = await context.platform.supervision.inspectProcess({
+    pid: process.pid,
+  });
+  if (self.state !== 'running')
+    throw new Error('Native self identity required');
+  const qualification = jest.fn(() => Promise.resolve());
+  const exclusion = await acquireW5MaintenanceExclusion({
+    dataRoot: data,
+    owner: { pid: process.pid, startIdentity: self.startIdentity },
+    inspect: (pid, signal) =>
+      context.platform.supervision.inspectProcess({ pid, signal }),
+    secureFiles: context.platform.secureFiles,
+    offlineMigration: qualification,
+  });
+  try {
+    expect(await exclusion.isHeld()).toBe(true);
+    expect(existsSync(join(data, 'runtime/w5-maintenance.json'))).toBe(true);
+    await expect(
+      registerW5Host({ dataRoot: data, hostKind: 'cli' }),
+    ).rejects.toMatchObject({ reason: 'maintenance-process' });
+    if (process.platform === 'win32')
+      await expect(ensureW5HostMembership()).rejects.toMatchObject({
+        reason: 'maintenance-process',
+      });
+    expect(qualification).toHaveBeenCalledTimes(2);
+  } finally {
+    await exclusion.release();
+  }
+  expect(await exclusion.isHeld()).toBe(false);
+  expect(existsSync(join(data, 'runtime/w5-maintenance.json'))).toBe(false);
+  await exclusion.release();
+});
+
+test('lost offline qualification releases the startup claim before worker admission', async () => {
+  const qualification = jest
+    .fn(() => Promise.resolve())
+    .mockImplementationOnce(() => Promise.resolve())
+    .mockImplementation(() =>
+      Promise.reject(new Error('qualification revoked')),
+    );
+  const context = createW5RecoveryMaintenanceContext(data, {
+    workerEntry,
+    windowsProcessPath: resolve(
+      '.cache/bin/win32-x64/canopy-process-identity.exe',
+    ),
+    offlineMigration: qualification,
+  });
+  await expect(
+    runW5Maintenance(context, {
+      source: 'offline_maintenance',
+      mode: 'reopen',
+    }),
+  ).rejects.toThrow('qualification revoked');
+  expect(qualification).toHaveBeenCalledTimes(2);
+  expect(context.host.workersStarted).toBe(0);
+  expect(existsSync(join(data, 'runtime/startup-claim.json'))).toBe(false);
+  expect(existsSync(join(data, 'runtime/w5-maintenance.json'))).toBe(false);
+});
+
+// Qualifies native W5 custody/recovery/release even when ambient cold inspection
+// refuses. Only the cold callback is synthetic; this is not composed evidence.
+test.each(['settled', 'commit', 'reservation'] as const)(
+  'offline migration W5 %s runs the writer and releases both records',
+  async (state) => {
+    mkdirSync(join(data, 'w5'), { mode: 0o700 });
+    const path = join(root, 'index.json');
+    const before = readFileSync(path, 'utf8');
+    const after = '{"version":1,"workspaces":[],"saved":true}';
+    const conflict = '{"version":1,"workspaces":[],"operatorEdit":true}';
+    const log = W5CommitLog.open(join(data, 'w5/commit-log.sqlite'));
+    try {
+      log.commit({
+        operation: 'core.workspace.update',
+        advance: [{ kind: 'workspaces' }],
+        files: [
+          {
+            path,
+            contents: after,
+            previousFingerprint: fingerprintW5File(before),
+          },
+        ],
+        outcome: { saved: true },
+      });
+      if (state === 'reservation')
+        log.reserve({
+          reservationId: 'uncertain',
+          operation: 'core.worktree.create',
+          diagnostics: {},
+        });
+    } finally {
+      log.close();
+    }
+    if (state === 'commit') writeFileSync(path, conflict);
+    const firstWorker = startedWorkers.length;
+    const qualification = {
+      identity: { ...internalRootIdentity(temporary, canopy), source: data },
+      transactionId: 'synthetic-w5-contract',
+      assertHeld: (): Promise<void> => Promise.resolve(),
+      assertCold: (): Promise<void> => Promise.resolve(),
+    };
+    const recovery = settleInternalRootW5(data, workerEntry, qualification, {
+      windowsProcessPath: resolve(
+        '.cache/bin/win32-x64/canopy-process-identity.exe',
+      ),
+      ...(process.platform === 'win32'
+        ? {
+            ownedChildPath: resolve(
+              `.cache/native-owned-child/win32-${process.arch}/core-owned-child.node`,
+            ),
+          }
+        : {}),
+    });
+    if (state === 'settled') await expect(recovery).resolves.toBe('settled');
+    else
+      await expect(recovery).rejects.toMatchObject({
+        reason: 'recovery-required',
+      });
+    const workers = startedWorkers.slice(firstWorker);
+    expect(workers.length).toBeGreaterThan(0);
+    expect(workers.every((worker) => worker.exitCode !== undefined)).toBe(true);
+    expect(readFileSync(path, 'utf8')).toBe(
+      state === 'commit' ? conflict : after,
+    );
+    expect(existsSync(join(data, 'runtime/startup-claim.json'))).toBe(false);
+    expect(existsSync(join(data, 'runtime/w5-maintenance.json'))).toBe(false);
   },
 );

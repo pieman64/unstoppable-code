@@ -3,7 +3,7 @@ import type {
   AgentUsageOverview,
   ProviderRateLimitWindow,
 } from '@canopy/desktop-shared/types';
-import type { PipelineStatusReason } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineStatusReason } from '@canopy/execution-engine/types/pipeline';
 
 function parseFutureResetMs(value: unknown, nowMs: number): number | null {
   if (typeof value !== 'string' || value.length === 0) {

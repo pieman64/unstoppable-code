@@ -46,13 +46,13 @@ export function ShareBlockedState({
 }: ShareBlockedStateProps): JSX.Element {
   return (
     <div
-      className="space-y-3 px-6 py-6"
+      className="flex flex-col px-6 py-6 gap-3"
       data-testid={dataTestId}
       aria-busy={busy ? 'true' : undefined}
     >
       {header}
       {(title || description) && (
-        <div className={`space-y-3${header ? ' pt-2' : ''}`}>
+        <div className={`flex flex-col gap-3${header ? ' pt-2' : ''}`}>
           {title && (
             <Heading level={3} variant="section">
               {title}

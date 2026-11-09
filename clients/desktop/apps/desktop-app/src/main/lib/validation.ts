@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
-import { isValidAgentModelSlug } from '@canopy/desktop-shared/types/agent-models';
+import { isValidAgentModelSlug } from '@canopy/execution-engine/types/agent-models';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   isAddressableSharedPipelineRemoteId,

@@ -11,7 +11,7 @@ import type {
   UpdateTerminalSettingsRequest,
   UpdateTerminalSettingsResponse,
 } from '@canopy/desktop-shared/types';
-import { validateId } from '@canopy/desktop-shared/node/lib/validation';
+import { validateId } from '@canopy/execution-engine/node/lib/validation';
 import { isTerminalPresetImageDataUrl } from '@canopy/desktop-shared/lib/terminal-preset-images';
 import {
   captureTerminalPresetImages,

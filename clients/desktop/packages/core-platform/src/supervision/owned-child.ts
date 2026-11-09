@@ -1595,7 +1595,14 @@ export function createJobLauncher(options: {
 export function loadMigrationFilesystem(
   nativePath: string,
 ): (
-  action: 'inspect' | 'mkdir' | 'copy' | 'finish' | 'read',
+  action:
+    | 'inspect'
+    | 'mkdir'
+    | 'copy'
+    | 'finish'
+    | 'read'
+    | 'remove'
+    | 'replace',
   path: string,
   other?: string,
 ) => unknown {

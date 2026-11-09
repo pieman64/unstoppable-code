@@ -6,7 +6,7 @@ import {
   isGatewayOnlyModel,
   isGatewayRoutableModel,
   isOrgGatewayRoute,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   resolveModelPickerRowCue,
   type ModelPickerRowCue,

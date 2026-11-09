@@ -118,9 +118,14 @@ export class DaemonScriptRuns implements ExternalScriptRuns {
     );
   }
 
+  /**
+   * Drains the worktree's daemon runs through `sweep` first, which waits for
+   * each run's process tree to exit (CAN-5839), then ends this process's
+   * entries, including runs not started yet.
+   */
   async drainWorktree(projectId: string, worktreeId: string): Promise<void> {
-    await this.stopEntries(this.inWorktree(projectId, worktreeId));
     await this.options.sweep(projectId, worktreeId);
+    await this.stopEntries(this.inWorktree(projectId, worktreeId));
   }
 
   stopAll(): void {

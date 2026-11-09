@@ -12,7 +12,13 @@ import type {
   FileIndexingPreferences,
   FileLabelBucket,
 } from '@canopy/desktop-shared/types';
-import { Button, ErrorState, ToggleSwitch } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ErrorState,
+  ToggleSwitch,
+  FieldError,
+  DisclosureButton,
+} from '@canopy/ui-shared/components';
 import { TrashIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useFileTabUiStore } from '@/stores/fileTabUiStore';
 import { useFileListStore } from '@/stores/fileListStore';
@@ -25,10 +31,7 @@ import {
   type FilesTabBuiltinRow,
   type FilesTabState,
 } from './filesTabState';
-import {
-  FileLabelsSection,
-  SectionDisclosureButton,
-} from './FileLabelsSection';
+import { FileLabelsSection } from './FileLabelsSection';
 import {
   SettingsGroup,
   SettingsPage,
@@ -343,11 +346,11 @@ function DoNotIndexSection(props: DoNotIndexSectionProps): JSX.Element {
           label="Do not index"
           description="Matching files stay in the file explorer but are hidden from Cmd+P and @ file mentions. The .git folder is always hidden."
           control={
-            <SectionDisclosureButton
-              expanded={expanded}
+            <DisclosureButton
+              open={expanded}
               onToggle={() => setExpanded((v) => !v)}
-              collapsedLabel={`${enabledGlobs} glob${enabledGlobs === 1 ? '' : 's'} enabled`}
-              expandedLabel="Hide globs"
+              closedLabel={`${enabledGlobs} glob${enabledGlobs === 1 ? '' : 's'} enabled`}
+              openLabel="Hide globs"
               dataTestId="settings-files-do-not-index-toggle"
             />
           }
@@ -450,12 +453,12 @@ function DoNotIndexLists({
         }
       >
         {errorText !== null && (
-          <p
-            className="text-xs fg-destructive"
+          <FieldError
+            id="settings-files-custom-error"
             data-testid="settings-files-custom-error"
           >
             {errorText}
-          </p>
+          </FieldError>
         )}
       </SettingsRow>
 

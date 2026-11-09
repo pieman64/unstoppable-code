@@ -1,4 +1,4 @@
-import type { ModelHarness } from '../types/model-harnesses';
+import type { ModelHarness } from '@canopy/execution-engine/types/model-harnesses';
 import type {
   AgentProviderType,
   ProjectOwnerContext,

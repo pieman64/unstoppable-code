@@ -7,7 +7,7 @@ import {
   resolveModelPolicyIndex,
   type ModelPolicyIndex,
 } from '@canopy/desktop-shared/lib/model-policy';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import {
   isOllamaModel,
   type CanopyCloudAccountPublicState,

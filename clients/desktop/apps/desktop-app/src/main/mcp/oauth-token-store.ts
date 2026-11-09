@@ -1,11 +1,11 @@
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type {
   McpServerConfigData,
   McpServerDefinitionData,
-} from '@canopy/desktop-shared/types/mcp-servers';
-import type { McpServerAuthStatus } from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
+import type { McpServerAuthStatus } from '@canopy/execution-engine/types/mcp-servers';
 import {
   isTokenEndpointAuthMethod,
   type TokenEndpointAuthMethod,
@@ -125,6 +125,35 @@ export function setMcpOAuthTokensChangedListener(
   listener: ((serverIds: string[]) => void) | null,
 ): void {
   tokensChangedListener = listener;
+}
+
+export type McpOAuthRevocationReason =
+  | 'cleared'
+  | 'invalidated'
+  | 'errored'
+  | 'migrated';
+export interface McpOAuthCredentialRevokedEvent {
+  readonly serverId: string;
+  readonly configId: string;
+  readonly reason: McpOAuthRevocationReason;
+}
+const revocationListeners = new Set<
+  (event: McpOAuthCredentialRevokedEvent) => void
+>();
+
+/**
+ * CAN-4126: fires once per changed record after a committed write that
+ * cleared, invalidated, errored or migrated it. Never fires for saves or for a
+ * write rolled back by `isCurrent`. A throwing listener is skipped. Returns an
+ * unsubscribe function.
+ */
+export function onMcpOAuthCredentialRevoked(
+  listener: (event: McpOAuthCredentialRevokedEvent) => void,
+): () => void {
+  revocationListeners.add(listener);
+  return (): void => {
+    revocationListeners.delete(listener);
+  };
 }
 
 function isStoredRecord(value: unknown): value is StoredMcpOAuthTokenRecord {
@@ -278,6 +307,7 @@ function queueTokenStoreMutation(
   mutation: (file: StoredMcpOAuthTokenFile) => Promise<void> | void,
   isCurrent?: () => boolean,
   requiresWrite: () => boolean = () => false,
+  revocation?: McpOAuthRevocationReason,
 ): Promise<boolean> {
   const next = tokenStoreMutationQueue.then(async (): Promise<boolean> => {
     const file = await readStoredFile();
@@ -294,7 +324,11 @@ function queueTokenStoreMutation(
     const previous = new Map(
       Object.entries(file.records).map(([key, record]) => [
         key,
-        { serverId: record.serverId, value: JSON.stringify(record) },
+        {
+          serverId: record.serverId,
+          configId: record.configId,
+          value: JSON.stringify(record),
+        },
       ]),
     );
     await mutation(file);
@@ -303,12 +337,15 @@ function queueTokenStoreMutation(
       ...Array.from(previous.keys()),
       ...Object.keys(file.records),
     ]);
+    const changedRecords: { serverId: string; configId: string }[] = [];
     const changedServers = Array.from(keys).flatMap((key) => {
       const record = file.records[key];
       const before = previous.get(key);
       if (before?.value === (record ? JSON.stringify(record) : undefined))
         return [];
       const serverId = record?.serverId ?? before?.serverId;
+      const configId = record?.configId ?? before?.configId;
+      if (serverId && configId) changedRecords.push({ serverId, configId });
       return serverId ? [serverId] : [];
     });
     if (changedServers.length === 0) return true;
@@ -321,6 +358,17 @@ function queueTokenStoreMutation(
       return false;
     }
     tokensChangedListener?.(Array.from(new Set(changedServers)));
+    if (revocation) {
+      for (const changed of changedRecords) {
+        for (const listener of Array.from(revocationListeners)) {
+          try {
+            listener({ ...changed, reason: revocation });
+          } catch {
+            /* skipped */
+          }
+        }
+      }
+    }
     return true;
   });
   tokenStoreMutationQueue = next.then(
@@ -430,53 +478,58 @@ export async function migratePluginMcpOAuthToken(
     )
       return;
     const upstreamUrl = getCanonicalUpstreamUrl(definition);
-    await queueTokenStoreMutation((file): void => {
-      const matches = sources.flatMap((source) => {
-        const key = tokenKey(source.serverId, source.configId);
-        const record = file.records[key];
-        if (
-          key === destination ||
-          !record ||
-          record.upstreamUrl !== upstreamUrl
-        )
-          return [];
-        const oauth = definition.oauth;
-        if (
-          oauth?.clientId
-            ? record.clientId !== oauth.clientId
-            : !source.allowDiscoveredClient
-        )
-          return [];
-        if (
-          oauth?.authorizationUrl &&
-          oauth.authorizationUrl !== record.authorizationUrl
-        )
-          return [];
-        if (oauth?.tokenUrl && oauth.tokenUrl !== record.tokenUrl) return [];
-        return [{ key, record }];
-      });
-      matches.sort((a, b) =>
-        b.record.updatedAt.localeCompare(a.record.updatedAt),
-      );
-      const policy = getSecretStoragePolicy();
-      for (const match of matches) decryptRecord(policy, match.record);
-      const newest = matches[0]?.record;
-      if (!newest) return;
-      const existingDestination = file.records[destination];
-      // A destination only supersedes readable aliases when its credentials
-      // can actually be read. Storage failure must retain every source record.
-      if (existingDestination) decryptRecord(policy, existingDestination);
-      if (!existingDestination) {
-        file.records[destination] = {
-          ...newest,
-          serverId: definition.id,
-          configId: config.id,
-        };
-      }
-      // Remove matching aliases in the same transaction. Disconnecting the new
-      // identity must not resurrect an older account on the next inventory read.
-      for (const match of matches) delete file.records[match.key];
-    });
+    await queueTokenStoreMutation(
+      (file): void => {
+        const matches = sources.flatMap((source) => {
+          const key = tokenKey(source.serverId, source.configId);
+          const record = file.records[key];
+          if (
+            key === destination ||
+            !record ||
+            record.upstreamUrl !== upstreamUrl
+          )
+            return [];
+          const oauth = definition.oauth;
+          if (
+            oauth?.clientId
+              ? record.clientId !== oauth.clientId
+              : !source.allowDiscoveredClient
+          )
+            return [];
+          if (
+            oauth?.authorizationUrl &&
+            oauth.authorizationUrl !== record.authorizationUrl
+          )
+            return [];
+          if (oauth?.tokenUrl && oauth.tokenUrl !== record.tokenUrl) return [];
+          return [{ key, record }];
+        });
+        matches.sort((a, b) =>
+          b.record.updatedAt.localeCompare(a.record.updatedAt),
+        );
+        const policy = getSecretStoragePolicy();
+        for (const match of matches) decryptRecord(policy, match.record);
+        const newest = matches[0]?.record;
+        if (!newest) return;
+        const existingDestination = file.records[destination];
+        // A destination only supersedes readable aliases when its credentials
+        // can actually be read. Storage failure must retain every source record.
+        if (existingDestination) decryptRecord(policy, existingDestination);
+        if (!existingDestination) {
+          file.records[destination] = {
+            ...newest,
+            serverId: definition.id,
+            configId: config.id,
+          };
+        }
+        // Remove matching aliases in the same transaction. Disconnecting the new
+        // identity must not resurrect an older account on the next inventory read.
+        for (const match of matches) delete file.records[match.key];
+      },
+      undefined,
+      undefined,
+      'migrated',
+    );
   } catch (error) {
     // Migration is optional for declarations that do not use app-managed OAuth.
     // Keep inventory/runtime usable when the OS credential store is unavailable.
@@ -548,9 +601,14 @@ export async function clearMcpOAuthToken(
   serverId: string,
   configId: string,
 ): Promise<void> {
-  await queueTokenStoreMutation((file): void => {
-    delete file.records[tokenKey(serverId, configId)];
-  });
+  await queueTokenStoreMutation(
+    (file): void => {
+      delete file.records[tokenKey(serverId, configId)];
+    },
+    undefined,
+    undefined,
+    'cleared',
+  );
 }
 
 export async function recordMcpOAuthTokenError(
@@ -604,6 +662,7 @@ export async function recordMcpOAuthTokenError(
     },
     isCurrent,
     () => encryptedNewRecord,
+    'errored',
   );
 }
 
@@ -614,18 +673,23 @@ export async function invalidateMcpOAuthAccessToken(
   accessToken: string,
   upstreamUrl: string,
 ): Promise<void> {
-  await queueTokenStoreMutation((file): void => {
-    const record = file.records[tokenKey(serverId, configId)];
-    if (
-      !record ||
-      record.upstreamUrl !== buildCanonicalResourceUrl(upstreamUrl)
-    )
-      return;
-    const token = decryptRecord(getMcpSecretStoragePolicy(), record);
-    if (token.accessToken !== accessToken) return;
-    record.expiresAt = new Date(0).toISOString();
-    record.updatedAt = new Date().toISOString();
-  });
+  await queueTokenStoreMutation(
+    (file): void => {
+      const record = file.records[tokenKey(serverId, configId)];
+      if (
+        !record ||
+        record.upstreamUrl !== buildCanonicalResourceUrl(upstreamUrl)
+      )
+        return;
+      const token = decryptRecord(getMcpSecretStoragePolicy(), record);
+      if (token.accessToken !== accessToken) return;
+      record.expiresAt = new Date(0).toISOString();
+      record.updatedAt = new Date().toISOString();
+    },
+    undefined,
+    undefined,
+    'invalidated',
+  );
 }
 
 /**

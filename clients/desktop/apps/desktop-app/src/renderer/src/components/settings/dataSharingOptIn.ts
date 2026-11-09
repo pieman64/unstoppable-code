@@ -13,7 +13,7 @@ import {
   resolveTelemetryEnforcementByOrganization,
   type TelemetryEnforcement,
 } from '@canopy/desktop-shared/lib/telemetry-enforcement';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import { DATA_SHARING_OPT_IN_SCOPES } from '@canopy/ui-shared/lib/data-sharing-features';
 import { findOrganizationName } from '@/lib/organizationName';
 import { sharesWithOrganization } from './telemetry-sharing';

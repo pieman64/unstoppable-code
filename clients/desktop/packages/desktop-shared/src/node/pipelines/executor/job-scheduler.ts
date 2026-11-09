@@ -8,7 +8,7 @@ import type {
   PipelineMatrixCombination,
   StepConclusion,
   StepResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   MAX_MATRIX_VARIANTS,
   createMatrixPhysicalJobId,

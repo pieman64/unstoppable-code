@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { type JSX, useEffect, useState } from 'react';
 import {
   formatUsageUpdatedPhrase,
@@ -52,7 +53,7 @@ export function UsagePage(): JSX.Element {
     >
       <PageTitlebar />
       <PageContent>
-        <div className="mx-auto w-full max-w-160">
+        <div className="flex flex-col mx-auto w-full max-w-160 gap-6">
           <PageHeader
             title="Usage"
             description={
@@ -65,7 +66,7 @@ export function UsagePage(): JSX.Element {
               <UsageRefreshButton refreshing={refreshing} onRefresh={refresh} />
             }
           />
-          <div className="mt-6 flex flex-col gap-8">
+          <Stack gap="page">
             <InterruptedSessionsNotice />
             <ProviderUsageCards
               nowMs={nowMs}
@@ -75,7 +76,7 @@ export function UsagePage(): JSX.Element {
               refreshProviderUsageDetails={refreshProviderUsageDetails}
             />
             <AiCreditsUsageCard />
-          </div>
+          </Stack>
         </div>
       </PageContent>
     </section>

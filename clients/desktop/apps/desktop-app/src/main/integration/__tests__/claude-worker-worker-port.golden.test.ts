@@ -11,6 +11,7 @@ import type * as PathsModule from '../../lib/paths';
 import type * as ApprovalServiceModule from '../../approvals/approval-service';
 import type * as RoutedWorkerTerminalModule from '../../terminal/routed-worker-terminal';
 import type * as RecordingTerminalEngineModule from './helpers/recording-terminal-engine';
+import type * as DaemonTerminalRouteModule from '../../terminal/daemon-terminal-route';
 import type { RecordingTerminalEngine } from './helpers/recording-terminal-engine';
 import type {
   AgentProviderAuthStatus,
@@ -216,6 +217,13 @@ jest.mock('../../terminal/persistence', () => ({
     markTerminalExited: (): void => undefined,
   },
 }));
+jest.mock('../../terminal/daemon-terminal-route', () => ({
+  ...jest.requireActual<typeof DaemonTerminalRouteModule>(
+    '../../terminal/daemon-terminal-route',
+  ),
+  selectDaemonManagedTerminalTarget: jest.fn(() => Promise.resolve(null)),
+  sweepOrphanedDaemonManagedTerminals: jest.fn(() => Promise.resolve()),
+}));
 
 import { TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL } from '@canopy/desktop-shared/types';
 import { getBundledClaudeBinaryPath } from '../../pipelines/config-paths';
@@ -224,6 +232,19 @@ import { DefaultClaudeWorkerSessionService } from '../../integration/claude-work
 const mockEngine = jest.requireMock<{ mockEngine: RecordingTerminalEngine }>(
   '../../terminal/worker-terminal',
 ).mockEngine;
+const mockSelectDaemonManagedTerminalTarget = jest.mocked(
+  jest.requireMock<typeof DaemonTerminalRouteModule>(
+    '../../terminal/daemon-terminal-route',
+  ).selectDaemonManagedTerminalTarget,
+);
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
 
 const WORKER = {
   kind: 'test',
@@ -316,5 +337,37 @@ describe('Claude worker sessions on the worker.terminal port (CAN-5097)', () => 
       { signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL },
     ]);
     await expect(run).resolves.toMatchObject({ status: 'cancelled' });
+  });
+  it('a worker cancelled while its terminal started kills that terminal', async () => {
+    const target = deferred<null>();
+    mockSelectDaemonManagedTerminalTarget.mockImplementationOnce(
+      () => target.promise,
+    );
+    const service = new DefaultClaudeWorkerSessionService();
+    let workerId = '';
+    const run = service.runWorker({
+      ...WORKER,
+      onCreated: (id) => {
+        workerId = id;
+      },
+    });
+    await waitFor(
+      () => mockSelectDaemonManagedTerminalTarget.mock.calls.length === 1,
+    );
+
+    await service.cancel(workerId);
+    target.resolve(null);
+    await waitFor(() => mockEngine.kills.length === 1);
+
+    expect(mockEngine.kills).toContainEqual([
+      'terminal-1',
+      { signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL },
+    ]);
+    const sessionKey =
+      mockRegisterCanopyWorktreeSessionRoute.mock.calls[0]?.[0]?.sessionKey;
+    expect(mockUnregisterCanopyWorktreeSessionRoute).toHaveBeenCalledWith(
+      sessionKey,
+    );
+    await run.catch(() => undefined);
   });
 });

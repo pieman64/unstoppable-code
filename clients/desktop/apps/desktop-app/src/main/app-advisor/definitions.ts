@@ -21,6 +21,7 @@ import {
   projectsListTaskChatsActionSchema,
 } from '@canopy/desktop-shared/lib/project-discovery';
 import { botActionSchema } from '@canopy/desktop-shared/lib/bot-discovery';
+import { CHAT_PLUGIN_LIST_MAX_LIMIT } from '@canopy/desktop-shared/lib/app-advisor-chat-reads';
 import {
   projectsCreateTaskActionSchema,
   projectsCreateTaskChatActionSchema,
@@ -116,7 +117,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   ADD_LEDGER_ENTRY_DESCRIPTION,
   SEARCH_LEDGER_ENTRIES_DESCRIPTION,
@@ -448,6 +449,18 @@ const pluginKindSchema = z.preprocess(
   z.enum(['collection', 'skill', 'plugin', 'mcp']),
 );
 const thinkingLevelSchema = z.enum(THINKING_LEVELS);
+const catalogSkillRefSchema = z.strictObject({
+  sourceId: z.string().min(1),
+  skillName: z.string().min(1),
+});
+const catalogPluginRefSchema = z.strictObject({
+  marketplaceId: z.string().min(1),
+  pluginName: z.string().min(1),
+});
+const catalogMcpServerRefSchema = z.strictObject({
+  serverId: z.string().min(1),
+  configId: z.string().min(1),
+});
 const advisorChatTextSchema = z.string().regex(/\S/, 'text must not be blank');
 const worktreeChatActionSchema = z.enum(['hand_off', 'fork', 'branch']);
 const trackedPlanReviewStatusSchema = z.enum([
@@ -791,6 +804,59 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
       'agents.update requires name, baseModel, instructions, or pluginSelections.',
     ),
   z.object({ type: z.literal('agents.delete'), id: z.string().min(1) }),
+  // CAN-6002: reachable from App Advisor for the first time; strict, so an
+  // unknown field is refused rather than dropped.
+  z.strictObject({
+    type: z.literal('preferences.get_global_plugin_selections'),
+  }),
+  z.strictObject({
+    type: z.literal('preferences.set_global_plugin_selections'),
+    selections: pluginSelectionsSchema,
+    expectedRevision: z.number().int().min(0),
+  }),
+  z.strictObject({
+    type: z.literal('collections.list'),
+    query: z.string().optional(),
+    limit: z.number().int().min(1).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('collections.create'),
+    name: z.string().min(1),
+    description: z.string().optional(),
+    skills: z.array(catalogSkillRefSchema).optional(),
+    plugins: z.array(catalogPluginRefSchema).optional(),
+    mcpServers: z.array(catalogMcpServerRefSchema).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('collections.update'),
+    id: z.string().min(1),
+    name: z.string().min(1).optional(),
+    description: z.string().optional(),
+    skills: z.array(catalogSkillRefSchema).optional(),
+    plugins: z.array(catalogPluginRefSchema).optional(),
+    mcpServers: z.array(catalogMcpServerRefSchema).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('collections.delete'),
+    id: z.string().min(1),
+  }),
+  z.strictObject({
+    type: z.literal('plugins.list_marketplaces'),
+    query: z.string().optional(),
+    limit: z.number().int().min(1).max(CHAT_PLUGIN_LIST_MAX_LIMIT).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('plugins.refresh_marketplace'),
+    marketplaceId: z.string().min(1),
+  }),
+  z.strictObject({
+    type: z.literal('plugins.remove_marketplace'),
+    marketplaceId: z.string().min(1),
+    providers: z
+      .array(z.enum(['claude', 'codex']))
+      .min(1)
+      .optional(),
+  }),
   z.object({
     type: z.literal('agents.list_shared'),
     query: z.string().optional(),
@@ -1340,13 +1406,15 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
     worktreeId: z.string(),
     level: z.enum(['all', 'attention', 'mute']),
   }),
-  z.object({
-    type: z.literal('worktree.set_base_branch'),
-    projectId: z.string(),
-    worktreeId: z.string(),
-    repoId: z.string().optional(),
-    baseBranch: z.string().trim().min(1),
-  }),
+  z
+    .object({
+      type: z.literal('worktree.set_base_branch'),
+      projectId: z.string(),
+      worktreeId: z.string(),
+      repoId: z.string().optional(),
+      baseBranch: z.string().trim().min(1),
+    })
+    .strict(),
   z
     .object({
       type: z.literal('worktree.add_workspace'),

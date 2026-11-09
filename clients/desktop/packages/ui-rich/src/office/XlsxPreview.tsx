@@ -6,6 +6,7 @@ import {
   type OfficePreviewRenderFailure,
 } from './office-preview-copy';
 import {
+  Surface,
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   TabBar,
@@ -178,27 +179,31 @@ function SheetGrid({
   return (
     <>
       {(rowsTruncated || colsTruncated) && (
-        <div
-          role="status"
-          className="shrink-0 border-b px-3 py-1.5 text-xs fg-secondary"
-          data-testid="xlsx-truncation-banner"
-        >
-          Showing the first {sheet.rows.length.toLocaleString('en-US')} of{' '}
-          {sheet.rowCount.toLocaleString('en-US')} rows
-          {colsTruncated
-            ? ` and ${visibleCols} of ${sheet.colCount} columns`
-            : ''}
-          . {truncationRecovery}
-        </div>
+        <Surface variant="section" boundary="bottom" className="shrink-0">
+          <div
+            role="status"
+            className="shrink-0 px-3 py-1.5 text-xs fg-secondary"
+            data-testid="xlsx-truncation-banner"
+          >
+            Showing the first {sheet.rows.length.toLocaleString('en-US')} of{' '}
+            {sheet.rowCount.toLocaleString('en-US')} rows
+            {colsTruncated
+              ? ` and ${visibleCols} of ${sheet.colCount} columns`
+              : ''}
+            . {truncationRecovery}
+          </div>
+        </Surface>
       )}
       {(sheet.hasFormulas || rowsTruncated || colsTruncated) && (
-        <div
-          className="shrink-0 border-b px-3 py-1.5 text-xs fg-secondary"
-          data-testid="xlsx-formula-note"
-        >
-          Cells show the values saved in the file; formulas are not
-          recalculated.
-        </div>
+        <Surface variant="section" boundary="bottom" className="shrink-0">
+          <div
+            className="shrink-0 px-3 py-1.5 text-xs fg-secondary"
+            data-testid="xlsx-formula-note"
+          >
+            Cells show the values saved in the file; formulas are not
+            recalculated.
+          </div>
+        </Surface>
       )}
       <div
         ref={scrollerRef}

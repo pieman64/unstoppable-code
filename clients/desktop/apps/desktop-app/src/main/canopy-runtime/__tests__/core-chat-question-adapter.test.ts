@@ -132,6 +132,17 @@ const STORED: McpQuestionAnswer[] = [
   { questionId: 'colour', question: 'Pick a colour', selectedOptions: ['Red'] },
   { questionId: 'size', question: 'Pick a size', selectedOptions: ['Large'] },
 ];
+// Main stamps who settled the question on the answers the waiting tool gets:
+// a person only through the window's question card, the window's renderer
+// relay or a Portal user session; this file's core caller is neither.
+const RESOLVED: McpQuestionAnswer[] = STORED.map((answer) => ({
+  ...answer,
+  answeredBy: 'person',
+}));
+const RESOLVED_BY_AGENT: McpQuestionAnswer[] = STORED.map((answer) => ({
+  ...answer,
+  answeredBy: 'agent',
+}));
 const invalidState = {
   payload: containing({
     kind: 'failed_precondition',
@@ -140,7 +151,7 @@ const invalidState = {
 };
 
 beforeEach(async () => {
-  resetDesktopChatWaitsForTest();
+  resetDesktopChatWaitsForTest({ noClientMode: 'wait' });
   trackSettledChatQuestions();
   readFails = false;
   fixture = createChatStateServiceFixture();
@@ -156,7 +167,7 @@ afterEach(async () => {
 it('answers a live question through core.chat.question.respond and resumes the waiting provider once', async () => {
   const { answers, settled } = await ask('q-live');
   const result = await respond({ questionId: 'q-live', answers: KEYED });
-  await expect(answers).resolves.toEqual(STORED);
+  await expect(answers).resolves.toEqual(RESOLVED_BY_AGENT);
   expect(settled).toHaveBeenCalledTimes(1);
   expect(result).toMatchObject({
     chatId: 'chat-1',
@@ -180,7 +191,7 @@ it('the renderer IPC and core.chat.question.respond settle the same question onc
       },
     }),
   ).rejects.toMatchObject(invalidState);
-  await expect(answers).resolves.toEqual(STORED);
+  await expect(answers).resolves.toEqual(RESOLVED_BY_AGENT);
   expect(settled).toHaveBeenCalledTimes(1);
 });
 
@@ -239,7 +250,7 @@ it('a failed answer write is unavailable and keeps the question waiting', async 
   await expect(
     answerChatQuestionFromRenderer('q-write-fails', STORED),
   ).resolves.toEqual({ accepted: true });
-  await expect(answers).resolves.toEqual(STORED);
+  await expect(answers).resolves.toEqual(RESOLVED);
 });
 
 it('a second answer gets invalidState and never resumes the provider again', async () => {
@@ -349,9 +360,73 @@ it('questions without ids are keyed by index', async () => {
     },
   });
   await expect(answers).resolves.toEqual([
-    { question: 'Pick a colour', selectedOptions: ['Blue'] },
-    { question: 'Pick a size', selectedOptions: ['Small'] },
+    {
+      question: 'Pick a colour',
+      selectedOptions: ['Blue'],
+      answeredBy: 'agent',
+    },
+    {
+      question: 'Pick a size',
+      selectedOptions: ['Small'],
+      answeredBy: 'agent',
+    },
   ]);
+});
+
+it("an answer through the main window's renderer relay reaches the waiting tool as a person's (CAN-6024)", async () => {
+  const { answers } = await ask('q-window-relay');
+  const handler =
+    createCoreChatQuestionAdapter(host())['core.chat.question.respond'];
+  await handler(
+    { chatId: 'chat-1', questionId: 'q-window-relay', answers: KEYED },
+    {
+      ...context,
+      caller: {
+        ...context.caller,
+        principalId: 'local-desktop-renderer:main',
+        clientInstanceId: 'renderer-relay:1',
+      },
+    },
+  );
+  await expect(answers).resolves.toEqual(RESOLVED);
+});
+
+it.each(['mcp', 'cli', 'http', 'daemon'] as const)(
+  'an answer from a %s caller reaches the waiting tool as an agent answer (CAN-6024)',
+  async (interfaceKind) => {
+    const { answers } = await ask(`q-agent-${interfaceKind}`);
+    const handler =
+      createCoreChatQuestionAdapter(host())['core.chat.question.respond'];
+    await handler(
+      {
+        chatId: 'chat-1',
+        questionId: `q-agent-${interfaceKind}`,
+        answers: KEYED,
+      },
+      { ...context, caller: { ...context.caller, interfaceKind } },
+    );
+    await expect(answers).resolves.toEqual(
+      STORED.map((answer) => ({ ...answer, answeredBy: 'agent' })),
+    );
+  },
+);
+
+it('a client cannot claim a person answered: without a trusted entry point the answer is an agent (CAN-6024)', async () => {
+  const { answers } = await ask('q-claimed');
+  await respondToChatQuestion({
+    scope: SCOPE,
+    chatId: 'chat-1',
+    questionId: 'q-claimed',
+    response: {
+      kind: 'answer',
+      answers: STORED.map((answer) => ({ ...answer, answeredBy: 'person' })),
+    },
+    commandId: 'claimed',
+    port: fixture.service,
+  });
+  await expect(answers).resolves.toEqual(
+    STORED.map((answer) => ({ ...answer, answeredBy: 'agent' })),
+  );
 });
 
 it('a failed scope read is unavailable, never not_found', async () => {

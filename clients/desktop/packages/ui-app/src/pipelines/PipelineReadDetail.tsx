@@ -1,9 +1,10 @@
 'use client';
 
+import { Badge, Count } from '@canopy/ui-shared/components/Badge';
 import { type JSX, useState } from 'react';
 import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
 import { PipelineIcon } from '@canopy/ui-shared';
-import { Button, Heading } from '@canopy/ui-shared/components';
+import { Stack, Button, Heading } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { EmptyStateRow } from '@canopy/ui-shared/components';
 import { Surface } from '@canopy/ui-shared/components';
@@ -36,7 +37,7 @@ export function PipelineReadDetail({
 
   return (
     <article
-      className={`mx-auto w-full max-w-4xl space-y-6 px-6 ${
+      className={`mx-auto w-full max-w-4xl flex flex-col gap-6 px-6 ${
         flushTop ? 'pb-6' : 'py-6'
       }`}
       data-testid="pipeline-read-detail"
@@ -55,23 +56,21 @@ export function PipelineReadDetail({
               )}
             </div>
           </Surface>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 flex flex-col gap-3">
             <div className="flex items-center gap-2">
               <Heading level={1} variant="page">
                 {definition.name}
               </Heading>
               {definition.version && (
-                <span className="rounded bg-secondary px-1.5 py-0.5 text-3xs font-medium fg-secondary">
+                <span className="text-xs fg-tertiary">
                   v{definition.version}
                 </span>
               )}
             </div>
             {definition.description && (
-              <p className="mt-1 text-s fg-secondary">
-                {definition.description}
-              </p>
+              <p className="text-s fg-secondary">{definition.description}</p>
             )}
-            <div className="mt-3 flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               {/* A run's recorded snapshot keeps no triggers. */}
               {definition.triggerSummary !== '' && (
                 <span className="rounded bg-info-subtle px-2 py-1 text-xs fg-info">
@@ -101,8 +100,12 @@ export function PipelineReadDetail({
         </div>
       </header>
 
-      <section aria-labelledby="pipeline-read-detail-jobs-heading">
-        <div className="mb-3 flex items-center justify-between">
+      <Stack
+        as="section"
+        gap="item"
+        aria-labelledby="pipeline-read-detail-jobs-heading"
+      >
+        <div className="flex items-center justify-between">
           <Heading
             level={2}
             variant="title"
@@ -124,7 +127,7 @@ export function PipelineReadDetail({
         </div>
 
         {showYaml && definition.canonicalYaml !== undefined ? (
-          <div className="space-y-2">
+          <Stack gap="inline">
             {definition.canonicalYamlTruncated === true && (
               <p className="text-xs fg-secondary">
                 YAML truncated in transfer.
@@ -139,9 +142,9 @@ export function PipelineReadDetail({
                 <code>{definition.canonicalYaml}</code>
               </pre>
             </Surface>
-          </div>
+          </Stack>
         ) : (
-          <div className="space-y-3">
+          <Stack gap="item">
             {definition.jobs.map((job) => (
               <Surface
                 key={job.id}
@@ -157,16 +160,14 @@ export function PipelineReadDetail({
                   {job.dependencies.map((dependency) => (
                     <span
                       key={dependency}
-                      className="rounded bg-secondary px-1.5 py-0.5 text-3xs font-medium fg-secondary"
+                      className="font-mono text-xs fg-secondary"
                     >
                       {dependency}
                     </span>
                   ))}
-                  <span className="rounded bg-secondary px-1.5 py-0.5 text-3xs font-medium fg-secondary">
-                    {job.steps.length}
-                  </span>
+                  <Count value={job.steps.length} />
                 </div>
-                <ol className="space-y-1.5 p-2">
+                <ol className="p-2 flex flex-col gap-1.5">
                   {job.steps.length === 0 && (
                     <li>
                       <EmptyStateRow title="No steps yet" />
@@ -183,15 +184,21 @@ export function PipelineReadDetail({
                           <span className="truncate text-s font-medium fg-primary">
                             {step.name}
                           </span>
-                          <span
-                            className={`shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium ${step.kind === 'action' ? 'bg-info-subtle fg-info' : step.kind === 'script' ? 'bg-warning-subtle fg-warning' : 'bg-secondary fg-secondary'}`}
+                          <Badge
+                            tone={
+                              step.kind === 'action'
+                                ? 'info'
+                                : step.kind === 'script'
+                                  ? 'warning'
+                                  : 'neutral'
+                            }
                           >
                             {step.kind === 'action'
                               ? 'Action'
                               : step.kind === 'script'
                                 ? 'Script'
                                 : 'Incomplete'}
-                          </span>
+                          </Badge>
                         </div>
                         {/* Action refs are recorded; a script's first line is blocked. */}
                         <p
@@ -205,9 +212,9 @@ export function PipelineReadDetail({
                 </ol>
               </Surface>
             ))}
-          </div>
+          </Stack>
         )}
-      </section>
+      </Stack>
     </article>
   );
 }

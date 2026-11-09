@@ -14,20 +14,20 @@ import {
   pushBranch,
 } from '@canopy/desktop-shared/lib/git';
 import { generatePrContentWithUsage } from '@canopy/desktop-shared/lib/github-pr-generator';
-import { localMemoryEnabledFromEnv } from '@canopy/desktop-shared/node/lib/native-memory';
+import { localMemoryEnabledFromEnv } from '@canopy/execution-engine/node/lib/native-memory';
 import {
   type PrInstructionMode,
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
 import { parseRepoMap } from '@canopy/desktop-shared/pipelines/base-branch-env';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import {
   describeJsonParseFailure,
   redactValues,
-} from '@canopy/desktop-shared/lib/redaction';
+} from '@canopy/execution-engine/lib/redaction';
 import { setOutput, writeOutputFile } from '../_lib/output';
 import { runWithActionEnvironment } from '../_lib/action-env';
-import { parseThinkingLevelInput } from '../_lib/thinking';
+import { parseThinkingLevelInput } from '@canopy/execution-engine/builtin-actions/_lib/thinking';
 import {
   redactNormalizedPreservingFormat,
   parseAgentSecretValuesEnv,
@@ -36,7 +36,7 @@ import {
 import {
   hydrateModelRegistryFromEnv,
   resolveConfiguredModel,
-} from '../_lib/model-registry';
+} from '@canopy/execution-engine/builtin-actions/_lib/model-registry';
 import {
   discoverWorkspaceRepos,
   type DiscoveredRepo,

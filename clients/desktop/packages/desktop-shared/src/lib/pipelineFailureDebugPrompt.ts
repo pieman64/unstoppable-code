@@ -3,7 +3,7 @@ import type {
   JobResult,
   StepLogLocator,
   StepResult,
-} from '../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { BRAND } from '@canopy/brand/current';
 
 export interface PipelineFailureDebugContextOptions {

@@ -91,7 +91,7 @@ import {
   interruptedSessionSecondaryMetadata,
   interruptedSessionTitle,
 } from './sessionRowModel';
-import { ChoiceField, ErrorBanner } from '@canopy/ui-shared/components';
+import { Stack, ChoiceField, ErrorBanner } from '@canopy/ui-shared/components';
 
 const REFRESH_INTERVAL_MS = 30_000;
 /** Readiness is recomputed in memory on this clock; it never fetches. */
@@ -964,9 +964,9 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
         title={title}
         subtitle={subtitle}
       >
-        <div className="">
-          <ErrorBanner error={LOAD_ERROR} className="" />
-          <div className="mt-4 flex justify-end gap-3">
+        <Stack gap="group">
+          <ErrorBanner className="" error={LOAD_ERROR} />
+          <div className="flex justify-end gap-3">
             <Button size="compact" onClick={closePrompt}>
               Cancel
             </Button>
@@ -974,7 +974,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
               Try again
             </Button>
           </div>
-        </div>
+        </Stack>
       </DialogModal>
     );
   }
@@ -998,9 +998,9 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
         title={title}
         subtitle={subtitle}
       >
-        <div className="">
-          <ErrorBanner error={error} className="" />
-          <div className="mt-4 flex justify-end gap-3">
+        <Stack gap="group">
+          <ErrorBanner className="" error={error} />
+          <div className="flex justify-end gap-3">
             <Button size="compact" onClick={closePrompt}>
               Cancel
             </Button>
@@ -1012,7 +1012,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
               Try again
             </Button>
           </div>
-        </div>
+        </Stack>
       </DialogModal>
     );
   }
@@ -1490,6 +1490,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
     const scheduleError = scheduling.errors[key];
     return (
       <InterruptedSessionRow
+        childrenGap="tight"
         key={key}
         indent={indent}
         title={interruptedSessionTitle(session)}
@@ -1525,7 +1526,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
             : null
         }
       >
-        <ErrorBanner error={scheduleError} className="mt-1" />
+        <ErrorBanner error={scheduleError} className="" />
       </InterruptedSessionRow>
     );
   };
@@ -1541,21 +1542,23 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
       <div data-testid="usage-limit-resume-modal" className="flex flex-col">
         {origin === 'authentication' &&
           authentication?.phase === 'verification-failed' && (
-            <ErrorBanner
-              className="mx-6 mt-4"
-              error={
-                authentication.error || "Couldn't verify your Codex sign-in."
-              }
-              onRetry={(): void => {
-                void window.api.codexLogin
-                  .retryVerification()
-                  .then((state) =>
-                    useUsageLimitResumePromptStore
-                      .getState()
-                      .updateAuthentication(state),
-                  );
-              }}
-            />
+            <div className="px-6 pt-4">
+              <ErrorBanner
+                className=""
+                error={
+                  authentication.error || "Couldn't verify your Codex sign-in."
+                }
+                onRetry={(): void => {
+                  void window.api.codexLogin
+                    .retryVerification()
+                    .then((state) =>
+                      useUsageLimitResumePromptStore
+                        .getState()
+                        .updateAuthentication(state),
+                    );
+                }}
+              />
+            </div>
           )}
         {origin === 'authentication' &&
           authentication?.phase === 'complete' &&
@@ -1595,93 +1598,103 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
             </span>
           ) : null}
         </div>
-        <div className="max-h-[50vh] overflow-y-auto px-6 py-2">
-          <ErrorBanner error={error} className="mb-2" />
-          {groups.map((group) => {
-            const workspaceState = triState(group.sessions);
-            const groupLabelId = interruptedSessionDomId(
-              'usage-limit-resume-group',
-              group.groupId,
-            );
-            return (
-              <div
-                key={group.groupId}
-                role="group"
-                aria-labelledby={groupLabelId}
-                className="mb-3"
-              >
-                {/* One label: the icon and name toggle the checkbox too. */}
-                <div className="py-1">
-                  <ChoiceField
-                    data-testid={`usage-limit-resume-workspace-${group.groupId}`}
-                    checked={workspaceState.checked}
-                    indeterminate={
-                      workspaceState.indeterminate && !workspaceState.checked
-                    }
-                    disabled={workspaceState.disabled}
-                    onChange={(): void => toggleWorkspace(group)}
-                    label={
-                      <span className="flex min-w-0 items-center gap-2 font-medium">
-                        <ResumeWorkspaceIcon group={group} />
-                        <span id={groupLabelId} className="truncate">
-                          {group.workspaceName}
-                        </span>
-                      </span>
-                    }
-                  />
-                </div>
-                {group.workspaceType === 'cowork'
-                  ? readyFirst(group.sessions, isEligible).map((session) =>
-                      renderSessionRow(session, 'group'),
-                    )
-                  : groupSessionsByWorktree(group.sessions).map((worktree) => {
-                      const worktreeState = triState(worktree.sessions);
-                      const worktreeLabelId = `${groupLabelId}-${interruptedSessionDomId('worktree', worktree.worktreeId)}`;
-                      return (
-                        <div
-                          key={worktree.worktreeId}
-                          role="group"
-                          aria-labelledby={worktreeLabelId}
-                          className="ml-6"
-                        >
-                          <div className="py-1">
-                            <ChoiceField
-                              data-testid={`usage-limit-resume-worktree-${group.groupId}-${worktree.worktreeId}`}
-                              checked={worktreeState.checked}
-                              indeterminate={
-                                worktreeState.indeterminate &&
-                                !worktreeState.checked
-                              }
-                              disabled={worktreeState.disabled}
-                              onChange={(): void =>
-                                toggleSessions(worktree.sessions)
-                              }
-                              label={
-                                <span className="flex min-w-0 items-center gap-2 fg-secondary">
-                                  <AppCatalogBranchIcon
-                                    aria-hidden="true"
-                                    size="sm"
-                                    className="shrink-0 opacity-70"
+        <div
+          className={`flex max-h-[50vh] flex-col gap-2 overflow-y-auto px-6 pt-2 [&>*]:shrink-0 ${groups.length > 0 ? 'pb-5' : error ? 'pb-4' : 'pb-2'}`}
+        >
+          <ErrorBanner error={error} className="" />
+          {groups.length > 0 && (
+            <div className="flex flex-col gap-3">
+              {groups.map((group) => {
+                const workspaceState = triState(group.sessions);
+                const groupLabelId = interruptedSessionDomId(
+                  'usage-limit-resume-group',
+                  group.groupId,
+                );
+                return (
+                  <div
+                    key={group.groupId}
+                    role="group"
+                    aria-labelledby={groupLabelId}
+                    className=""
+                  >
+                    {/* One label: the icon and name toggle the checkbox too. */}
+                    <div className="py-1">
+                      <ChoiceField
+                        data-testid={`usage-limit-resume-workspace-${group.groupId}`}
+                        checked={workspaceState.checked}
+                        indeterminate={
+                          workspaceState.indeterminate &&
+                          !workspaceState.checked
+                        }
+                        disabled={workspaceState.disabled}
+                        onChange={(): void => toggleWorkspace(group)}
+                        label={
+                          <span className="flex min-w-0 items-center gap-2 font-medium">
+                            <ResumeWorkspaceIcon group={group} />
+                            <span id={groupLabelId} className="truncate">
+                              {group.workspaceName}
+                            </span>
+                          </span>
+                        }
+                      />
+                    </div>
+                    {group.workspaceType === 'cowork'
+                      ? readyFirst(group.sessions, isEligible).map((session) =>
+                          renderSessionRow(session, 'group'),
+                        )
+                      : groupSessionsByWorktree(group.sessions).map(
+                          (worktree) => {
+                            const worktreeState = triState(worktree.sessions);
+                            const worktreeLabelId = `${groupLabelId}-${interruptedSessionDomId('worktree', worktree.worktreeId)}`;
+                            return (
+                              <div
+                                key={worktree.worktreeId}
+                                role="group"
+                                aria-labelledby={worktreeLabelId}
+                                className="pl-6"
+                              >
+                                <div className="py-1">
+                                  <ChoiceField
+                                    data-testid={`usage-limit-resume-worktree-${group.groupId}-${worktree.worktreeId}`}
+                                    checked={worktreeState.checked}
+                                    indeterminate={
+                                      worktreeState.indeterminate &&
+                                      !worktreeState.checked
+                                    }
+                                    disabled={worktreeState.disabled}
+                                    onChange={(): void =>
+                                      toggleSessions(worktree.sessions)
+                                    }
+                                    label={
+                                      <span className="flex min-w-0 items-center gap-2 fg-secondary">
+                                        <AppCatalogBranchIcon
+                                          aria-hidden="true"
+                                          size="sm"
+                                          className="shrink-0 opacity-70"
+                                        />
+                                        <span
+                                          id={worktreeLabelId}
+                                          className="truncate"
+                                        >
+                                          {worktree.worktreeName}
+                                        </span>
+                                      </span>
+                                    }
                                   />
-                                  <span
-                                    id={worktreeLabelId}
-                                    className="truncate"
-                                  >
-                                    {worktree.worktreeName}
-                                  </span>
-                                </span>
-                              }
-                            />
-                          </div>
-                          {readyFirst(worktree.sessions, isEligible).map(
-                            (session) => renderSessionRow(session, 'worktree'),
-                          )}
-                        </div>
-                      );
-                    })}
-              </div>
-            );
-          })}
+                                </div>
+                                {readyFirst(worktree.sessions, isEligible).map(
+                                  (session) =>
+                                    renderSessionRow(session, 'worktree'),
+                                )}
+                              </div>
+                            );
+                          },
+                        )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div className="flex items-center justify-end gap-3 border-t px-6 py-3">
           <Button

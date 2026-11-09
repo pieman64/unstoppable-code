@@ -8,6 +8,7 @@ import {
 } from '@canopy/ui-shared';
 import {
   Badge,
+  DetailEntityType,
   ExecutionActionButton,
   Heading,
 } from '@canopy/ui-shared/components';
@@ -94,7 +95,10 @@ export function PluginCatalogDetail({
         />
         <div className="min-w-0 flex-1">
           <Heading level={3} variant="section">
-            {entry.name}
+            <span className="inline-flex flex-wrap items-baseline gap-x-2">
+              {entry.name}
+              <DetailEntityType />
+            </span>
           </Heading>
           {entry.author && (
             <p className="mt-0.5 text-xs fg-secondary">By {entry.author}</p>
@@ -133,11 +137,11 @@ export function PluginCatalogDetail({
       )}
       <div>
         <Divider />
-        <div className="pt-4">
+        <div className="pt-4 flex flex-col gap-1">
           <Heading level={4} variant="title">
             Included
           </Heading>
-          <p className="mt-1 text-xs fg-secondary">
+          <p className="text-xs fg-secondary">
             {componentCount > 0
               ? `${componentCount} plugin component${componentCount === 1 ? '' : 's'} available after adding.`
               : 'Plugin capabilities become available after adding.'}

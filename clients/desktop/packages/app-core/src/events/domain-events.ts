@@ -121,6 +121,27 @@ export interface ScriptActionsChangedEvent extends DomainEventBase {
 }
 
 /**
+ * The paired computer's Orchestrator questions changed: one arrived, was
+ * answered elsewhere or was withdrawn (CAN-5985). Re-query `appAdvisor.chats`.
+ * Subscribing also tells the computer this client shows Orchestrator
+ * questions, so it delivers the ones already waiting.
+ */
+export interface AppAdvisorChangedEvent extends DomainEventBase {
+  readonly reason: 'question';
+}
+
+/**
+ * A worktree's plan, script, hook, pipeline or summary rows changed on the
+ * paired computer (CAN-5985): re-query `worktree.activity`. The worktree is
+ * absent when the computer did not name it (re-read every worktree shown).
+ */
+export interface WorktreeActivityChangedEvent extends DomainEventBase {
+  readonly projectId?: string;
+  readonly worktreeId?: string;
+  readonly reason: 'pipelines' | 'plans' | 'hooks' | 'scripts' | 'summary';
+}
+
+/**
  * Map of domain-event name → payload. Extend this interface (do not augment it
  * from another package) when a feature slice introduces new events. Every
  * payload extends {@link DomainEventBase} except raw `terminal.output` frames,
@@ -138,6 +159,8 @@ export interface DomainEventMap {
   'org-projects.setup-progress': OrgProjectSetupProgressEvent;
   'delegation.lifetimeChanged': DelegationLifetimeChangedEvent;
   'scriptActions.changed': ScriptActionsChangedEvent;
+  'appAdvisor.changed': AppAdvisorChangedEvent;
+  'worktree.activityChanged': WorktreeActivityChangedEvent;
 }
 
 /** Closed set of supported domain-event names. */

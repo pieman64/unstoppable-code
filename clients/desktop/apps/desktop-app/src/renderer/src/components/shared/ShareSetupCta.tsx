@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
 import type { SharedContainerBlockedReason } from '@canopy/desktop-shared/types';
 import { formatOrgNameList } from '@canopy/ui-shared/lib/org-lapse-sentence';
@@ -48,7 +49,7 @@ export function ShareSetupCta({
 
   if (reason === 'sync-blocked-by-org') {
     return (
-      <div className="space-y-2" data-testid="shared-container-setup-cta">
+      <Stack gap="inline" data-testid="shared-container-setup-cta">
         <p className="text-s font-medium fg-primary">
           Your organization has turned off project data sharing
         </p>
@@ -57,12 +58,12 @@ export function ShareSetupCta({
             ? `${orgNames} prohibits sharing project data with ${CLOUD_ACCOUNT_NAME}, so this project cannot be shared with a teammate. An organization admin can change that policy.`
             : `Your organization prohibits sharing project data with ${CLOUD_ACCOUNT_NAME}, so this project cannot be shared with a teammate. An organization admin can change that policy.`}
         </p>
-      </div>
+      </Stack>
     );
   }
 
   return (
-    <div className="space-y-2" data-testid="shared-container-setup-cta">
+    <Stack gap="inline" data-testid="shared-container-setup-cta">
       <p className="text-s font-medium fg-primary">
         Turn on project data sharing to invite a teammate
       </p>
@@ -78,6 +79,7 @@ export function ShareSetupCta({
               {`Inviting a teammate needs this project to be registered with ${CLOUD_ACCOUNT_NAME}. Turn project data sharing on and the invite becomes available, and you can keep transcripts, plans, and summaries off.`}
             </p>
             <Button
+              className="self-start"
               variant="secondary"
               size="compact"
               data-testid="shared-container-setup-cta-open-settings"
@@ -91,6 +93,6 @@ export function ShareSetupCta({
           </>
         }
       />
-    </div>
+    </Stack>
   );
 }

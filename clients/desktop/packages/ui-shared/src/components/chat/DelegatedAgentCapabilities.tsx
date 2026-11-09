@@ -1,3 +1,4 @@
+import { Button } from '../Button';
 import { memo, useId, useState, type JSX } from 'react';
 import {
   DELEGATION_CAPABILITY_LIMITS,
@@ -55,8 +56,9 @@ export const DelegatedAgentCapabilities = memo(
             <span className="min-w-0 break-words">
               {delegatedAgentCapabilityCountsLabel(summary)}
             </span>
-            <button
-              type="button"
+            <Button
+              variant="link"
+              className="shrink-0"
               data-testid="delegated-agent-capabilities-toggle"
               aria-expanded={open}
               aria-controls={detailsId}
@@ -65,11 +67,10 @@ export const DelegatedAgentCapabilities = memo(
                   ? DELEGATED_AGENT_CAPABILITIES_HIDE_LABEL
                   : DELEGATED_AGENT_CAPABILITIES_SHOW_LABEL
               }
-              className="shrink-0 fg-secondary underline hover:fg-primary focus-visible:outline focus-visible:ring-1 focus-visible:ring-line-accent"
               onClick={(): void => setOpen((current): boolean => !current)}
             >
               {open ? 'Hide' : 'Show'}
-            </button>
+            </Button>
           </div>
         </Fact>
         {/* Each source is one more fact in the parent list (design call 8A,
@@ -83,7 +84,7 @@ export const DelegatedAgentCapabilities = memo(
                   label={delegatedAgentCapabilitySourceLabel(group.source)}
                   testId={`delegated-agent-capability-${group.source}`}
                 >
-                  <ul className="list-none space-y-0.5 p-0">
+                  <ul className="list-none flex flex-col gap-0.5 p-0">
                     {group.items.map(
                       (item, index): JSX.Element => (
                         <li key={`${index}-${item.name}`}>
@@ -123,7 +124,7 @@ export const DelegatedAgentCapabilities = memo(
                 label={DELEGATED_AGENT_CAPABILITIES_SKIPPED_LABEL}
                 testId="delegated-agent-capability-skipped"
               >
-                <ul className="list-none space-y-0.5 p-0">
+                <ul className="list-none flex flex-col gap-0.5 p-0">
                   {skipped.map(
                     (item, index): JSX.Element => (
                       <li key={`${index}-${item.name}`}>

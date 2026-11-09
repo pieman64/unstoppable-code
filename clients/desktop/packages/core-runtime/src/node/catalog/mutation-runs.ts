@@ -8,6 +8,7 @@ import type {
   OperationOwner,
   OperationRecord,
 } from '@canopy/protocol/canopy-core';
+import { isBoundedCanopyJsonValue } from '@canopy/protocol/canopy-core';
 import { stableStringify } from '@canopy/protocol/plans';
 import { CanopyOperationError } from '../../runtime/errors';
 import type { CanopyHandlerContext } from '../../runtime/types';
@@ -68,6 +69,21 @@ const FAILED_PAYLOAD: CanopyErrorPayload = {
   message: 'The catalog change failed.',
   retry: { kind: 'never' },
 };
+
+/** The failure a completed outcome records when the ledger cannot hold it (CAN-5898). */
+const OUTCOME_TOO_LARGE: CanopyErrorPayload = {
+  kind: 'internal',
+  message:
+    'The catalog change finished, but its result was too large to record.',
+  retry: { kind: 'never' },
+};
+
+/** A completed outcome, or the failure it records when it cannot be recorded. */
+function terminalOf(outcome: CanopyJsonValue): TerminalOutcome {
+  return isBoundedCanopyJsonValue(outcome)
+    ? { status: 'completed', outcome }
+    : { status: 'failed', error: OUTCOME_TOO_LARGE };
+}
 
 const sha256Hex = (text: string): string =>
   createHash('sha256').update(text, 'utf8').digest('hex');
@@ -158,10 +174,10 @@ export class CatalogMutationRuns {
         });
         throw thrown;
       }
-      await this.finishQuietly(operationId, {
-        status: 'completed',
-        outcome: result,
-      });
+      const terminal = terminalOf(result);
+      await this.finishQuietly(operationId, terminal);
+      if (terminal.status === 'failed')
+        throw new CanopyOperationError(terminal.error);
       return result;
     }
     if (admitted.status === 'replay-expired') throw finishedError();
@@ -205,8 +221,7 @@ export class CatalogMutationRuns {
       );
     }
     void request.effect(operationId).then(
-      (outcome) =>
-        this.finishQuietly(operationId, { status: 'completed', outcome }),
+      (outcome) => this.finishQuietly(operationId, terminalOf(outcome)),
       (error: unknown) =>
         this.finishQuietly(operationId, {
           status: 'failed',

@@ -1,3 +1,4 @@
+import type { SpaceRole } from './Stack';
 import {
   createContext,
   useState,
@@ -8,6 +9,17 @@ import {
 } from 'react';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
 import { Heading } from './Heading';
+
+const SUBTITLE_GAP_CLASS: Readonly<Record<SpaceRole, string>> = {
+  tight: 'gap-y-1',
+  inline: 'gap-y-2',
+  item: 'gap-y-3',
+  group: 'gap-y-4',
+  block: 'gap-y-5',
+  section: 'gap-y-6',
+  page: 'gap-y-8',
+  hero: 'gap-y-10',
+};
 
 export type CollapsedIconColor = 'amber' | 'blue' | 'muted';
 
@@ -36,6 +48,8 @@ export interface PanelSectionProps {
   title: ReactNode;
   subtitle?: ReactNode;
   subtitleInline?: boolean;
+  /** Total title-to-subtitle gap for a margin-free subtitle; default tight. */
+  subtitleGap?: SpaceRole;
   children?: ReactNode;
   headerAction?: ReactNode;
   collapsedIconColor?: CollapsedIconColor;
@@ -79,6 +93,7 @@ export function PanelSection({
   title,
   subtitle,
   subtitleInline = false,
+  subtitleGap = 'tight',
   children,
   headerAction,
   collapsedIconColor = 'muted',
@@ -145,11 +160,11 @@ export function PanelSection({
 
   return (
     <section
-      className={`rounded-lg bg-tertiary p-3 shadow-sm${collapsible && !collapsed ? ' space-y-3' : ''}`}
+      className={`rounded-lg bg-tertiary p-3 shadow-sm${collapsible && !collapsed ? ' flex flex-col gap-3' : ''}`}
       data-collapsible={collapsible ? 'true' : 'false'}
     >
       <div
-        className={`group/section-header relative grid select-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1${
+        className={`group/section-header relative grid select-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 ${SUBTITLE_GAP_CLASS[subtitleGap]}${
           collapsible ? ' cursor-pointer' : ''
         }${hasDraggable ? ' active:cursor-grabbing' : ''}`}
         {...headerSpread}
@@ -256,7 +271,7 @@ export function PanelSection({
         children != null && (
           <div
             hidden={collapsible && collapsed}
-            className={`space-y-3${collapsible ? ' pt-3.25' : ' pt-3 empty:hidden'}`}
+            className={`flex flex-col gap-3${collapsible ? ' pt-3.25' : ' pt-3 empty:hidden'}`}
             data-panel-section-body
           >
             <PanelSectionHeaderActionSlotContext.Provider

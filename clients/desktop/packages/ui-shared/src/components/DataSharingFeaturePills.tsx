@@ -22,6 +22,13 @@ export interface DataSharingFeaturePillsProps {
    * ambient gate regardless.
    */
   includeEnforcementOnly?: boolean;
+  /**
+   * `default` keeps the neutral pills, quieted only while sharing is off.
+   * `quiet` keeps every pill at the quieter fill, for a surface where the
+   * pills sit under a control and the caption alone carries the state, such
+   * as the desktop Privacy tab. The org admin card keeps the default.
+   */
+  tone?: 'default' | 'quiet';
   /** Test ID hook; the caption and each pill derive their own ids from it. */
   dataTestId?: string;
   className?: string;
@@ -40,6 +47,7 @@ export function DataSharingFeaturePills({
   scope,
   sharing,
   includeEnforcementOnly = true,
+  tone = 'default',
   dataTestId,
   className,
 }: DataSharingFeaturePillsProps): JSX.Element | null {
@@ -57,11 +65,12 @@ export function DataSharingFeaturePills({
       data-sharing={sharing ? 'true' : 'false'}
     >
       <span className="text-3xs font-medium fg-secondary">{caption}</span>
-      {/* Feature names are neutral; they quiet down while sharing is off. */}
+      {/* Feature names are neutral; they quiet down while sharing is off, or
+          always in the quiet tone. */}
       {features.map((entry) => (
         <Badge
           key={entry.id}
-          muted={!sharing}
+          muted={tone === 'quiet' || !sharing}
           data-testid={
             dataTestId ? `${dataTestId}-pill-${entry.id}` : undefined
           }

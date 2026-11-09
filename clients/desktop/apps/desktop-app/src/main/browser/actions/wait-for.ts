@@ -3,7 +3,7 @@ import type {
   BrowserDownloadTransfer,
   BrowserJavaScriptDialog,
   BrowserWaitForResult,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import { sanitizeNavigationUrl } from './effects';
 
 export type BrowserWaitForCommand = Extract<

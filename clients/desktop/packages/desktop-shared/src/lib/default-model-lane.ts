@@ -14,7 +14,7 @@ import {
   isGatewayRoutableModel,
   resolveGatewayModelEntry,
   resolveModelIdForGatewayId,
-} from './gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 
 export type BillingLane =
   | 'claude-native'

@@ -228,17 +228,10 @@ function Capsule({ children }: { children: ReactNode }): JSX.Element {
   );
 }
 
-function Timer({
-  spaced = false,
-}: {
-  /** 8px more room before the next control (16px in all). */
-  spaced?: boolean;
-}): JSX.Element {
+function Timer(): JSX.Element {
   const seconds = useElapsedSeconds();
   return (
-    <span
-      className={`flex h-8 shrink-0 items-center text-xs tabular-nums fg-secondary${spaced ? ' mr-2' : ''}`}
-    >
+    <span className="flex h-8 shrink-0 items-center text-xs tabular-nums fg-secondary">
       {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}
     </span>
   );
@@ -251,13 +244,17 @@ function OptionA(): JSX.Element {
         <CloseLargeIcon size={16} />
       </RoundButton>
       <Waveform density="regular" />
-      <Timer spaced />
-      <RoundButton label="Stop recording" tone="secondary">
-        <StopFilledIcon size={16} />
-      </RoundButton>
-      <RoundButton label="Send" tone="primary">
-        <ArrowUp width={16} height={16} />
-      </RoundButton>
+      <span className="flex shrink-0 items-center gap-4">
+        <Timer />
+        <span className="flex items-center gap-2">
+          <RoundButton label="Stop recording" tone="secondary">
+            <StopFilledIcon size={16} />
+          </RoundButton>
+          <RoundButton label="Send" tone="primary">
+            <ArrowUp width={16} height={16} />
+          </RoundButton>
+        </span>
+      </span>
     </Capsule>
   );
 }

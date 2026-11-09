@@ -13,6 +13,7 @@ import type {
   PluginMcpServerInfo,
   PluginProvider,
 } from '@canopy/protocol/plugins';
+import { DetailFact, ProviderSupportIcons } from '@canopy/ui-shared/components';
 import {
   Button,
   ErrorBanner,
@@ -32,7 +33,6 @@ import {
   type PluginHarnessConnectionRow,
   type MarkdownProps,
   type PluginDetailReadComponent,
-  Heading,
 } from '@canopy/ui-shared/components';
 import {
   DetailActionBar,
@@ -202,12 +202,18 @@ export interface PluginDetailHostProps {
   onOpenRelated?: (id: string) => void;
   /** The same app from other catalogs, linked under the metadata. */
   alternatives?: readonly UnifiedEntryAlternative[];
+  /** Opens the catalog this plugin came from. */
+  onOpenSource?: () => void;
+  /** That catalog's own name, as its page shows it. */
+  sourceName?: string;
   /** Opens a linked entry; alternatives render disabled without it. */
   onOpenEntryId?: (entryId: string) => void;
   /** Installed MCP rows hidden behind this plugin; each opens its settings. */
   bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
   relatedItems?: readonly PluginDetailRelatedItem[];
   relatedContent?: ReactNode;
+  /** Host-owned control rendered before the Mods table, when supported. */
+  modsControl?: ReactNode;
   loading?: boolean;
   error?: string;
   truncated?: boolean;
@@ -368,84 +374,23 @@ function useBuiltInInstall(
   return { visibleRows, installable, installing, message, install };
 }
 
-function BuiltInInstallPanel({
+function BuiltInInstallMessage({
   state,
-  brandName,
 }: {
   state: BuiltInInstall;
-  brandName: string;
-}): JSX.Element {
-  const { visibleRows, installing, message, install } = state;
-  const installingOnly = (provider: PluginProvider): boolean =>
-    installing?.length === 1 && installing[0] === provider;
-  return (
-    <Surface
-      as="section"
-      variant="outline"
-      padding="default"
-      data-testid="built-in-install-panel"
+}): JSX.Element | null {
+  const { message } = state;
+  if (!message) return null;
+  return message.tone === 'success' ? (
+    <p
+      className="text-xs fg-secondary"
+      data-testid="built-in-install-message"
+      role="status"
     >
-      <Heading level={3} variant="title">
-        Install in provider apps
-      </Heading>
-      <p className="text-xs fg-secondary mt-1">
-        This plugin is available inside {brandName}. Install it to Claude or
-        Codex to use it directly outside {brandName}.
-      </p>
-      <Surface variant="outline" size="small" className="mt-3">
-        <div className="divide-y">
-          {visibleRows.map((row) => (
-            <div
-              key={row.provider}
-              className="flex flex-wrap items-center justify-between gap-3 px-3 py-2"
-              data-testid={`built-in-install-row-${row.provider}`}
-            >
-              <div className="min-w-0">
-                <p className="text-s fg-primary">
-                  {providerLabel(row.provider)}
-                </p>
-                <p
-                  className="text-xs fg-secondary"
-                  data-testid={`built-in-install-status-${row.provider}`}
-                >
-                  {row.statusText}
-                </p>
-              </div>
-              {row.available && (
-                <Button
-                  type="button"
-                  size="compact"
-                  onClick={() => void install([row.provider])}
-                  disabled={installing !== null}
-                  data-testid={`built-in-install-button-${row.provider}`}
-                >
-                  {installingOnly(row.provider)
-                    ? `Installing to ${providerLabel(row.provider)}…`
-                    : row.installed
-                      ? `Reinstall in ${providerLabel(row.provider)}`
-                      : `Install to ${providerLabel(row.provider)}`}
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
-      </Surface>
-      {message?.tone === 'success' ? (
-        <p
-          className="mt-3 text-xs fg-secondary"
-          data-testid="built-in-install-message"
-          role="status"
-        >
-          {message.text}
-        </p>
-      ) : (
-        <ErrorBanner
-          className="mt-3"
-          error={message?.text}
-          testId="built-in-install-message"
-        />
-      )}
-    </Surface>
+      {message.text}
+    </p>
+  ) : (
+    <ErrorBanner error={message.text} testId="built-in-install-message" />
   );
 }
 
@@ -463,6 +408,8 @@ export function PluginDetailHost({
   headerIcon,
   titleAs = 'h2',
   authorDisplay,
+  onOpenSource,
+  sourceName,
   mcpTarget,
   updateNotice,
   statusContent,
@@ -477,6 +424,7 @@ export function PluginDetailHost({
   bundledServerRows,
   relatedItems = [],
   relatedContent,
+  modsControl,
   loading = false,
   error,
   truncated = false,
@@ -552,13 +500,74 @@ export function PluginDetailHost({
     }
   };
 
+  const nativeProviders = [
+    plugin.providerSupport.claude === 'native' ? 'Claude' : undefined,
+    plugin.providerSupport.codex === 'native' ? 'Codex' : undefined,
+  ].filter((provider): provider is string => provider !== undefined);
+  // A copy built for a harness this one can't run on sits on that harness's
+  // Not supported row. Other copies keep the Other versions row.
+  const usedAlternatives = new Set<string>();
+  const linkedHarnessRows = harnessRows?.map((row) => {
+    if (row.installation !== 'Not supported' || !onOpenEntryId) return row;
+    const copy = alternatives?.find((alternative) =>
+      alternative.label.toLowerCase().startsWith(row.name.toLowerCase()),
+    );
+    if (!copy) return row;
+    usedAlternatives.add(copy.entryId);
+    return {
+      ...row,
+      alternative: {
+        label: `Use ${copy.label}`,
+        onOpen: (): void => onOpenEntryId(copy.entryId),
+      },
+    };
+  });
+  const otherAlternatives = alternatives?.filter(
+    (alternative) => !usedAlternatives.has(alternative.entryId),
+  );
+  const metadataFacts =
+    nativeProviders.length > 0 || (otherAlternatives?.length ?? 0) > 0 ? (
+      <>
+        {nativeProviders.length > 0 && (
+          <DetailFact label="Marketplace" testId="plugin-detail-provider">
+            <ProviderSupportIcons
+              support={{
+                claude:
+                  plugin.providerSupport.claude === 'native'
+                    ? 'native'
+                    : 'none',
+                codex:
+                  plugin.providerSupport.codex === 'native' ? 'native' : 'none',
+              }}
+              size={14}
+            />
+            {onOpenSource ? (
+              <Button
+                variant="link"
+                data-testid="plugin-detail-source-link"
+                onClick={onOpenSource}
+              >
+                {sourceName ?? nativeProviders.join(' and ')}
+              </Button>
+            ) : (
+              (sourceName ?? nativeProviders.join(' and '))
+            )}
+          </DetailFact>
+        )}
+        {(otherAlternatives?.length ?? 0) > 0 && (
+          <DetailFact label="Other versions">
+            <PluginAlternatives
+              alternatives={otherAlternatives}
+              onOpenEntryId={onOpenEntryId}
+              testIdPrefix="plugin-detail-also-available"
+              linksOnly
+            />
+          </DetailFact>
+        )}
+      </>
+    ) : undefined;
   const metadataFooter = (
     <>
-      <PluginAlternatives
-        alternatives={alternatives}
-        onOpenEntryId={onOpenEntryId}
-        testIdPrefix="plugin-detail-also-available"
-      />
       <ErrorBanner className="mt-2" error={compatError || compatibilityError} />
       {plugin.providerSupport.codex === 'compat' && onToggleCodexCompat && (
         <Surface variant="group" className="mt-4">
@@ -688,9 +697,7 @@ export function PluginDetailHost({
     installing;
   const installActions = hasInstallActions ? (
     <>
-      {canInstall && builtInPanel && (
-        <BuiltInInstallPanel state={builtIn} brandName={brandName} />
-      )}
+      {canInstall && builtInPanel && <BuiltInInstallMessage state={builtIn} />}
       {plugin.externalSource && (
         <Surface variant="group" className="min-w-0">
           <div className="px-4 py-3">
@@ -739,17 +746,17 @@ export function PluginDetailHost({
         />
       )}
       {showInstallPrompt && !installing && (
-        <div className="flex flex-col items-center justify-center py-12 text-center">
+        <div className="flex flex-col items-center justify-center py-12 text-center gap-4">
           <p className="text-s fg-secondary">
             This plugin&rsquo;s content is hosted externally and needs to be
             installed.
           </p>
-          <ErrorBanner className="mt-4" error={installError} />
+          <ErrorBanner className="" error={installError} />
         </div>
       )}
       {installing && (
-        <div className="flex flex-col items-center justify-center py-12 text-center">
-          <LoadingSpinner tone="accent" className="mb-3" />
+        <div className="flex flex-col items-center justify-center py-12 text-center gap-3">
+          <LoadingSpinner tone="accent" />
           <p className="text-s fg-secondary">Installing plugin&hellip;</p>
         </div>
       )}
@@ -775,6 +782,39 @@ export function PluginDetailHost({
       </section>
     ) : undefined);
 
+  // The Works with table is where a provider install starts, so the built-in
+  // install lives on its row rather than in a second table.
+  const harnessRowsWithActions = linkedHarnessRows?.map((row) => {
+    if (!canInstall || !builtInPanel) return row;
+    // Cursor and OpenCode load the Claude package when there is one, else the
+    // Codex one, so their install is that provider's install.
+    const direct: PluginProvider | undefined =
+      row.id === 'claude' ? 'claude' : row.id === 'codex' ? 'codex' : undefined;
+    if (!direct && row.installation !== 'Not installed') return row;
+    const providerId: PluginProvider =
+      direct ?? (plugin.facets?.claude ? 'claude' : 'codex');
+    const provider = builtIn.visibleRows.find(
+      (candidate) => candidate.provider === providerId,
+    );
+    if (!provider?.available || row.installation === 'Not supported')
+      return row;
+    const label = providerLabel(provider.provider);
+    return {
+      ...row,
+      alternative: {
+        label: builtIn.installing?.includes(provider.provider)
+          ? `Installing to ${label}…`
+          : provider.installed
+            ? `Reinstall in ${label}`
+            : `Install to ${label}`,
+        iconOnly: provider.installed,
+        onOpen: (): void => {
+          if (builtIn.installing === null)
+            void builtIn.install([provider.provider]);
+        },
+      },
+    };
+  });
   return (
     <div data-testid="plugin-detail-host">
       {truncated && (
@@ -800,6 +840,7 @@ export function PluginDetailHost({
         readme={readme}
         markdownOptions={markdownOptions}
         metadataFooter={metadataFooter}
+        metadataFacts={metadataFacts}
         updateNotice={updateNotice}
         statusContent={
           statusContent ? (
@@ -810,7 +851,7 @@ export function PluginDetailHost({
             </DetailActionSlotsProvider>
           ) : undefined
         }
-        harnessRows={harnessRows}
+        harnessRows={harnessRowsWithActions}
         installActions={
           installContent || installActions ? (
             <DetailActionSlotsProvider slots={actionSlots}>
@@ -829,6 +870,7 @@ export function PluginDetailHost({
             </DetailActionSlotsProvider>
           ) : undefined
         }
+        modsControl={modsControl}
         hideComponents={
           (showInstallPrompt || installing) && mcpTarget === undefined
         }

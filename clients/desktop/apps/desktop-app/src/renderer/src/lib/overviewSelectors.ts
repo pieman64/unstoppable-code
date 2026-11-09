@@ -1,4 +1,4 @@
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import type {
   ChatMessage,

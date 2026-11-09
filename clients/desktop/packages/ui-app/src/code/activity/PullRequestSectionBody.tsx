@@ -1,7 +1,13 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
+import {
+  SPACE_ROLE_GAP_CLASS,
+  type SpaceRole,
+} from '@canopy/ui-shared/components/Stack';
 import { useMemo, useState, type JSX, type ReactNode } from 'react';
 import {
+  Stack,
   CheckStatusBadge,
   LoadingSpinner,
   Notice,
@@ -97,14 +103,6 @@ export interface PullRequestSectionCreationStep {
 export interface PullRequestSectionCreationProgress {
   readonly steps: readonly PullRequestSectionCreationStep[];
   readonly currentPhase: PullRequestCreationPhase;
-}
-
-function StateTag({
-  state,
-}: {
-  state: PullRequestSectionPrState;
-}): JSX.Element {
-  return <PullRequestStateBadge state={state} dataTestId="pr-status-badge" />;
 }
 
 function toCheckStatusBadgeStatus(
@@ -235,23 +233,15 @@ function groupStepsByRepo(steps: readonly PullRequestSectionCreationStep[]): {
   return { repos, skipped };
 }
 
-function CreationStatusBadge({
-  phase,
-}: {
-  phase: PullRequestCreationPhase;
-}): JSX.Element {
+function CreationStatusBadge(phase: PullRequestCreationPhase): JSX.Element {
   return (
-    <span
-      className={`inline-flex rounded-full border px-2 py-0.5 text-3xs font-medium ${
-        phase === 'error'
-          ? 'border-line-destructive bg-destructive-subtle fg-destructive'
-          : phase === 'done'
-            ? 'border-line-positive bg-success-subtle fg-success'
-            : 'border-fg-info/30 bg-info-subtle fg-info'
-      }`}
+    <Badge
+      tone={
+        phase === 'error' ? 'danger' : phase === 'done' ? 'success' : 'info'
+      }
     >
       {phase === 'error' ? 'Failed' : phase === 'done' ? 'Created' : 'Creating'}
-    </span>
+    </Badge>
   );
 }
 
@@ -276,45 +266,47 @@ function CreationProgressFeed({
 
   if (isMultiRepo) {
     return (
-      <div className="space-y-1.5">
-        <div className="mb-2 flex items-center gap-2">
-          <CreationStatusBadge phase={progress.currentPhase} />
+      <Stack gap="inline">
+        <div className="flex items-center gap-2">
+          {CreationStatusBadge(progress.currentPhase)}
         </div>
-        <div className="space-y-3">
-          {repos.map((repo) => {
-            const repoDone =
-              repo.currentPhase === 'done' || repo.currentPhase === 'error';
-            return (
-              <div key={repo.repoName}>
-                <div className="mb-1 flex items-center gap-1.5">
-                  <span className="text-xs font-medium fg-primary/80">
-                    {repo.repoName}
-                  </span>
-                  {repo.currentPhase === 'done' && (
-                    <span className="text-3xs fg-success">{'✓'}</span>
-                  )}
-                  {repo.currentPhase === 'error' && (
-                    <span className="text-3xs fg-destructive">{'✗'}</span>
-                  )}
-                </div>
-                <div className="pl-2">
-                  <PhaseList
-                    steps={repo.steps}
-                    currentPhase={repo.currentPhase}
-                    isCreating={isCreating && !repoDone}
-                  />
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        {repos.length > 0 && (
+          <Stack gap="item">
+            {repos.map((repo) => {
+              const repoDone =
+                repo.currentPhase === 'done' || repo.currentPhase === 'error';
+              return (
+                <Stack gap="tight" key={repo.repoName}>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-medium fg-primary/80">
+                      {repo.repoName}
+                    </span>
+                    {repo.currentPhase === 'done' && (
+                      <span className="text-3xs fg-success">{'✓'}</span>
+                    )}
+                    {repo.currentPhase === 'error' && (
+                      <span className="text-3xs fg-destructive">{'✗'}</span>
+                    )}
+                  </div>
+                  <div className="pl-2">
+                    <PhaseList
+                      steps={repo.steps}
+                      currentPhase={repo.currentPhase}
+                      isCreating={isCreating && !repoDone}
+                    />
+                  </div>
+                </Stack>
+              );
+            })}
+          </Stack>
+        )}
         {skipped.length > 0 && (
-          <p className="mt-2 text-2xs fg-secondary">
+          <p className="text-2xs fg-secondary">
             Skipped {skipped.length} {skipped.length === 1 ? 'repo' : 'repos'}{' '}
             (no changes): {skipped.join(', ')}
           </p>
         )}
-      </div>
+      </Stack>
     );
   }
 
@@ -384,14 +376,14 @@ export function PullRequestRepoDetail({
   }
 
   return (
-    <div className="space-y-3">
+    <Stack gap="item">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-s font-medium fg-primary">
             PR #{s.prNumber}
           </span>
-          <StateTag state={s.state} />
+          <PullRequestStateBadge state={s.state} dataTestId="pr-status-badge" />
         </div>
         {/* Portal snapshots can carry a numbered PR without a URL (lenient
             wire contract); an empty href would self-navigate, so the link
@@ -412,8 +404,8 @@ export function PullRequestRepoDetail({
 
       {/* Checks */}
       {s.checkDetails.length > 0 && (
-        <div>
-          <p className="mb-1 text-3xs font-semibold fg-secondary">
+        <Stack gap="tight">
+          <p className="text-3xs font-semibold fg-secondary">
             Checks (
             {
               s.checkDetails.filter(
@@ -425,8 +417,8 @@ export function PullRequestRepoDetail({
           <div
             className={
               framelessChecks
-                ? 'space-y-1 pr-1'
-                : 'max-h-70 space-y-1 overflow-y-auto pr-1'
+                ? 'grid grid-cols-1 content-start gap-1 pr-1'
+                : 'max-h-70 grid grid-cols-1 content-start gap-1 overflow-y-auto pr-1'
             }
           >
             {sortedChecks.map((check: PullRequestSectionCheckDetail, index) => (
@@ -451,22 +443,22 @@ export function PullRequestRepoDetail({
               </div>
             ))}
           </div>
-        </div>
+        </Stack>
       )}
 
       {/* Reviews */}
-      <div>
-        <p className="mb-1 text-3xs font-semibold fg-secondary">Reviews</p>
+      <Stack gap="tight">
+        <p className="text-3xs font-semibold fg-secondary">Reviews</p>
         <ReviewSummary
           status={s.reviewStatus}
           isMergeReady={s.isMergeReady === true}
         />
-      </div>
+      </Stack>
 
       {/* Labels */}
       {s.labels && s.labels.length > 0 && (
-        <div data-testid="pr-labels-section">
-          <p className="mb-1 text-3xs font-semibold fg-secondary">Labels</p>
+        <Stack gap="tight" data-testid="pr-labels-section">
+          <p className="text-3xs font-semibold fg-secondary">Labels</p>
           <div className="flex flex-wrap gap-1">
             {s.labels.map((label) => (
               <PrLabelBadge
@@ -478,7 +470,7 @@ export function PullRequestRepoDetail({
               />
             ))}
           </div>
-        </div>
+        </Stack>
       )}
 
       {/* Conflicts */}
@@ -494,7 +486,7 @@ export function PullRequestRepoDetail({
           {s.commentCount} {s.commentCount === 1 ? 'comment' : 'comments'}
         </p>
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -514,7 +506,20 @@ export interface PullRequestSectionBodyProps {
    * surfaces). Absent on hosts without those capabilities.
    */
   readonly children?: ReactNode;
+  /** Opt-in extension spacing, including its initial inset when no PR body is visible. */
+  readonly extensionGap?: SpaceRole;
 }
+
+const EXTENSION_INITIAL_INSET_CLASS: Readonly<Record<SpaceRole, string>> = {
+  tight: 'pt-1',
+  inline: 'pt-2',
+  item: 'pt-3',
+  group: 'pt-4',
+  block: 'pt-5',
+  section: 'pt-6',
+  page: 'pt-8',
+  hero: 'pt-10',
+};
 
 export function PullRequestSectionBody({
   repos,
@@ -522,6 +527,7 @@ export function PullRequestSectionBody({
   creationProgress,
   framelessChecks,
   children,
+  extensionGap,
 }: PullRequestSectionBodyProps): JSX.Element {
   const [expandedRepos, setExpandedRepos] = useState<Set<string>>(new Set());
 
@@ -559,7 +565,7 @@ export function PullRequestSectionBody({
     });
   }
 
-  return (
+  const content = (
     <>
       {showProgress && creationProgress ? (
         <CreationProgressFeed
@@ -567,7 +573,7 @@ export function PullRequestSectionBody({
           isCreating={isCreating}
         />
       ) : showHybridMultiRepo && creationProgress && repos ? (
-        <div className="space-y-2">
+        <Stack gap="inline">
           {repos.map((repo) => {
             const creationGroup = creationRepoGroups.repos.find(
               (g) => g.repoName === repo.repoName,
@@ -578,8 +584,8 @@ export function PullRequestSectionBody({
                 creationGroup.currentPhase === 'done' ||
                 creationGroup.currentPhase === 'error';
               return (
-                <div key={repo.repoId}>
-                  <div className="mb-1 flex items-center gap-1.5">
+                <Stack gap="tight" key={repo.repoId}>
+                  <div className="flex items-center gap-1.5">
                     <span className="text-xs font-medium fg-primary/80">
                       {repo.repoName}
                     </span>
@@ -589,7 +595,7 @@ export function PullRequestSectionBody({
                     {creationGroup.currentPhase === 'error' && (
                       <span className="text-3xs fg-destructive">{'✗'}</span>
                     )}
-                    <CreationStatusBadge phase={creationGroup.currentPhase} />
+                    {CreationStatusBadge(creationGroup.currentPhase)}
                   </div>
                   <div className="pl-2">
                     <PhaseList
@@ -598,12 +604,12 @@ export function PullRequestSectionBody({
                       isCreating={isCreating && !repoDone}
                     />
                   </div>
-                </div>
+                </Stack>
               );
             }
 
             return (
-              <div key={repo.repoId}>
+              <Stack gap="inline" key={repo.repoId}>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
@@ -615,7 +621,12 @@ export function PullRequestSectionBody({
                       className={`flex-shrink-0 transition-transform ${expandedRepos.has(repo.repoId) ? 'rotate-90' : ''}`}
                     />
                     <span className="truncate">{repo.repoName}</span>
-                    {repo.status && <StateTag state={repo.status.state} />}
+                    {repo.status && (
+                      <PullRequestStateBadge
+                        state={repo.status.state}
+                        dataTestId="pr-status-badge"
+                      />
+                    )}
                   </button>
                   {repo.status && repo.status.prUrl !== '' && (
                     <a
@@ -630,7 +641,7 @@ export function PullRequestSectionBody({
                   )}
                 </div>
                 {expandedRepos.has(repo.repoId) && (
-                  <div className="mt-2 pl-4">
+                  <div className="pl-4">
                     <PullRequestRepoDetail
                       status={repo.status}
                       hideGitHubLink
@@ -638,11 +649,11 @@ export function PullRequestSectionBody({
                     />
                   </div>
                 )}
-              </div>
+              </Stack>
             );
           })}
           {creationRepoGroups.skipped.length > 0 && (
-            <p className="mt-2 text-2xs fg-secondary">
+            <p className="text-2xs fg-secondary">
               Skipped {creationRepoGroups.skipped.length}{' '}
               {creationRepoGroups.skipped.length === 1 ? 'repo' : 'repos'} (no
               changes): {creationRepoGroups.skipped.join(', ')}
@@ -659,11 +670,11 @@ export function PullRequestSectionBody({
                 </p>
               </div>
             ))}
-        </div>
+        </Stack>
       ) : showPrDetails && !hasAnyPr ? null : showPrDetails && isMultiRepo ? (
-        <div className="space-y-2">
+        <Stack gap="inline">
           {repos.map((repo) => (
-            <div key={repo.repoId}>
+            <Stack gap="inline" key={repo.repoId}>
               <div className="flex items-center gap-1">
                 <button
                   type="button"
@@ -675,7 +686,12 @@ export function PullRequestSectionBody({
                     className={`flex-shrink-0 transition-transform ${expandedRepos.has(repo.repoId) ? 'rotate-90' : ''}`}
                   />
                   <span className="truncate">{repo.repoName}</span>
-                  {repo.status && <StateTag state={repo.status.state} />}
+                  {repo.status && (
+                    <PullRequestStateBadge
+                      state={repo.status.state}
+                      dataTestId="pr-status-badge"
+                    />
+                  )}
                 </button>
                 {repo.status && repo.status.prUrl !== '' && (
                   <a
@@ -690,7 +706,7 @@ export function PullRequestSectionBody({
                 )}
               </div>
               {expandedRepos.has(repo.repoId) && (
-                <div className="mt-2 pl-4">
+                <div className="pl-4">
                   <PullRequestRepoDetail
                     status={repo.status}
                     hideGitHubLink
@@ -698,9 +714,9 @@ export function PullRequestSectionBody({
                   />
                 </div>
               )}
-            </div>
+            </Stack>
           ))}
-        </div>
+        </Stack>
       ) : showPrDetails ? (
         <PullRequestRepoDetail
           status={repos[0]?.status ?? null}
@@ -709,5 +725,25 @@ export function PullRequestSectionBody({
       ) : null}
       {children}
     </>
+  );
+  const hasBody = Boolean(
+    (showProgress && creationProgress) ||
+    (showHybridMultiRepo && creationProgress && repos) ||
+    (showPrDetails && hasAnyPr),
+  );
+  return extensionGap === undefined ? (
+    content
+  ) : (
+    <Stack gap={extensionGap} className="empty:hidden">
+      {hasBody ? (
+        content
+      ) : (
+        <div
+          className={`flex flex-col ${SPACE_ROLE_GAP_CLASS[extensionGap]} ${EXTENSION_INITIAL_INSET_CLASS[extensionGap]} empty:hidden`}
+        >
+          {children}
+        </div>
+      )}
+    </Stack>
   );
 }

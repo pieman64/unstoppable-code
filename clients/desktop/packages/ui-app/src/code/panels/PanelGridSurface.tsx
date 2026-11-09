@@ -56,6 +56,7 @@ import {
   acquirePanelContentElement,
   PanelContentRoot,
 } from './PanelContentRoot';
+import type { AppErrorBoundaryHost } from '../../feedback/AppErrorBoundary';
 import {
   PanelTabContextMenu,
   type ClosePanelTab,
@@ -80,6 +81,8 @@ export interface PanelAddTabMenuRenderProps {
 
 export interface PanelGridSurfaceServices {
   renderPanelContent: (props: PanelContentProps) => ReactNode;
+  /** Records a panel's render failure and offers its report. */
+  panelErrorHost?: AppErrorBoundaryHost;
   renderTabIcon: (tab: PanelTabModel) => ReactNode;
   renderCollapsedTabIcon: (tab: PanelTabModel) => ReactNode;
   renderTabLabel: (tab: PanelTabModel) => ReactNode;
@@ -886,6 +889,7 @@ export function PanelGridSurface({
         auxLayoutKeys={auxLayoutKeys}
         includeAuxWindows={includeAuxWindowContent}
         deferHiddenContent={isChatPanelKind}
+        errorHost={services.panelErrorHost}
       />
     </>
   );

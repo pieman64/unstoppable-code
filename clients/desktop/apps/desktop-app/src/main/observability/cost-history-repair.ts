@@ -2,7 +2,7 @@ import type {
   AgentAuditEntry,
   AgentAuditModelUsage,
 } from '@canopy/desktop-shared/types';
-import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { mkdtemp, mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';

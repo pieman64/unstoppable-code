@@ -1,3 +1,5 @@
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
 import { Button, Surface } from '@canopy/ui-shared/components';
 import {
   useEffect,
@@ -9,8 +11,10 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { Tooltip } from '@canopy/ui-shared';
-import { FieldError, TextInput } from '@canopy/ui-shared/components';
+import { TextInput } from '@canopy/ui-shared/components';
 import { PencilIcon as AppCatalogPencilIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 
 export interface LabelFieldProps {
   /** Current custom label, or undefined/empty when none is set. */
@@ -52,7 +56,7 @@ export function LabelField({
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(trimmedLabel);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<InlineFailure | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const errorId = useId();
 
@@ -99,8 +103,12 @@ export function LabelField({
       try {
         await onSubmit(next);
         setEditing(false);
-      } catch {
-        setError('Could not save label. Try again.');
+      } catch (cause) {
+        // A save failure is the server's, not the input's: a banner under
+        // the field, keeping the typed value for another try.
+        const appError = toAppError(resolveClientAppError(cause));
+        if (appError)
+          setError(inlineFailure(appError, "Couldn't save the label."));
       } finally {
         setSaving(false);
       }
@@ -109,7 +117,7 @@ export function LabelField({
 
   return (
     <Surface variant="outline">
-      <div className="px-3 py-2">
+      <div className="flex flex-col gap-1 px-3 py-2">
         <div className="flex items-center justify-between gap-2">
           <span className="text-3xs font-medium fg-secondary">Label</span>
           {!editing && (
@@ -128,7 +136,7 @@ export function LabelField({
           )}
         </div>
         {editing ? (
-          <div className="mt-1 flex flex-col gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <div className="flex items-center gap-1.5">
               <TextInput
                 ref={inputRef}
@@ -167,15 +175,19 @@ export function LabelField({
                 Cancel
               </Button>
             </div>
-            {error ? (
-              <div role="alert">
-                <FieldError id={errorId}>{error}</FieldError>
-              </div>
-            ) : null}
+            <div id={errorId}>
+              <DesktopErrorBanner
+                className=""
+                error={error?.error}
+                details={error?.details}
+                onRetry={submit}
+                onDismiss={() => setError(null)}
+              />
+            </div>
           </div>
         ) : (
           <p
-            className={`mt-1 truncate text-xs ${
+            className={`truncate text-xs ${
               trimmedLabel ? 'fg-primary' : 'fg-secondary'
             }`}
             title={trimmedLabel || fallback}

@@ -13,6 +13,7 @@ import {
   type RefObject,
 } from 'react';
 import {
+  Surface,
   CustomizeBreadcrumbs,
   EmptyState,
   Notice,
@@ -20,7 +21,7 @@ import {
 import type {
   ExecutionState,
   ExecutionSummary,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { AppAdvisorJson } from '@canopy/desktop-shared/types';
 import type { CostNavigator } from '@canopy/app-core';
 import { toPipelineRunDefinitionViewModel } from '@canopy/desktop-shared/pipelines/pipeline-read-detail-adapter';
@@ -689,7 +690,7 @@ export function PipelineExecutionDetail({
 
   const renderChildExecution = useCallback(
     (childExecutionId: string): JSX.Element => (
-      <div className="mt-1">
+      <div className="pt-1 pl-2">
         <PipelineExecutionInlineDetail
           executionId={childExecutionId}
           owner={resolvedOwner}
@@ -824,44 +825,46 @@ export function PipelineExecutionDetail({
     >
       {renderHeader?.({ title, activeExecutionId, state, summary })}
       {(viewStack.length > 0 || state?.rerun_source_id) && (
-        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b px-5 py-2 text-xs">
-          {viewStack.length > 0 && (
-            <CustomizeBreadcrumbs
-              items={[
-                {
-                  key: 'root',
-                  label: rootLabel,
-                  onSelect: () => navigateToBreadcrumb(-1),
-                },
-                ...viewStack.map((entry, index) => ({
-                  key: entry.executionId,
-                  label: entry.label,
-                  onSelect: () => navigateToBreadcrumb(index),
-                })),
-              ]}
-            />
-          )}
-          {state?.rerun_source_id && (
-            <span className="text-2xs fg-secondary">
-              Started over from{' '}
-              <span className="font-medium fg-primary/80">
-                {rerunSourceSummary?.pipeline_name ??
-                  state.rerun_source_id.slice(0, 8)}
+        <Surface variant="section" boundary="bottom" className="shrink-0">
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2 text-xs">
+            {viewStack.length > 0 && (
+              <CustomizeBreadcrumbs
+                items={[
+                  {
+                    key: 'root',
+                    label: rootLabel,
+                    onSelect: () => navigateToBreadcrumb(-1),
+                  },
+                  ...viewStack.map((entry, index) => ({
+                    key: entry.executionId,
+                    label: entry.label,
+                    onSelect: () => navigateToBreadcrumb(index),
+                  })),
+                ]}
+              />
+            )}
+            {state?.rerun_source_id && (
+              <span className="text-2xs fg-secondary">
+                Started over from{' '}
+                <span className="font-medium fg-primary/80">
+                  {rerunSourceSummary?.pipeline_name ??
+                    state.rerun_source_id.slice(0, 8)}
+                </span>
               </span>
-            </span>
-          )}
-        </div>
+            )}
+          </div>
+        </Surface>
       )}
 
       {!state && loadFailed && renderLoadFailed !== undefined ? (
         renderLoadFailed()
       ) : !state ? (
-        <div className="flex min-h-80 flex-1 items-center justify-center p-6 text-s fg-secondary">
+        <div className="flex min-h-80 flex-1 items-center justify-center gap-3 p-6 text-s fg-secondary">
           {loadFailed ? (
             'Failed to load execution details.'
           ) : (
             <>
-              <LoadingSpinner tone="active" className="mr-3" />
+              <LoadingSpinner tone="active" />
               Loading execution details…
             </>
           )}
@@ -933,15 +936,15 @@ export function PipelineExecutionDetail({
               className="min-w-0 flex-1 overflow-y-auto focus:outline-none"
               data-testid="pipeline-execution-detail-body"
             >
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto p-5 pt-4">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-auto p-5 pt-4">
                 {visibleSelection === null ? (
                   <>
                     {pauseResumeContent}
                     {state.error && (
                       <Notice
+                        className=""
                         intent="destructive"
                         title="Execution error"
-                        className="mb-4"
                       >
                         <span className="whitespace-pre-wrap break-words font-mono">
                           {state.error}

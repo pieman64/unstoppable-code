@@ -5,6 +5,7 @@ import {
   REMOTE_UPLOAD_TOO_LARGE_MESSAGE,
   type RemoteControlApi,
   type RemoteControlContext,
+  type RemoteControlPairingEvent,
   type RemoteControlState,
   type RemotePathPickerRequest,
 } from '@canopy/desktop-shared/types';
@@ -46,6 +47,20 @@ export function createRemoteControlApi(
       ipc.invoke(IPC_CHANNELS.remoteControlOpenMachine, deviceId),
     setAllowIncoming: (allow) =>
       ipc.invoke(IPC_CHANNELS.remoteControlSetAllowIncoming, allow),
+    openPairingWindow: () =>
+      ipc.invoke(IPC_CHANNELS.remoteControlOpenPairingWindow),
+    closePairingWindow: () =>
+      ipc.invoke(IPC_CHANNELS.remoteControlClosePairingWindow),
+    onPairingEvent: (listener) => {
+      const handler = (
+        _event: IpcRendererEvent,
+        pairingEvent: RemoteControlPairingEvent,
+      ): void => listener(pairingEvent);
+      ipc.on(IPC_CHANNELS.remoteControlPairingEvent, handler);
+      return () => {
+        ipc.removeListener(IPC_CHANNELS.remoteControlPairingEvent, handler);
+      };
+    },
     startPairing: (deviceId) =>
       ipc.invoke(IPC_CHANNELS.remoteControlStartPairing, deviceId),
     cancelPairing: () => ipc.invoke(IPC_CHANNELS.remoteControlCancelPairing),

@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import type { JSX, Ref } from 'react';
 import { STATUS_GLYPHS, type StatusGlyphState } from '../lib/status-glyph';
 import { SpinnerStyleProvider } from './spinner-style';
 import { StatusGlyph } from './StatusGlyph';
@@ -8,6 +8,8 @@ import { ThinkingSpinner } from './ThinkingSpinner';
  * The one progress set (docs/design/feedback.md#progress): a labelled 6px
  * bar, a 16px ring for a control too small for a bar, and a row of status
  * glyphs for work made of steps. Every part takes a role, never a color.
+ * `SegmentsBar` shares the capsule for data rather than progress, so its
+ * parts take chart colors.
  */
 
 /**
@@ -126,6 +128,97 @@ export function ProgressBar({
         )}
       </div>
       {bar}
+    </div>
+  );
+}
+
+/** One part of a {@link SegmentsBar}. */
+export interface BarSegment {
+  readonly key: string;
+  /** The part's size in the caller's unit. Only positive finite values draw. */
+  readonly value: number;
+  /** A chart series color: this is data, so it takes a color, not a tone. */
+  readonly color: string;
+}
+
+/** `compact` is 4px, `default` 6px and `large` 8px. */
+export type SegmentsBarSize = ProgressBarSize | 'large';
+
+const SEGMENTS_HEIGHT: Readonly<Record<SegmentsBarSize, string>> = {
+  ...BAR_HEIGHT,
+  large: 'h-2',
+};
+
+export interface SegmentsBarProps {
+  readonly segments: readonly BarSegment[];
+  /** The filled length, 0..1, clamped. The segments split it by value. */
+  readonly scale?: number;
+  /**
+   * The bar's whole accessible name, with its figures. Leave it out when the
+   * row around the bar already says them: the bar is then decorative.
+   */
+  readonly label?: string;
+  readonly size?: SegmentsBarSize;
+  /**
+   * The filled length, for a caller that animates it. It rests without a
+   * transform, with its origin at the top left, as `useFlipBox` needs.
+   */
+  readonly fillRef?: Ref<HTMLDivElement>;
+  readonly dataTestId?: string;
+}
+
+/**
+ * A stacked share on the muted track: a filled length split into colored
+ * parts, a pixel apart. For a chart-like split (cost, context window) or one
+ * row's share of the largest, never for work in progress. A part with no value
+ * draws nothing, and with none left the track stays empty.
+ */
+export function SegmentsBar({
+  segments,
+  scale = 1,
+  label,
+  size = 'default',
+  fillRef,
+  dataTestId,
+}: SegmentsBarProps): JSX.Element {
+  const parts = segments.filter(
+    (segment) => Number.isFinite(segment.value) && segment.value > 0,
+  );
+  // Normalize before summing so large finite values cannot overflow the sum.
+  const largest = parts.reduce(
+    (max, segment) => Math.max(max, segment.value),
+    0,
+  );
+  const total = parts.reduce(
+    (sum, segment) => sum + segment.value / largest,
+    0,
+  );
+  return (
+    <div
+      role={label === undefined ? undefined : 'img'}
+      aria-label={label}
+      aria-hidden={label === undefined ? true : undefined}
+      data-testid={dataTestId}
+      className={`flex w-full overflow-hidden rounded-full bg-muted ${SEGMENTS_HEIGHT[size]}`}
+    >
+      <div
+        ref={fillRef}
+        aria-hidden="true"
+        className="flex h-full origin-top-left gap-px overflow-hidden rounded-full"
+        style={{ width: `${total > 0 ? clampPercent(scale * 100) : 0}%` }}
+      >
+        {parts.map((segment) => (
+          <span
+            key={segment.key}
+            className="h-full"
+            style={{
+              flexGrow: segment.value / largest / total,
+              flexBasis: 0,
+              backgroundColor: segment.color,
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }

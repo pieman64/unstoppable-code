@@ -18,6 +18,15 @@ import { z } from 'zod';
 
 export const DEVICE_RELAY_PROTOCOL_VERSION = 2;
 
+export const DEVICE_KINDS = ['desktop', 'mobile', 'browser', 'hosted'] as const;
+export type DeviceKind = (typeof DEVICE_KINDS)[number];
+export const DEVICE_RELAY_FEATURE_DEVICE_KIND = 'device-kind';
+
+/** Missing kind is the legacy desktop profile, never a platform inference. */
+export function deviceKindOrDefault(device: { kind?: DeviceKind }): DeviceKind {
+  return device.kind ?? 'desktop';
+}
+
 /** WebSocket path the relay accepts device connections on. */
 export const DEVICE_RELAY_CONNECT_PATH = '/v2/connect';
 
@@ -96,10 +105,25 @@ const PUBLIC_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 export const DeviceRelayTokenRequestSchema = z.object({
   deviceId: z.string().regex(DEVICE_ID_PATTERN),
+  kind: z.enum(DEVICE_KINDS).optional(),
 });
 export type DeviceRelayTokenRequest = z.infer<
   typeof DeviceRelayTokenRequestSchema
 >;
+
+export const DEVICE_RELAY_TOKEN_ERROR_CODES = [
+  'unauthorized',
+  'personal_account_required',
+  'feature_disabled',
+  'device_relay_not_configured',
+  'payload_too_large',
+  'invalid_request',
+  'origin_mismatch',
+  'entitlement_denied',
+  'entitlement_unavailable',
+] as const;
+export type DeviceRelayTokenErrorCode =
+  (typeof DEVICE_RELAY_TOKEN_ERROR_CODES)[number];
 
 export interface DeviceRelayTokenResponse {
   token: string;
@@ -123,7 +147,8 @@ export const DeviceRelayTokenClaimsSchema = z.object({
   userId: z.string().min(1),
   deviceId: z.string().regex(DEVICE_ID_PATTERN),
   /** Milliseconds since the epoch. */
-  expiresAt: z.number().int().positive(),
+  expiresAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  kind: z.enum(DEVICE_KINDS).optional(),
 });
 export type DeviceRelayTokenClaims = z.infer<
   typeof DeviceRelayTokenClaimsSchema
@@ -140,6 +165,7 @@ export const DeviceRelayDeviceInfoSchema = z.object({
   deviceId: z.string().regex(DEVICE_ID_PATTERN),
   name: z.string().min(1).max(120),
   platform: z.enum(DEVICE_PLATFORMS),
+  kind: z.enum(DEVICE_KINDS).optional(),
   appVersion: z.string().min(1).max(64),
   publicKey: z.string().regex(PUBLIC_KEY_PATTERN),
   /** Whether this device currently accepts remote-control sessions. */
@@ -175,6 +201,7 @@ export type DeviceRelayErrorCode = (typeof DEVICE_RELAY_ERROR_CODES)[number];
 export const DeviceRelayServerMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('ready'),
+    features: z.array(z.string().min(1).max(64)).max(32).optional(),
     deviceId: z.string().regex(DEVICE_ID_PATTERN),
     peers: z.array(DeviceRelayDeviceInfoSchema),
   }),

@@ -1,6 +1,6 @@
 import type { SidebarItem } from '@canopy/desktop-shared/types';
 import { discoverProjectPipelines } from './project-pipeline-discovery';
-import type { ProjectPipelineRequest } from '@canopy/desktop-shared/types/pipeline';
+import type { ProjectPipelineRequest } from '@canopy/execution-engine/types/pipeline';
 import { getCoworkWorkspaceRootDir } from '../lib/paths';
 import { getManagedCuratedPipeline } from './curated-pipeline-catalog';
 import {
@@ -14,17 +14,17 @@ import * as path from 'node:path';
 import { getProjectPipelinesDirCandidates } from '@canopy/desktop-shared/pipelines/config-paths';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { isPathInside } from '../lib/path-safety';
-import type { PipelineShareSource } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineShareSource } from '@canopy/execution-engine/types/pipeline';
 import { parseSharedPipelineLocalId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import type {
   ResourceContextInput,
   InstallReceipt,
-} from '@canopy/desktop-shared/lib/resource-context-policy';
+} from '@canopy/execution-engine/lib/resource-context-policy';
 import { getResourceContextPolicyService } from '../services/resource-context-policy-service';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import { createHash } from 'node:crypto';
-import type { SharedPipelineDetail } from '@canopy/desktop-shared/types/pipeline';
-import { classifyResourceOwner } from '@canopy/desktop-shared/lib/resource-context';
+import type { SharedPipelineDetail } from '@canopy/execution-engine/types/pipeline';
+import { classifyResourceOwner } from '@canopy/execution-engine/lib/resource-context';
 import { createResourceInstallReceiptsStore } from '../lib/resource-install-receipts';
 import { readCanopyCloudAccountWithStatus } from '../lib/canopy-cloud-account-store';
 import {

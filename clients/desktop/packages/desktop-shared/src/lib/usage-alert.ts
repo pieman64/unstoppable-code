@@ -6,7 +6,7 @@ import type {
   AgentUsageOverview,
   ProviderRateLimitWindow,
   ProviderUsageSummary,
-} from '../types/observability';
+} from '@canopy/execution-engine/types/observability';
 import type { AiCreditsRoutingMode, CanopyCloudAiCreditsState } from '../types';
 import type { AccountProxyStatus } from '../types/account-proxy';
 import { subscriptionUsageLimits } from './subscription-usage';

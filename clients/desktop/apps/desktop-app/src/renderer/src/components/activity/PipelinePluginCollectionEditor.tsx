@@ -18,7 +18,7 @@ import type {
   PipelinePluginCollection,
   PipelinePluginCollectionPreference,
   PipelinePluginDefaultPreviewItem,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { Disclosure } from '@canopy/ui-shared/components';
 
 interface PipelinePluginCollectionEditorProps {

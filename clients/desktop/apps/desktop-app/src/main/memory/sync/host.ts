@@ -55,10 +55,10 @@ import {
 
 /*
  * The desktop host of the memory sync engine (design §8, D15): the Electron
- * side the engine itself never touches. It runs while
- * `canopy-desktop-memory-sync` is on, for the signed-in account when that
- * account carries `memory-sync-v1` and is not a guest (guests never sync,
- * §8.1). It supplies the device identity (the Portal device, the
+ * side the engine itself never touches. It runs for the signed-in account
+ * while that account carries `memory-sync-v1`, which Canopy Cloud mints
+ * behind `canopy-memory-sync-enabled`, and is not a guest (guests never
+ * sync, §8.1). It supplies the device identity (the Portal device, the
  * installation generation and a nonce per launch), the bearer key, the
  * `memory.scope` nudge stream and resume-from-sleep pulls, and installs the
  * replica locator and note hooks so the local store reads and writes the
@@ -279,7 +279,8 @@ function onReplicasChanged(): void {
 }
 
 const registry = new MemoryReplicaRegistry(onReplicasChanged);
-let enabled = false;
+let started = false;
+let attached = false;
 let engine: MemorySyncEngine | null = null;
 let stream: { stop: () => void } | null = null;
 let unsubscribers: Array<() => void> = [];
@@ -303,9 +304,33 @@ async function readEligibleAccountId(): Promise<string | null> {
   return result?.status === 'ok' ? memorySyncAccountId(result.entry) : null;
 }
 
+/**
+ * Installs the replica locator and note hooks, so the local store reads and
+ * writes the account's replicas while an engine runs.
+ */
+function attachReplicas(): void {
+  attached = true;
+  setLocalMemoryReplicaLocator(
+    createMemoryReplicaLocator(registry, resolvableAccountId),
+  );
+  setLocalMemoryReplicaHooks(createMemoryReplicaHooks(registry));
+}
+
+/**
+ * Removes them, so every scope resolves to its device-local folder again, as
+ * on a build without sync; replicas stay on disk.
+ */
+function detachReplicas(): void {
+  if (!attached) return;
+  attached = false;
+  setLocalMemoryReplicaLocator(null);
+  setLocalMemoryReplicaHooks(null);
+}
+
 async function stopEngine(): Promise<void> {
   stream?.stop();
   stream = null;
+  detachReplicas();
   const current = engine;
   engine = null;
   if (current === null) return;
@@ -315,6 +340,7 @@ async function stopEngine(): Promise<void> {
 
 async function startEngine(accountId: string): Promise<void> {
   const device = await readDevice();
+  attachReplicas();
   const next = new MemorySyncEngine({
     accountId,
     replicasRoot: getMemoryReplicasRootDir(),
@@ -351,11 +377,12 @@ async function startEngine(accountId: string): Promise<void> {
 }
 
 async function reconcileNow(): Promise<void> {
-  const desired = enabled ? await readEligibleAccountId() : null;
+  const desired = started ? await readEligibleAccountId() : null;
   if (desired !== null && desired === engine?.accountId) return;
   await stopEngine();
-  if (desired !== null && enabled) {
+  if (desired !== null && started) {
     await startEngine(desired).catch((error: unknown) => {
+      if (engine === null) detachReplicas();
       logMainProcessWarn('Memory sync could not start', {
         error: error instanceof Error ? error.name : 'unknown',
       });
@@ -373,39 +400,29 @@ function onResume(): void {
 }
 
 /**
- * Follows `canopy-desktop-memory-sync`. Turning it off stops the engine and
+ * Follows the signed-in account from launch: the engine runs while it
+ * carries `memory-sync-v1`. Losing the capability stops the engine and
  * removes the locator, so every scope resolves to its device-local folder
- * again, as on a build without sync; replicas stay on disk.
+ * again; replicas stay on disk.
  */
-export function setMemorySyncEnabled(next: boolean): void {
-  if (next === enabled) return;
-  enabled = next;
-  if (next) {
-    setLocalMemoryReplicaLocator(
-      createMemoryReplicaLocator(registry, resolvableAccountId),
-    );
-    setLocalMemoryReplicaHooks(createMemoryReplicaHooks(registry));
-    powerMonitor.on('resume', onResume);
-    unsubscribers = [
-      subscribeCanopyCloudAccountChanges(() => {
-        void reconcile();
-      }),
-      (): void => {
-        powerMonitor.removeListener('resume', onResume);
-      },
-    ];
-  } else {
-    for (const unsubscribe of unsubscribers) unsubscribe();
-    unsubscribers = [];
-    setLocalMemoryReplicaLocator(null);
-    setLocalMemoryReplicaHooks(null);
-  }
+export function startMemorySync(): void {
+  if (started) return;
+  started = true;
+  powerMonitor.on('resume', onResume);
+  unsubscribers = [
+    subscribeCanopyCloudAccountChanges(() => {
+      void reconcile();
+    }),
+    (): void => {
+      powerMonitor.removeListener('resume', onResume);
+    },
+  ];
   void reconcile();
 }
 
 /** Stops sync at quit. Never rejects. */
 export async function stopMemorySync(): Promise<void> {
-  enabled = false;
+  started = false;
   for (const unsubscribe of unsubscribers) unsubscribe();
   unsubscribers = [];
   await reconcile().catch(() => undefined);

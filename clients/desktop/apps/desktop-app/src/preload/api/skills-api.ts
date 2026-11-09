@@ -5,7 +5,7 @@ import { SKILLS_CHANNELS } from '@canopy/desktop-shared/constants/skill-channels
 import type {
   PipelinePackageAnalysisSummary,
   PipelinePackageReadiness,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   AnalyzeSkillCapabilityPackageRequest,
   CommitSkillCapabilityPackageRequest,

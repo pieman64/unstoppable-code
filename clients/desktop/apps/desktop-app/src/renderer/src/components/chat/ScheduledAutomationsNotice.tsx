@@ -268,7 +268,8 @@ export function ScheduledAutomationsNoticeView({
         data-testid="chat-input-scheduled-automations-notice"
         // The notice itself is static (`role="none"`); the failure arrives
         // after the click, so it needs its own live region to be announced.
-        detail={runError ? <span role="alert">{runError}</span> : undefined}
+        detail={runError ?? undefined}
+        announceDetail
         actions={
           <>
             <NoticeButton

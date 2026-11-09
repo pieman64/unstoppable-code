@@ -59,6 +59,7 @@ const portableBlock = z.discriminatedUnion('type', [
         'automation_info',
         'claude_terminal_sync_warning',
         'account_proxy_switch',
+        'claude_mods_skipped',
         'rebase_resolution_info',
         'builtin_gh_chat_info',
         'pending_setup_info',

@@ -1,4 +1,6 @@
-import { Button, Heading, Surface } from '@canopy/ui-shared/components';
+import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
+import { StatusGlyph } from '@canopy/ui-shared/components/StatusGlyph';
+import { Stack, Button, Heading, Surface } from '@canopy/ui-shared/components';
 import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { PageTitlebar } from '../shared/PageTitlebar';
@@ -56,22 +58,22 @@ function formatWorkerStatus(status: WorkerStatus): string {
   }
 }
 
-function workerStatusBadgeClass(status: WorkerStatus): string {
+function workerStatusBadgeTone(status: WorkerStatus): BadgeTone {
   switch (status) {
     case 'queued':
-      return 'bg-muted fg-secondary';
+      return 'neutral';
     case 'starting':
-      return 'bg-info-subtle fg-info';
+      return 'info';
     case 'running':
-      return 'bg-info-subtle fg-info';
+      return 'info';
     case 'success':
-      return 'bg-success-subtle fg-success-strong';
+      return 'success';
     case 'failure':
-      return 'bg-destructive-subtle fg-destructive-strong';
+      return 'danger';
     case 'cancelled':
-      return 'bg-warning-subtle fg-warning';
+      return 'warning';
     case 'interrupted':
-      return 'bg-warning-subtle fg-warning';
+      return 'warning';
   }
 }
 
@@ -136,9 +138,9 @@ interface IdentifierChipProps {
 
 function IdentifierChip({ label, value }: IdentifierChipProps): JSX.Element {
   return (
-    <span className="inline-flex items-center gap-1 rounded bg-secondary px-1.5 py-0.5 font-mono text-3xs fg-secondary">
-      <span className="opacity-70">{label}</span>
-      <span className="fg-primary/80">{value}</span>
+    <span className="inline-flex items-baseline gap-1 text-2xs fg-secondary">
+      <span className="font-mono opacity-70">{label}</span>
+      <span className="font-mono fg-primary/80">{value}</span>
     </span>
   );
 }
@@ -189,115 +191,126 @@ function WorkerCard({
             }`
       }`}
     >
-      {!modalLayout && (
-        <div className="flex items-start justify-between gap-3 px-4 pt-4">
-          <div className="min-w-0 space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <ClaudeLogo width={14} height={14} className="shrink-0" />
-              <span className="truncate text-s font-semibold fg-primary">
-                {worker.label}
-              </span>
-              <span
-                className={`rounded-full px-2 py-0.5 text-2xs ${workerStatusBadgeClass(worker.status)}`}
-                data-testid={testId(`worker-status-${worker.workerId}`)}
-              >
-                {formatWorkerStatus(worker.status)}
-              </span>
-            </div>
-            <p className="text-xs fg-secondary">
-              <span className="font-mono">{worker.kind}</span>
-              {' · '}
-              {formatRelativeTime(new Date(worker.startedAt).toISOString())}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {worker.status === 'queued' && (
-              <span
-                className="inline-flex items-center gap-1 text-2xs fg-secondary"
-                data-testid={testId(
-                  `worker-queued-indicator-${worker.workerId}`,
+      <div
+        className={`flex min-h-0 flex-col gap-3 ${modalLayout ? 'flex-1' : ''}`}
+      >
+        <div>
+          {!modalLayout && (
+            <div className="flex items-start justify-between gap-3 px-4 pt-4">
+              <Stack gap="tight" className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <ClaudeLogo width={14} height={14} className="shrink-0" />
+                  <span className="truncate text-s font-semibold fg-primary">
+                    {worker.label}
+                  </span>
+                  <Badge
+                    tone={workerStatusBadgeTone(worker.status)}
+                    data-testid={testId(`worker-status-${worker.workerId}`)}
+                  >
+                    {formatWorkerStatus(worker.status)}
+                  </Badge>
+                </div>
+                <p className="text-xs fg-secondary">
+                  <span className="font-mono">{worker.kind}</span>
+                  {' · '}
+                  {formatRelativeTime(new Date(worker.startedAt).toISOString())}
+                </p>
+              </Stack>
+              <div className="flex items-center gap-2">
+                {worker.status === 'queued' && (
+                  <span
+                    className="inline-flex items-center gap-1 text-2xs fg-secondary"
+                    data-testid={testId(
+                      `worker-queued-indicator-${worker.workerId}`,
+                    )}
+                  >
+                    <StatusGlyph state="queued" size={12} />
+                    Waiting for a slot
+                  </span>
                 )}
-              >
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-fg-secondary" />
-                Waiting for a slot
-              </span>
-            )}
-            {!compact && onExpand && (
-              <Button
-                variant="ghost"
-                size="compact"
-                iconOnly
-                onClick={() => onExpand(worker.workerId)}
-                aria-label="Enlarge worker terminal"
-                data-testid={testId(`worker-expand-${worker.workerId}`)}
-              >
-                <AppCatalogExternalIcon size={14} />
-              </Button>
-            )}
-          </div>
-        </div>
-      )}
-
-      <div className="flex flex-wrap gap-1.5 px-4 pt-2">
-        {worker.projectId && (
-          <IdentifierChip label="project" value={worker.projectId} />
-        )}
-        {worker.worktreeId && (
-          <IdentifierChip
-            label={WORKTREE_UNIT_LABEL.toLowerCase()}
-            value={worker.worktreeId}
-          />
-        )}
-        {worker.chatId && <IdentifierChip label="Chat" value={worker.chatId} />}
-        {worker.pipelineExecutionId && (
-          <IdentifierChip label="workflow" value={worker.pipelineExecutionId} />
-        )}
-        {worker.stepId && <IdentifierChip label="step" value={worker.stepId} />}
-      </div>
-
-      {compact ? (
-        <div className="mt-3" />
-      ) : (
-        <div
-          // The host paints the terminal's own canvas color, so no strip of
-          // page surface shows beside a partially filled xterm row. There is
-          // no theme role for it: the terminal is this dark in both modes,
-          // and `bg-inverse` would turn the host white in dark mode.
-          // The block class keeps the worker's prompt and output out of
-          // session replay.
-          className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-3 flex min-h-0 flex-col border-y ${terminalClassName}`}
-          style={{ backgroundColor: TERMINAL_BG_COLOR }}
-          data-testid={testId(`worker-terminal-${worker.workerId}`)}
-        >
-          {terminalPlaceholder ? null : worker.terminalId ? (
-            <TerminalPane
-              terminalId={worker.terminalId}
-              // Display-only viewer: never wire input (no `onData → writeTerminal`),
-              // so a worker that blocked on a prompt can never hang invisibly here.
-              live={false}
-              // The PTY is live, though — report the fitted size so the agent
-              // renders for the actual card width instead of the spawn size.
-              reportResize
-              // The worker PTY is created and managed by the main-process worker
-              // session service; the renderer only attaches to replay + stream its
-              // output, so there is nothing to restore on mount.
-              restoreOnMount={false}
-              readOnlyMessage={null}
-              addToChatSelectionHelper={false}
-              pasteDroppedFiles={false}
-              focused={false}
-              onFocus={(): void => {}}
-            />
-          ) : (
-            // No PTY yet (a `starting` worker before its terminal spawns).
-            // Render a placeholder rather than attaching to an empty id.
-            <div className="flex flex-1 items-center justify-center text-xs fg-secondary">
-              Starting…
+                {!compact && onExpand && (
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    iconOnly
+                    onClick={() => onExpand(worker.workerId)}
+                    aria-label="Enlarge worker terminal"
+                    data-testid={testId(`worker-expand-${worker.workerId}`)}
+                  >
+                    <AppCatalogExternalIcon size={14} />
+                  </Button>
+                )}
+              </div>
             </div>
           )}
-        </div>
-      )}
 
+          <div className="flex flex-wrap gap-1.5 px-4 pt-2">
+            {worker.projectId && (
+              <IdentifierChip label="project" value={worker.projectId} />
+            )}
+            {worker.worktreeId && (
+              <IdentifierChip
+                label={WORKTREE_UNIT_LABEL.toLowerCase()}
+                value={worker.worktreeId}
+              />
+            )}
+            {worker.chatId && (
+              <IdentifierChip label="Chat" value={worker.chatId} />
+            )}
+            {worker.pipelineExecutionId && (
+              <IdentifierChip
+                label="workflow"
+                value={worker.pipelineExecutionId}
+              />
+            )}
+            {worker.stepId && (
+              <IdentifierChip label="step" value={worker.stepId} />
+            )}
+          </div>
+        </div>
+        {compact ? (
+          <div />
+        ) : (
+          <div
+            // The host paints the terminal's own canvas color, so no strip of
+            // page surface shows beside a partially filled xterm row. There is
+            // no theme role for it: the terminal is this dark in both modes,
+            // and `bg-inverse` would turn the host white in dark mode.
+            // The block class keeps the worker's prompt and output out of
+            // session replay.
+            className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex min-h-0 flex-col border-y ${terminalClassName}`}
+            style={{ backgroundColor: TERMINAL_BG_COLOR }}
+            data-testid={testId(`worker-terminal-${worker.workerId}`)}
+          >
+            {terminalPlaceholder ? null : worker.terminalId ? (
+              <TerminalPane
+                terminalId={worker.terminalId}
+                // Display-only viewer: never wire input (no `onData → writeTerminal`),
+                // so a worker that blocked on a prompt can never hang invisibly here.
+                live={false}
+                // The PTY is live, though — report the fitted size so the agent
+                // renders for the actual card width instead of the spawn size.
+                reportResize
+                // The worker PTY is created and managed by the main-process worker
+                // session service; the renderer only attaches to replay + stream its
+                // output, so there is nothing to restore on mount.
+                restoreOnMount={false}
+                readOnlyMessage={null}
+                addToChatSelectionHelper={false}
+                pasteDroppedFiles={false}
+                focused={false}
+                onFocus={(): void => {}}
+              />
+            ) : (
+              // No PTY yet (a `starting` worker before its terminal spawns).
+              // Render a placeholder rather than attaching to an empty id.
+              <div className="flex flex-1 items-center justify-center text-xs fg-secondary">
+                Starting…
+              </div>
+            )}
+          </div>
+        )}
+      </div>
       <div className="flex items-center justify-between gap-3 px-4 py-3">
         <Button
           size="compact"
@@ -497,21 +510,27 @@ export function WorkersPage(): JSX.Element {
     >
       <PageTitlebar />
       <PageContent bottomInset="tight" className="shrink-0">
-        <PageHeader
-          title="Claude workers"
-          description="Live, read-only view of background and workflow tasks running as managed Claude Code terminal sessions."
-        />
-        {alreadyCompletedNotice && (
-          <Surface variant="card" size="small" className="mt-3 inline-block">
-            <p
-              className="inline-flex px-3 py-1.5 text-s fg-secondary"
-              role="status"
-              data-testid="worker-already-completed-notice"
+        <Stack gap="item">
+          <PageHeader
+            title="Claude workers"
+            description="Live, read-only view of background and workflow tasks running as managed Claude Code terminal sessions."
+          />
+          {alreadyCompletedNotice && (
+            <Surface
+              variant="card"
+              size="small"
+              className="self-start inline-block"
             >
-              Worker already completed.
-            </p>
-          </Surface>
-        )}
+              <p
+                className="inline-flex px-3 py-1.5 text-s fg-secondary"
+                role="status"
+                data-testid="worker-already-completed-notice"
+              >
+                Worker already completed.
+              </p>
+            </Surface>
+          )}
+        </Stack>
       </PageContent>
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -522,32 +541,37 @@ export function WorkersPage(): JSX.Element {
               className="mx-auto max-w-lg"
               data-testid="workers-empty-state"
             >
-              <div className="px-6 py-12 text-center">
-                <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-secondary fg-secondary">
+              <div className="flex flex-col gap-4 px-6 py-12 text-center">
+                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-secondary fg-secondary">
                   <ClaudeLogo width={18} height={18} />
                 </div>
-                <Heading level={2} variant="title">
-                  No active workers
-                </Heading>
-                <p className="mt-1 text-s fg-secondary">
-                  When {brandText.appName} runs background helpers or workflow
-                  steps in Terminal mode, each appears here as a read-only
-                  terminal you can watch, inspect, or cancel.
-                </p>
+                <Stack gap="tight">
+                  <Heading level={2} variant="title">
+                    No active workers
+                  </Heading>
+                  <p className="text-s fg-secondary">
+                    When {brandText.appName} runs background helpers or workflow
+                    steps in Terminal mode, each appears here as a read-only
+                    terminal you can watch, inspect, or cancel.
+                  </p>
+                </Stack>
                 <Button
+                  className="self-center"
                   onClick={openClaudeSettings}
                   data-testid="workers-empty-open-settings"
-                  className="mt-4"
                 >
                   Open Claude settings
                 </Button>
               </div>
             </Surface>
           ) : (
-            <div className="space-y-8">
+            <Stack gap="page">
               {queuedWorkers.length > 0 && (
-                <section data-testid="workers-queued-section">
-                  <div className="mb-3 flex items-baseline gap-2">
+                <section
+                  className="flex flex-col gap-3"
+                  data-testid="workers-queued-section"
+                >
+                  <div className="flex items-baseline gap-2">
                     <Heading level={2} variant="title">
                       Queued
                     </Heading>
@@ -570,9 +594,12 @@ export function WorkersPage(): JSX.Element {
                 </section>
               )}
               {activeWorkers.length > 0 && (
-                <section data-testid="workers-active-section">
+                <section
+                  className="flex flex-col gap-3"
+                  data-testid="workers-active-section"
+                >
                   {queuedWorkers.length > 0 && (
-                    <div className="mb-3 flex items-baseline gap-2">
+                    <div className="flex items-baseline gap-2">
                       <Heading level={2} variant="title">
                         Active
                       </Heading>
@@ -598,7 +625,7 @@ export function WorkersPage(): JSX.Element {
                   </div>
                 </section>
               )}
-            </div>
+            </Stack>
           )}
         </PageContent>
       </div>

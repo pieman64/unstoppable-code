@@ -1,4 +1,4 @@
-import type { McpServerIndexEntry } from '../types/mcp-servers';
+import type { McpServerIndexEntry } from '@canopy/execution-engine/types/mcp-servers';
 
 /**
  * Flatten an MCP server index for consumers that look servers up by id.

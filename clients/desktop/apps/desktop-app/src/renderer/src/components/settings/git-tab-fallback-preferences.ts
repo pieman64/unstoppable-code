@@ -32,7 +32,7 @@ import {
   DEFAULT_VOICE_DICTATION_ENABLED,
 } from '@canopy/desktop-shared/constants/preferences';
 import { createDefaultSidebarNavLayout } from '@canopy/desktop-shared/lib/sidebar-nav-layout';
-import { DEFAULT_HELPER_MODEL } from '@canopy/desktop-shared/types/agent-models';
+import { DEFAULT_HELPER_MODEL } from '@canopy/execution-engine/types/agent-models';
 import { createEmptySelections } from '@/lib/pluginSelections';
 import { DEFAULT_TELEMETRY_SHARING } from './telemetry-sharing';
 
@@ -83,6 +83,8 @@ export function createGitTabFailedLoadPreferences(): PreferencesData {
       ollama: null,
     },
     approvalDefaults: createDefaultApprovalDefaults(),
+    claudeModAdmissions: [],
+    claudeModsDisabled: false,
     globalApprovalRules: [],
     approvalsUpgradeNoticeDismissed: false,
     suggestions: { enabled: true, dismissed: {} },
@@ -266,9 +268,18 @@ export function createGitTabFailedLoadPreferences(): PreferencesData {
     fileLabels: [],
     changedFilesHiddenLabelIds: [],
     autoDownloadUpdates: true,
+    automaticUpdateChecks: true,
     showDiagnosticsPill: true,
     onboardingCompleted: [],
     releaseHighlightsLastSeenVersion: null,
+    usageData: {
+      productAnalytics: true,
+      sessionReplay: true,
+      errorReports: true,
+      activeUseSignal: true,
+      featureFlagIdentity: true,
+      skillSafetyCheck: true,
+    },
     telemetrySharing: DEFAULT_TELEMETRY_SHARING,
     telemetrySharingPromptSeen: false,
     gitExecutablePath: '',

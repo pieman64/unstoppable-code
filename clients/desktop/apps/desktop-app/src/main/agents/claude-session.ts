@@ -18,6 +18,7 @@ import {
 import { withProxyFailureRestored } from './ai-credits-proxy-failure-restore';
 import { chatInputRefusal } from '@canopy/protocol/portal/input-delivery';
 import { withClaudeAiCreditsFallbackError } from './claude-ai-credits-fallback-error';
+import { claudeManagedSettingsGuard } from './claude-managed-settings';
 import { normalizeClaudeMaxTurns } from '@canopy/desktop-shared/constants/preferences';
 import { SkillUsageTracker } from './skill-usage-tracker';
 import type { UUID } from 'node:crypto';
@@ -39,7 +40,7 @@ import {
   getAppAdvisorLedgerToolNames,
 } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { isClaudeChainUuid } from '@canopy/desktop-shared/lib/claude-fork-resume-point';
-import { brandEnvName } from '@canopy/desktop-shared/brand/env';
+import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import type { BrowserWindow } from 'electron';
 import { managedDelegationEnabled } from './delegation/gate';
 import type { ManagedDelegationSession } from './delegation/service';
@@ -93,7 +94,7 @@ import { watchAccountProxySwitches } from '../account-proxy/switch-events';
 import { getCodexGatewayProxyService } from './codex-gateway-proxy-service';
 import { checkModelGatewayRoute } from '../lib/model-gateway-state';
 import { getMockLlmOrigin } from '../lib/e2e-mock-control-plane';
-import { isUnavailableModelSelection } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isUnavailableModelSelection } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   isProviderNativelyAuthenticated,
   isProviderNativelyAuthenticatedForRouting,
@@ -127,7 +128,7 @@ import {
   buildAccountProxyUsageLimitedEntry,
   classifyAccountChangeResume,
 } from '../lib/usage-limited-chats-recording';
-import { classifyAgentFailure } from '@canopy/desktop-shared/agent-failures';
+import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import { createClaudeContractGuard } from './provider-contract-guard';
 import { buildProviderAuthFailureEvent } from './provider-auth-failure-event';
 import { recordEventReceiptTime } from './event-receipt-time';
@@ -144,7 +145,6 @@ import {
   buildNoBillingSourceError,
   DEFAULT_CLAUDE_MODEL,
   NO_BILLING_SOURCE_ERROR_CODE,
-  SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
   IPC_CHANNELS,
   hasAnySelections,
   type ApprovalMode,
@@ -167,6 +167,15 @@ import {
 } from '../approvals/approval-service';
 import { resolvePlugins } from '../plugins/plugin-resolver';
 import { resolveEffectiveChatPluginContext } from '../plugins/global-plugin-overlay';
+import {
+  resolveClaudeModAdmissionContext,
+  resolveClaudeModAdmissionLaunch,
+} from './claude-mod-admission-launch';
+import {
+  clearClaudeModAdmissionSessionRecords,
+  buildClaudeModsSkippedEvent,
+  replaceClaudeModAdmissionSessionRecords,
+} from './claude-mod-admission-session';
 import { loadCachedInventory } from '../plugins/invocable-inventory-service';
 import { normalizeInvocationToken } from '../plugins/invocation-prefix-normalizer';
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
@@ -174,7 +183,7 @@ import { rejectAllForSession } from '../mcp/pending-requests';
 import {
   ASK_USER_HTTP_TIMEOUT_MS,
   CANOPY_MCP_TOOL_TIMEOUT_MS,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
 import {
   mayExposeLedgerTools,
@@ -193,7 +202,8 @@ import {
   requestAnswersFromRenderer,
   respondToFileCommentInSession,
 } from '../canopy-tools/session-runtime';
-import { claudeNativeMemoryOptions } from '@canopy/desktop-shared/node/lib/native-memory';
+import { claudeNativeMemoryOptions } from '@canopy/execution-engine/node/lib/native-memory';
+import { mergeClaudeModAdmissionSettings } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
 import {
   readLatestPreferencesFile,
   readLocalMemoryEnabledPreference,
@@ -237,9 +247,10 @@ import {
   captureClaudeContextSnapshot,
   claudeContextEndTokens,
 } from '../observability/capture-fields';
+
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { buildRtkClaudeHooks } from '@canopy/desktop-shared/node/rtk/claude-hooks';
-import { resolveAnthropicMockEnvOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   spawnClaudeCodeProcessOffMain,
   withholdClaudeProcessStdoutCreditUntil,
@@ -253,10 +264,7 @@ import {
   getChatTurnAuditStatus,
   isPlanHandoffResult,
 } from '../lib/chat-turn-audit';
-import {
-  mainWindowOnlyToolSurfaces,
-  requestShowFilesThroughLease,
-} from '../canopy-tools/show-files-runtime';
+import { requestShowFilesThroughLease } from '../canopy-tools/show-files-runtime';
 import { hasInterfaceTool } from './interface-tool-binding';
 import { createE2eClaudeQueryWithPrelude } from '../lib/e2e-claude-query-prelude';
 import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
@@ -1379,7 +1387,10 @@ export class ClaudeCodeProvider implements AgentProvider {
     let currentProviderSessionId = opts.sdkSessionId;
     const hostedProcesses = new Set<SpawnedProcess>();
     const providerType = this.providerType;
-    const spawnHostedProcess = (options: SpawnOptions): SpawnedProcess => {
+    const spawnHostedProcess = (
+      options: SpawnOptions,
+      onStarted?: () => void,
+    ): SpawnedProcess => {
       const context = {
         sessionKey: key,
         sessionInstanceId: getSessionInstanceId(session),
@@ -1388,8 +1399,11 @@ export class ClaudeCodeProvider implements AgentProvider {
       const process = spawnClaudeCodeProcessOffMain(options, {
         ...context,
         isRegistered: () => keyOwnership() === 'registered',
-        recordDiagnostic: (diagnostic) =>
-          recordHostedClaudeProcessDiagnostic(context, diagnostic),
+        recordDiagnostic: (diagnostic): void => {
+          recordHostedClaudeProcessDiagnostic(context, diagnostic);
+          // The host reports a real PID once; a spawn that never starts doesn't.
+          if (diagnostic.kind === 'claude_process_started') onStarted?.();
+        },
       });
       hostedProcesses.add(process);
       process.on('exit', (code, signal) => {
@@ -3055,7 +3069,10 @@ export class ClaudeCodeProvider implements AgentProvider {
       receipt?: ClaudeEventReceipt,
     ) => void | Promise<void>,
     skillUsage: SkillUsageTracker,
-    spawnHostedProcess: (options: SpawnOptions) => SpawnedProcess,
+    spawnHostedProcess: (
+      options: SpawnOptions,
+      onStarted?: () => void,
+    ) => SpawnedProcess,
     key: string,
     ownedKey: OwnedSessionKey,
     getWindow: () => BrowserWindow | null,
@@ -3138,6 +3155,22 @@ export class ClaudeCodeProvider implements AgentProvider {
         opts.applyGlobalPluginDefaults,
       );
       const effectiveSelections = pluginContext.selections;
+      const settingSources = ['user', 'project', 'local'] as const;
+      // Inspect the config dir the child gets: its agent env plus overrides.
+      const claudeModAdmissionEnvironment = {
+        environment: { runtime: 'agent' as const, workspaceId: opts.projectId },
+        ...(invocation.envOverride?.CLAUDE_CONFIG_DIR !== undefined
+          ? { claudeConfigDir: invocation.envOverride.CLAUDE_CONFIG_DIR }
+          : {}),
+      };
+      const claudeModAdmissionContext = await resolveClaudeModAdmissionContext({
+        cwd: opts.cwd,
+        settingSources,
+        ...claudeModAdmissionEnvironment,
+      });
+      let claudeModAdmission: Awaited<
+        ReturnType<typeof resolvePlugins>
+      >['claudeModAdmission'];
       const claudeMaxTurns =
         invocation.providerType === 'claude'
           ? normalizeClaudeMaxTurns(
@@ -3146,7 +3179,11 @@ export class ClaudeCodeProvider implements AgentProvider {
             )
           : 200;
 
-      if (hasAnySelections(effectiveSelections) || opts.packageOverlay) {
+      if (
+        hasAnySelections(effectiveSelections) ||
+        opts.packageOverlay ||
+        claudeModAdmissionContext !== undefined
+      ) {
         try {
           ownedKey.recordSessionEvent({
             type: 'phase',
@@ -3163,6 +3200,9 @@ export class ClaudeCodeProvider implements AgentProvider {
             opts.chatId,
             {
               purpose: 'claude-session',
+              cwd: opts.cwd,
+              settingSources,
+              claudeModAdmissionContext,
               installExternalPlugins: true,
               enableHttpMcpProxy: true,
               mcpHttpProxyService: getMcpHttpProxyService(),
@@ -3176,6 +3216,7 @@ export class ClaudeCodeProvider implements AgentProvider {
             },
           ).finally(stopPluginTimer);
           sdkPlugins = resolved.sdkPlugins;
+          claudeModAdmission = resolved.claudeModAdmission;
           resolvedMcpServers = resolved.mcpServers as Record<
             string,
             McpServerConfig
@@ -3191,8 +3232,30 @@ export class ClaudeCodeProvider implements AgentProvider {
         } catch (err) {
           // eslint-disable-next-line no-console
           console.error('[plugin-resolver] Failed to resolve plugins:', err);
+          if (claudeModAdmissionContext) {
+            // Without the resolver's decision, launch with no selected
+            // plugins and still turn off unadmitted ambient Mods.
+            sdkPlugins = [];
+            const ambientOnly = await resolveClaudeModAdmissionLaunch({
+              cwd: opts.cwd,
+              settingSources,
+              ...claudeModAdmissionEnvironment,
+            });
+            claudeModAdmission = ambientOnly
+              ? {
+                  ...(ambientOnly.settings
+                    ? { settings: ambientOnly.settings }
+                    : {}),
+                  skippedMods: ambientOnly.skippedMods,
+                }
+              : undefined;
+          }
         }
       }
+      replaceClaudeModAdmissionSessionRecords(
+        key,
+        claudeModAdmission?.skippedMods ?? [],
+      );
 
       // A point-in-time fork of a chat taken mid tool call resumes at an
       // assistant entry whose calls are still open; its first prompt must
@@ -3469,22 +3532,19 @@ export class ClaudeCodeProvider implements AgentProvider {
               ...(hasInterfaceTool(opts.interfaceTools, 'ui.show_files')
                 ? {
                     showFiles: (files) =>
-                      requestShowFilesThroughLease(
-                        {
-                          files,
-                          target: {
-                            projectId: opts.projectId,
-                            worktreeId: opts.worktreeId,
-                          },
-                          origin: {
-                            projectId: opts.projectId,
-                            worktreeId: opts.worktreeId,
-                            chatTabId: opts.chatId,
-                          },
-                          cwd: opts.cwd,
+                      requestShowFilesThroughLease({
+                        files,
+                        target: {
+                          projectId: opts.projectId,
+                          worktreeId: opts.worktreeId,
                         },
-                        mainWindowOnlyToolSurfaces(getWindow),
-                      ),
+                        origin: {
+                          projectId: opts.projectId,
+                          worktreeId: opts.worktreeId,
+                          chatTabId: opts.chatId,
+                        },
+                        cwd: opts.cwd,
+                      }),
                   }
                 : {}),
               getFileComments: ({ threadId }) =>
@@ -3526,11 +3586,11 @@ export class ClaudeCodeProvider implements AgentProvider {
         ...(opts.assistantMode !== 'app-advisor' &&
         opts.assistantMode !== 'pipeline-editor'
           ? {
-              setAutoArchiveForCurrentChat: (enabled) =>
-                emitEvent({
-                  type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
-                  enabled,
-                }),
+              autoArchiveChat: {
+                projectId: opts.projectId,
+                worktreeId: opts.worktreeId,
+                chatId: opts.chatId,
+              },
             }
           : {}),
       };
@@ -3711,11 +3771,7 @@ export class ClaudeCodeProvider implements AgentProvider {
                 },
               }
             : {}),
-          onSetAutoArchive: (enabled) =>
-            emitEvent({
-              type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
-              enabled,
-            }),
+          autoArchiveAvailable: true,
           ...(isCodeReview
             ? {
                 isCodeReview: true,
@@ -4364,12 +4420,62 @@ export class ClaudeCodeProvider implements AgentProvider {
         .filter(Boolean)
         .join('\n\n');
 
+      // Merge approval fallback and thinking settings (Ultra sets
+      // `ultracode`) before applying native-memory suppression so none
+      // of the independently owned settings overwrite another.
+      const nativeMemoryOptions = claudeNativeMemoryOptions(
+        localMemoryEnabled,
+        {
+          ...thinkingOptions.settings,
+          // Claude applies settings-file env after its launch environment.
+          // Pin the selected proxy at the flag tier so ambient provider
+          // defaults cannot replace its broker URL or authentication.
+          ...(accountProxyRoute ? { env: accountProxyRoute.env } : {}),
+          ...(approvalMode !== 'full-access'
+            ? { permissions: { ask: ['*'] } }
+            : {}),
+          // Claude Code 2.1.310+ gives Plan mode auto-mode semantics by
+          // default, where its classifier decides and hooks cannot approve.
+          // The session's approval mode stays authoritative while planning.
+          useAutoModeDuringPlan: false,
+        },
+      );
+      const admittedSdkSettings = claudeModAdmission?.settings
+        ? mergeClaudeModAdmissionSettings(
+            nativeMemoryOptions.settings ?? {},
+            claudeModAdmission.settings,
+          )
+        : undefined;
+
       const buildSdkOptions = (): QueryOptions => ({
         ...(claudeMaxTurns === null ? {} : { maxTurns: claudeMaxTurns }),
         cwd: opts.cwd,
         abortController,
         pathToClaudeCodeExecutable: getBundledClaudeBinaryPath(),
-        spawnClaudeCodeProcess: spawnHostedProcess,
+        spawnClaudeCodeProcess: (options): SpawnedProcess => {
+          // Snapshot this launch's records now; record them once it starts.
+          const skippedNotice = buildClaudeModsSkippedEvent(key);
+          return spawnHostedProcess(
+            options,
+            skippedNotice
+              ? (): void => {
+                  try {
+                    void Promise.resolve(emitEvent(skippedNotice)).catch(
+                      (): void => {
+                        logMainProcessWarn(
+                          '[claude-session] Failed to emit skipped Claude Mods notice',
+                        );
+                      },
+                    );
+                  } catch {
+                    logMainProcessWarn(
+                      '[claude-session] Failed to emit skipped Claude Mods notice',
+                    );
+                  }
+                }
+              : undefined,
+          );
+        },
         env: sdkEnv,
         ...(invocation.providerType === 'claude'
           ? { perTaskStopAffordance: true }
@@ -4386,7 +4492,9 @@ export class ClaudeCodeProvider implements AgentProvider {
         // Keep the native permission callback as an independent enforcement
         // path if repository settings disable hooks. Policy-tier `ask` rules
         // outrank repository allowlists while still letting `canUseTool` return
-        // the Canopy decision without showing a second prompt.
+        // the Canopy decision without showing a second prompt; full access uses
+        // a non-matching managed deny to keep Claude's plugin guard ahead of
+        // user-installed Mod approval.
         ...(approvalMode !== 'full-access'
           ? {
               managedSettings: {
@@ -4397,25 +4505,12 @@ export class ClaudeCodeProvider implements AgentProvider {
               // priority user-controlled tier as a fallback against repository
               // allowlists; administrator policy remains authoritative.
             }
-          : {}),
+          : { managedSettings: claudeManagedSettingsGuard() }),
         ...thinkingOptions,
-        // Merge approval fallback and thinking settings (Ultra sets
-        // `ultracode`) before applying native-memory suppression so none
-        // of the independently owned settings overwrite another.
-        ...claudeNativeMemoryOptions(localMemoryEnabled, {
-          ...thinkingOptions.settings,
-          // Claude applies settings-file env after its launch environment.
-          // Pin the selected proxy at the flag tier so ambient provider
-          // defaults cannot replace its broker URL or authentication.
-          ...(accountProxyRoute ? { env: accountProxyRoute.env } : {}),
-          ...(approvalMode !== 'full-access'
-            ? { permissions: { ask: ['*'] } }
-            : {}),
-          // Claude Code 2.1.310+ gives Plan mode auto-mode semantics by
-          // default, where its classifier decides and hooks cannot approve.
-          // The session's approval mode stays authoritative while planning.
-          useAutoModeDuringPlan: false,
-        }),
+        ...nativeMemoryOptions,
+        ...(claudeModAdmission && admittedSdkSettings
+          ? { settings: admittedSdkSettings }
+          : {}),
         ...(routedSdkModel ? { model: routedSdkModel } : {}),
         ...(opts.sdkSessionId && !forkResumePointRejected
           ? { resume: opts.sdkSessionId }
@@ -5083,6 +5178,7 @@ export class ClaudeCodeProvider implements AgentProvider {
         }
         clearActiveTurn();
         approvalSession?.dispose();
+        clearClaudeModAdmissionSessionRecords(key);
         ledger.tools?.dispose();
         ownedKey.release();
       }

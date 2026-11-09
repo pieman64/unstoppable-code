@@ -50,10 +50,10 @@ import { CanopyClientError } from '@canopy/core-client';
  * under one writer lease (CAN-5084), including in-process fallback.
  */
 
-/** Which hosts may build and read graphs in the daemon. Windows waits for CAN-5091. */
+/** Which hosts may build and read graphs in the daemon. Windows since CAN-5091. */
 export const DAEMON_CODE_GRAPH_PLATFORMS: Readonly<
   Record<PlatformOperatingSystem, boolean>
-> = { darwin: true, linux: true, win32: false };
+> = { darwin: true, linux: true, win32: true };
 
 /** Set only by the code-graph IPC handlers, from the trusted event. */
 export interface DaemonCodeGraphRouteContext {

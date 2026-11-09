@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
-import type { NormalizedPipelineAssetDeclaration } from '@canopy/desktop-shared/types/pipeline';
+import type { NormalizedPipelineAssetDeclaration } from '@canopy/execution-engine/types/pipeline';
 
 /**
  * Per-pipeline data layout under `<dataRoot>` (`<data>/pipeline-data`):

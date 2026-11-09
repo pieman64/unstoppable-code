@@ -3,6 +3,8 @@ import {
   ProgressBar,
   ProgressRing,
   ProgressSteps,
+  SegmentsBar,
+  type BarSegment,
   type ProgressStep,
   type ProgressTone,
 } from '@canopy/ui-shared/components';
@@ -36,6 +38,12 @@ const FAILED_RUN: readonly (readonly ProgressStep[])[] = [
     { id: 'test', state: 'cancelled' },
   ],
   [{ id: 'ship', state: 'paused' }],
+];
+
+const CONTEXT_SPLIT: readonly BarSegment[] = [
+  { key: 'messages', value: 48, color: 'var(--chart-categorical-1)' },
+  { key: 'tools', value: 22, color: 'var(--chart-categorical-2)' },
+  { key: 'system', value: 12, color: 'var(--chart-categorical-3)' },
 ];
 
 export function ProgressSpecimen(): JSX.Element {
@@ -94,6 +102,43 @@ export function ProgressSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="failed, cancelled and paused steps">
             <ProgressSteps stages={FAILED_RUN} />
+          </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="SegmentsBar: a stacked share, in chart colors, never for progress">
+        <SpecimenGrid>
+          <SpecimenCell label="default, whole length" wide>
+            <SegmentsBar
+              segments={CONTEXT_SPLIT}
+              label="Context window: messages, tools, system"
+            />
+          </SpecimenCell>
+          <SpecimenCell label="default, scale 0.6" wide>
+            <SegmentsBar
+              segments={CONTEXT_SPLIT}
+              scale={0.6}
+              label="60% of the context window"
+            />
+          </SpecimenCell>
+          <SpecimenCell label="compact, under a list row" wide>
+            <SegmentsBar
+              segments={CONTEXT_SPLIT}
+              scale={0.35}
+              size="compact"
+              label="Cost by source"
+            />
+          </SpecimenCell>
+          <SpecimenCell label="large, one part, decorative" wide>
+            <SegmentsBar
+              segments={[
+                { key: 'count', value: 8, color: 'var(--chart-categorical-5)' },
+              ]}
+              scale={0.4}
+              size="large"
+            />
+          </SpecimenCell>
+          <SpecimenCell label="no value: the track stays empty" wide>
+            <SegmentsBar segments={[]} label="Cost by source: none" />
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>

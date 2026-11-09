@@ -6,7 +6,7 @@ import {
   type PersistedChatTab,
   type ChatRuntimeState,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import type {
   CostScopeRef,
   CostPipelineRunStatus,

@@ -30,11 +30,11 @@ import type {
   SharedPluginPublicShareInfo,
   SharedPluginUpdateRequest,
 } from '@canopy/protocol/plugins';
-import type { IPCResult } from './pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { ShareablePluginRef } from '@canopy/protocol/plugins';
 import type { ChatTabPluginSelections } from '../types';
 import type { InvocableInventoryEnableRef } from './invocable-inventory';
-import type { PipelinePackageAnalysisSummary } from './pipeline';
+import type { PipelinePackageAnalysisSummary } from '@canopy/execution-engine/types/pipeline';
 
 export interface AnalyzeSharedPluginReferenceRequest {
   ref: ShareablePluginRef;

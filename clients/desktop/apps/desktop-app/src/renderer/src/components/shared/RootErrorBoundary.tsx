@@ -1,131 +1,50 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react';
+import type { JSX, ReactNode } from 'react';
 import { CanopyClientProvider } from '@canopy/app-state';
-import type { AppError } from '@canopy/protocol/app-errors';
-import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
-import { ReportActionBoundary } from '@canopy/ui-app';
-import {
-  AppErrorDetails,
-  ErrorBanner,
-  Heading,
-  Surface,
-} from '@canopy/ui-shared/components';
+import { AppErrorBoundary } from '@canopy/ui-app';
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
-import { brandText } from '@/lib/brand';
-import {
-  captureRendererAppError,
-  presentRendererAppError,
-} from '@/lib/renderer-app-error';
-import { captureClientInstrumentationError } from '@canopy/desktop-instrumentation/client';
-import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
-import { Button } from '@/components/shared/Button';
-import { DesktopReportThisAction } from './DesktopReportThisAction';
+import { rootErrorBoundaryHost } from '@/lib/desktop-error-boundary-host';
+import { RenderFaultProbe } from '@/lib/e2e-render-fault';
 
 interface RootErrorBoundaryProps {
   children: ReactNode;
 }
 
-interface RootErrorBoundaryState {
-  error: Error | null;
-  appError: AppError | null;
-  telemetry: FeedbackReportTelemetry | null;
-}
-
-export class RootErrorBoundary extends Component<
-  RootErrorBoundaryProps,
-  RootErrorBoundaryState
-> {
-  constructor(props: RootErrorBoundaryProps) {
-    super(props);
-    this.state = { error: null, appError: null, telemetry: null };
-  }
-
-  static getDerivedStateFromError(error: Error): RootErrorBoundaryState {
-    return { error, appError: null, telemetry: null };
-  }
-
-  override componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
-    captureClientInstrumentationError(error, {
-      context: { boundary: 'root' },
-    });
-    reportRendererConsoleError(
-      'Top-level renderer error boundary caught an error',
-      {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-        componentStack: errorInfo.componentStack,
-      },
-    );
-    this.setState(captureRendererAppError(error, 'window', 'root'));
-  }
-
-  handleReload = (): void => {
-    void window.api.reloadWindow().catch(() => {
+/** Starts in a chain so a native reload that throws also gets the fallback. */
+function reloadWindow(): Promise<void> {
+  return Promise.resolve()
+    .then(async () => {
+      await window.api.reloadWindow();
+    })
+    .catch(() => {
       window.location.reload();
     });
-  };
+}
 
-  override render(): ReactNode {
-    const { error, appError, telemetry } = this.state;
+/** The fallback sits outside the app's provider, and reporting needs one. */
+function withReportClient(fallback: JSX.Element): JSX.Element {
+  return (
+    <CanopyClientProvider client={ipcCanopyClient}>
+      {fallback}
+    </CanopyClientProvider>
+  );
+}
 
-    if (!error) {
-      return this.props.children;
-    }
-
-    const presentation = appError ? presentRendererAppError(appError) : null;
-
-    return (
-      <div className="flex h-screen w-screen items-center justify-center bg-base p-6 fg-primary">
-        <Surface variant="group" padding="roomy" className="w-full max-w-2xl">
-          <div className="space-y-3">
-            <div>
-              <Heading level={1} variant="page">
-                {brandText.appName} hit a renderer error
-              </Heading>
-              <p className="mt-1 text-s fg-secondary">
-                The window was kept alive with a fallback view instead of going
-                blank.
-              </p>
-            </div>
-            {/* Catalog copy only: raw text stays behind Technical details, so
-                a stable build never shows it, even on the first paint. */}
-            {presentation ? (
-              <div data-selectable>
-                <ErrorBanner
-                  className=""
-                  error={presentation.copy.title}
-                  errorRecordingDisabled
-                />
-              </div>
-            ) : null}
-            {presentation ? (
-              <ReportActionBoundary>
-                <AppErrorDetails presentation={presentation} />
-              </ReportActionBoundary>
-            ) : null}
-            <div className="flex items-center gap-3">
-              <Button variant="primary" onClick={this.handleReload}>
-                Reload window
-              </Button>
-              {appError ? (
-                <ReportActionBoundary>
-                  {/* The fallback sits outside the app's provider. */}
-                  <CanopyClientProvider client={ipcCanopyClient}>
-                    <DesktopReportThisAction
-                      error={appError}
-                      appName={brandText.appName}
-                      {...(telemetry ? { telemetry } : {})}
-                    />
-                  </CanopyClientProvider>
-                </ReportActionBoundary>
-              ) : null}
-              <p className="text-xs fg-secondary">
-                This usually matches `Cmd+R`, but keeps the failure visible.
-              </p>
-            </div>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
+export function RootErrorBoundary({
+  children,
+}: RootErrorBoundaryProps): JSX.Element {
+  return (
+    <AppErrorBoundary
+      layout="window"
+      message="Couldn't show this window."
+      recoveryLabel="Reload window"
+      testId="root-error-fallback"
+      host={rootErrorBoundaryHost}
+      onRecover={reloadWindow}
+      recoveryReplacesDocument
+      renderFrame={withReportClient}
+    >
+      {__CANOPY_E2E__ ? <RenderFaultProbe target="window" /> : null}
+      {children}
+    </AppErrorBoundary>
+  );
 }

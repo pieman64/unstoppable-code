@@ -1,9 +1,11 @@
+import { Dot } from '@canopy/ui-shared/components/Badge';
 import { useState, type JSX } from 'react';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { ChatIcon, TrashIcon } from '@canopy/ui-shared/icons';
 import { useBrowserStore } from '@/stores/browserStore';
 import { stageBrowserRecording } from '@/lib/browserChatStaging';
 import { Button, Tooltip } from '@canopy/ui-shared';
+import { Surface, StatusLabel } from '@canopy/ui-shared/components';
 
 interface BrowserRecordingPanelProps {
   browserId: string;
@@ -45,42 +47,46 @@ export function BrowserRecordingPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b px-2 py-1">
-        {isRecording ? (
-          <span className="flex items-center gap-1.5 text-2xs font-medium fg-destructive">
-            <span className="inline-flex h-2 w-2 animate-pulse rounded-full bg-destructive" />
-            Recording
-          </span>
-        ) : (
-          <span className="text-2xs fg-secondary">
-            {steps.length > 0 ? `${steps.length} steps` : 'Idle'}
-          </span>
-        )}
-        <div className="flex-1" />
-        {isRecording && (
-          <Button
-            variant="ghost"
-            size="compact"
-            onClick={(): void => {
-              void handleStop();
-            }}
-            disabled={busy}
-          >
-            Stop recording
-          </Button>
-        )}
-        <Tooltip label="Delete recording">
-          <Button
-            variant="ghost"
-            size="compact"
-            iconOnly
-            onClick={(): void => clearRecording(browserId)}
-            aria-label="Delete recording"
-          >
-            <TrashIcon size="sm" />
-          </Button>
-        </Tooltip>
-      </div>
+      <Surface variant="section" boundary="bottom">
+        <div className="flex items-center gap-2 px-2 py-1">
+          {isRecording ? (
+            <span className="flex items-center gap-1.5 text-2xs font-medium">
+              <span className="inline-flex animate-pulse">
+                <Dot tone="danger" />
+              </span>
+              <StatusLabel>Recording</StatusLabel>
+            </span>
+          ) : (
+            <span className="text-2xs fg-secondary">
+              {steps.length > 0 ? `${steps.length} steps` : 'Idle'}
+            </span>
+          )}
+          <div className="flex-1" />
+          {isRecording && (
+            <Button
+              variant="ghost"
+              size="compact"
+              onClick={(): void => {
+                void handleStop();
+              }}
+              disabled={busy}
+            >
+              Stop recording
+            </Button>
+          )}
+          <Tooltip label="Delete recording">
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
+              onClick={(): void => clearRecording(browserId)}
+              aria-label="Delete recording"
+            >
+              <TrashIcon size="sm" />
+            </Button>
+          </Tooltip>
+        </div>
+      </Surface>
       <div className="min-h-0 flex-1 overflow-auto p-2">
         {steps.length === 0 && script.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs fg-secondary">

@@ -8,6 +8,7 @@ import {
   type ScriptsSectionWorkspaceLifecycleGroup,
 } from '@canopy/ui-app';
 import {
+  Stack,
   DialogModal,
   LoadingSpinner,
   SourceInfoButton,
@@ -140,12 +141,13 @@ function ScriptSourceInfoModal({
       loadInfo={loadInfo}
       renderLayers={(info, emptyText): JSX.Element => (
         <SourceInfoLayers
+          separateBody
           layers={info.layers}
           emptyText={emptyText}
           renderBody={(layer) =>
             layer.command !== null && (
               <pre
-                className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-1.5 max-h-16 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1 font-mono text-2xs fg-secondary`}
+                className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-16 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1 font-mono text-2xs fg-secondary`}
               >
                 {layer.command}
               </pre>
@@ -257,19 +259,17 @@ function WorkspaceLifecycleInfoModal({
           </p>
         )}
         {!loading && items.length > 0 && (
-          <div className="space-y-3">
+          <Stack gap="item">
             {items.map((item, index) => (
               <Surface
                 variant="group"
                 padding="compact"
                 key={`${item.entry.script.scriptKey}-${index}`}
               >
-                <div className="text-xs">
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <span className="font-medium fg-primary/80">
-                      <span className="mr-1.5 fg-secondary/60">
-                        {index + 1}.
-                      </span>
+                <div className="flex flex-col gap-2 text-xs">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="inline-flex items-baseline gap-1.5 font-medium fg-primary/80">
+                      <span className="fg-secondary/60">{index + 1}.</span>
                       {item.entry.script.label}
                     </span>
                     <span className="shrink-0 text-3xs font-medium fg-secondary/60">
@@ -284,11 +284,11 @@ function WorkspaceLifecycleInfoModal({
                     </div>
                   )}
                   {item.info && (
-                    <div className="space-y-1.5">
+                    <div className="flex flex-col gap-1.5">
                       {item.info.layers.map((layer) => (
                         <div
                           key={layer.sourceKey}
-                          className={`rounded border px-2 py-1.5 ${
+                          className={`flex flex-col gap-1 rounded border px-2 py-1.5 ${
                             layer.status === 'active'
                               ? 'border-line-positive bg-success/[0.05]'
                               : 'bg-base/50'
@@ -312,7 +312,7 @@ function WorkspaceLifecycleInfoModal({
                           </div>
                           {layer.command !== null && (
                             <pre
-                              className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-1 max-h-14 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1 font-mono text-2xs fg-secondary`}
+                              className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-14 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1 font-mono text-2xs fg-secondary`}
                             >
                               {layer.command}
                             </pre>
@@ -324,7 +324,7 @@ function WorkspaceLifecycleInfoModal({
                 </div>
               </Surface>
             ))}
-          </div>
+          </Stack>
         )}
       </div>
     </DialogModal>
@@ -497,19 +497,20 @@ export function useScriptsSectionHostModel({
   }
 
   const stopRun = (scriptKey: string): void => {
-    if (!markStopping(projectId, worktreeId, scriptKey)) {
+    const token = markStopping(projectId, worktreeId, scriptKey);
+    if (!token) {
       return;
     }
     void window.api
       .stopScript({ projectId, worktreeId, scriptKey })
       .then((response) => {
         if (response) {
-          completeRun(projectId, worktreeId, scriptKey, response);
+          completeRun(projectId, worktreeId, scriptKey, response, token);
         } else {
-          completeStaleRun(projectId, worktreeId, scriptKey);
+          completeStaleRun(projectId, worktreeId, scriptKey, token);
         }
       })
-      .catch(() => completeStaleRun(projectId, worktreeId, scriptKey));
+      .catch(() => completeStaleRun(projectId, worktreeId, scriptKey, token));
   };
   const runEntry = async (bodyEntry: ScriptsSectionEntry): Promise<void> => {
     const entry = entriesByKey.get(bodyEntry.script.scriptKey);
@@ -523,20 +524,32 @@ export function useScriptsSectionHostModel({
     if (!entry.request) {
       throw new Error('Script execution failed');
     }
-    startRun(projectId, worktreeId, entry.script);
+    const token = startRun(projectId, worktreeId, entry.script);
     try {
       const response: ScriptRunResponse = await window.api.runScript(
         entry.request,
       );
-      completeRun(projectId, worktreeId, entry.script.scriptKey, response);
+      completeRun(
+        projectId,
+        worktreeId,
+        entry.script.scriptKey,
+        response,
+        token,
+      );
     } catch (cause: unknown) {
-      completeRun(projectId, worktreeId, entry.script.scriptKey, {
-        success: false,
-        exitCode: null,
-        output: '',
-        timedOut: false,
-        durationMs: 0,
-      });
+      completeRun(
+        projectId,
+        worktreeId,
+        entry.script.scriptKey,
+        {
+          success: false,
+          exitCode: null,
+          output: '',
+          timedOut: false,
+          durationMs: 0,
+        },
+        token,
+      );
       throw cause;
     }
   };

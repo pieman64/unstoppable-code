@@ -12,6 +12,7 @@ import {
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type {
+  AgentModelDefinition,
   CreateSharedAgentRequest,
   AnalyzeAgentCapabilityPackageRequest,
   CommitAgentCapabilityPackageRequest,
@@ -26,7 +27,7 @@ import type {
   DetectPublicAgentRequest,
   ImportPublicAgentRequest,
   UninstallPublicAgentRequest,
-} from '@canopy/desktop-shared/types/agent-models';
+} from '@canopy/execution-engine/types/agent-models';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import { requireProviderForModel } from '@canopy/desktop-shared/types';
 import {
@@ -376,6 +377,35 @@ async function importSharedAgentDetail(
   return response;
 }
 
+/** The window's agent save, which App Advisor's agents.create and .update share (CAN-6002). */
+export async function saveAgentForWindow(
+  request: SaveAgentModelRequest,
+  getWindow: () => BrowserWindow | null,
+): Promise<AgentModelDefinition> {
+  validateSaveAgentRequest(request);
+  const agent = await saveAgentModel(request);
+  await refreshAfterAgentMutation(getWindow);
+  return agent;
+}
+
+/**
+ * The window's agent delete, which App Advisor's agents.delete shares
+ * (CAN-6002): the store refuses what it refuses for the window. Answers
+ * whether an agent was removed.
+ */
+export async function deleteAgentForWindow(
+  request: DeleteAgentModelRequest,
+  getWindow: () => BrowserWindow | null,
+): Promise<boolean> {
+  validateAgentModelId(request.id, 'agent id');
+  const changed =
+    request.importedShare === undefined
+      ? await deleteAgentModel(request.id)
+      : await deleteAgentModel(request.id, request.importedShare);
+  if (changed) await refreshAfterAgentMutation(getWindow);
+  return changed;
+}
+
 export function registerAgentModelHandlers(
   getWindow: () => BrowserWindow | null,
 ): void {
@@ -402,25 +432,14 @@ export function registerAgentModelHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.agentsSave,
-    async (_event, request: SaveAgentModelRequest) => {
-      validateSaveAgentRequest(request);
-      const agent = await saveAgentModel(request);
-      await refreshAfterAgentMutation(getWindow);
-      return agent;
-    },
+    (_event, request: SaveAgentModelRequest) =>
+      saveAgentForWindow(request, getWindow),
   );
 
   registerIpcHandler(
     IPC_CHANNELS.agentsDelete,
     async (_event, request: DeleteAgentModelRequest) => {
-      validateAgentModelId(request.id, 'agent id');
-      const changed =
-        request.importedShare === undefined
-          ? await deleteAgentModel(request.id)
-          : await deleteAgentModel(request.id, request.importedShare);
-      if (changed) {
-        await refreshAfterAgentMutation(getWindow);
-      }
+      await deleteAgentForWindow(request, getWindow);
     },
   );
 

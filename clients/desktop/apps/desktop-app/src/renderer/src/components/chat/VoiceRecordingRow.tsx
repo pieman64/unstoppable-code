@@ -1,3 +1,4 @@
+import { Inline } from '@canopy/ui-shared/components';
 import { useEffect, useState, type JSX } from 'react';
 import { AudioWaveform, ComposerSendButton, Tooltip } from '@canopy/ui-shared';
 import {
@@ -23,9 +24,7 @@ function RecordingDuration({ since }: { since: number | null }): JSX.Element {
   return (
     <span
       data-testid="voice-recording-duration"
-      // 8px past the row's gap: the time reads with the stop button, not
-      // squeezed against it.
-      className="mr-2 flex h-8 shrink-0 items-center text-xs tabular-nums fg-secondary"
+      className="flex h-8 shrink-0 items-center text-xs tabular-nums fg-secondary"
     >
       {formatRecordingDuration(since === null ? 0 : now - since)}
     </span>
@@ -77,24 +76,28 @@ export function VoiceRecordingRow({
         readLevel={readLevel}
         dataTestId="voice-recording-waveform"
       />
-      <RecordingDuration since={listeningSince} />
-      <Tooltip label="Stop recording" delay="long">
-        <Button
-          iconOnly
-          onClick={onStop}
-          aria-label="Stop recording"
-          data-testid="voice-recording-stop"
-        >
-          <StopFilledIcon size={16} />
-        </Button>
-      </Tooltip>
-      <ComposerSendButton
-        kind="send"
-        onSend={onSend}
-        disabled={false}
-        pending={false}
-        dataTestId="voice-recording-send"
-      />
+      <Inline gap="group">
+        <RecordingDuration since={listeningSince} />
+        <Inline gap="inline">
+          <Tooltip label="Stop recording" delay="long">
+            <Button
+              iconOnly
+              onClick={onStop}
+              aria-label="Stop recording"
+              data-testid="voice-recording-stop"
+            >
+              <StopFilledIcon size={16} />
+            </Button>
+          </Tooltip>
+          <ComposerSendButton
+            kind="send"
+            onSend={onSend}
+            disabled={false}
+            pending={false}
+            dataTestId="voice-recording-send"
+          />
+        </Inline>
+      </Inline>
     </div>
   );
 }

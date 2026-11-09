@@ -1,5 +1,5 @@
 import type { AppAdvisorJson } from '@canopy/desktop-shared/types';
-import type { PipelineTransientRetryState } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineTransientRetryState } from '@canopy/execution-engine/types/pipeline';
 
 interface PipelineDetailStatusReason {
   id: string;

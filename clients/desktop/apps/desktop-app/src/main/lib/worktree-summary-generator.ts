@@ -19,7 +19,7 @@ import {
   formatClaudeStreamError,
   StructuredHelperQueryError,
 } from '@canopy/desktop-shared/lib/structured-helper-query';
-import { claudeNativeMemoryOptions } from '@canopy/desktop-shared/node/lib/native-memory';
+import { claudeNativeMemoryOptions } from '@canopy/execution-engine/node/lib/native-memory';
 import { READ_ONLY_TOOLS } from '@canopy/desktop-shared/builtin-actions/agent-prompt/logic';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import {
@@ -32,7 +32,7 @@ import {
   isTransientAgentRetryExhaustedError,
   readClaudeRetrySessionId,
   runWithTransientAgentRetry,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 import {
   getBundledClaudeBinaryPath,
   getBundledRgBinaryPath,
@@ -43,12 +43,14 @@ import { spawnClaudeCodeProcessOffMain } from '../agents/claude-process-host-run
 import {
   mergeHelperUsage,
   readHelperUsage,
-} from '@canopy/desktop-shared/lib/helper-usage';
+} from '@canopy/execution-engine/lib/helper-usage';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { isRecord } from './type-guards';
 import { isWorktreeSummaryData } from './worktree-summary-persistence';
 import { resolveHelperInvocation } from '../ollama/helper-invocation';
 import { resolveInvocationWorkOwner } from '../agents/work-owner';
+import { resolveClaudeModAdmissionLaunch } from '../agents/claude-mod-admission-launch';
+import { mergeClaudeModAdmissionSettings } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
 import { markObservedHelperTaskAiCreditsRouted } from './helper-observed-task';
 import {
   codexStructuredHelperRunner,
@@ -541,6 +543,41 @@ async function runClaudeSummaryQuery(
         const thinkingOptions = buildClaudeThinkingOptions(
           options.thinkingLevel,
         );
+        const summaryPlugins = summaryPluginRuntime.claudePlugins.map(
+          (plugin) => ({
+            ...plugin,
+            skipMcpDiscovery: true,
+          }),
+        );
+        const claudeModAdmission = await resolveClaudeModAdmissionLaunch({
+          cwd: options.cwd,
+          settingSources: ['user', 'project', 'local'],
+          plugins: summaryPlugins,
+          environment: {
+            runtime: 'agent',
+            ...(options.projectId ? { workspaceId: options.projectId } : {}),
+          },
+          ...(invocation.envOverride?.CLAUDE_CONFIG_DIR !== undefined
+            ? { claudeConfigDir: invocation.envOverride.CLAUDE_CONFIG_DIR }
+            : {}),
+        });
+        const queryPlugins = (
+          claudeModAdmission ? claudeModAdmission.plugins : summaryPlugins
+        ).map((plugin) => ({
+          type: plugin.type,
+          path: plugin.path,
+          skipMcpDiscovery: true,
+        }));
+        const nativeMemoryOptions = claudeNativeMemoryOptions(
+          preferences?.localMemoryEnabled === true,
+          thinkingOptions.settings,
+        );
+        const admissionSettings = claudeModAdmission?.settings
+          ? mergeClaudeModAdmissionSettings(
+              nativeMemoryOptions.settings ?? {},
+              claudeModAdmission.settings,
+            )
+          : undefined;
         const queryResult = claudeQuery({
           prompt: resumeSessionId
             ? AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT
@@ -573,22 +610,13 @@ async function runClaudeSummaryQuery(
             settingSources: ['user', 'project', 'local'],
             strictMcpConfig: true,
             systemPrompt,
-            ...(summaryPluginRuntime.claudePlugins.length > 0
-              ? {
-                  plugins: summaryPluginRuntime.claudePlugins.map((plugin) => ({
-                    ...plugin,
-                    skipMcpDiscovery: true,
-                  })),
-                }
-              : {}),
+            ...(queryPlugins.length > 0 ? { plugins: queryPlugins } : {}),
             ...thinkingOptions,
             // Merge with the thinking settings (Ultra sets `ultracode`) so the
             // spread cannot drop the native-memory suppression applied while
             // local memory is enabled (CAN-1969).
-            ...claudeNativeMemoryOptions(
-              preferences?.localMemoryEnabled === true,
-              thinkingOptions.settings,
-            ),
+            ...nativeMemoryOptions,
+            ...(admissionSettings ? { settings: admissionSettings } : {}),
             outputFormat: {
               type: 'json_schema',
               schema: summarySchemaFor(options),

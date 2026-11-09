@@ -1,4 +1,5 @@
 import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -20,6 +21,80 @@ async function waitForHomeWorkspaceSelection(homePage) {
 }
 
 test.describe('Home chat send', () => {
+  test('an unborn source preserves the draft before any worktree or chat and recovers after a first commit', async () => {
+    test.setTimeout(120_000);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-home-unborn-'),
+    );
+    const summary = seedDemoWorkspaces({
+      userDataDir,
+      apps: [DEMO_APP_ID],
+      createWorktrees: false,
+    });
+    const repoPath = summary.workspaces[0].repoPath;
+    const git = (args) =>
+      execFileSync('git', args, { cwd: repoPath, stdio: 'pipe' });
+    // Keep staged files but remove the first commit, like a fresh git init.
+    git(['update-ref', '-d', 'HEAD']);
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+      await window.getByTestId('sidebar-create-task').click();
+      const home = window.getByTestId('page-home');
+      await waitForHomeWorkspaceSelection(home);
+      const picker = home.getByTestId('home-branch-picker-button');
+      await expect(picker).toHaveAttribute('data-source-no-commits', 'true');
+      const prompt = 'Investigate the failing health-check endpoint.';
+      await home.getByTestId('home-composer-editor').fill(prompt);
+      await home.getByTestId('home-send-button').click();
+      await window.keyboard.press('Enter');
+      await expect(home.getByTestId('home-composer-error')).toContainText(
+        'has no commits yet. Create a first commit on this branch, then send again.',
+      );
+      await expect(home.getByTestId('home-composer-editor')).toContainText(
+        prompt,
+      );
+      await expect(window.getByTestId('worktree-row')).toHaveCount(0);
+      await expect(window.getByTestId('panel-content-chat')).toHaveCount(0);
+      const projects = await window.evaluate(() => window.api.loadProjects());
+      expect(
+        projects.items.find((item) => item.id === `demo-${DEMO_APP_ID}`)
+          ?.worktrees,
+      ).toEqual([]);
+
+      git([
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.com',
+        'commit',
+        '--no-verify',
+        '-m',
+        'First commit',
+      ]);
+      // Returning from an external editor refreshes the warning and clears
+      // only this preflight error, without consuming the preserved draft.
+      await window.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect(picker).not.toHaveAttribute(
+        'data-source-no-commits',
+        'true',
+      );
+      await expect(home.getByTestId('home-composer-error')).toHaveCount(0);
+      await home.getByTestId('home-send-button').click();
+      await expect(home).toHaveCount(0);
+      await expect(window.getByTestId('worktree-row')).toHaveCount(1, {
+        timeout: 60_000,
+      });
+      await expect(
+        window.getByTestId('panel-content-chat').getByText(prompt).first(),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(window.getByTestId('worktree-error-notice')).toHaveCount(0);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
   test('Chat mode send creates a worktree, navigates to Code, and the message reaches the transcript', async () => {
     test.setTimeout(120_000);
 

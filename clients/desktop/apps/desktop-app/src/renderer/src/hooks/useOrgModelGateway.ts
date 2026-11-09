@@ -6,7 +6,7 @@ import type {
 } from '@canopy/protocol/canopy-server';
 import { gatewayHostname } from '@canopy/protocol/model-gateway/discovery';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 
 /**
  * One organization's model gateway, flattened for renderer surfaces (the

@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { type JSX, useId, useMemo, useState } from 'react';
 import {
   getProviderForModel,
@@ -10,7 +11,7 @@ import {
   isValidAgentModelSlug,
   type AgentModelDefinition,
   type SaveAgentModelRequest,
-} from '@canopy/desktop-shared/types/agent-models';
+} from '@canopy/execution-engine/types/agent-models';
 import {
   AGENT_DEFAULT_BASE_MODEL,
   MAX_SHARED_AGENT_INSTRUCTIONS_BYTES,
@@ -22,6 +23,7 @@ import {
   ChoiceList,
   ChoiceListRow,
   FieldError,
+  Fieldset,
   FORM_FIELD_DESCRIPTION_CLASS,
   FORM_FIELD_LABEL_CLASS,
   FormField,
@@ -36,8 +38,10 @@ import { DialogModal } from '../shared/DialogModal';
 import { ModelPicker } from '../chat/ModelPicker';
 import { ChatPluginsModal } from '../chat/ChatPluginsModal';
 import { createEmptySelections } from '@/lib/pluginSelections';
-import { extractIpcErrorMessage } from '@/lib/errors';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
+import { DesktopErrorBanner } from '../shared/DesktopErrorBanner';
 
 interface AgentModelModalProps {
   /** The Agent being edited, or `null` when creating a new one. */
@@ -133,7 +137,7 @@ export function AgentModelModal({
   const [pluginsModalOpen, setPluginsModalOpen] = useState(false);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<InlineFailure | null>(null);
   const inheritsDefaultModel = isAgentDefaultBaseModel(baseModel);
   const baseProvider = baseModel ? getProviderForModel(baseModel) : undefined;
   const baseModelErrorId = useId();
@@ -334,12 +338,18 @@ export function AgentModelModal({
       await onSave(request);
       onClose();
     } catch (err: unknown) {
-      setSubmitError(extractIpcErrorMessage(err));
       setSubmitting(false);
+      const appError = toAppError(resolveClientAppError(err));
+      if (!appError) return;
+      // The dialog stays open with the entered values.
+      setSubmitError(
+        inlineFailure(
+          appError,
+          isEdit ? 'Couldn’t save this agent.' : 'Couldn’t create this agent.',
+        ),
+      );
     }
   }
-
-  const helperClass = 'mt-1 text-xs fg-secondary';
 
   return (
     <DialogModal
@@ -408,74 +418,76 @@ export function AgentModelModal({
         </FormField>
 
         {/* Base model */}
-        <fieldset className="flex flex-col gap-1.5">
-          <legend className={`${FORM_FIELD_LABEL_CLASS} mb-1.5`}>
-            Base model
-          </legend>
-          <ChoiceList kind="radio" aria-label="Base model">
-            <ChoiceListRow
-              kind="radio"
-              selected={inheritsDefaultModel}
-              disabled={submitting}
-              onClick={(): void => {
-                // A radio row: pressing the selected row changes nothing.
-                if (!inheritsDefaultModel) {
-                  handleBaseModelChange(AGENT_DEFAULT_BASE_MODEL);
-                }
-              }}
-              data-testid="agent-model-base-default"
-            >
-              <span className="block">Default model</span>
-              <span className="block text-xs fg-secondary">
-                Each chat uses its default model from Settings when it starts.
-              </span>
-            </ChoiceListRow>
-            <ChoiceListRow
-              kind="radio"
-              selected={!inheritsDefaultModel}
-              disabled={submitting}
-              onClick={(): void => {
-                if (inheritsDefaultModel) handleBaseModelChange('');
-              }}
-              data-testid="agent-model-base-specific"
-            >
-              Specific model
-            </ChoiceListRow>
-          </ChoiceList>
-          {/*
+        <Fieldset
+          gap="control"
+          legend={<span className={FORM_FIELD_LABEL_CLASS}>Base model</span>}
+        >
+          <div className="flex flex-col gap-2.5">
+            <ChoiceList kind="radio" aria-label="Base model">
+              <ChoiceListRow
+                kind="radio"
+                selected={inheritsDefaultModel}
+                disabled={submitting}
+                onClick={(): void => {
+                  // A radio row: pressing the selected row changes nothing.
+                  if (!inheritsDefaultModel) {
+                    handleBaseModelChange(AGENT_DEFAULT_BASE_MODEL);
+                  }
+                }}
+                data-testid="agent-model-base-default"
+              >
+                <span className="block">Default model</span>
+                <span className="block text-xs fg-secondary">
+                  Each chat uses its default model from Settings when it starts.
+                </span>
+              </ChoiceListRow>
+              <ChoiceListRow
+                kind="radio"
+                selected={!inheritsDefaultModel}
+                disabled={submitting}
+                onClick={(): void => {
+                  if (inheritsDefaultModel) handleBaseModelChange('');
+                }}
+                data-testid="agent-model-base-specific"
+              >
+                Specific model
+              </ChoiceListRow>
+            </ChoiceList>
+            {/*
             Only real provider base models are offered. The Agents group is
             hidden (`hideAgents`) because a custom Agent cannot use another
             Agent as its base (isBaseModelSelectableForAgent / the validator
             enforce this).
           */}
-          {!inheritsDefaultModel && (
-            <>
-              <Surface
-                variant="inset"
-                className="mt-1 self-start inline-block"
-                data-testid="agent-model-base-model"
-              >
-                <div className="inline-flex px-2 py-1">
-                  <ModelPicker
-                    currentModel={baseModel}
-                    disabled={submitting}
-                    hideAgents
-                    browserLayout="harnesses"
-                    allowCursor
-                    allowOpenCode
-                    allowCopilot
-                    placeholderLabel="Select a base model…"
-                    onModelChange={handleBaseModelChange}
-                    triggerTooltip="Model this agent is built on"
-                  />
-                </div>
-              </Surface>
-              <p className={FORM_FIELD_DESCRIPTION_CLASS}>
-                Choose a provider model, including Cursor. Custom agents cannot
-                be used as a base model.
-              </p>
-            </>
-          )}
+            {!inheritsDefaultModel && (
+              <div className="flex flex-col gap-1.5">
+                <Surface
+                  variant="inset"
+                  className="inline-flex self-start"
+                  data-testid="agent-model-base-model"
+                >
+                  <div className="inline-flex px-2 py-1">
+                    <ModelPicker
+                      currentModel={baseModel}
+                      disabled={submitting}
+                      hideAgents
+                      browserLayout="harnesses"
+                      allowCursor
+                      allowOpenCode
+                      allowCopilot
+                      placeholderLabel="Select a base model…"
+                      onModelChange={handleBaseModelChange}
+                      triggerTooltip="Model this agent is built on"
+                    />
+                  </div>
+                </Surface>
+                <p className={FORM_FIELD_DESCRIPTION_CLASS}>
+                  Choose a provider model, including Cursor. Custom agents
+                  cannot be used as a base model.
+                </p>
+              </div>
+            )}
+          </div>
           {errors.baseModel && (
             <FieldError
               id={`${baseModelErrorId}-error`}
@@ -484,7 +496,7 @@ export function AgentModelModal({
               {errors.baseModel}
             </FieldError>
           )}
-        </fieldset>
+        </Fieldset>
 
         {/* Instructions */}
         <FormField
@@ -507,17 +519,20 @@ export function AgentModelModal({
         </FormField>
 
         {/* Plugins */}
-        <div>
-          <span className={`block ${FORM_FIELD_LABEL_CLASS}`}>Plugins</span>
-          <p className={`${helperClass} mb-2`}>
-            These plugins are enabled automatically in addition to the chat or
-            workflow selections.
-          </p>
+        <Stack gap="inline">
+          <Stack gap="tight">
+            <span className={`block ${FORM_FIELD_LABEL_CLASS}`}>Plugins</span>
+            <p className="text-xs fg-secondary">
+              These plugins are enabled automatically in addition to the chat or
+              workflow selections.
+            </p>
+          </Stack>
           <Button
             size="compact"
             disabled={submitting}
             onClick={(): void => setPluginsModalOpen(true)}
             data-testid="agent-model-plugins"
+            className="self-start"
             aria-label="Plugins"
           >
             <PluginsIcon size="sm" />
@@ -525,7 +540,7 @@ export function AgentModelModal({
           </Button>
 
           {pluginChips.length > 0 ? (
-            <div className="mt-2 flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               {pluginChips.map((chip) => (
                 <Tooltip
                   key={chip.key}
@@ -544,14 +559,20 @@ export function AgentModelModal({
               ))}
             </div>
           ) : (
-            <p className="mt-2 text-2xs fg-secondary">
+            <p className="text-2xs fg-secondary">
               No plugins added. This agent uses only the chat or workflow plugin
               selections.
             </p>
           )}
-        </div>
+        </Stack>
 
-        <ErrorBanner error={submitError} className="" />
+        <DesktopErrorBanner
+          error={submitError?.error}
+          {...(submitError?.details === undefined
+            ? {}
+            : { details: submitError.details })}
+          className=""
+        />
 
         {/* Footer */}
         <div className="flex justify-end gap-2">

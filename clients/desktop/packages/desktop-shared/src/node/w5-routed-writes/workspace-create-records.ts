@@ -29,8 +29,8 @@ import type {
   WorkspaceCliRecord,
   WorktreeData,
 } from '../../types';
-import { isRecord } from '../lib/type-guards';
-import { isPathInside } from '../lib/path-safety';
+import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
+import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 import {
   getWorkspacesRootDir,
   toWorkspaceCliRecord,

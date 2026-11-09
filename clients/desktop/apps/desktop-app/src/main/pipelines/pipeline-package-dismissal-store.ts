@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import {
   damagedCopyPath,
   pruneDamagedCopies,
-} from '@canopy/desktop-shared/node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import { writeStoreFileDurably } from '../lib/durable-store-write';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 

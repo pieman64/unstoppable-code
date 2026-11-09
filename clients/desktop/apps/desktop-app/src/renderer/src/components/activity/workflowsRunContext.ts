@@ -1,7 +1,7 @@
 import type {
   PipelineData,
   PipelineExecutionScope,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   PIPELINE_RUN_CONTEXT_COPY,
   type PipelineRunLocation,

@@ -37,7 +37,7 @@ export function PageContent({
   return (
     <div
       {...props}
-      className={`mx-auto w-full max-w-6xl px-8 ${BOTTOM_INSET_CLASS_NAMES[bottomInset]}${stack ? ' space-y-6' : ''} ${className ?? ''}`}
+      className={`mx-auto w-full max-w-6xl px-8 ${BOTTOM_INSET_CLASS_NAMES[bottomInset]}${stack ? ' flex flex-col gap-6' : ''} ${className ?? ''}`}
     >
       {children}
     </div>

@@ -1,4 +1,4 @@
-import { Button, Heading, Surface } from '@canopy/ui-shared/components';
+import { Stack, Button, Heading, Surface } from '@canopy/ui-shared/components';
 import {
   Fragment,
   useCallback,
@@ -363,20 +363,21 @@ function LeadingPriorityCard(): JSX.Element {
     <Surface
       data-testid="leading-priority-list"
       variant="inset"
+      gap="item"
       padding="default"
     >
       <div className="flex items-start justify-between gap-4">
-        <div>
+        <Stack gap="tight">
           <Heading level={2} variant="title">
             Leading icon priority
           </Heading>
-          <p className="mt-1 text-xs leading-relaxed fg-secondary">
+          <p className="text-xs leading-relaxed fg-secondary">
             Drag to build your proposed order. Items above the divider claim the
             leading slot (top wins); items below stay subtitle-only. This is a
             proposal tool — the row&apos;s real chain stays as implemented until
             an order is chosen and coded.
           </p>
-        </div>
+        </Stack>
         <div className="flex shrink-0 items-center gap-2">
           <Button
             variant="ghost"
@@ -396,7 +397,7 @@ function LeadingPriorityCard(): JSX.Element {
           </Button>
         </div>
       </div>
-      <div className="mt-3 max-w-xl">
+      <div className="max-w-xl">
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -406,7 +407,7 @@ function LeadingPriorityCard(): JSX.Element {
             items={entries}
             strategy={verticalListSortingStrategy}
           >
-            <div className="flex flex-col gap-1">
+            <Stack gap="tight">
               {entries.map((id, index) => {
                 if (id === NOT_PROMOTED_DIVIDER_ID) {
                   return (
@@ -443,9 +444,9 @@ function LeadingPriorityCard(): JSX.Element {
                       <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
                         {item.icon}
                       </span>
-                      <span className="min-w-0">
+                      <span className="inline-flex min-w-0 flex-wrap items-baseline gap-2">
                         {item.label}
-                        <span className="ml-2 text-xs fg-tertiary">
+                        <span className="text-xs fg-tertiary">
                           {item.description}
                         </span>
                       </span>
@@ -453,7 +454,7 @@ function LeadingPriorityCard(): JSX.Element {
                   </SortablePriorityRow>
                 );
               })}
-            </div>
+            </Stack>
           </SortableContext>
         </DndContext>
       </div>
@@ -477,8 +478,8 @@ export function WorktreeStateGalleryPage(): JSX.Element {
     >
       <PageTitlebar />
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-12">
-        <div className="mx-auto max-w-5xl space-y-8">
-          <div className="space-y-2">
+        <div className="flex flex-col mx-auto max-w-5xl gap-8">
+          <Stack gap="inline">
             <Heading level={1} variant="page">
               Worktree States
             </Heading>
@@ -496,24 +497,25 @@ export function WorktreeStateGalleryPage(): JSX.Element {
                 ? 'Showing the focused status model. Turn off early access in Settings, Labs to see the classic rows.'
                 : 'Showing the classic status model. Turn on early access in Settings, Labs to see the focused rows.'}
             </p>
-          </div>
+          </Stack>
 
           <LeadingPriorityCard />
 
           <Surface
             data-testid="state-color-legend"
             variant="inset"
+            gap="item"
             padding="default"
           >
             <Heading level={2} variant="title">
               Color legend
             </Heading>
-            <ul className="mt-3 grid grid-cols-1 gap-x-8 gap-y-2 md:grid-cols-2">
+            <ul className="grid grid-cols-1 gap-x-8 gap-y-2 md:grid-cols-2">
               {LEGEND_ENTRIES.map((entry) => (
                 <li key={entry.title} className="flex items-start gap-2.5">
                   <span
                     aria-hidden="true"
-                    className={`mt-1 inline-flex h-4 w-4 shrink-0 items-center justify-center ${entry.toneClassName}`}
+                    className={`inline-flex h-5 w-4 pt-1 shrink-0 items-center justify-center ${entry.toneClassName}`}
                   >
                     <span className="h-2 w-2 rounded-full bg-current" />
                   </span>
@@ -533,17 +535,20 @@ export function WorktreeStateGalleryPage(): JSX.Element {
               key={section.title}
               data-testid={`gallery-section-${sectionSlug(section.title)}`}
               variant="inset"
+              gap="item"
               padding="default"
             >
-              <Heading level={2} variant="title">
-                {section.title}
-              </Heading>
-              {section.description && (
-                <p className="mt-1 text-xs leading-relaxed fg-secondary">
-                  {section.description}
-                </p>
-              )}
-              <div className="mt-3 grid grid-cols-[21.25rem_minmax(0,1fr)] items-center gap-x-8 gap-y-1.5">
+              <Stack gap="tight">
+                <Heading level={2} variant="title">
+                  {section.title}
+                </Heading>
+                {section.description && (
+                  <p className="text-xs leading-relaxed fg-secondary">
+                    {section.description}
+                  </p>
+                )}
+              </Stack>
+              <div className="grid grid-cols-[21.25rem_minmax(0,1fr)] items-center gap-x-8 gap-y-1.5">
                 {section.states.map((state) => (
                   <GalleryStateRow
                     key={state.id}

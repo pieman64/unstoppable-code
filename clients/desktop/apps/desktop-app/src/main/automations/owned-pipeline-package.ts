@@ -21,7 +21,7 @@ import { CHAT_AUTOMATION_JOB } from '@canopy/desktop-shared/lib/chat-automation-
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node/pipelines/package-contract';
 import type { PipelineHostActionCaller } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
-import type { PipelinePackageCapabilityOverlay } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/types/pipeline';
 import type { PipelinePackageRef } from '@canopy/protocol/pipelines';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { ownedPipelineId } from './owned-pipeline';

@@ -33,6 +33,7 @@ import {
   SettingsSaveBar,
   DialogFormField,
   DialogModal,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import { Tooltip } from '@canopy/ui-shared';
 import {
@@ -527,19 +528,19 @@ export function EnvironmentsTab(): JSX.Element {
     <SettingsSaveBar
       dataTestId="environments-save-bar"
       status={
-        <>
+        <div className="flex flex-wrap items-center gap-2">
           {dirty && (
             <span data-testid="environments-unsaved">Unsaved changes</span>
           )}
           {validationMessage !== null && (
-            <span
-              className="ml-2 fg-destructive"
+            <FieldError
+              id="environments-validation"
               data-testid="environments-validation"
             >
               {validationMessage}
-            </span>
+            </FieldError>
           )}
-        </>
+        </div>
       }
       actions={
         <>

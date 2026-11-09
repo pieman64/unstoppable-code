@@ -70,6 +70,7 @@ import { useSharedContainerRun } from './useSharedContainerRun';
 import { ViewOnlyPill } from './ViewOnlyPill';
 import { ForkedContainerNotice } from './ForkedContainerNotice';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { Surface } from '@canopy/ui-shared/components';
 
 const TERMINAL_HYDRATION_RETRY_MS = 1_000;
 
@@ -476,14 +477,16 @@ export function SharedContainerWorkspace({
           // forever, which is worse than not showing it (CAN-2551).
           <WorkspaceAccessContext.Provider value={access}>
             {viewer.loading && (
-              <div
-                data-testid="shared-container-resyncing"
-                data-sync-phase={viewer.syncPhase ?? 'checking-access'}
-                className="flex shrink-0 items-center gap-2 border-b px-3 py-1 text-xs fg-secondary"
-              >
-                <LoadingSpinner tone="secondary" />
-                <span>{loadingLabel}</span>
-              </div>
+              <Surface variant="section" boundary="bottom" className="shrink-0">
+                <div
+                  data-testid="shared-container-resyncing"
+                  data-sync-phase={viewer.syncPhase ?? 'checking-access'}
+                  className="flex shrink-0 items-center gap-2 px-3 py-1 text-xs fg-secondary"
+                >
+                  <LoadingSpinner tone="secondary" />
+                  <span>{loadingLabel}</span>
+                </div>
+              </Surface>
             )}
             <div
               data-testid="shared-container-workspace-grid"
@@ -494,7 +497,6 @@ export function SharedContainerWorkspace({
                 worktreeId={viewer.containerId}
                 hostState={DEFAULT_PANEL_HOST_STATE}
                 includeAuxWindowContent={false}
-                archivedChatsAccessory={false}
               />
             </div>
           </WorkspaceAccessContext.Provider>
@@ -661,17 +663,17 @@ function SharedContainerNotice({
   return (
     <div
       data-testid={testId}
-      className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center"
+      className="flex flex-1 flex-col items-center justify-center p-8 text-center gap-2"
     >
       <p className="text-s font-medium fg-primary">{title}</p>
       <p className="max-w-md text-s fg-secondary">{detail}</p>
       {onRetry !== undefined && (
         <Button
+          className=""
           variant="outline"
           size="sm"
           data-testid="shared-container-retry"
           onClick={onRetry}
-          className="mt-1"
         >
           Re-check access
         </Button>

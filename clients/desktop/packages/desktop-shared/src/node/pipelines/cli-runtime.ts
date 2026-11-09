@@ -51,7 +51,7 @@ import {
   projectCodexRuntimeEvent,
 } from '../codex-runtime';
 import { resolvePlugins } from '../plugins/plugin-resolver';
-import { resolveCodexMockAppServerOverride } from '../e2e-mock-env';
+import { resolveCodexMockAppServerOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   CODEX_STRUCTURED_OUTPUT_RETRY_ATTEMPTS,
   appendCodexSchemaInstruction,
@@ -61,23 +61,23 @@ import {
   isRetryableCodexStructuredOutputError,
   parseStructuredResponseText,
 } from '../../builtin-actions/agent-prompt/logic';
-import { mapThinkingToReasoningEffort } from '../../lib/codex-model-config';
+import { mapThinkingToReasoningEffort } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   SETUP_WITHDRAWN,
   createSetupWithdrawal,
   stepTimedOutMessage,
 } from './step-timeout';
-import { buildPipelineGlobalInstructionsBlock } from '../../lib/global-instructions';
-import { getBrandEnv } from '../../brand/env';
-import { classifyAgentFailure } from '../../agent-failures';
+import { buildPipelineGlobalInstructionsBlock } from '@canopy/execution-engine/lib/global-instructions';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
+import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import type { JsonValue } from '../codex-runtime/generated/serde_json/JsonValue';
 import { isJsonValue } from '../codex-runtime/rollout-seed';
-import { isRecord } from '../lib/type-guards';
+import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import { buildCodexPipelineThreadConfig } from './codex-preferences';
 import {
   codexNativeMemoryThreadConfig,
   localMemoryEnabledFromEnv,
-} from '../lib/native-memory';
+} from '@canopy/execution-engine/node/lib/native-memory';
 import {
   DEFAULT_OLLAMA_SERVER_PORT,
   DEFAULT_OLLAMA_HARNESS,
@@ -91,7 +91,7 @@ import {
   stripOllamaModelPrefix,
   type ModelHarnessInvocation,
 } from '../../types';
-import { isGatewayOnlyModel } from '../../lib/gateway-model-availability';
+import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { buildCodexCompatibleOllamaConfig } from '../ollama';
 import { spawnProviderProcessDirect } from '../provider-process/spawn';
 

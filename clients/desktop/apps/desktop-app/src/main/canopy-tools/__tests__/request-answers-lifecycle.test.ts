@@ -81,7 +81,7 @@ function expiredRequestIds(): unknown[] {
 describe('requestAnswersFromRenderer on the chat wait lifecycle', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    resetDesktopChatWaitsForTest();
+    resetDesktopChatWaitsForTest({ noClientMode: 'wait' });
   });
   afterEach(() => {
     jest.useRealTimers();

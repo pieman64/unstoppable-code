@@ -152,7 +152,7 @@ import {
   type PluginsCache,
   type PluginsCacheV1,
 } from '@canopy/desktop-shared/types/plugins';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { PluginMarketplaceEntry } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginMarketplaceEntry';
 import type { PluginSummary } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginSummary';
 import {

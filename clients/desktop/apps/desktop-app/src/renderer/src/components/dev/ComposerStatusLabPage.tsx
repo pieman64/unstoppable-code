@@ -23,7 +23,11 @@ import {
   ComposerSendButton,
   defaultChatPlaceholder,
 } from '@canopy/ui-shared';
-import { ChoiceField, SettingsSelect } from '@canopy/ui-shared/components';
+import {
+  ChatComposerToolbarChip,
+  ChoiceField,
+  SettingsSelect,
+} from '@canopy/ui-shared/components';
 import {
   THINKING_LEVELS as CANONICAL_THINKING_LEVELS,
   type ThinkingLevel,
@@ -50,7 +54,7 @@ import { useVoiceTranscription } from '@/hooks/useVoiceTranscription';
 import { ScriptedVoiceProvider } from './composerLabVoice';
 import {
   buildChatComposerPlusItems,
-  FastModeChip,
+  buildFastModeChip,
   runComposerAction,
   ComposerStatusRow,
   expandedComposerEditorContainerClassName,
@@ -72,7 +76,7 @@ import {
   modelConfigForProviderSupportsFastMode,
   type ModelHarness,
 } from '@canopy/desktop-shared/types';
-import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import type { BillingFramework } from '@/lib/chatBillingFramework';
 import {
   ComposerVoiceOptionsLab,
@@ -948,11 +952,14 @@ export function ComposerStatusLabPage(): JSX.Element {
                             {modelPicker}
                             {effortPicker}
                             {fastAvailable && iteration < 2 && (
-                              <FastModeChip
-                                on={fastMode}
-                                disabled={false}
-                                compact={rowCompact}
-                                onToggle={(): void => setFastMode((on) => !on)}
+                              <ChatComposerToolbarChip
+                                {...buildFastModeChip({
+                                  on: fastMode,
+                                  disabled: false,
+                                  compact: rowCompact,
+                                  onToggle: (): void =>
+                                    setFastMode((on) => !on),
+                                })}
                               />
                             )}
                             {usageIndicator}

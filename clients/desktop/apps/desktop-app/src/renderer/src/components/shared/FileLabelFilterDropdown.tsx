@@ -1,3 +1,4 @@
+import { Dot } from '@canopy/ui-shared/components/Badge';
 import { useCallback, useMemo, useRef, useState, type JSX } from 'react';
 import { FilterIcon, SettingsIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -13,7 +14,6 @@ import {
   PickerMenuState,
   RailIconButton,
 } from '@canopy/ui-shared/components';
-import { SIDEBAR_INDICATOR_BLUE } from '@canopy/ui-shared/lib';
 import {
   useFileLabelFilterToggle,
   type FileLabelFilterOption,
@@ -113,10 +113,10 @@ export function FileLabelFilterDropdown({
         />
       )}
       {isActive && (
-        <span
-          aria-hidden="true"
+        <Dot
+          tone="filter"
           data-testid={`${testIdPrefix}-active-dot`}
-          className={`pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full ${SIDEBAR_INDICATOR_BLUE.background}`}
+          className="pointer-events-none absolute right-0.5 top-0.5"
         />
       )}
 

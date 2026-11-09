@@ -1,3 +1,4 @@
+import { type BadgeTone } from '@canopy/ui-shared/components/Badge';
 import {
   type JSX,
   useCallback,
@@ -48,6 +49,7 @@ import { DialogModal } from '@/components/shared/DialogModal';
 import { SearchBar } from '@/components/shared/search/SearchBar';
 import { LoadingSpinner } from '@/components/shared/loading';
 import {
+  Stack,
   EmptyState,
   ErrorState,
   Heading,
@@ -122,18 +124,18 @@ function formatStatus(status: AgentAuditStatus): string {
   }
 }
 
-function statusBadgeClass(status: AgentAuditStatus): string {
+function statusBadgeTone(status: AgentAuditStatus): BadgeTone {
   switch (status) {
     case 'running':
-      return 'bg-info-subtle fg-info';
+      return 'info';
     case 'success':
-      return 'bg-success-subtle fg-success-strong';
+      return 'success';
     case 'failure':
-      return 'bg-destructive-subtle fg-destructive-strong';
+      return 'danger';
     case 'cancelled':
-      return 'bg-warning-subtle fg-warning';
+      return 'warning';
     case 'interrupted':
-      return 'bg-warning-subtle fg-warning';
+      return 'warning';
   }
 }
 
@@ -297,14 +299,14 @@ function IdentifierRow({
   }
 
   return (
-    <div className="space-y-1" data-testid={testId}>
+    <Stack gap="tight" data-testid={testId}>
       <p className="text-2xs fg-secondary">{label}</p>
       <p
         className={`text-xs fg-primary ${monospace ? 'break-all font-mono' : 'break-words'}`}
       >
         {value}
       </p>
-    </div>
+    </Stack>
   );
 }
 
@@ -387,30 +389,23 @@ function AuditEntryCard({
   const costLabel = formatAuditCostLabel(entry);
   return (
     <Surface variant="group" data-testid={`audit-entry-${entry.id}`}>
-      <div className="px-4 py-4">
+      <div className="flex flex-col px-4 py-4 gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="space-y-1">
+          <Stack gap="tight">
             <div className="flex flex-wrap items-center gap-2">
               <ModelProviderIcon provider={entry.provider} size="sm" />
               <span className="text-s font-semibold fg-primary">
                 {displayLabelForEntry(entry)}
               </span>
-              <span className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
-                {entry.provider}
-              </span>
+              <Badge>{entry.provider}</Badge>
               {entry.chatMode === 'terminal' && (
-                <span
-                  className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary"
-                  data-testid={`audit-chat-mode-badge-${entry.id}`}
-                >
+                <Badge data-testid={`audit-chat-mode-badge-${entry.id}`}>
                   Terminal
-                </span>
+                </Badge>
               )}
-              <span
-                className={`rounded-full px-2 py-0.5 text-2xs ${statusBadgeClass(entry.status)}`}
-              >
+              <Badge tone={statusBadgeTone(entry.status)}>
                 {formatStatus(entry.status)}
-              </span>
+              </Badge>
               {entry.aiCreditsRouted && !entry.modelGatewayRouted && (
                 <Badge
                   data-testid={`audit-ai-credits-badge-${entry.id}`}
@@ -425,7 +420,7 @@ function AuditEntryCard({
               {entry.model ? ` · ${entry.model}` : ''}
               {entry.repoLabel ? ` · ${entry.repoLabel}` : ''}
             </p>
-          </div>
+          </Stack>
           <div className="flex items-center gap-3">
             {entry.hasTranscript && (
               <Button
@@ -449,7 +444,7 @@ function AuditEntryCard({
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-4 text-xs fg-secondary">
+        <div className="flex flex-wrap items-center justify-between gap-4 text-xs fg-secondary">
           <div className="flex flex-wrap gap-4">
             <AuditDuration entry={entry} />
             <span>{entry.messageCount} messages</span>
@@ -465,7 +460,7 @@ function AuditEntryCard({
         </div>
 
         {entry.error && (
-          <p className="mt-3">
+          <p>
             <StatusLabel size="s">{entry.error}</StatusLabel>
           </p>
         )}
@@ -488,7 +483,7 @@ function AuditEntryListSkeleton(): JSX.Element {
       label="Loading audit entries"
       testId="audit-trail-loading"
     >
-      <div className="flex flex-col gap-3">
+      <Stack gap="item">
         {SAMPLE_AUDIT_ENTRIES.map((entry) => (
           <AuditEntryCard
             key={entry.id}
@@ -497,7 +492,7 @@ function AuditEntryListSkeleton(): JSX.Element {
             onInspect={noop}
           />
         ))}
-      </div>
+      </Stack>
     </Skeleton>
   );
 }
@@ -509,10 +504,10 @@ interface DurationRowProps {
 
 function DurationRow({ label, entry }: DurationRowProps): JSX.Element {
   return (
-    <div className="space-y-1">
+    <Stack gap="tight">
       <p className="text-2xs fg-secondary">{label}</p>
       <AuditDuration entry={entry} className="font-mono text-xs fg-primary" />
-    </div>
+    </Stack>
   );
 }
 
@@ -856,111 +851,113 @@ export function AuditTrailPage(): JSX.Element {
     >
       <PageTitlebar />
       <PageContent bottomInset="tight" className="shrink-0">
-        <PageHeader
-          title="Audit trail"
-          description="Chronological summaries of chat turns, helper tasks, and workflow agent steps."
-          actions={
-            <Button
-              variant="secondary"
-              size="compact"
-              onClick={() => {
-                void handleExport();
-              }}
-              disabled={exporting}
-            >
-              <AppCatalogDownload width="14" height="14" aria-hidden="true" />
-              {exporting ? 'Exporting…' : 'Export CSV'}
-            </Button>
-          }
-        />
-
-        <PageSearchRow testId="audit-trail-search-row" className="mt-4">
-          <PageSearchField
-            value={search}
-            onValueChange={setSearch}
-            placeholder="Search the audit trail"
-            aria-label="Search the audit trail"
-            data-testid="audit-trail-search"
-            clearTestId="audit-trail-search-clear"
+        <Stack gap="group">
+          <PageHeader
+            title="Audit trail"
+            description="Chronological summaries of chat turns, helper tasks, and workflow agent steps."
+            actions={
+              <Button
+                variant="secondary"
+                size="compact"
+                onClick={() => {
+                  void handleExport();
+                }}
+                disabled={exporting}
+              >
+                <AppCatalogDownload width="14" height="14" aria-hidden="true" />
+                {exporting ? 'Exporting…' : 'Export CSV'}
+              </Button>
+            }
           />
-          <PageSearchControls>
-            <PageSearchFilters
-              filters={[
-                ...(scopingContext !== undefined
-                  ? [
-                      pageFilter<'context'>({
-                        key: 'context',
-                        title: 'Scope',
-                        anyLabel: 'All contexts',
-                        options: [
-                          { value: 'context', label: 'Selected context' },
-                        ],
-                        selected:
-                          contextFilter === 'context' ? ['context'] : [],
-                        onToggle: (): void => setContextFilter('context'),
-                        onClear: (): void => setContextFilter('all'),
-                        testId: 'audit-trail-context-filter',
-                      }),
-                    ]
-                  : []),
-                pageFilter<AuditTrailProvider>({
-                  key: 'provider',
-                  title: 'Provider',
-                  anyLabel: 'All providers',
-                  options: AUDIT_TRAIL_PROVIDERS.map((value) => ({
-                    value,
-                    label: getModelCatalogProviderLabel(value),
-                  })),
-                  selected: auditTrailProviderSelection(provider),
-                  onToggle: (value): void =>
-                    setProvider(provider === value ? 'all' : value),
-                  onClear: (): void => setProvider('all'),
-                  testId: 'audit-trail-provider-filter',
-                }),
-                pageFilter<AgentAuditStatus>({
-                  key: 'status',
-                  title: 'Status',
-                  anyLabel: 'All statuses',
-                  options: AUDIT_TRAIL_STATUSES.map((value) => ({
-                    value,
-                    label: formatStatus(value),
-                  })),
-                  selected: status === 'all' ? [] : [status],
-                  onToggle: (value): void =>
-                    setStatus(status === value ? 'all' : value),
-                  onClear: (): void => setStatus('all'),
-                  testId: 'audit-trail-status-filter',
-                }),
-                pageFilter<AgentAuditEventType>({
-                  key: 'event',
-                  title: 'Event',
-                  anyLabel: 'All events',
-                  options: AGENT_AUDIT_EVENT_TYPES.map((value) => ({
-                    value,
-                    label: EVENT_TYPE_FILTER_LABELS[value],
-                  })),
-                  selected: eventType === 'all' ? [] : [eventType],
-                  onToggle: (value): void =>
-                    setEventType(eventType === value ? 'all' : value),
-                  onClear: (): void => setEventType('all'),
-                  testId: 'audit-trail-event-type-filter',
-                }),
-              ]}
-              onClearAll={(): void => {
-                setContextFilter('all');
-                setProvider('all');
-                setStatus('all');
-                setEventType('all');
-              }}
-              testId="audit-trail-filter"
+
+          <PageSearchRow testId="audit-trail-search-row">
+            <PageSearchField
+              value={search}
+              onValueChange={setSearch}
+              placeholder="Search the audit trail"
+              aria-label="Search the audit trail"
+              data-testid="audit-trail-search"
+              clearTestId="audit-trail-search-clear"
             />
-          </PageSearchControls>
-        </PageSearchRow>
+            <PageSearchControls>
+              <PageSearchFilters
+                filters={[
+                  ...(scopingContext !== undefined
+                    ? [
+                        pageFilter<'context'>({
+                          key: 'context',
+                          title: 'Scope',
+                          anyLabel: 'All contexts',
+                          options: [
+                            { value: 'context', label: 'Selected context' },
+                          ],
+                          selected:
+                            contextFilter === 'context' ? ['context'] : [],
+                          onToggle: (): void => setContextFilter('context'),
+                          onClear: (): void => setContextFilter('all'),
+                          testId: 'audit-trail-context-filter',
+                        }),
+                      ]
+                    : []),
+                  pageFilter<AuditTrailProvider>({
+                    key: 'provider',
+                    title: 'Provider',
+                    anyLabel: 'All providers',
+                    options: AUDIT_TRAIL_PROVIDERS.map((value) => ({
+                      value,
+                      label: getModelCatalogProviderLabel(value),
+                    })),
+                    selected: auditTrailProviderSelection(provider),
+                    onToggle: (value): void =>
+                      setProvider(provider === value ? 'all' : value),
+                    onClear: (): void => setProvider('all'),
+                    testId: 'audit-trail-provider-filter',
+                  }),
+                  pageFilter<AgentAuditStatus>({
+                    key: 'status',
+                    title: 'Status',
+                    anyLabel: 'All statuses',
+                    options: AUDIT_TRAIL_STATUSES.map((value) => ({
+                      value,
+                      label: formatStatus(value),
+                    })),
+                    selected: status === 'all' ? [] : [status],
+                    onToggle: (value): void =>
+                      setStatus(status === value ? 'all' : value),
+                    onClear: (): void => setStatus('all'),
+                    testId: 'audit-trail-status-filter',
+                  }),
+                  pageFilter<AgentAuditEventType>({
+                    key: 'event',
+                    title: 'Event',
+                    anyLabel: 'All events',
+                    options: AGENT_AUDIT_EVENT_TYPES.map((value) => ({
+                      value,
+                      label: EVENT_TYPE_FILTER_LABELS[value],
+                    })),
+                    selected: eventType === 'all' ? [] : [eventType],
+                    onToggle: (value): void =>
+                      setEventType(eventType === value ? 'all' : value),
+                    onClear: (): void => setEventType('all'),
+                    testId: 'audit-trail-event-type-filter',
+                  }),
+                ]}
+                onClearAll={(): void => {
+                  setContextFilter('all');
+                  setProvider('all');
+                  setStatus('all');
+                  setEventType('all');
+                }}
+                testId="audit-trail-filter"
+              />
+            </PageSearchControls>
+          </PageSearchRow>
+        </Stack>
       </PageContent>
 
       <div className="min-h-0 flex-1 overflow-auto">
         <PageContent>
-          <div className="space-y-3" data-testid="audit-entry-list">
+          <Stack gap="item" data-testid="audit-entry-list">
             {visibleHistoryEntries.length === 0 && loadingHistory ? (
               <DelayedLoadingPlaceholder slowNote="Still loading audit entries…">
                 <AuditEntryListSkeleton />
@@ -994,7 +991,7 @@ export function AuditTrailPage(): JSX.Element {
             {nextCursor && !loadingHistory && (
               <div ref={sentinelRef} className="h-1" aria-hidden="true" />
             )}
-          </div>
+          </Stack>
         </PageContent>
       </div>
       {transcriptDisplayEntry && (
@@ -1104,7 +1101,7 @@ export function AuditTrailPage(): JSX.Element {
               {transcriptResponse?.type === 'success' &&
                 transcriptResponse.injectedPrompts.length > 0 && (
                   <div
-                    className="space-y-3 border-b px-6 py-4"
+                    className="flex flex-col border-b px-6 py-4 gap-3"
                     data-testid="audit-transcript-injected-prompts"
                   >
                     <div>
@@ -1120,23 +1117,26 @@ export function AuditTrailPage(): JSX.Element {
                       <Surface
                         key={`${prompt.kind}-${String(index)}`}
                         variant="group"
+                        gap="item"
                         padding="compact"
                       >
-                        <p className="text-xs font-medium fg-primary">
-                          {prompt.kind === 'system_prompt_append'
-                            ? 'System prompt'
-                            : prompt.kind === 'org_memory'
-                              ? 'Organization memory'
-                              : 'Plan mode developer instructions'}
-                        </p>
-                        <p className="mt-1 text-xs fg-secondary">
-                          {prompt.provider} ·{' '}
-                          {formatInjectedPromptCondition(
-                            prompt.applicationCondition,
-                          )}
-                        </p>
+                        <Stack gap="tight">
+                          <p className="text-xs font-medium fg-primary">
+                            {prompt.kind === 'system_prompt_append'
+                              ? 'System prompt'
+                              : prompt.kind === 'org_memory'
+                                ? 'Organization memory'
+                                : 'Plan mode developer instructions'}
+                          </p>
+                          <p className="text-xs fg-secondary">
+                            {prompt.provider} ·{' '}
+                            {formatInjectedPromptCondition(
+                              prompt.applicationCondition,
+                            )}
+                          </p>
+                        </Stack>
                         <pre
-                          className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-3 overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary/60 p-3 font-mono text-xs fg-primary`}
+                          className={`${POSTHOG_REPLAY_BLOCK_CLASS} overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary/60 p-3 font-mono text-xs fg-primary`}
                         >
                           {prompt.text}
                         </pre>

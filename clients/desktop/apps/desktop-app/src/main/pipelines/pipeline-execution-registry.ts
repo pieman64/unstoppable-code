@@ -1,6 +1,10 @@
 import type { ExecutionLease } from '@canopy/core-runtime';
 import type { ExecutionHandle } from '@canopy/desktop-shared/node/pipelines/executor';
 import { getExecutionAccounting } from '../execution-accounting';
+import {
+  getFollowedDaemonPipelineExecutionHandles,
+  onDaemonPipelineMirrorsChange,
+} from './daemon-pipeline-execution';
 
 interface ReservedExecution {
   kind: 'reserved';
@@ -26,8 +30,22 @@ const timedOutShutdownReservations = new Set<string>();
 const DEFAULT_CANCEL_TIMEOUT_MS = 8_000;
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 
+/**
+ * Daemon runs main follows (CAN-5086) are active work too: they count, take
+ * a lease and keep their worktree busy. Shutdown never pauses or cancels them.
+ */
+function followedDaemonRuns(): ExecutionHandle[] {
+  return getFollowedDaemonPipelineExecutionHandles().filter(
+    (handle) => !activeExecutions.has(handle.id),
+  );
+}
+
 function syncExecutionLeases(): void {
-  activeExecutions.forEach((_execution, executionId): void => {
+  const active = new Set([
+    ...activeExecutions.keys(),
+    ...followedDaemonRuns().map((handle) => handle.id),
+  ]);
+  active.forEach((executionId): void => {
     if (!executionLeases.has(executionId)) {
       executionLeases.set(
         executionId,
@@ -36,7 +54,7 @@ function syncExecutionLeases(): void {
     }
   });
   executionLeases.forEach((lease, executionId): void => {
-    if (!activeExecutions.has(executionId)) {
+    if (!active.has(executionId)) {
       lease.release();
       executionLeases.delete(executionId);
     }
@@ -45,7 +63,7 @@ function syncExecutionLeases(): void {
 
 function notifyActiveCountChange(): void {
   syncExecutionLeases();
-  const count = activeExecutions.size;
+  const count = getActivePipelineExecutionCount();
   for (const listener of Array.from(activeCountListeners)) {
     listener(count);
   }
@@ -169,7 +187,7 @@ export function getActiveExecutionHandle(
     : undefined;
 }
 
-export function getActivePipelineExecutionHandles(): ExecutionHandle[] {
+function inProcessExecutionHandles(): ExecutionHandle[] {
   const handles: ExecutionHandle[] = [];
   activeExecutions.forEach((activeExecution): void => {
     if (activeExecution.kind === 'running') {
@@ -177,6 +195,10 @@ export function getActivePipelineExecutionHandles(): ExecutionHandle[] {
     }
   });
   return handles;
+}
+
+export function getActivePipelineExecutionHandles(): ExecutionHandle[] {
+  return [...inProcessExecutionHandles(), ...followedDaemonRuns()];
 }
 
 async function cancelWithTimeout(
@@ -217,10 +239,15 @@ export function cancelAllActivePipelineExecutions(
 }
 
 export function hasActivePipelineExecutions(): boolean {
-  return activeExecutions.size > 0;
+  return getActivePipelineExecutionCount() > 0;
 }
 
 export function getActivePipelineExecutionCount(): number {
+  return activeExecutions.size + followedDaemonRuns().length;
+}
+
+/** The executions a shutdown checkpoint pauses: the in-process ones. */
+export function getInProcessPipelineExecutionCount(): number {
   return activeExecutions.size;
 }
 
@@ -252,8 +279,8 @@ export async function pauseAllActivePipelineExecutions(
       if (error) reject(error);
       else resolve();
     };
-    unsubscribe = subscribeToActiveCountChange((count) => {
-      if (count === 0) {
+    unsubscribe = subscribeToActiveCountChange(() => {
+      if (activeExecutions.size === 0) {
         finish();
       }
     });
@@ -277,7 +304,7 @@ export async function pauseAllActivePipelineExecutions(
       }
     }, timeoutMs);
   });
-  getActivePipelineExecutionHandles().forEach((handle) =>
+  inProcessExecutionHandles().forEach((handle) =>
     pauseExecutionForShutdown(handle),
   );
   await drained;
@@ -293,3 +320,5 @@ export async function pauseAllActivePipelineExecutions(
     );
   }
 }
+
+onDaemonPipelineMirrorsChange(notifyActiveCountChange);

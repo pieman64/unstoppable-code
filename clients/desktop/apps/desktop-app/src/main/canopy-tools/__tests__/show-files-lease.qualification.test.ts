@@ -24,19 +24,17 @@ import {
   interfaceToolDescriptor,
   type InterfaceToolName,
 } from '@canopy/protocol/canopy-core';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
-import type {
-  AppAdvisorRendererToolResponse,
-  ShowFilesRendererResult,
-} from '@canopy/desktop-shared/types';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
+import type { ShowFilesRendererResult } from '@canopy/desktop-shared/types';
 import {
   requestAppAdvisorRendererTool,
   routeRendererToolRequest,
   surfaceUnavailableResponse,
-  type AppAdvisorRendererToolSurfaces,
-  type RemoteAppAdvisorWindowHost,
 } from '../../ipc/app-advisor';
-import { setSessionInterfaceToolRegistry } from '../../agents/interface-tool-binding';
+import {
+  setInterfaceToolAudienceResolver,
+  setSessionInterfaceToolRegistry,
+} from '../../agents/interface-tool-binding';
 import { buildCodexSessionDynamicToolSpecs } from '../../codex/session-dynamic-tools';
 import { getCanopyRouteTools } from '../../mcp/canopy-route-tools';
 import type { CanopyWorktreeSessionRoute } from '../../mcp/canopy-tool-router';
@@ -57,23 +55,6 @@ const rendererResult = {
   activated: true,
   files: [{ path: 'README.md', ok: true, opened: true }],
 };
-
-function surfaces(): AppAdvisorRendererToolSurfaces & {
-  touched: jest.Mock;
-} {
-  const touched = jest.fn((): null => null);
-  return {
-    touched,
-    getMainWindow: touched,
-    getAppAdvisorWindow: touched,
-    openAppAdvisorWindow: jest.fn(() =>
-      Promise.resolve({ open: false, focused: false }),
-    ),
-    ensureAppAdvisorWindow: jest.fn(() =>
-      Promise.resolve({ open: false, focused: false }),
-    ),
-  };
-}
 
 interface Lease {
   registry: InterfaceToolRegistry;
@@ -130,6 +111,7 @@ async function delivered(lease: Lease): Promise<InterfaceToolCall> {
 
 afterEach(() => {
   setSessionInterfaceToolRegistry(null);
+  setInterfaceToolAudienceResolver(null);
   routeRequest.mockReset();
   routeRequest.mockReturnValue(null);
   windowRequest.mockReset();
@@ -138,7 +120,7 @@ afterEach(() => {
 describe('ShowFiles through the main window lease (CAN-4131)', () => {
   it('ShowFiles reaches the main window only through its lease', async () => {
     const lease = mainWindowLease();
-    const pending = requestShowFilesThroughLease(input, surfaces());
+    const pending = requestShowFilesThroughLease(input);
     const call = await delivered(lease);
     expect(lease.delivered).toHaveLength(1);
     expect(call.toolName).toBe('ui.show_files');
@@ -158,10 +140,9 @@ describe('ShowFiles through the main window lease (CAN-4131)', () => {
     expect(windowRequest).not.toHaveBeenCalled();
   });
 
-  it('the lease path never touches a window accessor', async () => {
+  it('the lease path never touches a window or the routed path', async () => {
     const lease = mainWindowLease();
-    const fallback = surfaces();
-    const pending = requestShowFilesThroughLease(input, fallback);
+    const pending = requestShowFilesThroughLease(input);
     const call = await delivered(lease);
     lease.registry.reply('main-1', call.callId, {
       requestId: call.callId,
@@ -169,43 +150,51 @@ describe('ShowFiles through the main window lease (CAN-4131)', () => {
       result: rendererResult,
     });
     await pending;
-    expect(fallback.touched).not.toHaveBeenCalled();
-    expect(fallback.openAppAdvisorWindow).not.toHaveBeenCalled();
-    expect(fallback.ensureAppAdvisorWindow).not.toHaveBeenCalled();
+    expect(windowRequest).not.toHaveBeenCalled();
+    expect(routeRequest).not.toHaveBeenCalled();
   });
 
-  it("a remote-driven chat keeps today's path", async () => {
+  it("a remote-driven chat is served by its controller's lease, never this computer's (CAN-5823)", async () => {
     const lease = mainWindowLease();
-    const remote = surfaces();
-    const closed = { open: false, focused: false };
-    const host: RemoteAppAdvisorWindowHost = {
-      ...remote,
-      routeKey: 'controller',
-      focusMainWindow: () => Promise.resolve(),
-      closeAppAdvisorWindow: () => Promise.resolve(closed),
-      toggleAppAdvisorWindow: () => Promise.resolve(closed),
-      getAppAdvisorWindowState: () => closed,
-      markAppAdvisorWindowRendererReady: () => closed,
-      reportAppAdvisorWindowUiState: () => undefined,
-    };
-    routeRequest.mockReturnValue(host);
-    windowRequest.mockImplementation((request) =>
-      Promise.resolve<AppAdvisorRendererToolResponse>({
-        requestId: request.requestId,
-        ok: true,
-        result: rendererResult,
-      }),
+    const remote: InterfaceToolCall[] = [];
+    lease.registry.openLease(
+      {
+        leaseId: 'remote-1',
+        surface: 'main',
+        interfaceKind: 'desktop',
+        audience: 'controller',
+      },
+      {
+        deliver: (call) => {
+          remote.push(call);
+          return true;
+        },
+        cancel: () => undefined,
+      },
     );
-    await expect(
-      requestShowFilesThroughLease(input, surfaces()),
-    ).resolves.toMatchObject({ opened: 1 });
-    expect(windowRequest).toHaveBeenCalledTimes(1);
+    lease.registry.register('remote-1', {
+      tools: [interfaceToolDescriptor('ui.show_files')],
+      _meta: { idempotencyKey: 'remote-tools' },
+    });
+    setInterfaceToolAudienceResolver(() => 'controller');
+    const pending = requestShowFilesThroughLease(input);
+    for (let tick = 0; tick < 10 && remote.length === 0; tick += 1)
+      await Promise.resolve();
+    const call = remote[0];
+    if (!call) throw new Error('no call delivered');
+    lease.registry.reply('remote-1', call.callId, {
+      requestId: call.callId,
+      ok: true,
+      result: rendererResult,
+    });
+    await expect(pending).resolves.toMatchObject({ opened: 1 });
     expect(lease.delivered).toHaveLength(0);
+    expect(windowRequest).not.toHaveBeenCalled();
   });
 
   it("lease loss returns today's surface_unavailable failure", async () => {
     const lease = mainWindowLease();
-    const pending = requestShowFilesThroughLease(input, surfaces());
+    const pending = requestShowFilesThroughLease(input);
     const call = await delivered(lease);
     lease.registry.endLease('main-1');
     const expected = surfaceUnavailableResponse({

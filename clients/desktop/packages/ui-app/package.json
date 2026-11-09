@@ -67,13 +67,15 @@
     "./settings/github": "./src/settings/github/index.ts",
     "./settings/billing": "./src/settings/billing/index.ts",
     "./settings/errors": "./src/settings/errors/index.ts",
+    "./remote-control": "./src/remote-control/index.ts",
     "./repo-rules": "./src/repo-rules/index.ts",
     "./script-actions": "./src/script-actions/index.ts",
     "./onboarding": "./src/onboarding/index.ts",
     "./onboarding-tips": "./src/onboarding-tips/index.ts",
     "./suggestions": "./src/suggestions/index.ts",
     "./composer-recovery": "./src/composer-recovery/index.ts",
-    "./marketplace-sources": "./src/marketplace-sources/index.ts"
+    "./marketplace-sources": "./src/marketplace-sources/index.ts",
+    "./standing-conditions": "./src/standing-conditions/index.ts"
   },
   "dependencies": {
     "@canopy/app-core": "workspace:*",
@@ -125,6 +127,7 @@
     "./src/onboarding/**",
     "./src/org-projects/**",
     "./src/pipelines/**",
+    "./src/remote-control/**",
     "./src/repo-rules/**",
     "./src/script-actions/**",
     "./src/settings/**",

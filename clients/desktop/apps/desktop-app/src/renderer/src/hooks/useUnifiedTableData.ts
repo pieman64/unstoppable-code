@@ -18,7 +18,7 @@ import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import type {
   ProviderConnectorListResult,
   ProviderConnectorRow,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { buildProviderConnectorRows } from '../components/mcp/providerConnectorRows';
 import {
   advertisesProviderConnector,
@@ -28,7 +28,7 @@ import {
   supersededByConnector,
   type ConnectorOwnership,
 } from '../lib/unifiedPluginEntries';
-import type { McpServerIndexEntry } from '@canopy/desktop-shared/types/mcp-servers';
+import type { McpServerIndexEntry } from '@canopy/execution-engine/types/mcp-servers';
 import {
   computePluginShareableRef,
   normalizeGitHubRepoRef,

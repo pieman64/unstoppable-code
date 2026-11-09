@@ -1,6 +1,6 @@
-import type { RepositoryPolicyScope } from '../../lib/repository-policy';
+import type { RepositoryPolicyScope } from '@canopy/execution-engine/node/lib/repository-policy';
 import type { LedgerGlobalOwner } from '@canopy/protocol/canopy-core';
-import type { ResourceContextInput } from '../../../lib/resource-context-policy';
+import type { ResourceContextInput } from '@canopy/execution-engine/lib/resource-context-policy';
 import type { PipelineResourceParent } from './child-pipeline-resolver';
 import type { ChildPipelineAuthorization } from './child-pipeline-resolver';
 import type {
@@ -32,7 +32,7 @@ import type {
   PipelinePackageManifestV1,
   SpawnedProcessRunner,
   StepOutputEvent,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   AgentAuditLinkTarget,
   AgentModelConfig,
@@ -64,12 +64,19 @@ import type {
 } from '@canopy/desktop-shared/pipelines/host-create-entry';
 import type { ResolvedSendAgentMessageInputs } from '@canopy/desktop-shared/pipelines/host-send-agent-message';
 import type { WaitForAgentReplyInputs } from '@canopy/desktop-shared/pipelines/host-wait-for-agent-reply';
-import type { CodexConfig } from '@canopy/desktop-shared/lib/codex-model-config';
-import type { AgentActionFailureMetadata } from '@canopy/desktop-shared/agent-failures';
-import type { HelperUsage } from '@canopy/desktop-shared/lib/helper-usage';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
+import type { AgentActionFailureMetadata } from '@canopy/execution-engine/agent-failures';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import type { PermissionPreset } from '@canopy/desktop-shared/builtin-actions/agent-prompt/logic';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import type { JsonValue } from '../../codex-runtime/generated/serde_json/JsonValue';
+import type { ClaudeModAdmissionInput } from '../../plugins/claude-mod-admission';
+
+/** Host-resolved policy and ambient inputs; step-selected roots are added later. */
+export type ClaudeModAdmissionContext = Omit<
+  ClaudeModAdmissionInput,
+  'selectedPlugins'
+>;
 export type {
   AgentRecoveryAttempt,
   AgentRecoveryCheckpoint,
@@ -120,7 +127,7 @@ export type {
   TaskReadyEventData,
   TaskReadyEventInput,
   TaskReadyReplayData,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 export interface ExecutionLifecycleHooks {
   onExecutionStart?(state: ExecutionState): void;
@@ -300,6 +307,13 @@ export interface ExecutionRuntime {
     collections: readonly PipelinePluginCollection[] | undefined,
     preferences: Record<string, PipelinePluginCollectionPreference>,
   ) => Promise<PipelinePluginCollectionResolution>;
+  /** Resolve fresh Claude Mod policy for one agent launch at its effective cwd. */
+  resolveClaudeModAdmissionContext?: (request: {
+    cwd: string;
+    settingSources: readonly SettingSource[];
+    /** The step env's CLAUDE_CONFIG_DIR, when the pipeline sets one. */
+    claudeConfigDir?: string;
+  }) => Promise<ClaudeModAdmissionContext | undefined>;
   /** `scope` names the step's workspace, whose default an inheriting Agent takes. */
   resolvePipelineAgentModelAlias?: (
     agentId: string,
@@ -603,10 +617,12 @@ export interface PipelineHostActionControls {
   artifactsDir: string;
   /**
    * Registered before the first async effect; on timeout the executor
-   * returns the finalizer's result instead of a generic timeout.
+   * returns the finalizer's result instead of a generic timeout. A finalizer
+   * that resolves `undefined` counts as none: the step ends as a plain
+   * timeout (a daemon host step whose owner had no finalizer, CAN-5771).
    */
   registerTimeoutFinalizer(
-    finalize: () => Promise<PipelineHostActionResult>,
+    finalize: () => Promise<PipelineHostActionResult | undefined>,
   ): void;
 }
 

@@ -57,6 +57,8 @@ const config = {
     '^@canopy/protocol/(.*)$': '<rootDir>/packages/protocol/src/$1',
     '^@canopy/agent-actions$': '<rootDir>/packages/agent-actions/src/index.ts',
     '^@canopy/agent-actions/(.*)$': '<rootDir>/packages/agent-actions/src/$1',
+    '^@canopy/remote-session$':
+      '<rootDir>/packages/remote-session/src/index.ts',
     '^@canopy/plugin-interop$':
       '<rootDir>/packages/plugin-interop/src/index.ts',
     '^@canopy/plugin-interop/(.*)$': '<rootDir>/packages/plugin-interop/src/$1',
@@ -77,6 +79,8 @@ const config = {
       '<rootDir>/packages/copilot-recipient/src/$1',
     '^@canopy/code-graph$': '<rootDir>/packages/code-graph/src/index.ts',
     '^@canopy/code-graph/(.*)$': '<rootDir>/packages/code-graph/src/$1',
+    '^@canopy/execution-engine/(.*)$':
+      '<rootDir>/packages/execution-engine/src/$1',
     '^@canopy/desktop-shared$':
       '<rootDir>/packages/desktop-shared/src/index.ts',
     '^@canopy/desktop-shared/(.*)$': '<rootDir>/packages/desktop-shared/src/$1',
@@ -88,6 +92,10 @@ const config = {
     '^@canopy/ui-shared/(.*)$': '<rootDir>/packages/ui-shared/src/$1',
     '^@canopy/ui-rich$': '<rootDir>/packages/ui-rich/src/index.ts',
     '^@canopy/ui-rich/(.*)$': '<rootDir>/packages/ui-rich/src/$1',
+    '^@canopy/ipc-canopy-client$':
+      '<rootDir>/packages/ipc-canopy-client/src/index.ts',
+    '^@canopy/ipc-canopy-client/(.*)$':
+      '<rootDir>/packages/ipc-canopy-client/src/$1',
     '^@canopy/app-core$': '<rootDir>/packages/app-core/src/index.ts',
     '^@canopy/app-core/(.*)$': '<rootDir>/packages/app-core/src/$1',
     '^@canopy/app-state$': '<rootDir>/packages/app-state/src/index.ts',

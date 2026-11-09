@@ -8,7 +8,7 @@ import {
   type SkillSuggestion,
   type SkillSuggestionOrigin,
 } from '@canopy/desktop-shared/lib/skill-suggestions';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import { validateId } from '../lib/validation';
 import { sendToWebContents } from '../lib/web-contents-send';
 import { skillSuggestionSurfacing } from '../skill-suggestions';

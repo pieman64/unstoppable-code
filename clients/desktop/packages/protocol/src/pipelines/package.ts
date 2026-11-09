@@ -1283,6 +1283,11 @@ export type PipelinePackageBlockerCode =
   | 'INVALID_PACKAGE'
   /** A child `with.pipeline` ref depends on inputs, steps or runtime env. Dismissable. */
   | 'UNRESOLVED_CHILD_PIPELINE_REF'
+  /**
+   * A shared or packaged pipeline (the root, a child or an automation's)
+   * declares `workflow`, which can't leave this machine yet (CAN-5782).
+   */
+  | 'LOCAL_ONLY_PIPELINE_TRIGGER'
   /** A prompt names more than one pipeline. Dismissable. */
   | 'AMBIGUOUS_PIPELINE_REFERENCE'
   /** A dependency pipeline has its own installed package (its children are not on disk). */

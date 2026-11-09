@@ -20,6 +20,7 @@
 import { useState, type JSX, type ReactNode } from 'react';
 import { Button, EmptyState, Notice } from '@canopy/ui-shared';
 import {
+  Stack,
   DelayedLoadingPlaceholder,
   SearchField,
 } from '@canopy/ui-shared/components';
@@ -250,7 +251,7 @@ export function OrgProjectCatalogList({
   const addLabel = cloud === undefined ? 'Add' : 'Add to desktop';
   const addedLabel = cloud === undefined ? 'Added' : 'On desktop';
   return (
-    <div data-testid="add-workspace-org-catalog" className="space-y-4">
+    <Stack data-testid="add-workspace-org-catalog" gap="group">
       {error && <Notice>{error}</Notice>}
       {unauthorized ? (
         <EmptyState
@@ -277,7 +278,7 @@ export function OrgProjectCatalogList({
             // Stays pinned while the list scrolls; it covers the scroll
             // container's top padding so rows never show above it, and a
             // short fade below it lets rows slide under it softly.
-            <div className="sticky top-0 z-10 -mx-5 -mt-3 space-y-2 bg-card px-5 pt-3 pb-2 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-4 after:bg-linear-to-b after:from-card after:to-transparent">
+            <div className="sticky top-0 z-10 -mx-5 -mt-3 flex flex-col gap-2 bg-card px-5 pt-3 pb-2 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-4 after:bg-linear-to-b after:from-card after:to-transparent">
               <SearchField
                 value={search}
                 onValueChange={setSearch}
@@ -312,7 +313,7 @@ export function OrgProjectCatalogList({
               />
             </div>
           ) : (
-            <section aria-label="Projects" className="space-y-2">
+            <Stack aria-label="Projects" as="section" gap="inline">
               {rows.map((project): JSX.Element => {
                 const state = deriveOrgProjectPlaceholderState({
                   project,
@@ -404,11 +405,11 @@ export function OrgProjectCatalogList({
                   />
                 );
               })}
-            </section>
+            </Stack>
           )}
         </>
       )}
-    </div>
+    </Stack>
   );
 }
 

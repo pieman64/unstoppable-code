@@ -67,7 +67,9 @@ async function observe(
       ?.slice(9);
     if (
       listed &&
-      (sep === '\\' ? (await realpath(listed)) === path : listed === path)
+      (sep === '\\'
+        ? (await canonicalGitPath(listed, 'symlink-checkout')) === path
+        : listed === path)
     )
       entry = fields;
   }
@@ -88,6 +90,7 @@ async function observe(
           '--git-common-dir',
         ])
       ).replace(/\r?\n$/, ''),
+      'symlink-common-directory',
     ),
     head,
     branch,
@@ -108,12 +111,14 @@ export async function prepareRelocationGit(
 ): Promise<RelocationGitPlan> {
   const checkouts: RelocationGitCheckout[] = [];
   const backlinks = new Map<string, string>();
-  for (const path of new Set(paths)) {
-    if ((await realpath(path)) !== path)
-      throw new RelocationRefusedError('symlink-checkout');
+  for (const requestedPath of new Set(paths)) {
+    const path = await canonicalGitPath(requestedPath, 'symlink-checkout');
+    if (checkouts.some((checkout) => checkout.path === path)) continue;
+    const dotGit = join(path, '.git');
+    const dotGitState = await lstat(dotGit);
+    if (dotGitState.isSymbolicLink())
+      throw new RelocationRefusedError('symlink-git-directory');
     const checkout = await observe(git, path);
-    if ((await realpath(checkout.commonDirectory)) !== checkout.commonDirectory)
-      throw new RelocationRefusedError('symlink-common-directory');
     if (options.portableFilesystem) {
       const configuration = await git(path, ['config', '--null', '--list']);
       if (
@@ -144,10 +149,6 @@ export async function prepareRelocationGit(
     )
       throw new RelocationRefusedError('unsupported-git-submodule');
     checkouts.push(checkout);
-    const dotGit = join(path, '.git');
-    const dotGitState = await lstat(dotGit);
-    if (dotGitState.isSymbolicLink())
-      throw new RelocationRefusedError('symlink-git-directory');
     if (dotGitState.isFile()) {
       backlinks.set(dotGit, await readFile(dotGit, 'utf8'));
       const gitDir = await canonicalGitPath(
@@ -158,8 +159,6 @@ export async function prepareRelocationGit(
       );
       if (options.portableFilesystem && gitDir === checkout.commonDirectory)
         throw new RelocationRefusedError('unsupported-separate-git-directory');
-      if ((await realpath(gitDir)) !== gitDir)
-        throw new RelocationRefusedError('symlink-git-directory');
       if (
         options.portableFilesystem &&
         (await present(join(gitDir, 'config.worktree')))
@@ -167,10 +166,8 @@ export async function prepareRelocationGit(
         throw new RelocationRefusedError('unsupported-git-worktree-config');
       for (const file of ['gitdir', 'commondir']) {
         const target = join(gitDir, file);
-        if (
-          !(await lstat(target)).isFile() ||
-          (await realpath(target)) !== target
-        )
+        await canonicalGitPath(target, 'symlink-backlink');
+        if (!(await lstat(target)).isFile())
           throw new RelocationRefusedError('symlink-backlink');
         backlinks.set(target, await readFile(target, 'utf8'));
       }
@@ -194,7 +191,9 @@ export async function prepareRelocationGit(
         if (
           field.startsWith('worktree ') &&
           !represented.has(
-            sep === '\\' ? await realpath(field.slice(9)) : field.slice(9),
+            sep === '\\'
+              ? await canonicalGitPath(field.slice(9), 'symlink-checkout')
+              : field.slice(9),
           )
         )
           throw new RelocationRefusedError('uninventoried-git-checkout');
@@ -246,9 +245,43 @@ export async function repairRelocationGit(
   transition: RelocationTransition,
   plan: RelocationGitPlan,
   workingRoot: string,
+  replace: (image: RelocationBacklink) => Promise<void> = replaceBacklink,
 ): Promise<void> {
   await assertRelocationWorkingRoot(transition, workingRoot);
   const writes: RelocationBacklink[] = [];
+  const expected: RelocationBacklink[] = [];
+  const postimages = await projectRelocationBacklinks(transition, plan);
+  for (const [index, image] of plan.backlinks.entries()) {
+    const postimage = postimages[index];
+    if (!postimage) throw new RelocationRefusedError('missing-git-postimage');
+    const finalPath = postimage.path;
+    const contents = postimage.contents;
+    const path = relocationWorkingPath(transition, workingRoot, finalPath);
+    await canonicalGitPath(path, 'symlink-backlink');
+    if (!(await lstat(path)).isFile())
+      throw new RelocationRefusedError('symlink-backlink');
+    const current = await readFile(path, 'utf8');
+    if (current !== image.contents && current !== contents)
+      throw new RelocationRefusedError('git-backlink-changed');
+    expected.push({ path, contents });
+    if (current !== contents) {
+      if (isWithin(transition.from.canonicalDataRoot, path))
+        throw new RelocationRefusedError('source-git-backlink');
+      writes.push({ path, contents });
+    }
+  }
+  for (const image of writes) await replace(image);
+  for (const image of expected) {
+    if ((await readFile(image.path, 'utf8')) !== image.contents)
+      throw new RelocationRefusedError('git-verification-failed');
+  }
+}
+
+/** Frozen final-path postimages, shared by repair and read-only verification. */
+export async function projectRelocationBacklinks(
+  transition: RelocationTransition,
+  plan: RelocationGitPlan,
+): Promise<readonly RelocationBacklink[]> {
   const expected: RelocationBacklink[] = [];
   for (const image of plan.backlinks) {
     const isCheckout = plan.checkouts.some(
@@ -280,24 +313,30 @@ export async function repairRelocationGit(
       finalPath === image.path && finalTarget === target
         ? image.contents
         : `${prefix}${gitBacklinkText(dirname(finalPath), finalTarget, isAbsolute(text))}\n`;
-    const path = relocationWorkingPath(transition, workingRoot, finalPath);
-    if (!(await lstat(path)).isFile() || (await realpath(path)) !== path)
-      throw new RelocationRefusedError('symlink-backlink');
-    const current = await readFile(path, 'utf8');
-    if (current !== image.contents && current !== contents)
-      throw new RelocationRefusedError('git-backlink-changed');
-    expected.push({ path, contents });
-    if (current !== contents) {
-      if (isWithin(transition.from.canonicalDataRoot, path))
-        throw new RelocationRefusedError('source-git-backlink');
-      writes.push({ path, contents });
-    }
+    expected.push({ path: finalPath, contents });
   }
-  for (const image of writes) await replaceBacklink(image);
-  for (const image of expected) {
-    if ((await readFile(image.path, 'utf8')) !== image.contents)
-      throw new RelocationRefusedError('git-verification-failed');
-  }
+  return expected;
+}
+
+/** No optional index writes: the trusted worker's Git port disables optional locks. */
+export async function qualifyRelocationGit(
+  git: RelocationGit,
+  transition: RelocationTransition,
+  plan: RelocationGitPlan,
+  options: { readonly portableFilesystem?: boolean } = {},
+): Promise<void> {
+  const expected = plan.checkouts.map((row) => ({
+    ...row,
+    path: movedOwnedPath(transition, row.path),
+    commonDirectory: movedOwnedPath(transition, row.commonDirectory),
+  }));
+  const actual = await prepareRelocationGit(
+    git,
+    expected.map((row) => row.path),
+    options,
+  );
+  if (JSON.stringify(actual.checkouts) !== JSON.stringify(expected))
+    throw new RelocationRefusedError('published-git-state-changed');
 }
 
 async function present(path: string): Promise<boolean> {
@@ -333,10 +372,36 @@ export function gitBacklinkText(
   return sep === '\\' ? value.replace(/\\/g, '/') : value;
 }
 
-async function canonicalGitPath(path: string): Promise<string> {
-  if (sep !== '\\') return path;
+async function canonicalGitPath(
+  path: string,
+  reason = 'symlink-git-directory',
+): Promise<string> {
+  if (sep === '\\') {
+    // Git's separators, case and 8.3 names are spellings, not link evidence.
+    if (
+      path.includes('\0') ||
+      !/^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![?.][\\/])[^\\/]+[\\/]+[^\\/])/.test(path)
+    )
+      throw new TypeError('Git paths must be fully qualified.');
+    try {
+      for (let component = resolve(path); ; component = dirname(component)) {
+        if ((await lstat(component)).isSymbolicLink())
+          throw new RelocationRefusedError(reason);
+        if (dirname(component) === component) break;
+      }
+      return await realpath(path);
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 'ENOENT'
+      )
+        throw new RelocationRefusedError(reason);
+      throw error;
+    }
+  }
   const canonical = await realpath(path);
-  if (relative(resolve(path), canonical) !== '')
-    throw new RelocationRefusedError('symlink-git-directory');
+  if (canonical !== path) throw new RelocationRefusedError(reason);
   return canonical;
 }

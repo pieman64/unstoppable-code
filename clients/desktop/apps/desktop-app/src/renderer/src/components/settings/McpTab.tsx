@@ -3,6 +3,13 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import { type JSX, useEffect, useRef, useState } from 'react';
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import {
   DEFAULT_MCP_HTTP_AUTH_HANDLER,
   DEFAULT_MCP_PROXY_PORT,
@@ -12,7 +19,7 @@ import {
 import type {
   McpProxyState,
   McpProxyStatus,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   MCP_HTTP_AUTH_CANOPY_DESCRIPTION,
   MCP_HTTP_AUTH_CANOPY_LABEL,
@@ -34,7 +41,7 @@ import {
   SlowLoadNote,
   StatusBadge,
   type StatusBadgeVariant,
-  ErrorBanner,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import { useLoadingPhase } from '@canopy/ui-shared/lib';
 import {
@@ -156,9 +163,12 @@ export function McpTab(): JSX.Element {
     DEFAULT_MCP_HTTP_AUTH_HANDLER,
   );
   const [saving, setSaving] = useState<boolean>(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  // The failure's own text: copied by Copy details, never shown.
-  const [errorDetails, setErrorDetails] = useState<string | null>(null);
+  // A failed Apply: our sentence, with the failure's own text behind Copy
+  // details (never shown).
+  const [applyError, setApplyError] = useState<InlineFailure | null>(null);
+  // The port field's own validation, shown under the field.
+  const [portError, setPortError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<InlineFailure | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [proxyState, setProxyState] = useState<McpProxyState | null>(null);
   const unsubscribeProxyStatusRef = useRef<(() => void) | null>(null);
@@ -195,12 +205,20 @@ export function McpTab(): JSX.Element {
         setAuthHandler(handler);
         setStatus('ready');
       })
-      .catch((): void => {
+      .catch((error: unknown): void => {
         if (cancelled) return;
         setPortInput(String(DEFAULT_MCP_PROXY_PORT));
         setAppliedPort(DEFAULT_MCP_PROXY_PORT);
         setAuthHandler(DEFAULT_MCP_HTTP_AUTH_HANDLER);
         setStatus('error');
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError)
+          setLoadError(
+            inlineFailure(
+              appError,
+              "Couldn't load MCP proxy settings. Defaults are shown.",
+            ),
+          );
       });
 
     void window.mcpServers
@@ -209,8 +227,9 @@ export function McpTab(): JSX.Element {
         if (cancelled) return;
         applyProxyState(state);
       })
-      .catch((): void => {
+      .catch((error: unknown): void => {
         // Non-fatal — UI falls back to "no state" placeholder.
+        reportClientAppError(error);
       });
 
     unsubscribeProxyStatusRef.current = window.mcpServers.onProxyStatus(
@@ -228,8 +247,8 @@ export function McpTab(): JSX.Element {
 
   async function applySettings(port: number): Promise<void> {
     setSuccessMessage(null);
-    setErrorMessage(null);
-    setErrorDetails(null);
+    setApplyError(null);
+    setPortError(null);
     setSaving(true);
     try {
       const state = await window.mcpServers.applyProxyPort(port);
@@ -240,10 +259,9 @@ export function McpTab(): JSX.Element {
       setAppliedPort(port);
       setSuccessMessage(MCP_SAVED_TEXT);
     } catch (err: unknown) {
-      setErrorMessage(MCP_SAVE_ERROR_FALLBACK);
-      setErrorDetails(
-        err instanceof Error && err.message.length > 0 ? err.message : null,
-      );
+      const appError = toAppError(resolveClientAppError(err));
+      if (appError)
+        setApplyError(inlineFailure(appError, MCP_SAVE_ERROR_FALLBACK));
     } finally {
       setSaving(false);
     }
@@ -253,8 +271,8 @@ export function McpTab(): JSX.Element {
     const parsed = parseMcpProxyPort(portInput);
     if (parsed === null) {
       setSuccessMessage(null);
-      setErrorMessage(MCP_PORT_VALIDATION_ERROR);
-      setErrorDetails(null);
+      setApplyError(null);
+      setPortError(MCP_PORT_VALIDATION_ERROR);
       return;
     }
     await applySettings(parsed);
@@ -268,7 +286,7 @@ export function McpTab(): JSX.Element {
   function handleAuthHandlerChange(next: McpHttpAuthHandler): void {
     setAuthHandler(next);
     setSuccessMessage(null);
-    setErrorMessage(null);
+    setApplyError(null);
   }
 
   // While the saved values load, the page keeps its headings and labels and
@@ -291,9 +309,10 @@ export function McpTab(): JSX.Element {
       ? proxyState.error
       : null;
   const proxyError =
-    errorMessage ?? (proxyStateError !== null ? MCP_PROXY_ERROR_COPY : null);
+    applyError?.error ??
+    (proxyStateError !== null ? MCP_PROXY_ERROR_COPY : null);
   const proxyErrorDetails =
-    errorMessage !== null ? errorDetails : proxyStateError;
+    applyError !== null ? applyError.details : (proxyStateError ?? undefined);
 
   return (
     <SettingsPage title="MCP servers" dataTestId="settings-tab-mcp">
@@ -302,6 +321,14 @@ export function McpTab(): JSX.Element {
           Loading
         </span>
       )}
+      <DesktopErrorBanner
+        className=""
+        error={loadError?.error}
+        {...(loadError?.details === undefined
+          ? {}
+          : { details: loadError.details })}
+        testId="settings-mcp-load-error"
+      />
       <DesktopMcpSettingsSection />
 
       <SettingsSection
@@ -406,8 +433,13 @@ export function McpTab(): JSX.Element {
                     ): void => {
                       setPortInput(e.target.value);
                       setSuccessMessage(null);
-                      setErrorMessage(null);
+                      setApplyError(null);
+                      setPortError(null);
                     }}
+                    aria-invalid={portError !== null ? true : undefined}
+                    aria-describedby={
+                      portError !== null ? 'settings-mcp-port-error' : undefined
+                    }
                     data-testid="settings-mcp-port-input"
                   />
                   {showReset && (
@@ -451,7 +483,16 @@ export function McpTab(): JSX.Element {
                 {successMessage}
               </p>
             )}
-            <ErrorBanner
+            {portError !== null && (
+              <FieldError
+                id="settings-mcp-port-error"
+                announce
+                data-testid="settings-mcp-port-error"
+              >
+                {portError}
+              </FieldError>
+            )}
+            <DesktopErrorBanner
               className=""
               error={proxyError}
               testId="settings-mcp-error"

@@ -1,6 +1,8 @@
 import { useTerminalCompletionNotices } from '@canopy/ui-app/terminal-core';
 import { useChatStore } from '@/stores/chatStore';
 import { useGitHubStore } from '@/stores/githubStore';
+import { addFailureToast, type ToastMeta } from '@/stores/toastStore';
+import { ownWorkToastError } from '@canopy/ui-shared/lib';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useClaudeTerminalStore } from '@/stores/claudeTerminalStore';
 import { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
@@ -36,12 +38,24 @@ export function useTerminalCompletionToasts(
       const workspaceName = useProjectsStore
         .getState()
         .projects.find((project) => project.id === notice.projectId)?.name;
-      useGitHubStore.getState().addToast(notice.message, notice.type, onClick, {
+      const meta: ToastMeta = {
         category: 'Terminal',
         workspaceName,
         projectId: notice.projectId,
         worktreeId: notice.worktreeId,
-      });
+      };
+      if (notice.type === 'error') {
+        addFailureToast({
+          message: notice.message,
+          error: ownWorkToastError(notice.message),
+          origin: { label: 'Open worktree', open: onClick },
+          meta,
+        });
+        return;
+      }
+      useGitHubStore
+        .getState()
+        .addToast(notice.message, 'success', onClick, meta);
     },
   });
 }

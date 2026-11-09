@@ -11,13 +11,13 @@
 // and review the snapshot diff as a behavior change.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import type { OperationRecord } from '@canopy/protocol/canopy-core';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import { GOLDEN_INVALID_PIPELINE_YAML } from '@canopy/desktop-shared/node/pipelines/__tests__/golden-fixtures';
 import { getStoredPipelinePath } from '@canopy/desktop-shared/pipelines/store';
 import {
@@ -43,6 +43,7 @@ import {
   projectExecution,
   SLOW_ONCE_YAML,
   SUCCESS_YAML,
+  WORKFLOW_YAML,
   waitForExecution as waitForPersistedExecution,
   waitForRunningStep,
 } from './executions';
@@ -93,6 +94,7 @@ beforeAll(async () => {
     matrixPause: MATRIX_PAUSE_YAML,
     slowOnce: SLOW_ONCE_YAML,
     global: GLOBAL_YAML,
+    workflow: WORKFLOW_YAML,
   }))
     pipelineIds[name] = await world.saveUserPipeline(yaml, `pipeline:${name}`);
   const handlers = await import('../../pipelines/pipeline-handlers');
@@ -583,6 +585,34 @@ describe('desktop IPC', () => {
         resumed,
       }),
     ).toMatchSnapshot();
+  });
+
+  // The daemon's pipeline host records canonical paths, while main reads the
+  // store through the data root it was given, which can be a symlink (CAN-5958).
+  it('reads a step log named by realpath and refuses one a symlink takes outside', async () => {
+    const logs = join(executionsDir, 'can-5958-probe', 'logs');
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, 'emit.log'), 'marker\n');
+    const alias = `${executionsDir}-alias`;
+    symlinkSync(executionsDir, alias);
+    const outside = join(world.root, 'outside');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, 'secret.log'), 'secret\n');
+    const escape = join(world.root, 'escape');
+    symlinkSync(outside, escape);
+
+    await expect(
+      invokeIpc(
+        PIPELINE_CHANNELS.READ_STEP_LOG,
+        join(alias, 'can-5958-probe', 'logs', 'emit.log'),
+      ),
+    ).resolves.toMatchObject({
+      success: true,
+      data: { lines: ['marker'] },
+    });
+    await expect(
+      invokeIpc(PIPELINE_CHANNELS.READ_STEP_LOG, join(escape, 'secret.log')),
+    ).resolves.toEqual({ success: false, error: 'Invalid log file path' });
   });
 });
 
@@ -1428,4 +1458,30 @@ it('refuses a queued workflow IPC cancellation during startup and keeps absent c
     list.mockRestore();
     cancel.mockRestore();
   }
+});
+
+describe('workflow trigger (CAN-5782)', () => {
+  it('runs a workflow pipeline as workflow and starts it nowhere else', async () => {
+    const run = await start('ipc-workflow', () =>
+      executeIpc('workflow', WORKFLOW_YAML, {
+        eventName: 'workflow',
+        inputs: { greeting: 'golden' },
+      }),
+    );
+    expect(
+      golden({
+        run: run.result,
+        settled: await settled(run.executionId),
+        portalWithoutEvent: await runPortalCommand('portal.pipeline.run', {
+          pipelineId: pipelineIds.workflow,
+          projectId: GOLDEN_WORKSPACE_ID,
+          worktreeId: GOLDEN_WORKTREE_ID,
+        }),
+        agentRun: await dispatchAgentAction(
+          { type: 'pipeline.run', pipelineId: pipelineIds.workflow },
+          goldenWorktreeActionRuntime(world.worktreePath),
+        ),
+      }),
+    ).toMatchSnapshot();
+  });
 });

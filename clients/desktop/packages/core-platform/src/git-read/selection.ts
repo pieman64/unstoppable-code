@@ -6,12 +6,14 @@ import {
   GitIgnoreHostError,
   type GitIgnoreHostFailureCode,
   getGitExecutableDetectionMode,
+  getGitExecutableProbeOrder,
   getLinuxGitCandidates,
   getMacGitCandidates,
   getWindowsGitCandidates,
   isMacGitShim,
   parseGitVersion,
   parseWhereExeOutput,
+  shouldJoinGitExecutableDetection,
 } from '@canopy/core-runtime/node';
 import type {
   GitExecutableSelectionFacts,
@@ -54,7 +56,7 @@ export const NODE_SELECTION_IO: SelectionIo = Object.freeze({
 export interface SelectionTiming {
   /** One detection, and one login-PATH refresh, each from its own start. */
   readonly detectionDeadlineMs: number;
-  /** A rejected explicit value stays rejected this long for an unchanged file. */
+  /** Fallback retry interval; outside Windows also caches unchanged rejections. */
   readonly revalidateMs: number;
   readonly loginPathTtlMs: number;
 }
@@ -101,9 +103,10 @@ export interface GitSelection {
   ): Promise<SelectedGit>;
   /**
    * The selection `select` would make, as facts without its path. `recheck`
-   * skips the fast path that keeps an unchanged earlier selection. A
-   * selection failure is a result; an abort or a failed saved-value read
-   * rejects.
+   * skips the fast path that keeps an unchanged earlier selection. Windows
+   * observations always validate anew; forced Windows rechecks do not join
+   * in-flight detection. A selection failure is a result; an abort or a
+   * failed saved-value read rejects.
    */
   observe(
     this: void,
@@ -201,17 +204,36 @@ interface Validated {
 type Verdict =
   | Validated
   /** `identity`: the validated file's, when validation reached its `stat`. */
-  | { readonly rejected: true; readonly identity: string | undefined };
+  | {
+      readonly rejected: true;
+      readonly identity: string | undefined;
+      readonly unusable: boolean;
+    };
 
-type Detected =
+type Detected = (
   | (Validated & {
       readonly fromSaved: boolean;
       readonly origin: GitExecutableSelectionOrigin;
       readonly revalidateAt: number;
     })
-  | { readonly failure: GitIgnoreHostFailureCode };
+  | { readonly failure: GitIgnoreHostFailureCode }
+) & { readonly wingetAvailable?: boolean };
+
+class SelectionFailed extends GitIgnoreHostError {
+  constructor(
+    readonly facts: Extract<Detected, { failure: GitIgnoreHostFailureCode }>,
+  ) {
+    super(facts.failure);
+  }
+}
+
+type SelectionResult = SelectedGit & {
+  readonly origin: GitExecutableSelectionOrigin;
+  readonly wingetAvailable?: boolean;
+};
 
 interface Accepted extends Validated {
+  readonly wingetAvailable?: boolean;
   readonly key: string;
   readonly saved: string;
   readonly fromSaved: boolean;
@@ -274,8 +296,8 @@ function createWork(): {
 /**
  * Desktop's `detectGitExecutableInternal` and `getResolvedGitExecutableForSpawn`
  * (apps/desktop-app git-executable.ts), read-only: nothing is installed,
- * saved, cleared or published. A failed explicit value is remembered for
- * `revalidateMs` while its file is unchanged instead of being cleared.
+ * saved, cleared or published. Outside Windows, a failed explicit value is
+ * remembered for `revalidateMs` while its file is unchanged instead of cleared.
  */
 export function createGitSelection(options: SelectionOptions): GitSelection {
   const { os, environment, probeDirectory, runner, io, now, timing } = options;
@@ -368,12 +390,13 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
   async function probe(
     command: GitReadCommand,
     scope: Scope,
+    environment: GitReadEnvironment = probeEnvironment(),
   ): Promise<GitReadOutput | null> {
     try {
       return await scoped(scope, () =>
         runner.run(command, {
           cwd: probeDirectory,
-          environment: probeEnvironment(),
+          environment,
           deadlineAt: scope.deadlineAt,
         }),
       );
@@ -519,7 +542,8 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
   async function validate(candidate: string, scope: Scope): Promise<Verdict> {
     const value = candidate.trim();
     let identity: string | undefined;
-    const reject = (): Verdict => ({ rejected: true, identity });
+    let unusable = true;
+    const reject = (): Verdict => ({ rejected: true, identity, unusable });
     if (!value || !isHostAbsolute(os, value)) return reject();
     if (os === 'darwin' && isMacGitShim(value)) return reject();
     if (os === 'win32' && path.win32.basename(value).toLowerCase() !== 'git.exe') return reject(); // prettier-ignore
@@ -538,6 +562,8 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     } catch (error) {
       scope.signal.throwIfAborted();
       identity ??= identityOfError(error);
+      // Desktop Windows detection treats every failed stat as a missing file.
+      unusable = os !== 'win32' && !missing(errnoCode(error));
       return reject();
     }
 
@@ -564,6 +590,28 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
 
   // -------------------------------------------------------------- discovery
 
+  function windowsWingetEnvironment(): GitReadEnvironment {
+    const localAppData = windowsEnvironmentValue(environment, 'LOCALAPPDATA');
+    const currentPath = windowsEnvironmentValue(environment, 'PATH');
+    if (
+      !localAppData ||
+      !currentPath ||
+      !isHostAbsolute('win32', localAppData) ||
+      /[;"\r\n]/.test(localAppData)
+    )
+      return environment;
+    // The daemon launch PATH omits App Installer's per-user aliases. Only
+    // winget discovery may search them; Git and spawn environments stay intact.
+    return Object.freeze({
+      ...Object.fromEntries(
+        Object.entries(environment).filter(
+          ([key]) => key.toUpperCase() !== 'PATH',
+        ),
+      ),
+      PATH: `${currentPath};${path.win32.join(localAppData, 'Microsoft', 'WindowsApps')}`,
+    });
+  }
+
   async function macCandidates(scope: Scope): Promise<string[]> {
     const currentPath = currentLoginPath();
     const printed = await probe({ kind: 'xcode-select-print-path' }, scope);
@@ -577,7 +625,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     });
   }
 
-  /** `where.exe git` runs in `probeDirectory`; no winget probe. */
+  /** `where.exe git` runs in the trusted probe directory. */
   async function windowsCandidates(scope: Scope): Promise<string[]> {
     const where = await probe({ kind: 'where-git' }, scope);
     const value = (name: string): string | undefined =>
@@ -637,19 +685,23 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
 
   /**
    * An explicit value (saved or override): skipped while rejected for an
-   * unchanged file, else validated. Only the current detection records.
+   * unchanged file, else validated. Windows always retries during detection.
+   * Only the current detection records.
    */
   async function tryExplicit(
     value: string,
     knownIdentity: string | undefined,
     scope: Scope,
     isCurrent: () => boolean,
-  ): Promise<Validated | { readonly rejectedAt: number }> {
+  ): Promise<
+    Validated | { readonly rejectedAt: number; readonly unusable: boolean }
+  > {
     const prior = rejections.get(value);
-    if (prior && now() - prior.at < timing.revalidateMs) {
+    if (os !== 'win32' && prior && now() - prior.at < timing.revalidateMs) {
       const identity =
         knownIdentity ?? (await identityOf(value, [scope.signal]));
-      if (identity === prior.identity) return { rejectedAt: prior.at };
+      if (identity === prior.identity)
+        return { rejectedAt: prior.at, unusable: true };
     }
     const verdict = await validate(value, scope);
     if ('path' in verdict) {
@@ -666,7 +718,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     // Only while current: a failure seen then is real for this identity, so it
     // stays after a later supersession. Revisit if supersession must roll back.
     if (isCurrent()) rejections.set(value, { identity, at });
-    return { rejectedAt: at };
+    return { rejectedAt: at, unusable: verdict.unusable };
   }
 
   async function detectMacOrWindows(
@@ -676,6 +728,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     isCurrent: () => boolean,
   ): Promise<Detected> {
     let revalidateAt = Number.POSITIVE_INFINITY;
+    let foundUnusable = false;
     const explicit: [string, string | undefined][] = [];
     if (saved) explicit.push([saved, savedIdentity]);
     if (override && override !== saved) explicit.push([override, undefined]);
@@ -688,6 +741,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
           origin: value === saved ? 'saved' : 'override',
           revalidateAt,
         };
+      if (os === 'win32' && outcome.unusable) foundUnusable = true;
       revalidateAt = Math.min(
         revalidateAt,
         outcome.rejectedAt + timing.revalidateMs,
@@ -698,17 +752,18 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
       os === 'darwin'
         ? await macCandidates(scope)
         : await windowsCandidates(scope);
-    const seen = new Set<string>();
-    for (const candidate of candidates) {
-      if (os === 'darwin' && isMacGitShim(candidate)) continue;
-      const key = os === 'win32' ? candidate.toLowerCase() : candidate;
-      if (seen.has(key)) continue;
-      seen.add(key);
+    for (const candidate of getGitExecutableProbeOrder(os, candidates)) {
       const verdict = await validate(candidate, scope);
       if ('path' in verdict)
         return { ...verdict, fromSaved: false, origin: 'discovered', revalidateAt }; // prettier-ignore
+      if (os === 'win32' && verdict.unusable) foundUnusable = true;
     }
-    return { failure: 'git_unavailable' };
+    return {
+      failure:
+        os === 'win32' && foundUnusable
+          ? 'selection_rejected'
+          : 'git_unavailable',
+    };
   }
 
   /**
@@ -774,12 +829,27 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
   ): Promise<Detected> {
     const scope = openScope();
     const isCurrent = (): boolean => isServing() && !scope.signal.aborted;
+    let wingetAvailable = false;
+    const windowsFacts = (): { wingetAvailable?: boolean } =>
+      os === 'win32' ? { wingetAvailable } : {};
     try {
-      return os === 'linux'
-        ? await detectLinux(saved, savedIdentity, scope, isCurrent)
-        : await detectMacOrWindows(saved, savedIdentity, scope, isCurrent);
+      if (os === 'win32') {
+        const winget = await probe(
+          { kind: 'where-winget' },
+          scope,
+          windowsWingetEnvironment(),
+        );
+        wingetAvailable =
+          exitedZero(winget) && parseWhereExeOutput(winget.stdout).length > 0;
+      }
+      const detected =
+        os === 'linux'
+          ? await detectLinux(saved, savedIdentity, scope, isCurrent)
+          : await detectMacOrWindows(saved, savedIdentity, scope, isCurrent);
+      return { ...detected, ...windowsFacts() };
     } catch (error) {
       return {
+        ...windowsFacts(),
         failure:
           error instanceof DetectionEnded ? error.code : 'git_unavailable',
       };
@@ -789,17 +859,21 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
   }
 
   /**
-   * Single-flight per key. The latest request's detection, started or
-   * joined, is current; a superseded one never records.
+   * Single-flight per key unless a Windows recheck is forced. The latest
+   * request's detection, started or joined, is current.
    */
   function detect(
     key: string,
     saved: string,
     savedIdentity: string,
     isLatest: () => boolean,
+    force: boolean,
   ): Promise<Detected> {
     const pending = inFlight.get(key);
-    if (pending) {
+    if (
+      pending &&
+      (os !== 'win32' || shouldJoinGitExecutableDetection(os, force))
+    ) {
       if (isLatest()) current = pending.token;
       return pending.work;
     }
@@ -817,7 +891,9 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
         return detected;
       }),
     );
-    inFlight.set(key, { token, work: detection });
+    // A Windows recheck delayed in stat must not replace newer joinable work.
+    if (os !== 'win32' || isLatest())
+      inFlight.set(key, { token, work: detection });
     return detection;
   }
 
@@ -870,13 +946,17 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     selected: Accepted,
     requested: readonly AbortSignal[],
     recheck: boolean,
-  ): Promise<
-    (SelectedGit & { readonly origin: GitExecutableSelectionOrigin }) | null
-  > {
+  ): Promise<SelectionResult | null> {
     if (recheck) return null;
     const found = await stillSelected(selected.path, requested);
     return found
-      ? { ...selectedGit(selected, found), origin: selected.origin }
+      ? {
+          ...selectedGit(selected, found),
+          origin: selected.origin,
+          ...(os === 'win32'
+            ? { wingetAvailable: selected.wingetAvailable }
+            : {}),
+        }
       : null;
   }
 
@@ -885,7 +965,8 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     readSaved: (signal: AbortSignal) => Promise<unknown>,
     signal: AbortSignal,
     recheck = false,
-  ): Promise<SelectedGit & { readonly origin: GitExecutableSelectionOrigin }> {
+    observation = false,
+  ): Promise<SelectionResult> {
     const raw = await readSaved(signal);
     const read = ++savedReads;
     if (typeof raw !== 'string')
@@ -915,9 +996,14 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     const isLatest = (): boolean => read === latestRequest;
     const selected = accepted;
     if (selected?.key === key && now() < selected.revalidateAt) {
-      const kept = await keptSelection(selected, requested, recheck);
+      const kept = await keptSelection(
+        selected,
+        requested,
+        recheck || (os === 'win32' && observation),
+      );
       if (kept) return kept;
     } else if (
+      (os !== 'win32' || !observation) &&
       selected?.fromSaved &&
       selected.saved === saved &&
       savedIdentity.startsWith('error:') &&
@@ -927,13 +1013,17 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
       throw new GitIgnoreHostError('selection_rejected');
     }
     throwIfEnded(requested);
-    const detected = await detect(key, saved, savedIdentity, isLatest);
-    if ('failure' in detected) throw new GitIgnoreHostError(detected.failure);
+    const detected = await detect(key, saved, savedIdentity, isLatest, recheck);
+    if ('failure' in detected)
+      throw os === 'win32'
+        ? new SelectionFailed(detected)
+        : new GitIgnoreHostError(detected.failure);
     return {
       executable: detected.path,
       version: detected.version,
       identity: detected.identity,
       origin: detected.origin,
+      ...(os === 'win32' ? { wingetAvailable: detected.wingetAvailable } : {}),
     };
   }
 
@@ -972,12 +1062,15 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
       return raw;
     };
     try {
-      const chosen = await selectOnce(reading, signal, recheck);
+      const chosen = await selectOnce(reading, signal, recheck, true);
       return {
         ready: true,
         version: chosen.version ?? null,
         origin: chosen.origin,
         override: Boolean(override),
+        ...(os === 'win32'
+          ? { wingetAvailable: chosen.wingetAvailable ?? false }
+          : {}),
       };
     } catch (error) {
       if (options.hostSignal.aborted)
@@ -991,8 +1084,17 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
       return {
         ready: false,
         code: error.code,
+        ...(os === 'win32'
+          ? {
+              wingetAvailable:
+                error instanceof SelectionFailed
+                  ? (error.facts.wingetAvailable ?? false)
+                  : false,
+            }
+          : {}),
         explicit:
-          (error.code === 'selection_rejected' &&
+          (os !== 'win32' &&
+            error.code === 'selection_rejected' &&
             (rejectedOrigin === 'saved' || rejectedOrigin === 'override')) ||
           (linuxDiscovery && Boolean(saved || override)),
       };

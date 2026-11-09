@@ -26,7 +26,7 @@ import type {
   RewriteMcpServerRefsResponse,
   StartMcpOAuthLoginRequest,
   StartMcpOAuthLoginResponse,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 
 export type { McpServersAPI };
 

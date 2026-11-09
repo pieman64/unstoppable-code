@@ -16,7 +16,6 @@ interface WorktreeStatusIndicatorProps {
   /** Live background tasks: the background spinner while nothing streams. */
   backgroundTasks?: number;
   fadeStatusOnHover?: boolean;
-  layout?: 'inline' | 'stacked';
   showPrimaryIndicator?: boolean;
   doneLabel?: string;
   /**
@@ -105,7 +104,6 @@ function renderPrimaryIndicator(
 }
 
 export function WorktreeStatusIndicator({
-  layout = 'inline',
   showPrimaryIndicator = true,
   ...props
 }: WorktreeStatusIndicatorProps): JSX.Element {
@@ -118,15 +116,6 @@ export function WorktreeStatusIndicator({
   ) : backgroundTasks > 0 ? (
     <AgentStateGlyph state="background" backgroundTasks={backgroundTasks} />
   ) : null;
-
-  if (layout === 'stacked') {
-    return (
-      <div className="mt-1 flex shrink-0 flex-col items-center gap-1">
-        {primaryIndicator}
-        {spinner}
-      </div>
-    );
-  }
 
   return (
     <div className="flex shrink-0 items-center gap-1">

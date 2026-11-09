@@ -8,21 +8,20 @@ import type {
   ChatTurnPhase,
   SettingsHeldChange,
 } from '@canopy/desktop-shared/types';
-import {
-  QUEUED_MESSAGE_LABEL_CLASS,
-  QueuedMessageActions,
-  QueuedMessageReason,
-} from '@canopy/ui-shared';
+import { QueuedMessageActions, QueuedMessageContent } from '@canopy/ui-shared';
 import { ScheduleIcon } from '@canopy/ui-shared/icons';
 import {
   BubbleCopyBadge,
+  Button,
   steeringRequestPresentation,
   MessageEditSurface,
+  Stack,
 } from '@canopy/ui-shared/components';
 import type { QueuedChatMessage } from '@/stores/chatStore';
 import { MessageAttachments } from './MessageAttachments';
 import { WatcherFiredTitle } from './WatcherFiredTitle';
 import { CollapsibleUserMessageContent } from './CollapsibleUserMessageContent';
+import { QueuedMessageEditFailureBanner } from './QueuedMessageEditFailureBanner';
 import { formatScheduledSendLabel } from '@/lib/worktreeSessionPromptAutomations';
 import {
   SUBAGENT_REFERENCE_PREFIX,
@@ -47,6 +46,11 @@ export interface ScheduledMessageBubbleDescriptor {
   onEdit: () => void;
   onClear: () => void;
   onInterrupt: () => void;
+  /**
+   * CAN-5782: the message is read-only here because other schedules share
+   * its workflow; it has no Edit and links to that Workflow page instead.
+   */
+  onOpenWorkflow?: () => void;
 }
 
 interface QueuedMessageBubbleProps {
@@ -178,16 +182,9 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
     : null;
 
   const messageParagraphs = (
-    <div className="break-words">
+    <div className="flex flex-col gap-2 break-words">
       {paragraphs.map((paragraph, paragraphIndex) => (
-        <p
-          key={`${index}-${paragraphIndex}`}
-          className={
-            paragraphIndex === 0
-              ? 'whitespace-pre-wrap'
-              : 'mt-2 whitespace-pre-wrap'
-          }
-        >
+        <p key={`${index}-${paragraphIndex}`} className="whitespace-pre-wrap">
           {paragraph}
         </p>
       ))}
@@ -195,7 +192,7 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   );
 
   const showEdit = isScheduled
-    ? !anyEditing
+    ? !anyEditing && scheduled?.onOpenWorkflow === undefined
     : !message.pendingSend &&
       !message.editLocked &&
       Boolean(onEdit) &&
@@ -229,77 +226,90 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
         The inner `break-words` can only wrap once the box is constrained.
       */}
       <div className="group relative min-w-0 max-w-full">
-        <MessageEditSurface
-          onEdit={showEdit ? handleEdit : undefined}
-          tone={
-            watcherFired || steeringRequest?.variant === 'info'
-              ? 'info'
-              : 'default'
-          }
-        >
-          <QueuedMessageActions
-            placement="corner"
-            variant="badge"
-            cornerLeading={
-              <BubbleCopyBadge copyText={copyText} label="Copy to clipboard" />
-            }
+        <Stack gap="tight">
+          <MessageEditSurface
             onEdit={showEdit ? handleEdit : undefined}
-            onCancel={handleClear}
-            pending={message.pendingSend === true}
-            editLabel={
-              isScheduled ? 'Edit scheduled message' : 'Edit queued message'
+            tone={
+              watcherFired || steeringRequest?.variant === 'info'
+                ? 'info'
+                : 'default'
             }
-            cancelLabel={
-              isScheduled ? 'Clear scheduled message' : 'Clear queued message'
-            }
-          />
-          {isScheduled ? (
-            <div
-              data-testid="scheduled-message-send-label"
-              className="mb-1 flex items-center gap-1 text-xs fg-secondary"
-            >
-              <ScheduleIcon size="sm" className="shrink-0" />
-              <span>
-                {scheduledLabel ? `Sends ${scheduledLabel}` : 'Scheduled'}
-              </span>
-            </div>
-          ) : (
-            <>
-              <div className={QUEUED_MESSAGE_LABEL_CLASS}>Queued</div>
-              {agentSent && (
-                <AgentSentTitle
-                  agentSent={agentSent}
-                  receivingContext={receivingContext}
+          >
+            <QueuedMessageActions
+              placement="corner"
+              variant="badge"
+              cornerLeading={
+                <BubbleCopyBadge
+                  copyText={copyText}
+                  label="Copy to clipboard"
                 />
-              )}
-              {watcherFired ? (
-                <WatcherFiredTitle watcherFired={watcherFired} />
+              }
+              onEdit={showEdit ? handleEdit : undefined}
+              onCancel={handleClear}
+              pending={message.pendingSend === true}
+              editLabel={
+                isScheduled ? 'Edit scheduled message' : 'Edit queued message'
+              }
+              cancelLabel={
+                isScheduled ? 'Clear scheduled message' : 'Clear queued message'
+              }
+            />
+            <QueuedMessageContent
+              label={
+                isScheduled ? (
+                  <div
+                    data-testid="scheduled-message-send-label"
+                    className="flex items-center gap-1 text-xs fg-secondary"
+                  >
+                    <ScheduleIcon size="sm" className="shrink-0" />
+                    <span>
+                      {scheduledLabel ? `Sends ${scheduledLabel}` : 'Scheduled'}
+                    </span>
+                    {scheduled?.onOpenWorkflow ? (
+                      <Button
+                        variant="link"
+                        data-testid="scheduled-message-open-workflow"
+                        onClick={scheduled.onOpenWorkflow}
+                      >
+                        Open workflow
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : undefined
+              }
+              heading={
+                !isScheduled ? (
+                  <>
+                    {agentSent && (
+                      <AgentSentTitle
+                        agentSent={agentSent}
+                        receivingContext={receivingContext}
+                      />
+                    )}
+                    {watcherFired ? (
+                      <WatcherFiredTitle watcherFired={watcherFired} />
+                    ) : (
+                      steeringRequest?.title
+                    )}
+                  </>
+                ) : undefined
+              }
+              reason={isScheduled ? undefined : message.reason}
+              waitingReason={isScheduled ? undefined : message.waitingReason}
+            >
+              {isScheduled ? (
+                // Keep the sent bubble's clamp for long scheduled prompts.
+                <CollapsibleUserMessageContent>
+                  {messageParagraphs}
+                </CollapsibleUserMessageContent>
               ) : (
-                steeringRequest?.title
+                messageParagraphs
               )}
-              {/*
-                Prefer the per-message reason (hook-chat queue path), then the
-                host's waiting reason. With none, no reason row renders (the
-                streaming-queue look).
-              */}
-              {message.reason ? (
-                <QueuedMessageReason reason={message.reason} />
-              ) : message.waitingReason !== undefined ? (
-                <QueuedMessageReason waitingReason={message.waitingReason} />
-              ) : null}
-            </>
-          )}
-          {isScheduled ? (
-            // Same clamp as the sent bubble: a long scheduled prompt shows
-            // three rows and a fade instead of taking over the transcript.
-            <CollapsibleUserMessageContent>
-              {messageParagraphs}
-            </CollapsibleUserMessageContent>
-          ) : (
-            messageParagraphs
-          )}
-        </MessageEditSurface>
-        <MessageAttachments attachmentPaths={message.attachmentPaths} />
+            </QueuedMessageContent>
+          </MessageEditSurface>
+          <MessageAttachments attachmentPaths={message.attachmentPaths} />
+          {!isScheduled && <QueuedMessageEditFailureBanner message={message} />}
+        </Stack>
         <QueuedMessageActions
           placement="footer"
           variant="badge"

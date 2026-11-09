@@ -143,7 +143,9 @@ export function OpenDropdown({
                 />
               </button>
             </Tooltip>
-            <Divider orientation="vertical" className="my-1.5" aria-hidden />
+            <span className="flex h-4 self-center">
+              <Divider orientation="vertical" aria-hidden />
+            </span>
           </>
         )}
         <Tooltip label="Open in…" className="items-stretch" suppressed={open}>

@@ -1,4 +1,4 @@
-import type { DevicePlatform } from '@canopy/protocol/device-relay';
+import type { DeviceKind, DevicePlatform } from '@canopy/protocol/device-relay';
 
 /**
  * Renderer-facing contract for device-to-device remote control.
@@ -48,12 +48,31 @@ export interface RemoteControlHost extends RemoteControlDevice {
   ended: boolean;
 }
 
+/**
+ * A short-lived session a hosted agents root opened through a signed
+ * delegation. It is attributed to, and revoked with, its root.
+ */
+export interface RemoteControlHostedSession {
+  /** The ephemeral relay device the session runs over. */
+  deviceId: string;
+  /** ISO timestamp; the session closes then at the latest. */
+  expiresAt: string;
+}
+
 /** A device allowed to control this computer. */
 export interface RemoteControlController extends RemoteControlDevice {
+  /**
+   * The controller profile this pairing is held to: what the relay
+   * authenticated, never what the device said about itself. Pairings saved
+   * before kinds existed are `desktop`.
+   */
+  kind: DeviceKind;
   pairedAt: string;
   online: boolean;
   /** Whether it is controlling this computer right now. */
   connected: boolean;
+  /** Live delegated sessions, for a hosted agents root; otherwise empty. */
+  hostedSessions: RemoteControlHostedSession[];
 }
 
 export type RemoteOutgoingPairingStatus =
@@ -72,7 +91,61 @@ export interface RemoteOutgoingPairing extends RemoteControlDevice {
 
 export interface RemoteIncomingPairing extends RemoteControlDevice {
   pairingId: string;
+  /** The relay-authenticated kind of the asking device. */
+  kind: DeviceKind;
   code: string;
+}
+
+/** The open pairing link window; its secret never leaves the main process. */
+export interface RemoteControlPairingWindowState {
+  /** ISO timestamp. */
+  expiresAt: string;
+}
+
+export interface RemoteControlOpenPairingWindowResult {
+  /** The link to show as a QR code; possession authorizes one pairing. */
+  link: string;
+  /** ISO timestamp. */
+  expiresAt: string;
+}
+
+export type RemoteControlPairingWindowCloseReason =
+  | 'expired'
+  | 'replaced'
+  | 'closed'
+  | 'disabled'
+  | 'consumed';
+
+export type RemoteControlPairingRequestOutcome =
+  | 'approved'
+  | 'declined'
+  | 'cancelled'
+  | 'timed-out'
+  | 'failed';
+
+/** Pairing progress on this computer, pushed on `remote-control:pairing-event`. */
+export type RemoteControlPairingEvent =
+  | { type: 'window-opened'; expiresAt: string }
+  | { type: 'window-closed'; reason: RemoteControlPairingWindowCloseReason }
+  /** A device asks to pair without a link and needs Allow or Deny. */
+  | { type: 'request'; pairing: RemoteIncomingPairing }
+  | {
+      type: 'request-ended';
+      pairingId: string;
+      outcome: RemoteControlPairingRequestOutcome;
+    }
+  /** A pairing was saved; reported only after it is durable. */
+  | {
+      type: 'paired';
+      deviceId: string;
+      name: string;
+      kind: DeviceKind;
+      method: 'link' | 'code';
+    };
+
+/** `remote-control:install-id`: this computer's stable install identifier. */
+export interface RemoteControlInstallIdResult {
+  installId: string;
 }
 
 export interface RemoteControlState {
@@ -90,6 +163,8 @@ export interface RemoteControlState {
   discoverable: RemoteControlDevice[];
   outgoingPairing: RemoteOutgoingPairing | null;
   incomingPairings: RemoteIncomingPairing[];
+  /** The open pairing link window, or null. */
+  pairingWindow: RemoteControlPairingWindowState | null;
 }
 
 export interface RemoteControlGetStateRequest {
@@ -155,7 +230,17 @@ export interface RemoteControlApi {
   onStateChanged(listener: (state: RemoteControlState) => void): () => void;
   /** Opens or focuses a computer's window; null means this computer. */
   openMachine(deviceId: string | null): Promise<void>;
+  /**
+   * The single Remote Control opt-in. Turning it off ends incoming direct
+   * and Portal sessions and closes the pairing window; pairings are kept.
+   */
   setAllowIncoming(allow: boolean): Promise<RemoteControlState>;
+  /** Opens, or replaces, the pairing link window. Needs Remote Control on. */
+  openPairingWindow(): Promise<RemoteControlOpenPairingWindowResult>;
+  closePairingWindow(): Promise<RemoteControlState>;
+  onPairingEvent(
+    listener: (event: RemoteControlPairingEvent) => void,
+  ): () => void;
   startPairing(deviceId: string): Promise<RemoteControlState>;
   cancelPairing(): Promise<RemoteControlState>;
   respondToPairing(

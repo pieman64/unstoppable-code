@@ -9,7 +9,7 @@ import {
   emptyHelperAgentPluginRuntime,
   type HelperAgentPluginRuntime,
 } from '@canopy/desktop-shared/lib/helper-agent-plugins';
-import type { CodexConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { cleanupChatSkillPluginDir } from '../plugins/plugin-cleanup';
 import { resolvePlugins } from '../plugins/plugin-resolver';
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
@@ -128,7 +128,8 @@ export async function withResolvedHelperPlugins<T>(
       }
 
       runtime = {
-        claudePlugins: resolved.sdkPlugins,
+        // With ids, so the helper's launch finds consent for allowed Mods.
+        claudePlugins: resolved.identifiedSdkPlugins ?? resolved.sdkPlugins,
         claudeMcpServers: toClaudeMcpServers(resolved.mcpServers),
         codexCapabilityRoots: resolved.selectedCapabilityRoots,
         codexMcpServers: resolved.codexMcpServers,

@@ -11,8 +11,10 @@ import type {
   PipelineTriggerType,
   RunDefaults,
   ShellType,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
+  Surface,
+  Stack,
   ChoiceList,
   ChoiceListRow,
   Heading,
@@ -23,7 +25,7 @@ import {
   getTriggerTypes,
   setTriggerInputDefs,
   setTriggerTypes,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   readPipelineScopeSelection,
   toPipelineScopeValue,
@@ -122,7 +124,24 @@ const TRIGGER_OPTIONS: TriggerOption[] = [
     label: 'Task ready',
     hint: 'Triggered when a task definition is ready to be planned',
   },
+  {
+    type: 'workflow',
+    label: 'Workflow',
+    hint: 'Started from the Workflows page and its schedules',
+  },
 ];
+
+/**
+ * Whether the panel offers a trigger. `workflow` is shown only once a
+ * pipeline declares it, so it can be removed but not added: adding it waits
+ * for a release every desktop and web can read (CAN-5782).
+ */
+function isOfferedTrigger(
+  type: PipelineTriggerType,
+  activeTriggerTypes: readonly PipelineTriggerType[],
+): boolean {
+  return type !== 'workflow' || activeTriggerTypes.includes('workflow');
+}
 
 function buildShellOptions(): PipelineShellOption[] {
   return [
@@ -195,34 +214,36 @@ export function PipelineSettingsPanel({
   }
 
   return (
-    <div className="h-full flex flex-col bg-card">
-      <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
-        <Heading level={2} variant="title">
-          Workflow settings
-        </Heading>
-        {onClose && (
-          <Tooltip label="Close settings">
-            <Button
-              variant="ghost"
-              size="compact"
-              iconOnly
-              onClick={onClose}
-              aria-label="Close settings"
-            >
-              <AppCatalogCloseIcon size="sm" />
-            </Button>
-          </Tooltip>
-        )}
-      </div>
+    <Surface variant="panel" extent="parent" className="flex flex-col">
+      <Surface variant="section" boundary="bottom" className="shrink-0">
+        <div className="flex items-center justify-between px-4 py-3 shrink-0">
+          <Heading level={2} variant="title">
+            Workflow settings
+          </Heading>
+          {onClose && (
+            <Tooltip label="Close settings">
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
+                onClick={onClose}
+                aria-label="Close settings"
+              >
+                <AppCatalogCloseIcon size="sm" />
+              </Button>
+            </Tooltip>
+          )}
+        </div>
+      </Surface>
 
       <div className="flex-1 overflow-auto">
-        <div className="px-4 py-5 space-y-8">
+        <div className="flex flex-col px-4 py-5 gap-8">
           {/* General */}
-          <section>
-            <Heading level={3} variant="title" className="mb-4">
+          <section className="flex flex-col gap-4">
+            <Heading className="" level={3} variant="title">
               General
             </Heading>
-            <div className="space-y-4">
+            <Stack gap="group">
               <FormField label="Name">
                 <TextField
                   value={pipeline.name}
@@ -256,16 +277,18 @@ export function PipelineSettingsPanel({
                   disabled={readonly}
                 />
               </FormField>
-            </div>
+            </Stack>
           </section>
 
           {/* Triggers */}
-          <section>
-            <Heading level={3} variant="title" className="mb-4">
+          <section className="flex flex-col gap-4">
+            <Heading className="" level={3} variant="title">
               Triggers
             </Heading>
             <ChoiceList aria-label="Triggers">
-              {TRIGGER_OPTIONS.map((trigger) => {
+              {TRIGGER_OPTIONS.filter((trigger) =>
+                isOfferedTrigger(trigger.type, activeTriggerTypes),
+              ).map((trigger) => {
                 const isActive = activeTriggerTypes.includes(trigger.type);
                 return (
                   <ChoiceListRow
@@ -294,13 +317,18 @@ export function PipelineSettingsPanel({
           </section>
 
           {/* Execution Scope */}
-          <section data-testid="pipeline-execution-scope">
-            <Heading level={3} variant="title" className="mb-1">
-              Execution scope
-            </Heading>
-            <p className="text-xs fg-secondary mb-4">
-              Controls where this workflow can be shown and run.
-            </p>
+          <section
+            className="flex flex-col gap-4"
+            data-testid="pipeline-execution-scope"
+          >
+            <Stack gap="tight">
+              <Heading className="" level={3} variant="title">
+                Execution scope
+              </Heading>
+              <p className="text-xs fg-secondary">
+                Controls where this workflow can be shown and run.
+              </p>
+            </Stack>
             <ChoiceList aria-label="Execution scope">
               {EXECUTION_SCOPE_OPTIONS.map((option) => {
                 const isSelected = selectedScopes.includes(option.scope);
@@ -331,16 +359,18 @@ export function PipelineSettingsPanel({
 
           {/* Trigger Inputs */}
           {activeTriggerTypes.length > 0 && (
-            <section>
-              <Heading level={3} variant="title" className="mb-1">
-                Trigger inputs
-              </Heading>
-              <p className="text-xs fg-secondary mb-4">
-                Inputs are collected from the user when the workflow is
-                triggered and made available to steps as{' '}
-                <code>{brand.internalName}.inputs.&lt;name&gt;</code>.
-              </p>
-              <div className="space-y-5">
+            <section className="flex flex-col gap-4">
+              <Stack gap="tight">
+                <Heading className="" level={3} variant="title">
+                  Trigger inputs
+                </Heading>
+                <p className="text-xs fg-secondary">
+                  Inputs are collected from the user when the workflow is
+                  triggered and made available to steps as{' '}
+                  <code>{brand.internalName}.inputs.&lt;name&gt;</code>.
+                </p>
+              </Stack>
+              <Stack gap="block">
                 {activeTriggerTypes.map((triggerType) => (
                   <TriggerInputsEditor
                     key={triggerType}
@@ -350,19 +380,22 @@ export function PipelineSettingsPanel({
                     readonly={readonly}
                   />
                 ))}
-              </div>
+              </Stack>
             </section>
           )}
 
           {/* Plugin Collections */}
-          <section>
-            <Heading level={3} variant="title" className="mb-1">
-              Plugin collections
-            </Heading>
-            <p className="text-xs fg-secondary mb-4">
-              Named sets of shareable skills and marketplace plugins that agent
-              steps can opt into via <code>with.plugin_collection_id</code>.
-            </p>
+          <section className="flex flex-col gap-4">
+            <Stack gap="tight">
+              <Heading className="" level={3} variant="title">
+                Plugin collections
+              </Heading>
+              <p className="text-xs fg-secondary">
+                Named sets of shareable skills and marketplace plugins that
+                agent steps can opt into via{' '}
+                <code>with.plugin_collection_id</code>.
+              </p>
+            </Stack>
             <PluginCollectionsEditor
               collections={pipeline.plugin_collections ?? []}
               onChange={updatePluginCollections}
@@ -371,15 +404,17 @@ export function PipelineSettingsPanel({
           </section>
 
           {/* Model Aliases */}
-          <section>
-            <Heading level={3} variant="title" className="mb-1">
-              Model aliases
-            </Heading>
-            <p className="text-xs fg-secondary mb-4">
-              Named model choices that agent steps can use via{' '}
-              <code>with.model</code>. Aliases can provide workflow defaults,
-              point to a local agent, or require configuration at dispatch.
-            </p>
+          <section className="flex flex-col gap-4">
+            <Stack gap="tight">
+              <Heading className="" level={3} variant="title">
+                Model aliases
+              </Heading>
+              <p className="text-xs fg-secondary">
+                Named model choices that agent steps can use via{' '}
+                <code>with.model</code>. Aliases can provide workflow defaults,
+                point to a local agent, or require configuration at dispatch.
+              </p>
+            </Stack>
             <ModelAliasesEditor
               aliases={pipeline.model_aliases ?? []}
               pluginCollections={pipeline.plugin_collections ?? []}
@@ -389,8 +424,8 @@ export function PipelineSettingsPanel({
           </section>
 
           {/* Environment Variables */}
-          <section>
-            <Heading level={3} variant="title" className="mb-4">
+          <section className="flex flex-col gap-4">
+            <Heading className="" level={3} variant="title">
               Environment variables
             </Heading>
             <KeyValueEditor
@@ -401,11 +436,11 @@ export function PipelineSettingsPanel({
           </section>
 
           {/* Run Defaults */}
-          <section>
-            <Heading level={3} variant="title" className="mb-4">
+          <section className="flex flex-col gap-4">
+            <Heading className="" level={3} variant="title">
               Run defaults
             </Heading>
-            <div className="space-y-4">
+            <Stack gap="group">
               <FormField label="Shell" hint="Default shell for run steps">
                 <SelectField
                   value={run.shell || ''}
@@ -435,7 +470,7 @@ export function PipelineSettingsPanel({
                   disabled={readonly}
                 />
               </FormField>
-            </div>
+            </Stack>
           </section>
 
           <PipelineRelatedSections
@@ -451,6 +486,6 @@ export function PipelineSettingsPanel({
           />
         </div>
       </div>
-    </div>
+    </Surface>
   );
 }

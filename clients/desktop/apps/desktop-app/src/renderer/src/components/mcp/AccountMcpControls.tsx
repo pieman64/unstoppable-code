@@ -11,8 +11,8 @@ import {
   MarketplaceShareButton,
   DetailActionBar,
 } from '@canopy/ui-shared';
-import type { AccountMcpConnection } from '@canopy/desktop-shared/types/mcp-servers';
-import { FormField, TextInput } from '@canopy/ui-shared/components';
+import type { AccountMcpConnection } from '@canopy/execution-engine/types/mcp-servers';
+import { Stack, FormField, TextInput } from '@canopy/ui-shared/components';
 
 interface AccountMcpDetailsProps {
   shareAction?: MarketplaceShareAction;
@@ -102,7 +102,7 @@ export function AccountMcpCredentialDialog({
   };
   return (
     <DialogModal title={`Connect ${displayName}`} onClose={onClose}>
-      <div className="space-y-4" data-testid="mcp-account-credential-setup">
+      <Stack gap="group" data-testid="mcp-account-credential-setup">
         {setup ? (
           <McpClientSetupDetails
             serverName={displayName}
@@ -156,7 +156,7 @@ export function AccountMcpCredentialDialog({
             Connect
           </Button>
         </div>
-      </div>
+      </Stack>
     </DialogModal>
   );
 }
@@ -198,7 +198,7 @@ export function AccountMcpDetails({
         />
       }
     >
-      <div className="" data-testid="mcp-account-details">
+      <div data-testid="mcp-account-details">
         <InstalledEntryStatusSection
           entry={{
             state: 'installed',

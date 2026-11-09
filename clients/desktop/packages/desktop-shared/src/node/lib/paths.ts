@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import { getCanopyDataDir } from '../../canopy-paths';
-import { validateId } from './validation';
+import { validateId } from '@canopy/execution-engine/node/lib/validation';
 
 /** Copilot conversations share the owning execution's artifact retention. */
 export function getPipelineExecutionCopilotSessionsDir(

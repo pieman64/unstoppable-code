@@ -5,7 +5,7 @@ import {
 import {
   validateDependencyGraph,
   type ResourceContextInput,
-} from '@canopy/desktop-shared/lib/resource-context-policy';
+} from '@canopy/execution-engine/lib/resource-context-policy';
 import { getStoredPipelinePathWithSource } from '@canopy/desktop-shared/pipelines/store';
 import {
   getSharedPipeline,
@@ -15,7 +15,7 @@ import {
   assertPipelineContext,
   pipelineResourceContextEnabled,
 } from './resource-lanes';
-import { classifyResourceOwner } from '@canopy/desktop-shared/lib/resource-context';
+import { classifyResourceOwner } from '@canopy/execution-engine/lib/resource-context';
 import { parseSharedPipelineLocalId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import * as os from 'node:os';
@@ -53,16 +53,20 @@ import { getAgentModel } from '../agents/agent-model-store';
 import { resolveAgentDestinationDefaultModel } from '../agents/agent-default-model';
 import { isAgentDefaultBaseModel } from '@canopy/protocol/agents';
 import { getClaudeWorkerSessionService } from '../integration/claude-worker-session-service';
+import { resolveClaudeModAdmissionContext } from '../agents/claude-mod-admission-launch';
 import { getWorktreeCliRecord } from '../lib/worktree-service';
-import { classifyAgentFailure } from '@canopy/desktop-shared/agent-failures';
-import { transcriptHasAgentActivity } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
+import { transcriptHasAgentActivity } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import { runPipelineProcessInExecutionHost } from './process-host-runner';
 import {
   createDesktopPipelineLedgerPort,
   getPipelineLedgerAttemptTools,
 } from './pipeline-ledger';
 import { createDesktopPipelineHostActions } from './host-actions';
-import { createWorkerPipelineHostActions } from './pipeline-host-requests';
+import {
+  createWorkerPipelineHostActions,
+  registerDesktopPipelineHostActions,
+} from './pipeline-host-requests';
 import {
   isDesktopPipelineModelBlocked,
   isDesktopPipelineOrgPolicyActive,
@@ -97,6 +101,10 @@ import {
 export function createElectronExecutionRuntime(
   getWindow?: () => BrowserWindow | null,
 ): ExecutionRuntime {
+  const desktopHost = createDesktopPipelineHostActions({
+    assertTargetOwner: assertPipelineHostTargetOwner,
+    ...(getWindow ? { getWindow } : {}),
+  });
   const runtime: ExecutionRuntime = {
     resolvePipelineContextResource: async (parent, executionContext) => {
       if (!pipelineResourceContextEnabled()) return undefined;
@@ -248,6 +256,8 @@ export function createElectronExecutionRuntime(
       updateTrackedPlan,
     },
     resolvePipelinePluginCollections,
+    resolveClaudeModAdmissionContext: (request) =>
+      resolveClaudeModAdmissionContext(request),
     resolveClaudeCompatibleInvocation,
     resolveModelHarnessInvocation: resolveDesktopPipelineHarnessInvocation,
     resolveAiCreditsRouting: resolveDesktopPipelineAiCreditsRouting,
@@ -277,12 +287,7 @@ export function createElectronExecutionRuntime(
     resolvePipelineTarget: resolveDesktopPipelineTarget,
     pipelineLedger: createDesktopPipelineLedgerPort(),
     // Host steps reach core as worker-to-core requests.
-    pipelineHostActions: createWorkerPipelineHostActions(
-      createDesktopPipelineHostActions({
-        assertTargetOwner: assertPipelineHostTargetOwner,
-        ...(getWindow ? { getWindow } : {}),
-      }),
-    ),
+    pipelineHostActions: createWorkerPipelineHostActions(desktopHost),
     pipelineOwnership: createDesktopPipelineOwnershipPort(),
     codexPromptRunner: {
       runCodexPrompt: (request) =>
@@ -467,6 +472,8 @@ export function createElectronExecutionRuntime(
       options,
       runtime.resourceMonitor,
     );
+  // A daemon run's host steps are applied with its start's desktop host (CAN-5771).
+  registerDesktopPipelineHostActions(runtime, desktopHost);
   return runtime;
 }
 

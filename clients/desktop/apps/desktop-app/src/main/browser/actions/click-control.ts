@@ -1,4 +1,4 @@
-import type { BrowserInputOption } from '@canopy/desktop-shared/types/browser';
+import type { BrowserInputOption } from '@canopy/execution-engine/types/browser';
 import { isCDPRecord } from '../frames/cdp-decode';
 import { remoteValue } from '../frames/host-cdp';
 import type { ResolvedActionTarget } from '../frames/action-targets';

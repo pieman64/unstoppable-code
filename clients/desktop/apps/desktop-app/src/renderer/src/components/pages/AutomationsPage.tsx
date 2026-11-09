@@ -12,6 +12,7 @@
 // Workflows edit shell (CAN-4072).
 /* eslint-disable react-refresh/only-export-components */
 
+import { Count } from '@canopy/ui-shared/components/Badge';
 import {
   useCallback,
   useEffect,
@@ -56,7 +57,7 @@ import {
   type AutomationRevealOutcome,
 } from '@/components/automations/automationRevealNotice';
 import { prefersReducedMotion } from '@canopy/ui-shared/lib';
-import { automationRunsInMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
+import { automationRunsInMessage } from '@canopy/execution-engine/lib/automation-context-copy';
 import {
   loadCalendarView,
   loadViewMode,
@@ -219,7 +220,14 @@ export interface AutomationsPageBodyApi {
     activity: ScheduledActivity,
   ) => Promise<AutomationMutationResponse>;
   readonly share: (activity: ScheduledActivity) => void;
-  readonly remove: (activity: ScheduledActivity) => Promise<void>;
+  /**
+   * Deletes the automation; throws with the refusal. With `workflow`, a
+   * workflow schedule takes its whole workflow page with it (CAN-5782).
+   */
+  readonly remove: (
+    activity: ScheduledActivity,
+    options?: { workflow?: boolean },
+  ) => Promise<void>;
   /** The automation whose Run now is in flight. */
   readonly runningActivityId: string | null;
   /** A just-installed or just-updated automation to point at (CAN-3651). */
@@ -619,7 +627,6 @@ export function AutomationsPage({
         dismissLabel={copy.dismissLabel}
         dismissTestId="automations-installed-notice-dismiss"
         data-testid="automations-installed-notice"
-        className="mt-4"
       >
         {copy.message}
       </Notice>
@@ -738,8 +745,8 @@ export function AutomationsPage({
           toggleEnabled: handleToggleEnabled,
           duplicate: handleDuplicate,
           share: handleShare,
-          remove: async (activity): Promise<void> => {
-            const response = await deleteActivity(activity.id);
+          remove: async (activity, options): Promise<void> => {
+            const response = await deleteActivity(activity.id, options);
             if (!response.ok) throw new Error(response.error);
           },
           runningActivityId: activityRunning,
@@ -772,19 +779,22 @@ export function AutomationsPage({
           }
         />
         <WorkflowsTabPanel className="flex flex-1 flex-col">
-          {error && (
-            <Notice intent="destructive" className="mt-3">
-              Could not load automations.
-            </Notice>
-          )}
-          {mutationError && (
-            <Notice
-              intent="destructive"
-              className="mt-3"
-              data-testid="automations-mutation-error"
-            >
-              {mutationError}
-            </Notice>
+          {(error || mutationError) && (
+            <div className="flex flex-col gap-3 pt-3">
+              {error && (
+                <Notice intent="destructive">
+                  Could not load automations.
+                </Notice>
+              )}
+              {mutationError && (
+                <Notice
+                  intent="destructive"
+                  data-testid="automations-mutation-error"
+                >
+                  {mutationError}
+                </Notice>
+              )}
+            </div>
           )}
           <TriggeredActivitiesTab
             activities={scopedActivities}
@@ -949,17 +959,17 @@ function TriggeredActivitiesTab({
 
   if (loading) {
     return (
-      <>
+      <div className={`flex flex-col gap-6 ${notice ? 'pt-4' : 'pt-6'}`}>
         {notice}
-        <div className="mt-6 text-s fg-secondary">Loading automations…</div>
-      </>
+        <div className="text-s fg-secondary">Loading automations…</div>
+      </div>
     );
   }
   if (activities.length === 0) {
     return (
-      <>
+      <div className={`flex flex-col gap-12 ${notice ? 'pt-4' : 'pt-12'}`}>
         {notice}
-        <div className="mt-12 flex flex-col items-center gap-3 text-center">
+        <div className="flex flex-col items-center gap-3 text-center">
           <p
             className="text-m font-medium fg-primary"
             data-testid="automations-empty-title"
@@ -982,7 +992,7 @@ function TriggeredActivitiesTab({
             New automation
           </Button>
         </div>
-      </>
+      </div>
     );
   }
   const previouslyTriggered = activities.filter(isPreviouslyTriggeredOneTime);
@@ -1015,9 +1025,9 @@ function TriggeredActivitiesTab({
       (activity) => activity.id === revealTarget.activityId,
     );
   return (
-    <>
+    <div className="flex flex-col gap-4 pt-4">
       {notice}
-      <div ref={listRef} className="mt-4 flex flex-col gap-4">
+      <div ref={listRef} className="flex flex-col gap-4">
         <div className="flex items-center">
           <ViewModePicker
             viewMode={effectiveViewMode}
@@ -1069,7 +1079,7 @@ function TriggeredActivitiesTab({
           />
         )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -1358,9 +1368,7 @@ function PreviouslyTriggeredSection({
           className={`transition-transform ${expanded ? '' : '-rotate-90'}`}
         />
         <span>Previously triggered</span>
-        <span className="rounded-full bg-fg-primary/[0.06] px-1.5 py-0.5 text-3xs tabular-nums fg-secondary">
-          {activities.length}
-        </span>
+        <Count value={activities.length} />
       </Button>
       {expanded && (
         <div data-testid="automations-previously-triggered-table">

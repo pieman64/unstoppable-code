@@ -26,6 +26,8 @@ export function HomeMcpSignInStrip(
         getRowNavigation={model.getRowNavigation}
         getRowSettings={model.getRowSettings}
         renderRowExtra={model.renderRowExtra}
+        rowExtraLayout="footer"
+        noticeGap="tight"
         notice={model.notice}
       />
       {model.dialogs}

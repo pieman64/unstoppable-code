@@ -17,6 +17,7 @@ import {
   LoadingSpinner,
   Kbd,
   TextInput,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import { interpretShortcutRecorderKey } from './shortcut-recorder';
 
@@ -222,26 +223,22 @@ export function ShortcutRecorderField({
         </Button>
       </div>
       {draft.problem !== null ? (
-        <p
-          className="text-xs fg-destructive"
-          data-testid={`${testId}-validation`}
-          id={hintId}
-        >
+        <FieldError id={hintId} data-testid={`${testId}-validation`}>
           {draft.problem}
-        </p>
+        </FieldError>
       ) : (
         <p className="text-xs fg-tertiary" id={hintId}>
           {RECORDER_HINT}
         </p>
       )}
       {error !== null ? (
-        <p
-          className="text-xs fg-destructive"
-          role="alert"
+        <FieldError
+          id={`${testId}-error`}
+          announce
           data-testid={`${testId}-error`}
         >
           {error}
-        </p>
+        </FieldError>
       ) : null}
     </div>
   );

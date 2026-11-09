@@ -124,8 +124,8 @@ import {
   mapWorktreeSummaryToText,
   splitTelemetryIngestRequest,
 } from '@canopy/desktop-shared/lib/telemetry-mapping';
-import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import {
   resolveEffectiveTelemetrySharing,
   enforcementForOrganization,
@@ -147,7 +147,7 @@ import type {
   AgentAuditTranscriptInjectedPromptRecord,
   AgentObservabilityUpdateEvent,
   PipelineRunUsageEvent,
-} from '@canopy/desktop-shared/types/observability';
+} from '@canopy/execution-engine/types/observability';
 import { getObservabilityService } from '../observability';
 import {
   oldestQueuedTelemetryItemAt,

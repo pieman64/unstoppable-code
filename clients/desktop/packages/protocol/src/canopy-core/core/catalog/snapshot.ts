@@ -28,12 +28,30 @@ const ProviderSupportSchema = z.strictObject({
   codex: z.boolean(),
 });
 
+/**
+ * The selection ref an entry id was built from, so a client can write a
+ * selection without splitting the id (a ref part may hold `/`).
+ */
+const SkillSelectionRefSchema = z.strictObject({
+  sourceId: IdSchema,
+  skillName: IdSchema,
+});
+const PluginSelectionRefSchema = z.strictObject({
+  marketplaceId: IdSchema,
+  pluginName: IdSchema,
+});
+const McpServerSelectionRefSchema = z.strictObject({
+  serverId: IdSchema,
+  configId: IdSchema,
+});
+
 export const CatalogEntryContentSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('skill'),
     /** Omitted when the catalog holds no body; never an empty string. */
     instructions: z.string().max(2_000_000).optional(),
     entrypoint: z.string().max(4096).nullable(),
+    selectionRef: SkillSelectionRefSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal('plugin'),
@@ -44,6 +62,7 @@ export const CatalogEntryContentSchema = z.discriminatedUnion('kind', [
       dependencies: z.array(IdSchema),
       providerSupport: ProviderSupportSchema.optional(),
     }),
+    selectionRef: PluginSelectionRefSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal('mcp_server'),
@@ -57,6 +76,7 @@ export const CatalogEntryContentSchema = z.discriminatedUnion('kind', [
       .optional(),
     /** Null enables every tool; `[]` disables them all. */
     enabledTools: z.array(z.string().max(256)).nullable().optional(),
+    selectionRef: McpServerSelectionRefSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal('agent'),

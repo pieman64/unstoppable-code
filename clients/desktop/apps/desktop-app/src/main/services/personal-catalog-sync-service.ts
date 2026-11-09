@@ -4,7 +4,7 @@ import { z } from 'zod';
 import {
   damagedCopiesOf,
   pruneDamagedCopies,
-} from '@canopy/desktop-shared/node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import type { PersonalCatalogRegistration } from '@canopy/protocol/org-projects';
 import { writeFileAtomically } from '../lib/atomic-file';
 import { logMainProcessError } from '../lib/main-process-logging';

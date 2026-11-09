@@ -1,11 +1,11 @@
 import type { PersistedChatTab } from '@canopy/desktop-shared/types';
-import type { UsageLimitResumePrompt } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import type { UsageLimitResumePrompt } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import type {
   AutoResumeReason,
   AutoResumeMetadata,
 } from '@canopy/agent-transcript/types';
 import { isRootUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
-import { computeUsageLimitResumePrompt } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { computeUsageLimitResumePrompt } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import { getModelCatalogProviderLabel } from '@canopy/protocol/models';
 
 /** Resolve one exact interrupted turn for both dispatch provenance and succession. */

@@ -405,6 +405,33 @@ describe('chat message command adapter', () => {
     }
   });
 
+  it('refuses attachment references before any effect', async () => {
+    const { port, command } = createPort(receipt);
+    const runtime = createDesktopRuntime({ chatCommandPort: port });
+    try {
+      await expect(
+        runtime.instruction(
+          'core.chat.message.send',
+          {
+            scope: { workspaceId: 'project-1', worktreeId: 'worktree-1' },
+            commandId: 'attachments',
+            chatId: 'chat-1',
+            messageId: 'message-1',
+            text: 'See the file.',
+            attachments: [{ attachmentId: 'att-1' }],
+            _meta: { idempotencyKey: 'attachments' },
+          },
+          { caller, metadata: { idempotencyKey: 'attachments' } },
+        ),
+      ).rejects.toMatchObject({
+        payload: { kind: 'capability_unavailable' },
+      });
+      expect(command).not.toHaveBeenCalled();
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it('preserves an absent revision and a replayed receipt', async () => {
     const replay = { ...receipt, outcome: 'already_applied' as const };
     const { port, command } = createPort(replay);

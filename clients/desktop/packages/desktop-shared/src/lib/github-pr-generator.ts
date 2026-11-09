@@ -1,4 +1,4 @@
-import type { TransientAgentRetryOptions } from '../types/agent-failures';
+import type { TransientAgentRetryOptions } from '@canopy/execution-engine/types/agent-failures';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -17,9 +17,9 @@ import {
   type StructuredHelperQueryResult,
 } from './structured-helper-query';
 import type { HelperAgentPluginRuntime } from './helper-agent-plugins';
-import type { HelperUsage } from './helper-usage';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import type { HelperTranscriptObserver } from './helper-transcript';
-import type { CodexConfig } from './codex-model-config';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   PR_CONTENT_RESPONSE_FORMAT_INSTRUCTIONS,
   PR_CONTENT_SCHEMA,

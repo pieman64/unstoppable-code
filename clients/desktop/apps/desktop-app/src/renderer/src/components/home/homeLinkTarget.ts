@@ -400,7 +400,8 @@ function classifyGitHubError(error: unknown): HomeLinkResolution {
       { kind: 'retry' },
     ]);
   }
-  if (/auth|token|credential|connect|401|sign in/i.test(message)) {
+  // Offline catalog copy says "connection"; that is not a sign-in failure.
+  if (/auth|token|credential|connect(?!ion)|401|sign in/i.test(message)) {
     return blocked('Connect GitHub to add this repository as a project.', [
       { kind: 'sign-in-github' },
       { kind: 'retry' },

@@ -1,3 +1,9 @@
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { inlineFailure } from '@/lib/inline-app-error';
 import {
   memo,
   useCallback,
@@ -12,7 +18,7 @@ import {
   type RefObject,
 } from 'react';
 import { useShallow } from 'zustand/shallow';
-import { useGitHubStore } from '@/stores/githubStore';
+import { gitActionFailureRaiser, useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -66,6 +72,7 @@ import {
 import { useMergeQueueAgentHandling } from '@/hooks/useMergeQueueAgentHandling';
 import { resolvePrMergeRoute, type PrMergeRoute } from './mergeButtonRoute';
 import {
+  Stack,
   ActionMenuRowStyle,
   Button,
   ConfirmDialog,
@@ -364,11 +371,9 @@ function RepoBranchesCard({
   repoBranches: RepoBranchInfo[];
 }): JSX.Element {
   return (
-    <div className="min-w-60 max-w-120">
-      <div className="mb-1.5 text-3xs font-semibold fg-secondary">
-        Repo branches
-      </div>
-      <div className="space-y-1">
+    <div className="flex flex-col gap-1.5 min-w-60 max-w-120">
+      <div className="text-3xs font-semibold fg-secondary">Repo branches</div>
+      <Stack gap="tight">
         {repoBranches.map((rb) => (
           <div
             key={rb.repoId}
@@ -388,7 +393,7 @@ function RepoBranchesCard({
             </span>
           </div>
         ))}
-      </div>
+      </Stack>
     </div>
   );
 }
@@ -1332,9 +1337,10 @@ export const PrStatusBar = memo(function PrStatusBar({
         worktreeId,
         drift.prBaseBranch,
         isMultiRepo ? drift.repoId : undefined,
-      ).catch(() => {
+      ).catch((error: unknown) => {
         // Silent by design: the user never asked for this write, so a failure
-        // must not raise a toast. Clearing the token lets the next poll retry.
+        // must not show. Record it; clearing the token lets the next poll retry.
+        reportClientAppError(error);
         autoAdoptedBaseBranchesRef.current.delete(token);
       });
     }
@@ -1534,6 +1540,7 @@ export const PrStatusBar = memo(function PrStatusBar({
     async (trimmed: string): Promise<void> => {
       setBranchRenameRemoteConfirm(null);
       setBranchRenamePending(true);
+      const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
       try {
         await window.api.renameBranch({
           projectId,
@@ -1545,12 +1552,10 @@ export const PrStatusBar = memo(function PrStatusBar({
           .updateBranchName(projectId, worktreeId, trimmed);
         void useProjectsStore.getState().refreshDiffStats();
       } catch (err: unknown) {
-        useGitHubStore
-          .getState()
-          .addToast(
-            err instanceof Error ? err.message : 'Failed to rename branch',
-            'error',
-          );
+        const appError = toAppError(resolveClientAppError(err));
+        if (appError) {
+          raiseFailure(inlineFailure(appError, "Couldn't rename the branch."));
+        }
       } finally {
         setBranchRenamePending(false);
         setBranchEditValue(null);
@@ -1604,6 +1609,7 @@ export const PrStatusBar = memo(function PrStatusBar({
   const handleBaseBranchSelect = useCallback(
     (branchName: string): void => {
       handleBaseBranchClose();
+      const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
       void setWorktreeBaseBranch(
         { projectId, worktreeId, baseBranch: branchName },
         {
@@ -1645,24 +1651,12 @@ export const PrStatusBar = memo(function PrStatusBar({
         },
       ).catch((error: unknown) => {
         setPendingPrBaseUpdate(null);
-        const wsName = useProjectsStore
-          .getState()
-          .projects.find((p) => p.id === projectId)?.name;
-        useGitHubStore
-          .getState()
-          .addToast(
-            error instanceof Error
-              ? error.message
-              : 'Failed to update the tracked base branch.',
-            'error',
-            undefined,
-            {
-              category: 'PR Create',
-              workspaceName: wsName,
-              projectId,
-              worktreeId,
-            },
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError) {
+          raiseFailure(
+            inlineFailure(appError, "Couldn't update the tracked base branch."),
           );
+        }
       });
     },
     [handleBaseBranchClose, projectId, worktreeId],
@@ -1704,6 +1698,7 @@ export const PrStatusBar = memo(function PrStatusBar({
             );
           return;
         }
+        const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
         for (const drift of driftsToApply) {
           void setTrackedBaseBranch(
             projectId,
@@ -1711,14 +1706,15 @@ export const PrStatusBar = memo(function PrStatusBar({
             drift.prBaseBranch,
             projectType === 'multi-repo' ? drift.repoId : undefined,
           ).catch((error: unknown) => {
-            useGitHubStore
-              .getState()
-              .addToast(
-                error instanceof Error
-                  ? error.message
-                  : 'Failed to update the tracked base branch.',
-                'error',
+            const appError = toAppError(resolveClientAppError(error));
+            if (appError) {
+              raiseFailure(
+                inlineFailure(
+                  appError,
+                  "Couldn't update the tracked base branch.",
+                ),
               );
+            }
           });
         }
       },
@@ -1945,6 +1941,7 @@ export const PrStatusBar = memo(function PrStatusBar({
     const warning = prMergeWarning;
     if (!warning) return;
     setStartingTriage(true);
+    const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
     void window.api.github
       .startPrCommentTriage({
         projectId: warning.projectId,
@@ -1957,16 +1954,12 @@ export const PrStatusBar = memo(function PrStatusBar({
         clearPrMergeWarning(warning.projectId, warning.worktreeId);
       })
       .catch((error: unknown) => {
-        const message =
-          error instanceof Error
-            ? error.message
-            : 'Failed to start review comment triage.';
-        useGitHubStore.getState().addToast(message, 'error', undefined, {
-          category: 'Git Merge',
-          workspaceName: projectName,
-          projectId,
-          worktreeId,
-        });
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError) {
+          raiseFailure(
+            inlineFailure(appError, "Couldn't start review comment triage."),
+          );
+        }
       })
       .finally(() => {
         setStartingTriage(false);
@@ -1979,7 +1972,6 @@ export const PrStatusBar = memo(function PrStatusBar({
     projectId,
     worktreeId,
     worktreeBranchName,
-    projectName,
   ]);
 
   const handleMergePrMultiConfirm = useCallback(
@@ -2003,6 +1995,7 @@ export const PrStatusBar = memo(function PrStatusBar({
   const handleResolveConflictsClick = useCallback((): void => {
     if (startingConflictResolution) return;
     setStartingConflictResolution(true);
+    const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
     const target = conflictingOpenPrRepos[0];
     void window.api.github
       .startMergeConflictResolution({
@@ -2013,16 +2006,15 @@ export const PrStatusBar = memo(function PrStatusBar({
         branchName: worktreeBranchName || undefined,
       })
       .catch((error: unknown) => {
-        const message =
-          error instanceof Error
-            ? error.message
-            : 'Failed to start merge conflict resolution.';
-        useGitHubStore.getState().addToast(message, 'error', undefined, {
-          category: 'Git Merge',
-          workspaceName: projectName,
-          projectId,
-          worktreeId,
-        });
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError) {
+          raiseFailure(
+            inlineFailure(
+              appError,
+              "Couldn't start resolving merge conflicts.",
+            ),
+          );
+        }
       })
       .finally(() => {
         setStartingConflictResolution(false);
@@ -2034,12 +2026,12 @@ export const PrStatusBar = memo(function PrStatusBar({
     projectId,
     worktreeId,
     worktreeBranchName,
-    projectName,
   ]);
 
   const handleFixCiChecksClick = useCallback((): void => {
     if (startingCiFix) return;
     setStartingCiFix(true);
+    const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
     void window.api.github
       .startCiCheckFix({
         projectId,
@@ -2049,16 +2041,12 @@ export const PrStatusBar = memo(function PrStatusBar({
         branchName: worktreeBranchName || undefined,
       })
       .catch((error: unknown) => {
-        const message =
-          error instanceof Error
-            ? error.message
-            : 'Failed to start CI check fix.';
-        useGitHubStore.getState().addToast(message, 'error', undefined, {
-          category: 'Git Merge',
-          workspaceName: projectName,
-          projectId,
-          worktreeId,
-        });
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError) {
+          raiseFailure(
+            inlineFailure(appError, "Couldn't start fixing CI checks."),
+          );
+        }
       })
       .finally(() => {
         setStartingCiFix(false);
@@ -2070,7 +2058,6 @@ export const PrStatusBar = memo(function PrStatusBar({
     projectId,
     worktreeId,
     worktreeBranchName,
-    projectName,
   ]);
 
   // Multi-repo PR badge data
@@ -2341,209 +2328,211 @@ export const PrStatusBar = memo(function PrStatusBar({
       {/* Two rhythms, by weight. The ghost status controls (CI, the PR badge,
           Merge / Commit & Push / Fix) sit on 4px — they read as one run of
           status, so tighter spacing groups them. The solid action cluster
-          then stands off by 8px (this 4px row gap plus its own `ml-1`), which
+          then stands off by the outer row's 8px gap, which
           is what Create PR keeps from `Open in` inside the cluster, so the gap
           before the buttons is ONE value in every state regardless of which
           controls that state happens to show. */}
-      <div className="flex min-h-6.5 items-center gap-1 text-xs">
-        {/* ---- Breadcrumb: [icon + project] > [branch] > [base branch] ----
+      <div className="flex min-h-6.5 items-center gap-2 text-xs">
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          {/* ---- Breadcrumb: [icon + project] > [branch] > [base branch] ----
             Sidebar-matched typography (text-s font-normal fg-primary), 16px
             medium chevrons, and every segment is a clickable 28px hover-pill:
             project opens project settings, branch opens the branch actions
             menu, base branch opens the base-branch selector. The bar's
             `pl-[5px]` plus the project pill's own 4px padding keeps the
             at-rest icon at the 9px edge inset. */}
-        {/* `min-w-0` lets the breadcrumb shrink below its content so the
+          {/* `min-w-0` lets the breadcrumb shrink below its content so the
             labels truncate under pressure; without it a flex item's
             `min-width: auto` floor would push the overflow onto the action
             cluster instead. */}
-        {/* `mr-auto` here — NOT `ml-auto` on the action cluster — is what
+          {/* `mr-auto` here — NOT `ml-auto` on the action cluster — is what
             right-aligns the row. All the slack is taken immediately after the
             breadcrumb, so every status item packs against the buttons on the
             row's own 8px gap. With the slack sitting at the cluster instead,
             the status items stayed pinned to the breadcrumb and their distance
             from the buttons changed with whatever copy the state happened to
             have (measured 8px to 66px across states). */}
-        <div className="group/branch electron-no-drag mr-auto flex min-w-0 items-center gap-1.5 text-s font-normal fg-primary">
-          {/* Icon-only project segment: the workspace name lives in the
+          <div className="group/branch electron-no-drag mr-auto flex min-w-0 items-center gap-1.5 text-s font-normal fg-primary">
+            {/* Icon-only project segment: the workspace name lives in the
               tooltip; clicking opens workspace settings. */}
-          <Tooltip
-            label={
-              <span className={POSTHOG_REPLAY_MASK_CLASS}>{projectName}</span>
-            }
-          >
-            <Button
-              variant="ghost"
-              size="compact"
-              iconOnly
-              data-testid="pr-status-bar-project-button"
-              onClick={(): void => {
-                useNavigationStore
-                  .getState()
-                  // The worktree context seeds the settings modal's
-                  // source-worktree picker, so "Default branch" starts on
-                  // the branch this header is showing (review ask: match
-                  // the scripts/hooks gear behavior).
-                  .openWorkspaceSettings({
-                    workspaceId: projectId,
-                    worktreeId,
-                  });
-              }}
-              aria-label={`${projectName} project settings`}
+            <Tooltip
+              label={
+                <span className={POSTHOG_REPLAY_MASK_CLASS}>{projectName}</span>
+              }
             >
-              <ProjectIcon
-                kind={projectType ?? 'single-repo'}
-                color={projectColor}
-                temporary={projectTemporary}
-                repoPath={projectRepoPath}
-              />
-            </Button>
-          </Tooltip>
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
+                data-testid="pr-status-bar-project-button"
+                onClick={(): void => {
+                  useNavigationStore
+                    .getState()
+                    // The worktree context seeds the settings modal's
+                    // source-worktree picker, so "Default branch" starts on
+                    // the branch this header is showing (review ask: match
+                    // the scripts/hooks gear behavior).
+                    .openWorkspaceSettings({
+                      workspaceId: projectId,
+                      worktreeId,
+                    });
+                }}
+                aria-label={`${projectName} project settings`}
+              >
+                <ProjectIcon
+                  kind={projectType ?? 'single-repo'}
+                  color={projectColor}
+                  temporary={projectTemporary}
+                  repoPath={projectRepoPath}
+                />
+              </Button>
+            </Tooltip>
 
-          {/* Current branch: click opens the branch actions menu;
+            {/* Current branch: click opens the branch actions menu;
               double-click flips into inline rename (single-repo). */}
-          {branchEditValue !== null ? (
-            // 40cqw of the bar is the ceiling: past that the text scrolls,
-            // mirroring how the read-only label truncates rather than
-            // starving its neighbours.
-            <span className="electron-no-drag relative inline-flex max-w-[40cqw]">
-              <InlineTextInput
-                data-testid="pr-status-bar-branch-rename-input"
-                // Grows with what is typed. The pill's width is the floor, so
-                // entering edit mode causes no jump, and its 8px inset keeps
-                // the text where the read-only label had it.
-                grow
-                // The pill's 13px type, not the 14px row edit, so the name
-                // keeps its size when editing starts.
-                size="inherit"
-                className="-ml-1.5"
-                style={
-                  branchEditWidth !== null
-                    ? { minWidth: `${branchEditWidth}px` }
-                    : undefined
-                }
-                value={branchEditValue}
-                disabled={branchRenamePending}
-                // Frozen while the remote confirmation is up: an edit after
-                // arming it would let "Rename anyway" commit the stale
-                // snapshot while the input shows a different name.
-                readOnly={branchRenameRemoteConfirm !== null}
-                autoFocus
-                spellCheck={false}
-                aria-label="Rename branch"
-                onFocus={(e): void => e.currentTarget.select()}
-                onCommit={(next): void => {
-                  branchEditCommittedRef.current = true;
-                  void commitBranchRename(next);
-                }}
-                onCancel={(): void => {
-                  // Abandon any pending remote confirmation too: leaving it
-                  // set would make the `commitBranchRename` guard swallow
-                  // every later rename, and re-arming would seed the popover
-                  // with this abandoned name.
-                  setBranchRenameRemoteConfirm(null);
-                  setBranchEditValue(null);
-                }}
-                onBlur={(): void => {
-                  // Leaving with the name unchanged ends the edit; a changed
-                  // name went through `onCommit` (which may hold the edit open
-                  // for the pushed-branch confirmation).
-                  if (branchEditCommittedRef.current) {
-                    branchEditCommittedRef.current = false;
-                    return;
+            {branchEditValue !== null ? (
+              // 40cqw of the bar is the ceiling: past that the text scrolls,
+              // mirroring how the read-only label truncates rather than
+              // starving its neighbours.
+              <span className="electron-no-drag relative inline-flex max-w-[40cqw]">
+                <InlineTextInput
+                  data-testid="pr-status-bar-branch-rename-input"
+                  // Grows with what is typed. The pill's width is the floor, so
+                  // entering edit mode causes no jump, and its 8px inset keeps
+                  // the text where the read-only label had it.
+                  grow
+                  // The pill's 13px type, not the 14px row edit, so the name
+                  // keeps its size when editing starts.
+                  size="inherit"
+                  className="-ml-1.5"
+                  style={
+                    branchEditWidth !== null
+                      ? { minWidth: `${branchEditWidth}px` }
+                      : undefined
                   }
-                  if (branchRenameRemoteConfirm === null) {
-                    setBranchEditValue(null);
-                  }
-                }}
-              />
-              {branchRenameRemoteConfirm !== null && (
-                <ConfirmDialog
-                  title="Rename pushed branch?"
-                  message="This branch has already been pushed to remote. Renaming will only change the local branch name — the old remote branch and any associated PRs will still exist."
-                  confirmLabel="Rename anyway"
-                  dataTestId="pr-status-bar-branch-rename-remote-confirm"
-                  // The input this opened from leaves with the edit, so focus
-                  // returns to the branch pill that replaces it.
-                  restoreFocusRef={branchMenuTriggerRef}
+                  value={branchEditValue}
+                  disabled={branchRenamePending}
+                  // Frozen while the remote confirmation is up: an edit after
+                  // arming it would let "Rename anyway" commit the stale
+                  // snapshot while the input shows a different name.
+                  readOnly={branchRenameRemoteConfirm !== null}
+                  autoFocus
+                  spellCheck={false}
+                  aria-label="Rename branch"
+                  onFocus={(e): void => e.currentTarget.select()}
+                  onCommit={(next): void => {
+                    branchEditCommittedRef.current = true;
+                    void commitBranchRename(next);
+                  }}
                   onCancel={(): void => {
+                    // Abandon any pending remote confirmation too: leaving it
+                    // set would make the `commitBranchRename` guard swallow
+                    // every later rename, and re-arming would seed the popover
+                    // with this abandoned name.
                     setBranchRenameRemoteConfirm(null);
                     setBranchEditValue(null);
                   }}
-                  onConfirm={(): void => {
-                    // Belt and braces with the input's readOnly freeze:
-                    // commit whatever the input SHOWS, never a stale
-                    // snapshot.
-                    void performBranchRename(
-                      branchEditValue?.trim() !== ''
-                        ? (branchEditValue?.trim() ?? branchRenameRemoteConfirm)
-                        : branchRenameRemoteConfirm,
-                    );
+                  onBlur={(): void => {
+                    // Leaving with the name unchanged ends the edit; a changed
+                    // name went through `onCommit` (which may hold the edit open
+                    // for the pushed-branch confirmation).
+                    if (branchEditCommittedRef.current) {
+                      branchEditCommittedRef.current = false;
+                      return;
+                    }
+                    if (branchRenameRemoteConfirm === null) {
+                      setBranchEditValue(null);
+                    }
                   }}
                 />
-              )}
-            </span>
-          ) : (
-            // Wrapper so the hover copy button can overlay the pill's right
-            // end as a SIBLING (a button inside the trigger <button> would be
-            // invalid markup). `min-w-0` keeps the truncation shrink chain.
-            <span
-              className="group/branchpill relative inline-flex min-w-0 items-center rounded-md transition-colors hover:bg-subtle -ml-1.5"
-              onMouseEnter={(e): void =>
-                setBranchPillLockedWidth(e.currentTarget.offsetWidth)
-              }
-              onMouseLeave={(): void => setBranchPillLockedWidth(null)}
-              style={
-                branchPillLockedWidth !== null
-                  ? { width: `${branchPillLockedWidth}px` }
-                  : undefined
-              }
-            >
-              <button
-                ref={branchMenuTriggerRef}
-                type="button"
-                data-testid="pr-status-bar-branch-menu-trigger"
-                onClick={(e): void => {
-                  setBranchMenuAnchorX(
-                    e.clientX - e.currentTarget.getBoundingClientRect().left,
-                  );
-                  setBranchMenuOpen((prev) => !prev);
-                }}
-                aria-haspopup="menu"
-                aria-expanded={branchMenuOpen}
-                aria-controls={branchMenuOpen ? branchMenuId : undefined}
-                // While the copy is revealed, the trigger's right padding
-                // drops from 8px to 4px: that 4px IS the text-to-copy gap,
-                // and the label gets the reclaimed 4px back, so it truncates
-                // less.
-                className={`electron-no-drag focus-ring relative flex h-7 min-w-0 items-center rounded-md pl-2 ${
-                  branchPillLockedWidth !== null ? 'pr-1' : 'pr-2'
-                }`}
+                {branchRenameRemoteConfirm !== null && (
+                  <ConfirmDialog
+                    title="Rename pushed branch?"
+                    message="This branch has already been pushed to remote. Renaming will only change the local branch name — the old remote branch and any associated PRs will still exist."
+                    confirmLabel="Rename anyway"
+                    dataTestId="pr-status-bar-branch-rename-remote-confirm"
+                    // The input this opened from leaves with the edit, so focus
+                    // returns to the branch pill that replaces it.
+                    restoreFocusRef={branchMenuTriggerRef}
+                    onCancel={(): void => {
+                      setBranchRenameRemoteConfirm(null);
+                      setBranchEditValue(null);
+                    }}
+                    onConfirm={(): void => {
+                      // Belt and braces with the input's readOnly freeze:
+                      // commit whatever the input SHOWS, never a stale
+                      // snapshot.
+                      void performBranchRename(
+                        branchEditValue?.trim() !== ''
+                          ? (branchEditValue?.trim() ??
+                              branchRenameRemoteConfirm)
+                          : branchRenameRemoteConfirm,
+                      );
+                    }}
+                  />
+                )}
+              </span>
+            ) : (
+              // Wrapper so the hover copy button can overlay the pill's right
+              // end as a SIBLING (a button inside the trigger <button> would be
+              // invalid markup). `min-w-0` keeps the truncation shrink chain.
+              <span
+                className="group/branchpill relative inline-flex min-w-0 items-center rounded-md transition-colors hover:bg-subtle -ml-1.5"
+                onMouseEnter={(e): void =>
+                  setBranchPillLockedWidth(e.currentTarget.offsetWidth)
+                }
+                onMouseLeave={(): void => setBranchPillLockedWidth(null)}
+                style={
+                  branchPillLockedWidth !== null
+                    ? { width: `${branchPillLockedWidth}px` }
+                    : undefined
+                }
               >
-                <span
-                  ref={branchMenuAnchorRef}
-                  aria-hidden="true"
-                  className="pointer-events-none absolute bottom-0 h-0 w-0"
-                  style={{ left: branchMenuAnchorX }}
-                />
-                {hasMultipleBranches && repoBranches ? (
-                  <RepoBranchesHoverCard repoBranches={repoBranches}>
+                <button
+                  ref={branchMenuTriggerRef}
+                  type="button"
+                  data-testid="pr-status-bar-branch-menu-trigger"
+                  onClick={(e): void => {
+                    setBranchMenuAnchorX(
+                      e.clientX - e.currentTarget.getBoundingClientRect().left,
+                    );
+                    setBranchMenuOpen((prev) => !prev);
+                  }}
+                  aria-haspopup="menu"
+                  aria-expanded={branchMenuOpen}
+                  aria-controls={branchMenuOpen ? branchMenuId : undefined}
+                  // While the copy is revealed, the trigger's right padding
+                  // drops from 8px to 4px: that 4px IS the text-to-copy gap,
+                  // and the label gets the reclaimed 4px back, so it truncates
+                  // less.
+                  className={`electron-no-drag focus-ring relative flex h-7 min-w-0 items-center rounded-md pl-2 ${
+                    branchPillLockedWidth !== null ? 'pr-1' : 'pr-2'
+                  }`}
+                >
+                  <span
+                    ref={branchMenuAnchorRef}
+                    aria-hidden="true"
+                    className="pointer-events-none absolute bottom-0 h-0 w-0"
+                    style={{ left: branchMenuAnchorX }}
+                  />
+                  {hasMultipleBranches && repoBranches ? (
+                    <RepoBranchesHoverCard repoBranches={repoBranches}>
+                      <span
+                        className={`${POSTHOG_REPLAY_MASK_CLASS} ${BRANCH_LABEL}`}
+                      >
+                        {currentBranchDisplay}
+                      </span>
+                    </RepoBranchesHoverCard>
+                  ) : (
                     <span
                       className={`${POSTHOG_REPLAY_MASK_CLASS} ${BRANCH_LABEL}`}
+                      title={currentBranchRawLabel}
                     >
                       {currentBranchDisplay}
                     </span>
-                  </RepoBranchesHoverCard>
-                ) : (
-                  <span
-                    className={`${POSTHOG_REPLAY_MASK_CLASS} ${BRANCH_LABEL}`}
-                    title={currentBranchRawLabel}
-                  >
-                    {currentBranchDisplay}
-                  </span>
-                )}
-              </button>
-              {/* Quick copy, revealed on pill hover INSIDE the pill, in-flow
+                  )}
+                </button>
+                {/* Quick copy, revealed on pill hover INSIDE the pill, in-flow
                   after the label. The wrapper's width is locked to its rest
                   measurement for the whole hover (see onMouseEnter), so the
                   pill NEVER grows: the label yields exactly the button's
@@ -2552,235 +2541,239 @@ export const PrStatusBar = memo(function PrStatusBar({
                   trailing pr matches), and the radius follows the
                   nested-radius rule: wrapper 8px − 2px inset = 6px, same as
                   the running-action ✕. Copy is ALSO in the branch menu. */}
-              {!hasMultipleBranches && branchPillLockedWidth !== null && (
-                <span className="inline-flex shrink-0 pr-0.5">
-                  <Tooltip label={copiedBranch ? 'Copied' : 'Copy branch name'}>
-                    <button
-                      type="button"
-                      onClick={handleCopyBranch}
-                      data-testid="pr-status-bar-branch-copy"
-                      aria-label={copiedBranch ? 'Copied' : 'Copy branch name'}
-                      // Nested corner: the 24px control sits 2px inside the
-                      // 28px rounded-md branch pill, so its radius is the 8px
-                      // of that pill less the inset, keeping the arcs
-                      // concentric.
-                      className="electron-no-drag focus-ring flex h-6 w-6 items-center justify-center rounded-[calc(var(--radius-md)-2px)] fg-secondary transition-colors hover:bg-subtle hover:fg-primary"
+                {!hasMultipleBranches && branchPillLockedWidth !== null && (
+                  <span className="inline-flex shrink-0 pr-0.5">
+                    <Tooltip
+                      label={copiedBranch ? 'Copied' : 'Copy branch name'}
                     >
+                      <button
+                        type="button"
+                        onClick={handleCopyBranch}
+                        data-testid="pr-status-bar-branch-copy"
+                        aria-label={
+                          copiedBranch ? 'Copied' : 'Copy branch name'
+                        }
+                        // Nested corner: the 24px control sits 2px inside the
+                        // 28px rounded-md branch pill, so its radius is the 8px
+                        // of that pill less the inset, keeping the arcs
+                        // concentric.
+                        className="electron-no-drag focus-ring flex h-6 w-6 items-center justify-center rounded-[calc(var(--radius-md)-2px)] fg-secondary transition-colors hover:bg-subtle hover:fg-primary"
+                      >
+                        {copiedBranch ? (
+                          <CheckIcon size={16} />
+                        ) : (
+                          <CopyIcon size={16} />
+                        )}
+                      </button>
+                    </Tooltip>
+                  </span>
+                )}
+              </span>
+            )}
+            <FloatingMenu
+              id={branchMenuId}
+              open={branchMenuOpen}
+              onOpenChange={setBranchMenuOpen}
+              anchorRef={branchMenuAnchorRef}
+              // The anchor is a zero-size cursor-positioning marker; focus must
+              // return to the actual branch button on Escape/selection, not the
+              // aria-hidden span.
+              returnFocusRef={branchMenuTriggerRef}
+              placement="bottom-center"
+              aria-label="Branch actions"
+              data-testid="pr-status-bar-branch-menu"
+              className="w-max max-w-[calc(100vw-16px)]"
+            >
+              <ActionMenuRowStyle>
+                <DropdownMenuItem
+                  data-testid="branch-menu-rename"
+                  // Single-repo flips the pill into the inline input; multi-repo
+                  // (several branches, no single inline target) opens the branch
+                  // dialog's seeded rename. Both are the deliberate, labelled
+                  // path — the double-click shortcut was cut on review.
+                  onClick={
+                    hasMultipleBranches
+                      ? handleEditBranch
+                      : beginInlineBranchRename
+                  }
+                >
+                  <DropdownMenuItemIcon>
+                    <PencilIcon />
+                  </DropdownMenuItemIcon>
+                  Rename branch
+                </DropdownMenuItem>
+                {isSingleRepoWorkspace && (
+                  <DropdownMenuItem
+                    data-testid="branch-menu-change"
+                    onClick={branchChange.openPicker}
+                  >
+                    <DropdownMenuItemIcon>
+                      <BranchIcon size="md" />
+                    </DropdownMenuItemIcon>
+                    Change branch
+                  </DropdownMenuItem>
+                )}
+                {!hasMultipleBranches && (
+                  <DropdownMenuItem
+                    data-testid="branch-menu-copy"
+                    onClick={(event): void => {
+                      // preventDefault suppresses FloatingMenu's close-on-select
+                      // so the row stays mounted to show the Copied confirmation
+                      // (the pre-redesign inline copy button behaved this way).
+                      event.preventDefault();
+                      handleCopyBranch();
+                    }}
+                  >
+                    <DropdownMenuItemIcon>
                       {copiedBranch ? (
                         <CheckIcon size={16} />
                       ) : (
                         <CopyIcon size={16} />
                       )}
-                    </button>
-                  </Tooltip>
-                </span>
-              )}
-            </span>
-          )}
-          <FloatingMenu
-            id={branchMenuId}
-            open={branchMenuOpen}
-            onOpenChange={setBranchMenuOpen}
-            anchorRef={branchMenuAnchorRef}
-            // The anchor is a zero-size cursor-positioning marker; focus must
-            // return to the actual branch button on Escape/selection, not the
-            // aria-hidden span.
-            returnFocusRef={branchMenuTriggerRef}
-            placement="bottom-center"
-            aria-label="Branch actions"
-            data-testid="pr-status-bar-branch-menu"
-            className="w-max max-w-[calc(100vw-16px)]"
-          >
-            <ActionMenuRowStyle>
-              <DropdownMenuItem
-                data-testid="branch-menu-rename"
-                // Single-repo flips the pill into the inline input; multi-repo
-                // (several branches, no single inline target) opens the branch
-                // dialog's seeded rename. Both are the deliberate, labelled
-                // path — the double-click shortcut was cut on review.
-                onClick={
-                  hasMultipleBranches
-                    ? handleEditBranch
-                    : beginInlineBranchRename
-                }
-              >
-                <DropdownMenuItemIcon>
-                  <PencilIcon />
-                </DropdownMenuItemIcon>
-                Rename branch
-              </DropdownMenuItem>
-              {isSingleRepoWorkspace && (
+                    </DropdownMenuItemIcon>
+                    {/* Stacked-label trick: an invisible copy of the LONGER
+                    label always occupies the cell, so the visible swap to
+                    "Copied" cannot narrow the `w-max` menu. */}
+                    <span className="grid">
+                      <span
+                        aria-hidden="true"
+                        className="invisible col-start-1 row-start-1 whitespace-nowrap"
+                      >
+                        Copy branch name
+                      </span>
+                      <span className="col-start-1 row-start-1 whitespace-nowrap">
+                        {copiedBranch ? 'Copied' : 'Copy branch name'}
+                      </span>
+                    </span>
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
-                  data-testid="branch-menu-change"
-                  onClick={branchChange.openPicker}
-                >
-                  <DropdownMenuItemIcon>
-                    <BranchIcon size="md" />
-                  </DropdownMenuItemIcon>
-                  Change branch
-                </DropdownMenuItem>
-              )}
-              {!hasMultipleBranches && (
-                <DropdownMenuItem
-                  data-testid="branch-menu-copy"
-                  onClick={(event): void => {
-                    // preventDefault suppresses FloatingMenu's close-on-select
-                    // so the row stays mounted to show the Copied confirmation
-                    // (the pre-redesign inline copy button behaved this way).
-                    event.preventDefault();
-                    handleCopyBranch();
+                  data-testid="branch-menu-info"
+                  onClick={(): void => {
+                    setBranchMenuOpen(false);
+                    handleOpenBranchInfo();
                   }}
                 >
                   <DropdownMenuItemIcon>
-                    {copiedBranch ? (
-                      <CheckIcon size={16} />
-                    ) : (
-                      <CopyIcon size={16} />
-                    )}
+                    <InfoIcon />
                   </DropdownMenuItemIcon>
-                  {/* Stacked-label trick: an invisible copy of the LONGER
-                    label always occupies the cell, so the visible swap to
-                    "Copied" cannot narrow the `w-max` menu. */}
-                  <span className="grid">
-                    <span
-                      aria-hidden="true"
-                      className="invisible col-start-1 row-start-1 whitespace-nowrap"
-                    >
-                      Copy branch name
-                    </span>
-                    <span className="col-start-1 row-start-1 whitespace-nowrap">
-                      {copiedBranch ? 'Copied' : 'Copy branch name'}
-                    </span>
-                  </span>
+                  Branch info
                 </DropdownMenuItem>
-              )}
-              <DropdownMenuItem
-                data-testid="branch-menu-info"
-                onClick={(): void => {
-                  setBranchMenuOpen(false);
-                  handleOpenBranchInfo();
-                }}
-              >
-                <DropdownMenuItemIcon>
-                  <InfoIcon />
-                </DropdownMenuItemIcon>
-                Branch info
-              </DropdownMenuItem>
-            </ActionMenuRowStyle>
-          </FloatingMenu>
-          {branchChange.open && (
-            <WorktreeBranchTargetPicker
-              workspaceId={projectId}
-              currentBranch={worktreeBranchName}
-              branchTargets={branchChange.targets}
-              onSelect={branchChange.selectTarget}
-              open={branchChange.open}
-              onOpenChange={branchChange.setOpen}
-              anchorRef={branchMenuTriggerRef}
-              data-testid="pr-status-bar-change-branch-menu"
-            />
-          )}
+              </ActionMenuRowStyle>
+            </FloatingMenu>
+            {branchChange.open && (
+              <WorktreeBranchTargetPicker
+                workspaceId={projectId}
+                currentBranch={worktreeBranchName}
+                branchTargets={branchChange.targets}
+                onSelect={branchChange.selectTarget}
+                open={branchChange.open}
+                onOpenChange={branchChange.setOpen}
+                anchorRef={branchMenuTriggerRef}
+                data-testid="pr-status-bar-change-branch-menu"
+              />
+            )}
 
-          {/* Chevron separator */}
-          {baseBranchDisplay && (
-            <span
-              className={BASE_BRANCH_GROUP}
-              style={
-                visibleBaseBranchDrifts.length > 0
-                  ? { minWidth: '6.375rem' }
-                  : undefined
-              }
-            >
-              {/* `-mx-[7px]` against the container's 6px gap pulls each
+            {/* Chevron separator */}
+            {baseBranchDisplay && (
+              <span
+                className={BASE_BRANCH_GROUP}
+                style={
+                  visibleBaseBranchDrifts.length > 0
+                    ? { minWidth: '6.375rem' }
+                    : undefined
+                }
+              >
+                {/* `-mx-[7px]` against the container's 6px gap pulls each
                   neighbouring control 1px PAST the chevron, so the visible
                   text-to-glyph gap is the buttons' own 8px padding less 1px.
                   Tightening here rather than on the container's gap keeps the
                   project icon → branch pill spacing untouched. */}
-              <span className="-mx-1.75 shrink-0 fg-quaternary">
-                <ChevronRightMediumIcon size={16} />
-              </span>
+                <span className="-mx-1.75 shrink-0 fg-quaternary">
+                  <ChevronRightMediumIcon size={16} />
+                </span>
 
-              {/* Base branch */}
-              {isMultiRepo ? (
-                // Multi-repo: readonly text with hover popover
-                hasMultipleBases && repoBranches ? (
-                  <RepoBranchesHoverCard repoBranches={repoBranches}>
+                {/* Base branch */}
+                {isMultiRepo ? (
+                  // Multi-repo: readonly text with hover popover
+                  hasMultipleBases && repoBranches ? (
+                    <RepoBranchesHoverCard repoBranches={repoBranches}>
+                      <span
+                        className={`${BRANCH_LABEL} ${BASE_BRANCH_ITEM} cursor-default fg-secondary`}
+                      >
+                        {baseBranchDisplay}
+                      </span>
+                    </RepoBranchesHoverCard>
+                  ) : (
                     <span
-                      className={`${BRANCH_LABEL} ${BASE_BRANCH_ITEM} cursor-default fg-secondary`}
+                      className={`${BRANCH_LABEL} ${BASE_BRANCH_ITEM} fg-secondary`}
+                      title={baseBranchDisplay ?? undefined}
                     >
                       {baseBranchDisplay}
                     </span>
-                  </RepoBranchesHoverCard>
+                  )
                 ) : (
-                  <span
-                    className={`${BRANCH_LABEL} ${BASE_BRANCH_ITEM} fg-secondary`}
-                    title={baseBranchDisplay ?? undefined}
+                  // Single-repo: clickable dropdown trigger. RichHoverTooltip
+                  // (not Tooltip): its wrapper carries no `shrink-0`, so with
+                  // the button's floor moved onto it the trigger still yields
+                  // space and the label truncates instead of overflowing the
+                  // bar. The full branch name lives in the tooltip.
+                  <RichHoverTooltip
+                    triggerWrapperClassName={BASE_BRANCH_ITEM}
+                    surfaceClassName="w-max max-w-72"
+                    surfacePadding="compact"
+                    content={
+                      <span className="text-xs fg-primary">
+                        {baseBranchDisplay}
+                      </span>
+                    }
                   >
-                    {baseBranchDisplay}
-                  </span>
-                )
-              ) : (
-                // Single-repo: clickable dropdown trigger. RichHoverTooltip
-                // (not Tooltip): its wrapper carries no `shrink-0`, so with
-                // the button's floor moved onto it the trigger still yields
-                // space and the label truncates instead of overflowing the
-                // bar. The full branch name lives in the tooltip.
-                <RichHoverTooltip
-                  triggerWrapperClassName={BASE_BRANCH_ITEM}
-                  surfaceClassName="w-max max-w-72"
-                  surfacePadding="compact"
-                  content={
-                    <span className="text-xs fg-primary">
-                      {baseBranchDisplay}
-                    </span>
-                  }
-                >
-                  <button
-                    ref={baseBranchTriggerRef}
-                    type="button"
-                    onClick={handleBaseBranchClick}
-                    data-testid="pr-status-bar-base-branch"
-                    aria-haspopup="dialog"
-                    aria-expanded={baseBranchDropdownOpen}
-                    className="electron-no-drag focus-ring inline-flex h-7 w-full min-w-0 items-center gap-0.5 rounded-md px-2 fg-secondary transition-colors hover:bg-subtle"
-                  >
-                    <span className={BRANCH_LABEL}>{baseBranchDisplay}</span>
-                  </button>
-                </RichHoverTooltip>
-              )}
-              {visibleBaseBranchDrifts.length > 0 &&
-                !baseBranchDriftConfirmationOpen && (
-                  <BaseBranchDriftWarning
-                    drifts={visibleBaseBranchDrifts}
-                    onAlign={handleOpenBaseBranchAlignment}
-                  />
+                    <button
+                      ref={baseBranchTriggerRef}
+                      type="button"
+                      onClick={handleBaseBranchClick}
+                      data-testid="pr-status-bar-base-branch"
+                      aria-haspopup="dialog"
+                      aria-expanded={baseBranchDropdownOpen}
+                      className="electron-no-drag focus-ring inline-flex h-7 w-full min-w-0 items-center gap-0.5 rounded-md px-2 fg-secondary transition-colors hover:bg-subtle"
+                    >
+                      <span className={BRANCH_LABEL}>{baseBranchDisplay}</span>
+                    </button>
+                  </RichHoverTooltip>
                 )}
-            </span>
+                {visibleBaseBranchDrifts.length > 0 &&
+                  !baseBranchDriftConfirmationOpen && (
+                    <BaseBranchDriftWarning
+                      drifts={visibleBaseBranchDrifts}
+                      onAlign={handleOpenBaseBranchAlignment}
+                    />
+                  )}
+              </span>
+            )}
+          </div>
+
+          {/* ---- Base branch dropdown (single-repo) ---- */}
+          {baseBranchDropdownOpen && (
+            <BaseBranchDropdownPortal
+              anchorRef={baseBranchTriggerRef}
+              projectId={projectId}
+              worktreeId={worktreeId}
+              currentValue={baseBranchDisplay}
+              onSelect={handleBaseBranchSelect}
+              onClose={handleBaseBranchClose}
+            />
           )}
-        </div>
 
-        {/* ---- Base branch dropdown (single-repo) ---- */}
-        {baseBranchDropdownOpen && (
-          <BaseBranchDropdownPortal
-            anchorRef={baseBranchTriggerRef}
-            projectId={projectId}
-            worktreeId={worktreeId}
-            currentValue={baseBranchDisplay}
-            onSelect={handleBaseBranchSelect}
-            onClose={handleBaseBranchClose}
+          {/* ---- PR badges and git/PR actions (shared, REG-3025) ---- */}
+          <PullRequestActions
+            plan={headerPlan}
+            activity={headerActivity}
+            onAction={handleHeaderAction}
+            onCancel={handleCancelGitAction}
+            renderProgress={renderHeaderProgress}
+            renderMergeQueueStatus={renderMergeQueueStatus}
           />
-        )}
-
-        {/* ---- PR badges and git/PR actions (shared, REG-3025) ---- */}
-        <PullRequestActions
-          plan={headerPlan}
-          activity={headerActivity}
-          onAction={handleHeaderAction}
-          onCancel={handleCancelGitAction}
-          renderProgress={renderHeaderProgress}
-          renderMergeQueueStatus={renderMergeQueueStatus}
-        />
-
+        </div>
         {/* ---- Right-aligned actions ---- */}
         {/* Create PR sits with `Open in` rather than in the status flow: both
             are header-level actions on this worktree, and the shared cluster
@@ -2792,7 +2785,7 @@ export const PrStatusBar = memo(function PrStatusBar({
             Launch button. Keeping the cluster rigid puts all the pressure on
             the breadcrumb, which truncates, and then on the priority tiers,
             which drop controls outright. */}
-        <div className="ml-1 flex shrink-0 items-center gap-2 electron-no-drag">
+        <div className="flex shrink-0 items-center gap-2 electron-no-drag">
           {/* Archived chats: a worktree-level action, so it rides the header
               cluster rather than a single panel group's tab strip (which
               also made it move around as groups were split or popped out).

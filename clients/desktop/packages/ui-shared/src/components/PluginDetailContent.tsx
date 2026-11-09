@@ -1,3 +1,5 @@
+import { Badge } from './Badge';
+import { Stack } from './Stack';
 import { pluginDisplayName } from '../lib/plugin-display-name';
 import { pluginDisplayAuthor } from '../lib/official-marketplace-products';
 import {
@@ -21,18 +23,22 @@ import {
   DataTableHead,
   DataTableHeaderCell,
   DataTableRow,
+  type DataTableColumn,
 } from './DataTable';
 import { Disclosure } from './Disclosure';
+import { DetailFact, DetailFactList } from './DetailFact';
+import { DetailEntityType } from './MarketplaceTypeLabel';
 import { ExternalTextLink } from './ExternalTextLink';
 import { Markdown, type MarkdownProps } from './Markdown';
 import { MarkdownFrontmatterContent } from './MarkdownFrontmatterContent';
 import { PluginDetailSectionHeading } from './PluginDetailSectionHeading';
+import { PluginModNotice, pluginModRows } from './PluginModMembers';
 import { ErrorBanner } from './StatusBlocks';
-import { SegmentedControl } from './SegmentedControl';
 import { Tooltip } from './Tooltip';
 import { McpServerLogo } from './McpServerLogo';
 import {
-  PluginHarnessConnections,
+  HarnessLogoList,
+  PluginWorksWith,
   type PluginHarnessConnectionRow,
 } from './PluginHarnessConnections';
 import { ChevronLeftMediumIcon } from '../icons/AppIcons';
@@ -43,6 +49,7 @@ import { PLUGIN_DETAIL_MCP_NOT_CONFIGURED } from '../lib/plugin-detail-mcp';
 
 import type {
   PluginDetails,
+  PluginLspServerInfo,
   PluginMcpServerInfo,
   PluginProviderFacet,
   PluginProviderSupport,
@@ -166,12 +173,21 @@ export interface PluginDetailContentProps {
    * homepage link (desktop: compat error + codex-compat mode switch).
    */
   metadataFooter?: ReactNode;
+  /** Host `DetailFact` rows, listed after Website. */
+  metadataFacts?: ReactNode;
   /** Host-owned notice right under the metadata, such as an available update. */
   updateNotice?: ReactNode;
   /** Host-owned Status row, under the metadata and any update notice. */
   statusContent?: ReactNode;
   /** Where the plugin runs, one row per harness, after the Status row. */
-  harnessRows?: readonly PluginHarnessConnectionRow[];
+  harnessRows?: readonly (PluginHarnessConnectionRow & {
+    readonly alternative?: {
+      label: string;
+      onOpen: () => void;
+      iconOnly?: boolean;
+    };
+    readonly note?: string;
+  })[];
   /**
    * Host-owned block rendered between the metadata section and the README
    * (desktop: built-in install panel, external source box, install prompt,
@@ -180,6 +196,8 @@ export interface PluginDetailContentProps {
   installActions?: ReactNode;
   /** Host-owned "Shared by you" section, after the install area. */
   sharedContent?: ReactNode;
+  /** Host-owned control rendered before the Mods table, when supported. */
+  modsControl?: ReactNode;
   /** Hide the component tables (desktop: while uninstalled/installing). */
   hideComponents?: boolean;
   /** Optional related-item sections appended after the components tables. */
@@ -295,10 +313,10 @@ function ComponentContentView({
   // unstyled block-level wrapper carries the block; the name heading and the
   // Back chrome stay recorded.
   return (
-    <div className="min-w-0">
+    <Stack gap="group" className="min-w-0">
       <Title
         id="plugin-detail-title"
-        className="text-lg font-semibold fg-primary mb-4"
+        className="text-lg font-semibold fg-primary"
       >
         {name}
       </Title>
@@ -313,7 +331,7 @@ function ComponentContentView({
         />
         {content?.truncated === true && <TruncatedNotice />}
       </div>
-    </div>
+    </Stack>
   );
 }
 
@@ -411,12 +429,16 @@ function ReadmeSection({
 
 type FacetTab = 'claude' | 'codex';
 
-const CODEX_COMPATIBILITY_TOOLTIP =
-  "Show the Codex details generated from this plugin's Claude version";
+/** Finds a server's row within one version: names can differ per version. */
+function mcpRowKey(
+  kind: PluginDetailFacetSlot['kind'],
+  serverName: string,
+): string {
+  return `${kind}/${serverName}`;
+}
+
 const CODEX_COMPATIBILITY_DISABLED_TOOLTIP =
   'Codex compatibility is turned off for this plugin';
-// Informational copy for the non-interactive metadata badge; the actionable
-// Codex tab uses the imperative CODEX_COMPATIBILITY_TOOLTIP instead.
 const CODEX_COMPATIBILITY_BADGE_TOOLTIP =
   "Generated from this plugin's Claude version for Codex compatibility";
 
@@ -446,6 +468,97 @@ function slotForTab(
   return slots.find(
     (s) => s.kind === 'codex' || s.kind === 'codexCompatibility',
   );
+}
+
+/** One row of a component table: the item and every harness that gets it. */
+interface ListedComponent<T> {
+  readonly item: T;
+  readonly harnesses: string[];
+  /** The version a row opens: Claude's when both have it. */
+  readonly slot?: PluginDetailFacetSlot;
+  /** Every version that lists it, so navigation can name one. */
+  readonly slotKinds: readonly PluginDetailFacetSlot['kind'][];
+}
+
+/** The kinds a Cursor or OpenCode session loads; the rest never load there. */
+type CursorLoadedKind = 'skills' | 'commands' | 'mcpServers';
+
+/**
+ * Cursor and OpenCode read the first version, Claude's, else native Codex's,
+ * and load only some kinds from it: commands from a Claude version alone, as
+ * `cursorLoadsPluginMemberKind` says for the sessions themselves.
+ */
+function slotHarnesses(
+  slot: PluginDetailFacetSlot,
+  index: number,
+  isSupported: (harness: string) => boolean,
+  cursorKind: CursorLoadedKind | undefined,
+): string[] {
+  const own = slot.kind === 'claude' ? 'claude' : 'codex';
+  const loaded =
+    index === 0 &&
+    slot.kind !== 'codexCompatibility' &&
+    cursorKind !== undefined &&
+    (cursorKind !== 'commands' || slot.kind === 'claude');
+  return [own, ...(loaded ? ['cursor', 'opencode'] : [])].filter(isSupported);
+}
+
+/**
+ * What an MCP server runs, so versions that define it differently stay apart.
+ * `mcpEndpointKey` is coarser on purpose: every command server shares one key.
+ */
+function mcpDefinitionKey(server: PluginMcpServerInfo): string {
+  return JSON.stringify(
+    server.type === 'http'
+      ? [server.name, server.type, server.url]
+      : [server.name, server.type, server.command, server.args ?? []],
+  );
+}
+
+function lspDefinitionKey(server: PluginLspServerInfo): string {
+  return JSON.stringify([server.name, server.command, server.args ?? []]);
+}
+
+/** One list across the plugin's versions, so no switch is needed to compare. */
+function mergeFacetComponents<T>(
+  slots: readonly PluginDetailFacetSlot[],
+  fallback: PluginDetails | undefined,
+  read: (details: PluginDetails) => readonly T[] | undefined,
+  keyOf: (item: T) => string,
+  isSupported: (harness: string) => boolean,
+  cursorKind: CursorLoadedKind | undefined,
+): ListedComponent<T>[] {
+  if (!slots.some((slot) => slot.facet.details)) {
+    return (fallback ? (read(fallback) ?? []) : []).map((item) => ({
+      item,
+      harnesses: [],
+      slotKinds: [],
+    }));
+  }
+  const merged = new Map<string, ListedComponent<T>>();
+  slots.forEach((slot, index) => {
+    if (!slot.facet.details) return;
+    const harnesses = slotHarnesses(slot, index, isSupported, cursorKind);
+    for (const item of read(slot.facet.details) ?? []) {
+      const key = keyOf(item);
+      const existing = merged.get(key);
+      if (existing) {
+        existing.harnesses.push(...harnesses);
+        merged.set(key, {
+          ...existing,
+          slotKinds: [...existing.slotKinds, slot.kind],
+        });
+      } else {
+        merged.set(key, {
+          item,
+          harnesses: [...harnesses],
+          slot,
+          slotKinds: [slot.kind],
+        });
+      }
+    }
+  });
+  return [...merged.values()];
 }
 
 /** Keep publisher instructions available without letting them overwhelm the list. */
@@ -484,6 +597,7 @@ interface ComponentRef {
   name: string;
   componentType: PluginDetailComponentType;
   file: string;
+  slot?: PluginDetailFacetSlot;
 }
 
 export function PluginDetailContent({
@@ -493,11 +607,13 @@ export function PluginDetailContent({
   onReadComponent,
   readme,
   metadataFooter,
+  metadataFacts,
   updateNotice,
   statusContent,
   harnessRows,
   installActions,
   sharedContent,
+  modsControl,
   hideComponents = false,
   relatedContent,
   headerActions,
@@ -516,20 +632,15 @@ export function PluginDetailContent({
 
   const slots = useMemo(() => collectFacets(plugin), [plugin]);
 
-  // Choose the initial tab. Prefer the facet that matches the plugin's
-  // top-level merged view (Claude when both are available).
-  const defaultTab: FacetTab = slots[0]?.kind === 'claude' ? 'claude' : 'codex';
-  const [activeTab, setActiveTab] = useState<FacetTab>(defaultTab);
-
-  // Reset the active tab whenever the plugin identity changes (e.g. the user
-  // re-opens a different plugin) so we don't keep a tab the new plugin lacks.
+  // Close an open component when the plugin identity changes (e.g. the user
+  // re-opens a different plugin).
   useEffect(() => {
-    setActiveTab(defaultTab);
     setViewingComponent(null);
   }, [plugin.marketplaceId, plugin.name]);
 
-  const activeSlot =
-    slotForTab(slots, activeTab) ?? slotForTab(slots, defaultTab) ?? slots[0];
+  // The header and README read the facet matching the plugin's top-level merged
+  // view (Claude when both are available). The tables list every version.
+  const activeSlot = slots[0];
   const isCompat = activeSlot?.kind === 'codexCompatibility';
 
   // The compat-disable control applies only to plugins that would otherwise
@@ -537,10 +648,10 @@ export function PluginDetailContent({
   // facet).
   const compatCapable = plugin.providerSupport.codex === 'compat';
   const codexCompatDisabled = plugin.codexCompatDisabled === true;
-
-  // Keep the provider toggle visible — with the Codex side greyed — even when
-  // the compat facet was not generated because compat is disabled.
-  const showToggle = slots.length > 1 || (compatCapable && codexCompatDisabled);
+  const commandHint = commandColumnHint(plugin.name, {
+    claude: plugin.providerSupport.claude !== 'none',
+    codex: plugin.providerSupport.codex !== 'none' && !codexCompatDisabled,
+  });
 
   // ---------------------------------------------------------------------
   // Pick fields from the active facet, falling back to the top-level plugin
@@ -582,8 +693,9 @@ export function PluginDetailContent({
     }
     const request = `${plugin.marketplaceId}/${plugin.name}/${mcpTarget.requestId}`;
     if (consumedMcpTarget.current === request) return;
-    const requestedTab = mcpTarget.provider ?? activeTab;
-    const requestedSlot = slotForTab(slots, requestedTab);
+    const requestedSlot = mcpTarget.provider
+      ? slotForTab(slots, mcpTarget.provider)
+      : activeSlot;
     if (
       mcpTarget.provider &&
       (!requestedSlot ||
@@ -594,12 +706,13 @@ export function PluginDetailContent({
       setMcpTargetError(true);
       return;
     }
-    if (activeTab !== requestedTab) {
-      setActiveTab(requestedTab);
-      return;
-    }
-    if (!displayDetails) return;
-    const row = mcpRows.current.get(mcpTarget.serverName);
+    if (!(requestedSlot?.facet.details ?? plugin.details)) return;
+    const row =
+      (requestedSlot &&
+        mcpRows.current.get(
+          mcpRowKey(requestedSlot.kind, mcpTarget.serverName),
+        )) ??
+      mcpRows.current.get(mcpTarget.serverName);
     consumedMcpTarget.current = request;
     setMcpTargetError(!row);
     if (row) {
@@ -611,23 +724,83 @@ export function PluginDetailContent({
     plugin.marketplaceId,
     plugin.name,
     plugin.codexCompatDisabled,
-    activeTab,
+    plugin.details,
+    activeSlot,
     slots,
-    displayDetails,
   ]);
 
-  const hasComponents = !!displayDetails && countComponents(displayDetails) > 0;
-  // MCP servers render in their own section, so the components block shows
-  // only for the other tables or the empty state.
-  const hasNonMcpComponents =
-    !!displayDetails &&
-    countComponents(displayDetails) > displayDetails.mcpServers.length;
+  const listedSlots = codexCompatDisabled
+    ? slots.filter((slot) => slot.kind !== 'codexCompatibility')
+    : slots;
+  const isHarnessSupported = (harness: string): boolean =>
+    !harnessRows?.length ||
+    harnessRows.some(
+      (row) => row.id === harness && row.installation !== 'Not supported',
+    );
+  const listComponents = <T,>(
+    read: (details: PluginDetails) => readonly T[] | undefined,
+    keyOf: (item: T) => string,
+    cursorKind?: CursorLoadedKind,
+  ): ListedComponent<T>[] =>
+    mergeFacetComponents(
+      listedSlots,
+      displayDetails,
+      read,
+      keyOf,
+      isHarnessSupported,
+      cursorKind,
+    );
+  const listedSkills = listComponents(
+    (d) => d.skills,
+    (c) => c.name,
+    'skills',
+  );
+  const listedAgents = listComponents(
+    (d) => d.agents,
+    (c) => c.name,
+  );
+  const listedCommands = listComponents(
+    (d) => d.commands,
+    (c) => c.name,
+    'commands',
+  );
+  const listedApps = listComponents(
+    (d) => d.apps,
+    (c) => c.name,
+  );
+  const listedHooks = listComponents(
+    (d) => d.hooks,
+    (h) =>
+      JSON.stringify([h.event, h.matcher ?? '', h.hookType, h.command ?? '']),
+  );
+  const listedMods = listComponents(
+    (d) => d.mods,
+    (m) => JSON.stringify([m.hooksFile, m.module]),
+  );
+  const listedLspServers = listComponents(
+    (d) => d.lspServers,
+    lspDefinitionKey,
+  );
+  const listedMcpServers = listComponents(
+    (d) => d.mcpServers,
+    mcpDefinitionKey,
+    'mcpServers',
+  );
+  const nonMcpCount =
+    listedSkills.length +
+    listedAgents.length +
+    listedCommands.length +
+    listedApps.length +
+    listedHooks.length +
+    listedMods.length +
+    listedLspServers.length;
+  const hasNonMcpComponents = nonMcpCount > 0;
+  const hasComponents = nonMcpCount + listedMcpServers.length > 0;
   const showComponentsSection =
     !hideComponents &&
     !!displayDetails &&
     (hasNonMcpComponents || (!hasComponents && !displayDetails.hasReadme));
-  const showMcpServers =
-    !hideComponents && (displayDetails?.mcpServers.length ?? 0) > 0;
+  const showMcpServers = !hideComponents && listedMcpServers.length > 0;
 
   // Stable token for the roots content reads resolve against (facet kind +
   // facet/plugin paths). Keys the README section remount and the component
@@ -641,13 +814,6 @@ export function PluginDetailContent({
     plugin.sourcePath ?? '',
   ].join('|');
 
-  const hasClaudeSlot = slots.some((s) => s.kind === 'claude');
-  const hasCodexSlot = slots.some(
-    (s) => s.kind === 'codex' || s.kind === 'codexCompatibility',
-  );
-  const codexSlotIsCompat =
-    !slots.some((s) => s.kind === 'codex') &&
-    slots.some((s) => s.kind === 'codexCompatibility');
   const handleChromeBack = (): void => {
     if (viewingComponent) {
       setViewingComponent(null);
@@ -656,48 +822,6 @@ export function PluginDetailContent({
     }
   };
   const showBack = viewingComponent !== null || onBack !== undefined;
-
-  // The Claude/Codex switch changes the facet the sections below read (MCP
-  // servers, README, components), so it sits at the top of them; the chrome
-  // row holds page actions only.
-  const providerToggle = (
-    <div className="inline-flex shrink-0 items-center gap-1.5">
-      <span
-        className="text-xs fg-secondary"
-        aria-hidden="true"
-        data-testid="plugin-detail-provider-toggle-label"
-      >
-        Show:
-      </span>
-      <SegmentedControl<FacetTab>
-        value={activeTab}
-        options={[
-          {
-            value: 'claude',
-            label: 'Claude',
-            tooltip: "Show this plugin's Claude details",
-            unavailable: !hasClaudeSlot,
-            dataTestId: 'plugin-detail-toggle-claude',
-          },
-          {
-            value: 'codex',
-            label: 'Codex',
-            tooltip: codexToggleTooltip(
-              codexSlotIsCompat,
-              compatCapable && codexCompatDisabled,
-            ),
-            unavailable:
-              !hasCodexSlot || (compatCapable && codexCompatDisabled),
-            dataTestId: 'plugin-detail-toggle-codex',
-          },
-        ]}
-        onChange={setActiveTab}
-        label="Show plugin details for Claude or Codex"
-        width="content"
-        dataTestId="plugin-detail-provider-toggle"
-      />
-    </div>
-  );
 
   const chrome = (
     <div
@@ -737,8 +861,8 @@ export function PluginDetailContent({
           name={viewingComponent.name}
           componentType={viewingComponent.componentType}
           componentFile={viewingComponent.file}
-          activeFacet={activeSlot}
-          readKey={contentRootsKey}
+          activeFacet={viewingComponent.slot ?? activeSlot}
+          readKey={`${contentRootsKey}|${viewingComponent.slot?.kind ?? ''}`}
           onReadComponent={onReadComponent}
         />
       </div>
@@ -760,14 +884,17 @@ export function PluginDetailContent({
               fit="contain"
             />
           )}
-          <div className="min-w-0 flex-1">
+          <div className="flex flex-col min-w-0 flex-1 gap-1">
             <Title
               id="plugin-detail-title"
               className="break-words text-lg font-semibold fg-primary"
             >
-              {displayName}
+              <span className="inline-flex flex-wrap items-baseline gap-x-2">
+                {displayName}
+                <DetailEntityType />
+              </span>
             </Title>
-            <div className="mt-1 flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {displayVersion && (
                 <span className="text-xs fg-secondary">v{displayVersion}</span>
               )}
@@ -784,22 +911,19 @@ export function PluginDetailContent({
               )}
               {isCompat && (
                 <Tooltip label={CODEX_COMPATIBILITY_BADGE_TOOLTIP}>
-                  <span
-                    className="rounded bg-warning-subtle px-1.5 py-0.5 text-3xs font-medium fg-warning"
+                  <Badge
+                    tone="warning"
                     data-testid="plugin-detail-codex-compat-badge"
                   >
                     Codex compatibility
-                  </span>
+                  </Badge>
                 </Tooltip>
               )}
               {compatCapable && codexCompatDisabled && (
                 <Tooltip label={CODEX_COMPATIBILITY_DISABLED_TOOLTIP}>
-                  <span
-                    className="rounded bg-muted px-1.5 py-0.5 text-3xs font-medium fg-secondary"
-                    data-testid="plugin-detail-codex-compat-disabled-badge"
-                  >
+                  <Badge data-testid="plugin-detail-codex-compat-disabled-badge">
                     Codex disabled
-                  </span>
+                  </Badge>
                 </Tooltip>
               )}
             </div>
@@ -812,12 +936,20 @@ export function PluginDetailContent({
         )}
         {/* Links sit apart from the metadata line, where "Website" read as
             part of the author ("by Microsoft Website"). */}
-        {displayHomepage && (
-          <div
-            data-testid="plugin-detail-links"
-            className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1"
-          >
-            <ExternalTextLink href={displayHomepage} label="Website" />
+        {statusContent && <div className="mt-4">{statusContent}</div>}
+        {(displayHomepage || metadataFacts) && (
+          <div className="-mb-1">
+            <DetailFactList placement={statusContent ? 'mt-1' : 'mt-4'}>
+              {displayHomepage && (
+                <DetailFact label="Website" testId="plugin-detail-links">
+                  <ExternalTextLink
+                    href={displayHomepage}
+                    label={websiteHost(displayHomepage)}
+                  />
+                </DetailFact>
+              )}
+              {metadataFacts}
+            </DetailFactList>
           </div>
         )}
         {mcpTargetError && (
@@ -834,26 +966,16 @@ export function PluginDetailContent({
 
       {/* Host slots render bare, so an empty slot leaves no wrapper. */}
       {updateNotice}
-      {statusContent}
-      {harnessRows && <PluginHarnessConnections rows={harnessRows} />}
+      {harnessRows && <PluginWorksWith rows={harnessRows} />}
 
       {/* Host-owned install/action area (desktop install panels; empty on web) */}
       {installActions && (
-        <div className="flex flex-col gap-6">{installActions}</div>
+        <div className="flex flex-col gap-6 empty:hidden">{installActions}</div>
       )}
 
-      {showToggle && (
-        <div
-          className="flex min-w-0 items-center"
-          data-testid="plugin-detail-provider-toggle-row"
-        >
-          {providerToggle}
-        </div>
-      )}
-
-      {showMcpServers && displayDetails && (
+      {showMcpServers && (
         <McpServersSection
-          servers={displayDetails.mcpServers}
+          servers={listedMcpServers}
           bundledServerRows={bundledServerRows}
           onOpenEntryId={onOpenEntryId}
           renderStatus={renderMcpServerStatus}
@@ -880,107 +1002,126 @@ export function PluginDetailContent({
         <div className="flex flex-col gap-6">
           {hasNonMcpComponents ? (
             <>
-              {displayDetails.skills.length > 0 && (
+              {listedSkills.length > 0 && (
                 <ComponentSection title="Skills">
                   <NameDescriptionTable
                     caption="Skills"
-                    items={displayDetails.skills.map((s) => ({
+                    commandHint={commandHint}
+                    items={listedSkills.map(({ item: s, harnesses, slot }) => ({
                       key: s.path,
                       name: s.name,
+                      command: s.userInvocable === false ? undefined : s.name,
                       description: s.description,
+                      harnesses,
                       onOpen: () =>
                         setViewingComponent({
                           name: s.name,
                           componentType: 'skill',
                           file: `${s.path}/SKILL.md`,
+                          slot,
                         }),
                     }))}
                   />
                 </ComponentSection>
               )}
 
-              {displayDetails.agents.length > 0 && (
+              {listedAgents.length > 0 && (
                 <ComponentSection title="Agents">
                   <NameDescriptionTable
                     caption="Agents"
-                    items={displayDetails.agents.map((a, i) => ({
-                      key: a.filePath || String(i),
-                      name: a.name,
-                      description: a.description,
-                      onOpen: a.filePath
-                        ? () =>
-                            setViewingComponent({
-                              name: a.name,
-                              componentType: 'agent',
-                              file: a.filePath,
-                            })
-                        : undefined,
-                    }))}
+                    items={listedAgents.map(
+                      ({ item: a, harnesses, slot }, i) => ({
+                        key: a.filePath || String(i),
+                        name: a.name,
+                        description: a.description,
+                        harnesses,
+                        onOpen: a.filePath
+                          ? () =>
+                              setViewingComponent({
+                                name: a.name,
+                                componentType: 'agent',
+                                file: a.filePath,
+                                slot,
+                              })
+                          : undefined,
+                      }),
+                    )}
                   />
                 </ComponentSection>
               )}
 
-              {displayDetails.commands.length > 0 && (
+              {listedCommands.length > 0 && (
                 <ComponentSection title="Commands">
                   <NameDescriptionTable
                     caption="Commands"
-                    items={displayDetails.commands.map((c, i) => ({
-                      key: c.filePath || String(i),
-                      name: c.name,
-                      description: c.description,
-                      onOpen: c.filePath
-                        ? () =>
-                            setViewingComponent({
-                              name: c.name,
-                              componentType: 'command',
-                              file: c.filePath,
-                            })
-                        : undefined,
-                    }))}
+                    commandHint={commandHint}
+                    items={listedCommands.map(
+                      ({ item: c, harnesses, slot }, i) => ({
+                        key: c.filePath || String(i),
+                        name: c.name,
+                        command: c.name,
+                        description: c.description,
+                        harnesses,
+                        onOpen: c.filePath
+                          ? () =>
+                              setViewingComponent({
+                                name: c.name,
+                                componentType: 'command',
+                                file: c.filePath,
+                                slot,
+                              })
+                          : undefined,
+                      }),
+                    )}
                   />
                 </ComponentSection>
               )}
 
-              {(displayDetails.apps?.length ?? 0) > 0 && (
+              {listedApps.length > 0 && (
                 <ComponentSection title="Apps">
                   <NameDescriptionTable
                     caption="Apps"
-                    items={(displayDetails.apps ?? []).map((a, i) => ({
-                      key: a.filePath || String(i),
-                      name: a.name,
-                      description: a.description,
-                      onOpen: a.filePath
-                        ? () =>
-                            setViewingComponent({
-                              name: a.name,
-                              componentType: 'app',
-                              file: a.filePath,
-                            })
-                        : undefined,
-                    }))}
+                    items={listedApps.map(
+                      ({ item: a, harnesses, slot }, i) => ({
+                        key: a.filePath || String(i),
+                        name: a.name,
+                        description: a.description,
+                        harnesses,
+                        onOpen: a.filePath
+                          ? () =>
+                              setViewingComponent({
+                                name: a.name,
+                                componentType: 'app',
+                                file: a.filePath,
+                                slot,
+                              })
+                          : undefined,
+                      }),
+                    )}
                   />
                 </ComponentSection>
               )}
 
-              {displayDetails.hooks.length > 0 && (
+              {listedHooks.length > 0 && (
                 <ComponentSection title="Hooks">
                   <DataTable
                     caption="Hooks"
-                    rows={displayDetails.hooks
+                    rows={listedHooks
                       .slice()
-                      .sort((a, b) => a.event.localeCompare(b.event))}
-                    rowKey={(h, i) => `${h.event}-${i}`}
+                      .sort((a, b) => a.item.event.localeCompare(b.item.event))}
+                    rowKey={({ item: h }, i) => `${h.event}-${i}`}
                     columns={[
                       {
                         key: 'event',
                         header: 'Event',
-                        render: (h) => h.event,
+                        render: ({ item: h }) => h.event,
                       },
+                      ...harnessColumn(listedHooks),
                       {
                         key: 'matcher',
                         header: 'Matcher',
                         overflow: 'wrap',
-                        render: (h) => (
+                        render: ({ item: h }) => (
                           <span className="font-mono text-xs">
                             {h.matcher || '—'}
                           </span>
@@ -989,33 +1130,69 @@ export function PluginDetailContent({
                       {
                         key: 'type',
                         header: 'Type',
-                        render: (h) => h.hookType,
+                        render: ({ item: h }) => h.hookType,
                       },
                     ]}
                   />
                 </ComponentSection>
               )}
 
-              {displayDetails.lspServers.length > 0 && (
+              {listedMods.length > 0 && (
+                <ComponentSection title="Mods">
+                  <PluginModNotice />
+                  {modsControl}
+                  <DataTable
+                    caption="Mods"
+                    testId="plugin-detail-mods"
+                    rows={pluginModRows(listedMods.map(({ item }) => item))}
+                    rowKey={(mod) => mod.key}
+                    columns={[
+                      {
+                        key: 'module',
+                        header: 'Module',
+                        overflow: 'wrap',
+                        render: (mod) => (
+                          <span className="font-mono text-xs">
+                            {mod.module}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'hooksFile',
+                        header: 'Hooks file',
+                        overflow: 'wrap',
+                        render: (mod) => (
+                          <span className="font-mono text-xs">
+                            {mod.hooksFile}
+                          </span>
+                        ),
+                      },
+                    ]}
+                  />
+                </ComponentSection>
+              )}
+
+              {listedLspServers.length > 0 && (
                 <ComponentSection title="LSP servers" collapsible>
                   <DataTable
                     caption="LSP servers"
-                    rows={displayDetails.lspServers
+                    rows={listedLspServers
                       .slice()
-                      .sort((a, b) => a.name.localeCompare(b.name))}
-                    rowKey={(server) => server.name}
+                      .sort((a, b) => a.item.name.localeCompare(b.item.name))}
+                    rowKey={({ item: server }) => lspDefinitionKey(server)}
                     columns={[
                       {
                         key: 'name',
                         header: 'Name',
-                        render: (server) => server.name,
+                        render: ({ item: server }) => server.name,
                       },
+                      ...harnessColumn(listedLspServers),
                       {
                         key: 'command',
                         header: 'Command',
                         overflow: 'wrap',
                         replay: 'block',
-                        render: (server) => (
+                        render: ({ item: server }) => (
                           <span className="font-mono text-xs">
                             {server.command}
                             {server.args?.length
@@ -1028,7 +1205,8 @@ export function PluginDetailContent({
                         key: 'languages',
                         header: 'Languages',
                         overflow: 'wrap',
-                        render: (server) => server.languages?.join(', ') || '—',
+                        render: ({ item: server }) =>
+                          server.languages?.join(', ') || '—',
                       },
                     ]}
                   />
@@ -1037,9 +1215,7 @@ export function PluginDetailContent({
             </>
           ) : !displayDetails.hasReadme ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <p className="text-s fg-secondary">
-                No components found for this provider.
-              </p>
+              <p className="text-s fg-secondary">No components found.</p>
             </div>
           ) : null}
         </div>
@@ -1053,19 +1229,62 @@ export function PluginDetailContent({
 interface NameDescriptionItem {
   readonly key: string;
   readonly name: string;
+  /** Its name when people can run it by typing; absent when they can't. */
+  readonly command?: string;
   readonly description?: string;
+  /** Harnesses that get this item; empty when the host has no version data. */
+  readonly harnesses?: readonly string[];
   /** Opens the component's file; without it the name is plain text. */
   readonly onOpen?: () => void;
+}
+
+const HARNESS_COLUMN_WIDTH = '7rem';
+
+/** A Harness column, left out when the rows have no version data to show. */
+function harnessColumn<Row extends { harnesses?: readonly string[] }>(
+  rows: readonly Row[],
+): DataTableColumn<Row>[] {
+  return rows.some((row) => row.harnesses?.length)
+    ? [
+        {
+          key: 'harness',
+          header: 'Harness',
+          width: HARNESS_COLUMN_WIDTH,
+          render: (row: Row): JSX.Element => (
+            <HarnessLogoList harnesses={row.harnesses ?? []} />
+          ),
+        },
+      ]
+    : [];
+}
+
+/**
+ * Every row shares the plugin's prefix, so the hint carries it once. Only
+ * Claude and Codex have a typed prefix, `/` and `$`, and only a harness that
+ * can run this plugin is named (`pluginMemberInvocation`).
+ */
+function commandColumnHint(
+  prefix: string | undefined,
+  harnesses: { claude: boolean; codex: boolean },
+): string | undefined {
+  const form = prefix ? `${prefix}:<command>` : '<command>';
+  const claude = harnesses.claude ? `/${form} in Claude` : undefined;
+  const codex = harnesses.codex ? `$${form} in Codex` : undefined;
+  if (!claude && !codex) return undefined;
+  return `Run it in chat as ${[claude, codex].filter(Boolean).join(' or ')}`;
 }
 
 /** A plugin's skills, agents, commands or apps: name and description, A to Z. */
 function NameDescriptionTable({
   caption,
+  commandHint,
   items,
 }: {
   caption: string;
+  commandHint?: string;
   items: readonly NameDescriptionItem[];
 }): JSX.Element {
+  const hasCommands = items.some((item) => item.command);
   return (
     <DataTable
       caption={caption}
@@ -1076,16 +1295,28 @@ function NameDescriptionTable({
       columns={[
         {
           key: 'name',
-          header: 'Name',
+          header: hasCommands ? 'Command' : 'Name',
+          headerHint: hasCommands ? commandHint : undefined,
           width: '33%',
           overflow: 'wrap',
           render: (item) =>
             item.onOpen ? (
-              <ClickableName name={item.name} onClick={item.onOpen} />
+              <ClickableName
+                name={item.command ?? item.name}
+                mono={item.command !== undefined}
+                onClick={item.onOpen}
+              />
             ) : (
-              <span className="font-medium">{item.name}</span>
+              <span
+                className={
+                  item.command ? 'font-mono text-xs font-medium' : 'font-medium'
+                }
+              >
+                {item.command ?? item.name}
+              </span>
             ),
         },
+        ...harnessColumn(items),
         {
           key: 'description',
           header: 'Description',
@@ -1102,21 +1333,17 @@ function NameDescriptionTable({
   );
 }
 
-function countComponents(details: PluginDetails): number {
-  return (
-    details.skills.length +
-    details.agents.length +
-    details.commands.length +
-    (details.apps?.length ?? 0) +
-    details.hooks.length +
-    details.mcpServers.length +
-    details.lspServers.length
-  );
+function websiteHost(href: string): string {
+  try {
+    return new URL(href).hostname.replace(/^www\./, '');
+  } catch {
+    return 'Website';
+  }
 }
 
 /**
- * The plugin's MCP servers, always visible: name with its type and endpoint,
- * and the host's health and Test connection per row (CAN-4842).
+ * The plugin's MCP servers, always visible: name and endpoint, and the host's
+ * health and Test connection per row (CAN-4842).
  */
 function McpServersSection({
   servers,
@@ -1125,18 +1352,27 @@ function McpServersSection({
   renderStatus,
   rowRefs,
 }: {
-  servers: readonly PluginMcpServerInfo[];
+  servers: readonly ListedComponent<PluginMcpServerInfo>[];
   bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
   onOpenEntryId?: (entryId: string) => void;
   renderStatus?: (server: PluginMcpServerInfo) => ReactNode | undefined;
   rowRefs: RefObject<Map<string, HTMLTableRowElement>>;
 }): JSX.Element {
+  const showHarness = servers.some((server) => server.harnesses.length > 0);
   return (
     <ComponentSection title="MCP servers">
       <DataTableFrame caption="MCP servers" layout="fixed">
         <DataTableHead>
-          <DataTableHeaderCell width="33%">Name</DataTableHeaderCell>
-          <DataTableHeaderCell>Status</DataTableHeaderCell>
+          <DataTableHeaderCell width="22%">Name</DataTableHeaderCell>
+          {showHarness && (
+            <DataTableHeaderCell width={HARNESS_COLUMN_WIDTH}>
+              Harness
+            </DataTableHeaderCell>
+          )}
+          <DataTableHeaderCell>Endpoint</DataTableHeaderCell>
+          <DataTableHeaderCell width="22%" align="right">
+            Status
+          </DataTableHeaderCell>
           {/* The status cell spans this column: its controls (Test
               connection) sit at the row's end under an Actions header. */}
           <DataTableHeaderCell width="0" labelHidden>
@@ -1146,8 +1382,8 @@ function McpServersSection({
         <DataTableBody>
           {servers
             .slice()
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((s) => {
+            .sort((a, b) => a.item.name.localeCompare(b.item.name))
+            .map(({ item: s, harnesses, slotKinds }) => {
               const row = onOpenEntryId
                 ? bundledServerRows?.find(
                     (candidate) =>
@@ -1158,13 +1394,18 @@ function McpServersSection({
               const status = renderStatus?.(s);
               return (
                 <DataTableRow
-                  key={s.name}
+                  key={mcpDefinitionKey(s)}
                   focusable
                   verticalAlign="top"
                   data-mcp-member={s.name}
                   ref={(node): void => {
-                    if (node) rowRefs.current.set(s.name, node);
-                    else rowRefs.current.delete(s.name);
+                    for (const key of [
+                      s.name,
+                      ...slotKinds.map((kind) => mcpRowKey(kind, s.name)),
+                    ]) {
+                      if (node) rowRefs.current.set(key, node);
+                      else rowRefs.current.delete(key);
+                    }
                   }}
                 >
                   <DataTableCell tone="primary" overflow="wrap">
@@ -1183,28 +1424,34 @@ function McpServersSection({
                         s.name
                       )}
                     </div>
-                    <div className="mt-1 flex min-w-0 items-center gap-2 fg-secondary">
-                      <span className="shrink-0 text-3xs bg-secondary px-1.5 py-0.5 rounded font-medium">
-                        {s.type}
-                      </span>
-                      <span
-                        className={`${s.type === 'http' ? '' : REPLAY_BLOCK_CLASS} min-w-0 break-all font-mono text-xs`}
-                      >
-                        {s.type === 'http'
-                          ? s.url
-                          : `${s.command ?? ''}${s.args?.length ? ` ${s.args.join(' ')}` : ''}`}
-                      </span>
-                    </div>
                   </DataTableCell>
-                  <DataTableCell overflow="wrap" colSpan={2}>
-                    {status ?? (
-                      <span
-                        data-testid="plugin-detail-mcp-status-unavailable"
-                        className="text-xs fg-tertiary"
-                      >
-                        {PLUGIN_DETAIL_MCP_NOT_CONFIGURED}
-                      </span>
-                    )}
+                  {showHarness && (
+                    <DataTableCell>
+                      <HarnessLogoList harnesses={harnesses} />
+                    </DataTableCell>
+                  )}
+                  <DataTableCell overflow="wrap">
+                    <span
+                      className={`${s.type === 'http' ? '' : REPLAY_BLOCK_CLASS} min-w-0 break-all font-mono text-xs`}
+                    >
+                      {/* The Portal drops a URL it can't parse. */}
+                      {(s.type === 'http'
+                        ? s.url
+                        : `${s.command ?? ''}${s.args?.length ? ` ${s.args.join(' ')}` : ''}`) ||
+                        '—'}
+                    </span>
+                  </DataTableCell>
+                  <DataTableCell overflow="wrap" colSpan={2} align="right">
+                    <div className="flex justify-end">
+                      {status ?? (
+                        <span
+                          data-testid="plugin-detail-mcp-status-unavailable"
+                          className="text-xs fg-tertiary"
+                        >
+                          {PLUGIN_DETAIL_MCP_NOT_CONFIGURED}
+                        </span>
+                      )}
+                    </div>
                   </DataTableCell>
                 </DataTableRow>
               );
@@ -1213,12 +1460,4 @@ function McpServersSection({
       </DataTableFrame>
     </ComponentSection>
   );
-}
-
-/** What the Codex segment shows, or why it cannot be picked. */
-function codexToggleTooltip(isCompat: boolean, compatOff: boolean): string {
-  if (compatOff) return CODEX_COMPATIBILITY_DISABLED_TOOLTIP;
-  return isCompat
-    ? CODEX_COMPATIBILITY_TOOLTIP
-    : "Show this plugin's Codex details";
 }

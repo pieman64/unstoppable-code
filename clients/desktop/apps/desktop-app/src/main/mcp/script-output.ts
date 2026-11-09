@@ -6,9 +6,23 @@ import {
   createScriptKey,
   parseScriptKey,
 } from '@canopy/desktop-shared/scripts';
-import { readScriptRun } from '../lib/script-execution';
+import {
+  WORKER_SCRIPT_GRANTS,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
+import { activeAgentCoreOperations } from '../canopy-tools/active-agent-core-operations';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { readWorkspaceConfig } from '../lib/workspace-persistence';
 import { getWorkspaceType, isCoworkWorkspace } from '../lib/workspace-registry';
+
+/** GetScriptOutput reads runs as its own principal, with only the read grant (CAN-5825). */
+const AGENT_SCRIPT_OUTPUT_CALLER: CanopyCallerDescriptor = {
+  principalId: 'desktop-agent-script-output',
+  clientInstanceId: 'desktop-main',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'mcp',
+  grants: [WORKER_SCRIPT_GRANTS.read],
+};
 
 const DEFAULT_MAX_LINES = 1000;
 const MAX_ALLOWED_LINES = 2000;
@@ -78,12 +92,15 @@ export async function loadScriptOutputSnapshot(args: {
       MAX_ALLOWED_LINES,
     ) || DEFAULT_MAX_LINES,
   );
-  const { run } = await readScriptRun({
-    projectId: args.projectId,
-    worktreeId: args.worktreeId,
-    scriptKey,
-    tailLines: maxLines,
-  });
+  const { run } = await activeAgentCoreOperations('scriptOutput').query(
+    'worker.script.execution.get',
+    {
+      scope: { workspaceId: args.projectId, worktreeId: args.worktreeId },
+      scriptKey,
+      tailLines: maxLines,
+    },
+    { caller: AGENT_SCRIPT_OUTPUT_CALLER },
+  );
 
   if (!run) {
     return {

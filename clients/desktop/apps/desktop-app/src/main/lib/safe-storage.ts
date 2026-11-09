@@ -3,7 +3,7 @@ import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { logMainProcessWarn } from './main-process-logging';
 import { isRecord } from './type-guards';
 import { getLinuxSecretServiceState } from './linux-secret-service';
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import {
   probeLinuxSafeStorageRecovery,
   encryptWithLinuxSafeStorageRecovery,

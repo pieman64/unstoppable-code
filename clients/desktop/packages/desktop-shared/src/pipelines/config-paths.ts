@@ -9,11 +9,11 @@ import * as path from 'node:path';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { getGitExecutableDetectionMode } from '@canopy/protocol/git-executable';
 import { BRAND } from '@canopy/brand/current';
-import { getBrandEnv } from '../brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import { sanitizeEnvVars } from '../lib/mcp-security';
-import { stripAgentSecretValues } from '../lib/agent-secret-values-env';
+import { stripAgentSecretValues } from '@canopy/execution-engine/lib/agent-secret-values-env';
 import { getCanopyDataDir, getCanopyRuntimeMode } from '../canopy-paths';
-import { findExecutableOnPath } from '../node/lib/path-lookup';
+import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import type { ResolveEnvironmentRequest } from '../types/user-environment';
 
 const LOGIN_SHELL_PATH_TTL_MS = 5 * 60_000; // 5 minutes
@@ -33,6 +33,7 @@ export const CANOPY_ENV_ENHANCED_MARKER = 'CANOPY_ENV_ENHANCED';
 
 let cachedLoginShellPath: string | undefined;
 let cachedLoginShellPathAt = 0;
+let claudeModAdmissionEnabled = false;
 
 type UserEnvironmentInjector = (
   context?: ResolveEnvironmentRequest,
@@ -244,6 +245,8 @@ function getTrimmedEnvVar(name: string): string | undefined {
 }
 
 function getBundledResourcesDirOverride(): string | undefined {
+  // The packaged CLI also supplies its extraction cache here; this is not a
+  // test-only data-root override.
   const overridePath = getBrandEnv(process.env, 'BUNDLED_RESOURCES_DIR');
   if (!overridePath || !path.isAbsolute(overridePath)) {
     return undefined;
@@ -639,7 +642,13 @@ function findDevResourcesDir(startPath: string): string | undefined {
 }
 
 function getDevResourcesDir(): string {
+  // Source runs are now dev under Jest; preserve its committed-resource preference.
+  const workspaceResourcesDir =
+    process.env.JEST_WORKER_ID !== undefined
+      ? findWorkspaceResourcesDirFallback(process.cwd())
+      : undefined;
   return (
+    workspaceResourcesDir ??
     findDevResourcesDir(process.cwd()) ??
     path.resolve(process.cwd(), 'packages', 'desktop-shared', 'resources')
   );
@@ -666,12 +675,10 @@ function hasBundledResources(candidateDir: string): boolean {
  * Walks up from `startPath` looking only for the committed workspace
  * resources directory (`packages/desktop-shared/resources`), deliberately
  * skipping the per-brand `.cache/brand/<id>/resources` mirror that
- * {@link findDevResourcesDir} prefers. Used solely as a Jest-only last-resort
- * fallback: Jest sets `NODE_ENV=test`, which `getCanopyRuntimeMode()` treats
- * as prod, so unmocked bundled-resource lookups in tests would otherwise
- * resolve relative to the Node executable. It must resolve to the same
- * directory regardless of whether `brand:prepare` has already mirrored
- * resources into `.cache/brand/<id>/resources`.
+ * {@link findDevResourcesDir} prefers. Used for source runs under Jest and as
+ * a Jest-only last-resort fallback for non-dev runtimes, whose resource
+ * lookups would otherwise resolve relative to the Node executable. This keeps
+ * tests independent of whether `brand:prepare` has generated a brand mirror.
  */
 function findWorkspaceResourcesDirFallback(
   startPath: string,
@@ -698,13 +705,14 @@ function findWorkspaceResourcesDirFallback(
 }
 
 function getBundledResourcesDir(): string {
-  if (isDevRuntime()) {
-    return getDevResourcesDir();
-  }
-
+  // Source runs are dev even under NODE_ENV=test; keep explicit fixture roots.
   const overridePath = getBundledResourcesDirOverride();
   if (overridePath) {
     return overridePath;
+  }
+
+  if (isDevRuntime()) {
+    return getDevResourcesDir();
   }
 
   if (typeof process.resourcesPath === 'string') {
@@ -721,10 +729,9 @@ function getBundledResourcesDir(): string {
     return parentDir;
   }
 
-  // Jest-only last resort: under Jest, NODE_ENV=test falls through to prod
-  // mode, so without this gate an unmocked resource lookup would resolve a
-  // nonsensical path relative to the Node executable. The gate is deliberately
-  // narrow — a real SEA CLI run manually from a repo checkout must NOT
+  // Jest-only last resort for non-dev runtimes: avoid resolving relative to
+  // the Node executable. The gate is deliberately narrow — a real SEA CLI
+  // run manually from a repo checkout must NOT
   // silently pick up the source tree and mask a broken staging step.
   if (process.env.JEST_WORKER_ID !== undefined) {
     const workspaceResourcesDir = findWorkspaceResourcesDirFallback(
@@ -922,12 +929,94 @@ export interface GetEnhancedEnvOptions {
  * `process.env`, which the app's renderers still inherit.
  */
 const HOST_CRASH_REPORTER_PIPE_ENV = 'CHROME_CRASHPAD_PIPE_NAME';
+const CLAUDE_CODE_PLUGIN_DIRS_ENV = 'CLAUDE_CODE_PLUGIN_DIRS';
+
+/** Apply the desktop Claude Mod feature-flag state to future environment copies. */
+export function setClaudeModAdmissionEnabled(enabled: boolean): void {
+  claudeModAdmissionEnabled = enabled;
+}
 
 function stripHostCrashReporterPipe(
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
   delete env[HOST_CRASH_REPORTER_PIPE_ENV];
   return env;
+}
+
+function stripInheritedClaudePluginDirs(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  if (!claudeModAdmissionEnabled) return env;
+  const copy = { ...env };
+  delete copy[CLAUDE_CODE_PLUGIN_DIRS_ENV];
+  return copy;
+}
+
+/**
+ * Where the desktop main entry records the environment main started with,
+ * before the bundle and its dependencies load
+ * (`scripts/lib/desktop-main-entry.mjs`). Other processes record nothing.
+ */
+const STARTUP_ENVIRONMENT_SLOT = Symbol.for('canopy.startupEnvironment');
+
+/**
+ * Variables a library sets on this process's `process.env` when it loads.
+ * The Claude Agent SDK sets `NoDefaultCurrentDirectoryInExePath=1`. This
+ * process keeps it, because Node resolves the programs it spawns by this
+ * process's value. A child's cmd.exe reads its own copy, though, and would
+ * stop running programs from its current directory by bare name, which a
+ * standalone terminal allows and builds rely on: node-pty's winpty build runs
+ * `cd shared && GetCommitHash.bat`. A child gets the startup value instead.
+ */
+const LIBRARY_INJECTED_ENV_NAMES = ['NoDefaultCurrentDirectoryInExePath'];
+
+function readStartupEnvironment(): Record<string, string> | undefined {
+  const recorded: unknown = Reflect.get(globalThis, STARTUP_ENVIRONMENT_SLOT);
+  if (typeof recorded !== 'object' || recorded === null) return undefined;
+  const environment: Record<string, string> = {};
+  for (const [key, value] of Object.entries(recorded)) {
+    if (typeof value === 'string') environment[key] = value;
+  }
+  return environment;
+}
+
+function envKeysNamed(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string,
+): string[] {
+  if (process.platform !== 'win32') {
+    return Object.prototype.hasOwnProperty.call(env, name) ? [name] : [];
+  }
+  const lowerName = name.toLowerCase();
+  return Object.keys(env).filter((key) => key.toLowerCase() === lowerName);
+}
+
+/**
+ * Gives `env` the startup value of each library-injected variable, except
+ * one `configured` sets explicitly for spawns. Without a recorded startup
+ * environment `env` keeps its values.
+ */
+function restoreLibraryInjectedEnvironment(
+  env: Record<string, string | undefined>,
+  configured: Readonly<Record<string, string>> = {},
+): Record<string, string | undefined> {
+  const startup = readStartupEnvironment();
+  if (!startup) return env;
+  for (const name of LIBRARY_INJECTED_ENV_NAMES) {
+    if (envKeysNamed(configured, name).length > 0) continue;
+    for (const key of envKeysNamed(env, name)) delete env[key];
+    for (const key of envKeysNamed(startup, name)) env[key] = startup[key];
+  }
+  return env;
+}
+
+/**
+ * A relaunched or updated app inherits this process's environment and would
+ * record a library-injected value as the user's own. Call this immediately
+ * before handing off to the next instance.
+ */
+export function restoreStartupEnvironmentForRelaunch(): void {
+  restoreLibraryInjectedEnvironment(process.env);
 }
 
 export function getEnhancedEnv(
@@ -950,8 +1039,15 @@ export function getEnhancedEnv(
   // and pass through. If this process registered injectors, it is an
   // environment source even when it inherited the marker from its own parent.
   if (process.env[CANOPY_ENV_ENHANCED_MARKER] === '1' && !hasLocalInjectors) {
-    return stripHostCrashReporterPipe(
-      stripAgentSecretValues({ ...process.env, PATH: pathValue }),
+    return stripInheritedClaudePluginDirs(
+      stripHostCrashReporterPipe(
+        stripAgentSecretValues(
+          restoreLibraryInjectedEnvironment({
+            ...process.env,
+            PATH: pathValue,
+          }),
+        ),
+      ),
     );
   }
 
@@ -965,14 +1061,21 @@ export function getEnhancedEnv(
   // A builtin agent action's aggregate of configured values is for that
   // action only; nothing it spawns needs it. Stripped from the object this
   // function already builds, so a spawn still copies the environment once.
-  return stripHostCrashReporterPipe(
-    stripAgentSecretValues({
-      ...process.env,
-      ...userEnvironment,
-      ...secrets,
-      [CANOPY_ENV_ENHANCED_MARKER]: '1',
-      PATH: pathValue,
-    }),
+  return stripInheritedClaudePluginDirs(
+    stripHostCrashReporterPipe(
+      stripAgentSecretValues(
+        restoreLibraryInjectedEnvironment(
+          {
+            ...process.env,
+            ...userEnvironment,
+            ...secrets,
+            [CANOPY_ENV_ENHANCED_MARKER]: '1',
+            PATH: pathValue,
+          },
+          userEnvironment,
+        ),
+      ),
+    ),
   );
 }
 

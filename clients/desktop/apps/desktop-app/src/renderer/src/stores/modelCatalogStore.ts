@@ -34,8 +34,8 @@ import {
 import {
   initOrgGatewayModelAliases,
   type OrgGatewayModelAliases,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import { getSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 import { findOrganizationName } from '@/lib/organizationName';
 import { replaceModelFamilyMetadata } from '@canopy/desktop-shared/model-config';

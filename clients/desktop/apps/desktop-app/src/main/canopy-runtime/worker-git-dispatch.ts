@@ -190,6 +190,7 @@ export async function listHomeBranchTargets(
       {
         scope: { workspaceId: request.workspaceId },
         repository: { kind: 'reference' },
+        includeHeadState: true,
       },
       routing,
     );
@@ -197,6 +198,9 @@ export async function listHomeBranchTargets(
       supported: true,
       branches: result.branches,
       defaultBranch: result.defaultBranch,
+      ...(result.headUnborn === undefined
+        ? {}
+        : { headUnborn: result.headUnborn }),
     };
   } catch (error) {
     if (

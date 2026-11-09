@@ -6,6 +6,7 @@ import {
   type JSX,
 } from 'react';
 import {
+  Stack,
   Chip,
   HeaderActionButton,
   Heading,
@@ -172,7 +173,7 @@ function DemoBody({
     return <p className="text-xs fg-secondary">No additional details.</p>;
   }
   return (
-    <div className="space-y-3">
+    <Stack gap="item">
       {body.description && (
         <p className="text-xs leading-relaxed fg-secondary">
           {body.description}
@@ -188,7 +189,7 @@ function DemoBody({
         />
       )}
       {body.rows && body.rows.length > 0 && (
-        <ul className="space-y-1.5">
+        <ul className="flex flex-col gap-1.5">
           {body.rows.map((row, index) => {
             const rowTone = row.tone ?? 'neutral';
             return (
@@ -239,7 +240,7 @@ function DemoBody({
           })}
         </ul>
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -383,10 +384,12 @@ export function ActivityStateGalleryPage(): JSX.Element {
           className={
             view === 'chat'
               ? 'flex h-full min-h-0 flex-col gap-3'
-              : 'mx-auto max-w-7xl space-y-8'
+              : 'mx-auto flex max-w-7xl flex-col gap-8'
           }
         >
-          <header className={view === 'chat' ? 'hidden' : 'space-y-2'}>
+          <header
+            className={view === 'chat' ? 'hidden' : 'flex flex-col gap-2'}
+          >
             <Heading level={1} variant="page">
               Activity States
             </Heading>
@@ -443,7 +446,7 @@ export function ActivityStateGalleryPage(): JSX.Element {
                     data-testid={`activity-state-machine-${section.id}`}
                     data-current-state={state.id}
                   >
-                    <div className="space-y-3">
+                    <div className="flex flex-col min-w-0 gap-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <Heading level={2} variant="title">
@@ -503,9 +506,9 @@ export function ActivityStateGalleryPage(): JSX.Element {
               })}
             </div>
           ) : (
-            <div className="space-y-8" data-testid="activity-gallery-catalog">
+            <Stack gap="page" data-testid="activity-gallery-catalog">
               {ACTIVITY_GALLERY_SECTIONS.map((section) => (
-                <section key={section.id} className="space-y-3">
+                <section key={section.id} className="flex flex-col gap-3">
                   <div className="flex items-center gap-2">
                     <span className="inline-flex h-5 w-5 items-center justify-center fg-secondary">
                       <SectionIcon icon={section.icon} />
@@ -526,7 +529,7 @@ export function ActivityStateGalleryPage(): JSX.Element {
                         key={state.id}
                         data-testid={`activity-gallery-catalog-${section.id}-${state.id}`}
                       >
-                        <div className="space-y-2">
+                        <div className="flex flex-col gap-2">
                           <div>
                             <Heading level={3} variant="title">
                               {state.label}
@@ -542,7 +545,7 @@ export function ActivityStateGalleryPage(): JSX.Element {
                   </div>
                 </section>
               ))}
-            </div>
+            </Stack>
           )}
         </div>
       </div>

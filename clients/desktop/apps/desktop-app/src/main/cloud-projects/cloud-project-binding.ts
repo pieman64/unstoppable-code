@@ -110,7 +110,10 @@ export interface BindingWorkspace {
   binding: StoredBinding | undefined;
   /** Null for a workspace identity does not cover (Cowork). */
   local: LocalProject | null;
-  /** `canopy.json` repo ids this device does not clone (`suppressedRepoIds`). */
+  /**
+   * `suppressedRepoIds`: `canopy.json` repo ids, or cloud manifest repository
+   * ids, this device does not clone.
+   */
   suppressedSourceKeys: readonly string[];
 }
 
@@ -195,7 +198,7 @@ function freshCreationKey(creationKey: string, lostProjectId: string): string {
   ].join('-');
 }
 
-function isConflict(failure: CloudProjectBindingFailure): boolean {
+export function isConflict(failure: CloudProjectBindingFailure): boolean {
   return failure.status === 409 && failure.code === 'conflict';
 }
 
@@ -225,7 +228,9 @@ function claimConflict(
   }
 }
 
-function isProjectRedirected(failure: CloudProjectBindingFailure): boolean {
+export function isProjectRedirected(
+  failure: CloudProjectBindingFailure,
+): boolean {
   return failure.status === 409 && failure.code === 'project_redirected';
 }
 
@@ -238,18 +243,18 @@ function isNotRestorable(failure: CloudProjectBindingFailure): boolean {
  * The project is gone. A route outside the identity rollout also answers
  * 404, with no code, and says nothing about the project.
  */
-function isProjectGone(failure: CloudProjectBindingFailure): boolean {
+export function isProjectGone(failure: CloudProjectBindingFailure): boolean {
   return failure.status === 404 && failure.code === 'not_found';
 }
 
 /** Where a redirected project leads: a merged duplicate's survivor, or the organization it moved into. */
-interface ProjectRedirect {
+export interface ProjectRedirect {
   kind: 'merged' | 'moved';
   projectId: string;
 }
 
 /** The redirect of `projectId` once `event` is applied, in feed order. */
-function redirectAfter(
+export function redirectAfter(
   event: CloudProjectLifecycleEvent,
   projectId: string,
   current: ProjectRedirect | null,
@@ -1587,8 +1592,10 @@ export class CloudProjectBindingEngine {
     const selected = manifest.repositories
       .filter((repository) => localKeys.has(repository.fingerprint.remoteKey))
       .map((repository) => repository.repositoryId);
-    // `suppressedRepoIds` name this checkout's own `canopy.json` entries,
-    // which a checkout of another root does not share with the project.
+    // Declined here: an entry of this checkout's own `canopy.json` its
+    // `suppressedRepoIds` name (a checkout of another root does not share
+    // those ids with the project), or the repository id a setup on this
+    // device recorded for a cloud manifest repository (CAN-5192).
     const declined = local.repositories.filter(
       (repository) =>
         !repository.cloned &&
@@ -1599,9 +1606,10 @@ export class CloudProjectBindingEngine {
       .filter(
         (repository) =>
           !localKeys.has(repository.fingerprint.remoteKey) &&
-          declined.some((entry) =>
-            isSameRepository(entry.fingerprint, repository.fingerprint),
-          ),
+          (suppressedSourceKeys.includes(repository.repositoryId) ||
+            declined.some((entry) =>
+              isSameRepository(entry.fingerprint, repository.fingerprint),
+            )),
       )
       .map((repository) => repository.repositoryId);
     const current = await session.cloud.selection(binding.instanceId);

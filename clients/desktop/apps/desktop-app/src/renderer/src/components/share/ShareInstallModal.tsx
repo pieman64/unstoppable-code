@@ -16,13 +16,20 @@ import type {
 import {
   SHARE_ATTRIBUTION_SEPARATOR,
   SHARE_ATTRIBUTION_SHARER_PREFIX,
+  SHARE_INSTALL_TURNING_ON_LABEL,
   shareInstallActionLabel,
   shareInstallDefaultDescription,
   shareInstallEntityNoun,
   shareInstallPlaceholderTitle,
+  shareInstallPluginAlreadyAvailableStatus,
+  shareInstallPluginAlreadyAvailableStatusParts,
+  shareInstallPluginEffectParts,
+  shareInstallPluginInstalledStatus,
+  shareInstallPluginInstalledStatusParts,
   shareInstallSkillEffectParts,
   shareInstallTypeLabel,
   type ShareAttributionPart,
+  type ShareInstallCopyPart,
   type ShareInstallEntity,
 } from '@canopy/ui-app/sharing/share-install-copy';
 import { useResourceContext } from '@canopy/ui-app/capability';
@@ -33,10 +40,7 @@ import {
   type ShareInstallDialogPrimary,
 } from '@canopy/ui-shared/components/ShareInstallDialog';
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
-import {
-  CenteredLoadingSpinner,
-  DelayedLoadingPlaceholder,
-} from '@canopy/ui-shared/components';
+import { LoadingRegion } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
   useNavigationStore,
@@ -63,7 +67,7 @@ import {
 } from './shareLandingErrorCopy';
 import { useCloudConnectGateStore } from '@/stores/cloudConnectGateStore';
 import {
-  skillShareAttribution,
+  scopedShareAttribution,
   skillShareInstallScope,
 } from './shareInstallProvenance';
 import {
@@ -80,7 +84,19 @@ import {
   watchShareChatTarget,
   type ShareChatTarget,
 } from './shareChatTarget';
+import {
+  capturePluginChatTarget,
+  isPluginChatTargetCurrent,
+  notifyTurnOnInChatFailure,
+  offerTurnOnInChat,
+  pluginChatTabTitle,
+  pluginChatTargetTitle,
+  returnToPluginChat,
+  watchPluginChatTarget,
+} from './pluginChatTarget';
+import { renderTurnOnInChatLabel } from './TurnOnInChatLabel';
 import { useChatStore } from '@/stores/chatStore';
+import { worktreeKey } from '@/stores/chat/utils';
 import { SharedContainerLinkLandingModal } from '@/components/shared-containers/SharedContainerLinkLandingModal';
 
 /**
@@ -157,7 +173,43 @@ function snapshotName(
 function installedStatus(
   installed: PublicShareInstalledTarget,
   installStatus: string,
+  marketplaceOrigin: string | null,
 ): JSX.Element | string {
+  // A plugin's status names its marketplace, which can be a personal GitHub
+  // login: render the known lines from parts so replay boxes the origin.
+  if (installed.entity === 'plugin' && marketplaceOrigin !== null) {
+    // Every Install click reports its own status, so an empty one means the
+    // review found the plugin already installed when it opened (CAN-5017).
+    if (installStatus === '') {
+      return renderCopyParts(
+        shareInstallPluginAlreadyAvailableStatusParts(marketplaceOrigin, {
+          installAttempted: false,
+        }),
+      );
+    }
+    if (
+      installStatus === shareInstallPluginInstalledStatus(marketplaceOrigin)
+    ) {
+      return renderCopyParts(
+        shareInstallPluginInstalledStatusParts(marketplaceOrigin),
+      );
+    }
+    const nothingInstalled = { installAttempted: true };
+    if (
+      installStatus ===
+      shareInstallPluginAlreadyAvailableStatus(
+        marketplaceOrigin,
+        nothingInstalled,
+      )
+    ) {
+      return renderCopyParts(
+        shareInstallPluginAlreadyAvailableStatusParts(
+          marketplaceOrigin,
+          nothingInstalled,
+        ),
+      );
+    }
+  }
   if (installStatus !== '') return installStatus;
   if (installed.entity === 'workspace') return 'Added to your projects.';
   if (
@@ -192,9 +244,26 @@ function offersUninstall(installed: PublicShareInstalledTarget): boolean {
   );
 }
 
+/** Install-review copy with each identifying name boxed in replay. */
+function renderCopyParts(parts: readonly ShareInstallCopyPart[]): JSX.Element {
+  return (
+    <>
+      {parts.map((part, index) =>
+        part.kind === 'name' ? (
+          <span key={index} className={POSTHOG_REPLAY_BLOCK_CLASS}>
+            {part.text}
+          </span>
+        ) : (
+          <Fragment key={index}>{part.text}</Fragment>
+        ),
+      )}
+    </>
+  );
+}
+
 /**
- * A skill's attribution parts, in order. The sharer is a person: replay
- * records a box for the name only, keeping `Shared by` around it.
+ * A skill or plugin's attribution parts, in order. The sharer is a person:
+ * replay records a box for the name only, keeping `Shared by` around it.
  */
 function renderShareAttribution(
   parts: readonly ShareAttributionPart[],
@@ -265,23 +334,35 @@ function navigationContextKey(): string {
   ]);
 }
 
-/**
- * The chat this landing opened over, captured once, and whether it is still
- * the one on screen. Once the user moves away the offer is gone for good: it
- * is never retargeted to the chat they moved to.
- */
-function useShareChatTarget(): {
-  target: ShareChatTarget | null;
-  current: boolean;
+interface ShareChatTargets {
+  /** The chat whose composer was on screen; skills are used there. */
+  skill: { target: ShareChatTarget | null; current: boolean };
+  /** The selected worktree's chat, from the chat page or Customize. */
+  plugin: { target: ShareChatTarget | null; current: boolean; title: string };
+  /** The review opened on the chat page, not over Customize. */
+  openedOverChat: boolean;
   isUnchanged: () => boolean;
-} {
+}
+
+/**
+ * The chats this landing opened over, captured once, and whether each still
+ * qualifies. Once the user moves away an offer is gone for good: it is never
+ * retargeted to the chat they moved to. Plugins (CAN-5219) are installed from
+ * Customize, so their chat is the selected worktree's active chat there too.
+ */
+function useShareChatTarget(): ShareChatTargets {
   const [opened] = useState(() => ({
     target: captureShareChatTarget(),
+    pluginTarget: capturePluginChatTarget(),
     navigationKey: navigationContextKey(),
+    overChat: useNavigationStore.getState().activePage === 'main',
   }));
   const unchanged = useRef(true);
   const mounted = useRef(true);
   const [current, setCurrent] = useState(opened.target !== null);
+  const [pluginCurrent, setPluginCurrent] = useState(
+    opened.pluginTarget !== null,
+  );
   useEffect(() => {
     mounted.current = true;
     const invalidate = (): void => {
@@ -295,21 +376,53 @@ function useShareChatTarget(): {
       opened.target === null
         ? (): void => undefined
         : watchShareChatTarget(opened.target, invalidate);
+    const stopPluginTarget =
+      opened.pluginTarget === null
+        ? (): void => undefined
+        : watchPluginChatTarget(opened.pluginTarget, (): void => {
+            setPluginCurrent(false);
+          });
     const stopChat = useChatStore.subscribe(check);
     const stopNavigation = useNavigationStore.subscribe(check);
     check();
+    if (
+      opened.pluginTarget !== null &&
+      !isPluginChatTargetCurrent(opened.pluginTarget)
+    ) {
+      setPluginCurrent(false);
+    }
     return (): void => {
       mounted.current = false;
       stopTarget();
+      stopPluginTarget();
       stopChat();
       stopNavigation();
     };
   }, [opened]);
+  // Live, so a rename or a late summary updates the label while it shows.
+  const pluginTitle = useChatStore((state): string => {
+    const target = opened.pluginTarget;
+    if (target === null) return '';
+    return pluginChatTabTitle(
+      state.worktreeChats[worktreeKey(target)]?.tabs.find(
+        (tab) => tab.id === target.tabId,
+      ),
+    );
+  });
   const isUnchanged = useCallback(
     (): boolean => mounted.current && unchanged.current,
     [],
   );
-  return { target: opened.target, current, isUnchanged };
+  return {
+    skill: { target: opened.target, current },
+    plugin: {
+      target: opened.pluginTarget,
+      current: pluginCurrent,
+      title: pluginTitle,
+    },
+    openedOverChat: opened.overChat,
+    isUnchanged,
+  };
 }
 
 /** Entities whose `intent=try` stages something after the install. */
@@ -492,6 +605,7 @@ export function ShareInstallModal({
   );
 
   const chat = useShareChatTarget();
+  const [turningOn, setTurningOn] = useState(false);
   const { steppedAside, stepAside } = useStepAsideForAccount();
   const handleInstall = useInstallAndLand(link, landing, onClose, chat);
   // CAN-5307: replacing a copy with the user's edits (or with no install-time
@@ -522,12 +636,14 @@ export function ShareInstallModal({
     useNavigationStore.getState().setShareInstallBusy(submitting);
   }, []);
 
-  // The author is a person: replay records a box for the name only. A skill
-  // names who shared it, its owner and audience (CAN-5017).
+  // The author is a person: replay records a box for the name only. Skills
+  // and scoped plugins name who shared them, their owner and audience
+  // (CAN-5017); a public plugin keeps its author.
   const publisher =
-    snapshot?.entity === 'skill' ? (
+    snapshot?.entity === 'skill' ||
+    (snapshot?.entity === 'plugin' && snapshot.sharedBy !== undefined) ? (
       renderShareAttribution(
-        skillShareAttribution(snapshot, personalOrganizationId),
+        scopedShareAttribution(snapshot, personalOrganizationId),
       )
     ) : snapshot?.authorUsername ? (
       <>
@@ -597,24 +713,25 @@ export function ShareInstallModal({
 
   // What installing does, from the same scope facts the install reads. An
   // installed copy, or one whose receipt could not be verified, has nothing
-  // left to add.
+  // left to add. A plugin names the marketplace it installs from; without
+  // one, or for a skill-typed ref that installs no marketplace, there is
+  // nothing to say.
+  const effectParts =
+    state.phase !== 'ready' ||
+    installed !== null ||
+    landing.verificationError !== ''
+      ? null
+      : snapshot?.entity === 'skill'
+        ? shareInstallSkillEffectParts(
+            skillShareInstallScope(snapshot, personalOrganizationId),
+          )
+        : snapshot?.entity === 'plugin' &&
+            snapshot.ref.type !== 'skill' &&
+            snapshot.marketplaceOrigin !== ''
+          ? shareInstallPluginEffectParts(snapshot.marketplaceOrigin)
+          : null;
   const effect =
-    snapshot?.entity === 'skill' &&
-    state.phase === 'ready' &&
-    installed === null &&
-    landing.verificationError === ''
-      ? shareInstallSkillEffectParts(
-          skillShareInstallScope(snapshot, personalOrganizationId),
-        ).map((part, index) =>
-          part.kind === 'name' ? (
-            <span key={index} className={POSTHOG_REPLAY_BLOCK_CLASS}>
-              {part.text}
-            </span>
-          ) : (
-            part.text
-          ),
-        )
-      : undefined;
+    effectParts !== null ? renderCopyParts(effectParts) : undefined;
 
   let primary: ShareInstallDialogPrimary | undefined;
   let blocker: string | undefined;
@@ -682,13 +799,50 @@ export function ShareInstallModal({
         },
       };
     } else if (
+      installed.entity === 'plugin' &&
+      chat.plugin.target !== null &&
+      chat.plugin.current
+    ) {
+      // CAN-5219: from a chat, or from Customize with a chat selected, an
+      // installed plugin is turned on in that chat, which the user returns
+      // to. Manage in the ⋯ menu still opens it.
+      const chatTarget = chat.plugin.target;
+      primary = {
+        label: renderTurnOnInChatLabel(chat.plugin.title),
+        busyLabel: SHARE_INSTALL_TURNING_ON_LABEL,
+        busy: turningOn,
+        testId: 'deep-link-share-turn-on-in-chat',
+        disabled: uninstalling || turningOn,
+        onClick: (): void => {
+          setTurningOn(true);
+          void landing
+            .turnOnInChat(installed, chatTarget)
+            .then(async (outcome): Promise<void> => {
+              if (outcome !== 'enabled') {
+                setTurningOn(false);
+                notifyTurnOnInChatFailure(outcome);
+                return;
+              }
+              // Commit dismissal and its focus-trap cleanup before moving
+              // focus to the chat's composer. A link that arrived meanwhile
+              // keeps the user where its review opened.
+              flushSync(onClose);
+              if (
+                useNavigationStore.getState().pendingShareInstall === undefined
+              ) {
+                await returnToPluginChat(chatTarget);
+              }
+            });
+        },
+      };
+    } else if (
       installed.entity === 'skill' &&
-      chat.target !== null &&
-      chat.current
+      chat.skill.target !== null &&
+      chat.skill.current
     ) {
       // Over a chat, an installed skill is put to use there; Manage in the
       // ⋯ menu still opens it.
-      const chatTarget = chat.target;
+      const chatTarget = chat.skill.target;
       primary = {
         label: shareInstallActionLabel(entity, 'use-in-chat'),
         testId: 'deep-link-share-use-in-chat',
@@ -730,7 +884,13 @@ export function ShareInstallModal({
     if (installed !== null) {
       status = (
         <span data-testid="deep-link-share-installed-status">
-          {installedStatus(installed, installStatus)}
+          {installedStatus(
+            installed,
+            installStatus,
+            snapshot?.entity === 'plugin' && snapshot.marketplaceOrigin !== ''
+              ? snapshot.marketplaceOrigin
+              : null,
+          )}
         </span>
       );
       menu = (
@@ -805,11 +965,10 @@ export function ShareInstallModal({
         loading={
           state.phase === 'loading' ||
           (state.phase === 'ready' && landing.openingInstallReview) ? (
-            <DelayedLoadingPlaceholder
+            <LoadingRegion
+              layout="intrinsic"
               slowNote={`Still loading ${placeholder.toLowerCase()}…`}
-            >
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
+            />
           ) : undefined
         }
         blocker={blocker}
@@ -837,10 +996,15 @@ function useInstallAndLand(
   link: DeepLinkShareOpenEvent,
   landing: PublicShareLanding,
   onClose: () => void,
-  chat: { target: ShareChatTarget | null; isUnchanged: () => boolean },
+  chat: ShareChatTargets,
 ): (outcome: 'installed' | 'updated') => Promise<void> {
-  const { install, insertInChat } = landing;
-  const { target: chatTarget, isUnchanged } = chat;
+  const { install, insertInChat, turnOnInChat } = landing;
+  const {
+    skill: { target: chatTarget },
+    plugin: { target: pluginTarget },
+    openedOverChat,
+    isUnchanged,
+  } = chat;
   return useCallback(
     async (outcome: 'installed' | 'updated'): Promise<void> => {
       // A try link from the web already chose Try: the landing stages it as
@@ -917,6 +1081,38 @@ function useInstallAndLand(
         });
         return;
       }
+      // CAN-5219: a plugin installed with a chat selected is offered there.
+      // From Customize the installed detail still opens, since Try it lives
+      // there; over the chat page the user stays put, as for skills.
+      if (
+        installedTarget.entity === 'plugin' &&
+        !result.partial &&
+        pluginTarget !== null
+      ) {
+        if (
+          useNavigationStore.getState().pendingShareInstall === undefined &&
+          isPluginChatTargetCurrent(pluginTarget)
+        ) {
+          if (!openedOverChat) openInstalledResult(installedTarget);
+          offerTurnOnInChat({
+            message: installRevealNotice('plugin', outcome, result.status),
+            target: pluginTarget,
+            title: pluginChatTargetTitle(pluginTarget),
+            stage: () => turnOnInChat(installedTarget, pluginTarget),
+          });
+          return;
+        }
+        if (openedOverChat) {
+          // The user moved on mid-install: say what happened, don't yank them.
+          announceInstall({
+            target: installedTarget,
+            outcome,
+            status: result.status,
+            partial: result.partial,
+          });
+          return;
+        }
+      }
       openInstallReveal({
         target: result.target,
         outcome,
@@ -924,7 +1120,17 @@ function useInstallAndLand(
         partial: result.partial,
       });
     },
-    [install, insertInChat, link, onClose, chatTarget, isUnchanged],
+    [
+      install,
+      insertInChat,
+      turnOnInChat,
+      link,
+      onClose,
+      chatTarget,
+      pluginTarget,
+      openedOverChat,
+      isUnchanged,
+    ],
   );
 }
 

@@ -101,8 +101,9 @@ its own slice and ignores the rest. The control plane treats slices as opaque.
 ### Personal cloud project identity (CAN-5190)
 
 `routes/cloud-projects.mjs` serves the cloud project identity routes
-(`/api/v1/projects/personal`, `/personal/match`, `/:id/manifest`,
-`/:id/events`, `/:id/instances/claim`, `/instances/:id/complete` and
+(`/api/v1/projects/personal` create and its CAN-5192 device list,
+`/personal/match`, `/:id/manifest`, `/:id/events`, `/:id/instances/claim`,
+`/instances/:id/complete`, `/instances/:id/detach` and
 `/instances/:id/repositories`) for keys whose scenario has a `cloudProjects`
 slice; other keys, and organization claims, fall through to `routes/cloud.mjs`.
 The account also needs `project-identity-v1`, for example through

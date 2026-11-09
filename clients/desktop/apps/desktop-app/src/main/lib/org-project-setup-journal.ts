@@ -7,7 +7,7 @@ import { basename, isAbsolute, join, dirname, normalize } from 'node:path';
 import {
   normalizeWorkspaceOwner,
   normalizeWorkspaceOwnershipTransfer,
-} from '@canopy/desktop-shared/lib/workspace-owner';
+} from '@canopy/execution-engine/lib/workspace-owner';
 import type {
   WorkspaceOwnerBinding,
   WorkspaceOwnershipTransfer,

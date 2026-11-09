@@ -22,14 +22,14 @@ import { buildRtkClaudeHooks } from '@canopy/desktop-shared/node/rtk/claude-hook
 import {
   mapThinkingToReasoningEffort,
   type CodexThreadOptions,
-} from '@canopy/desktop-shared/lib/codex-model-config';
+} from '@canopy/execution-engine/lib/codex-model-config';
 import { getBundledRtkBinaryPath } from '@canopy/desktop-shared/pipelines/config-paths';
 import {
   claudeNativeMemoryOptions,
   localMemoryEnabledFromEnv,
-} from '@canopy/desktop-shared/node/lib/native-memory';
-import { brandEnvName, getBrandEnv } from '@canopy/desktop-shared/brand/env';
-import { withoutAgentSecretValues } from '@canopy/desktop-shared/lib/agent-secret-values-env';
+} from '@canopy/execution-engine/node/lib/native-memory';
+import { brandEnvName, getBrandEnv } from '@canopy/execution-engine/brand/env';
+import { withoutAgentSecretValues } from '@canopy/execution-engine/lib/agent-secret-values-env';
 import {
   describeJsonParseFailure,
   normalizeSingleLine,
@@ -37,20 +37,26 @@ import {
   redactValues,
   redactValuesUnfiltered,
   withJsonEscapedVariants,
-} from '@canopy/desktop-shared/lib/redaction';
+} from '@canopy/execution-engine/lib/redaction';
 import {
   buildCodexPlanModeDeveloperInstructions,
   extractProposedPlan,
-} from '@canopy/desktop-shared/codex-plan-mode';
+} from '@canopy/execution-engine/codex-plan-mode';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
-import { hydrateModelRegistryFromEnv } from '../_lib/model-registry';
-import { parseThinkingLevelInput } from '../_lib/thinking';
+import {
+  filterToClaudeModLaunchPlugins,
+  mergeClaudeModAdmissionSettings,
+  readClaudeModAdmissionEnvelope,
+  type ClaudeModAdmissionLaunch,
+} from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+import { hydrateModelRegistryFromEnv } from '@canopy/execution-engine/builtin-actions/_lib/model-registry';
+import { parseThinkingLevelInput } from '@canopy/execution-engine/builtin-actions/_lib/thinking';
 
 // Shared with streamed Cursor masking, which cannot load this module.
 export {
   normalizeSingleLine,
   redactNormalizedPreservingFormat,
-} from '@canopy/desktop-shared/lib/redaction';
+} from '@canopy/execution-engine/lib/redaction';
 
 function hydrateOllamaModelsFromEnv(): void {
   if (OLLAMA_MODELS.length > 0) {
@@ -932,7 +938,20 @@ function isRtkEnabledFromEnv(): boolean {
   return getBrandEnv(process.env, 'PREF_RTK_ENABLED') !== 'false';
 }
 
+function resolveClaudeModAdmissionLaunch(
+  input: QueryOptionInput,
+): ClaudeModAdmissionLaunch | undefined {
+  return readClaudeModAdmissionEnvelope(
+    getBrandEnv(process.env, 'CLAUDE_MOD_ADMISSION'),
+    {
+      cwd: input.cwd,
+      settingSources: input.settingSources ?? DEFAULT_SETTING_SOURCES,
+    },
+  );
+}
+
 export function buildQueryOptions(input: QueryOptionInput): Options {
+  const claudeModAdmission = resolveClaudeModAdmissionLaunch(input);
   const ledgerTools =
     input.permissionPreset === 'plan' ? undefined : input.ledgerTools;
   // The Ledger tools are the host's own bookkeeping route: the presets that
@@ -979,6 +998,16 @@ export function buildQueryOptions(input: QueryOptionInput): Options {
         clampThinkingLevelForModel(input.thinkingLevel, input.model),
       )
     : undefined;
+  const nativeMemoryOptions = claudeNativeMemoryOptions(
+    localMemoryEnabledFromEnv(),
+    thinkingOptions?.settings,
+  );
+  const mergedAdmissionSettings = claudeModAdmission?.settings
+    ? mergeClaudeModAdmissionSettings(
+        nativeMemoryOptions.settings ?? {},
+        claudeModAdmission.settings,
+      )
+    : undefined;
 
   return {
     cwd: input.cwd,
@@ -1010,10 +1039,8 @@ export function buildQueryOptions(input: QueryOptionInput): Options {
     // subprocesses; the desktop step runner projects the opt-in preference
     // into the branded `PREF_LOCAL_MEMORY_ENABLED` env var, and CLI-launched
     // steps without it treat local memory as OFF (provider defaults).
-    ...claudeNativeMemoryOptions(
-      localMemoryEnabledFromEnv(),
-      thinkingOptions?.settings,
-    ),
+    ...nativeMemoryOptions,
+    ...(mergedAdmissionSettings ? { settings: mergedAdmissionSettings } : {}),
     ...(input.resumeSessionId ? { resume: input.resumeSessionId } : {}),
     ...(systemPrompt
       ? {
@@ -1033,7 +1060,14 @@ export function buildQueryOptions(input: QueryOptionInput): Options {
         }
       : {}),
     ...(rtkHooks ? { hooks: rtkHooks } : {}),
-    ...(input.plugins ? { plugins: input.plugins } : {}),
+    // The envelope only filters the step's own plugins; it never adds any.
+    ...(input.plugins
+      ? {
+          plugins: claudeModAdmission
+            ? filterToClaudeModLaunchPlugins(input.plugins, claudeModAdmission)
+            : input.plugins,
+        }
+      : {}),
     ...(ledgerTools ? { mcpServers: { ...ledgerTools.mcpServers } } : {}),
   };
 }

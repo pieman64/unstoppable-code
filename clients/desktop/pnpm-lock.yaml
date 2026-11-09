@@ -166,6 +166,7 @@ patchedDependencies:
   builder-util-runtime@9.5.1: 24aa7ce6b2a37dd3ac402553705ed169ff843be1b8ef3217abd0046e018900da
   electron-vite@5.0.0: 42373e3996bd93f486111b6d6871b42cba3b594916ea52466fa448a42f67a2e6
   playwright-core@1.64.1: 26fb2b68a441cf0d29b3561c0754a3956ddaed453e1512d45a216b6ef07b2f45
+  skullet@0.0.3: 0e0c3de7f731b7638fd44a5e2ea87bee8468b7618c4c13db23b57e989b5925df
 
 importers:
 
@@ -388,6 +389,9 @@ importers:
       vite:
         specifier: ^6.4.2
         version: 6.4.2(@types/node@24.10.13)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.0)
+      ws:
+        specifier: ^8.20.0
+        version: 8.22.0
 
   apps/desktop-app:
     dependencies:
@@ -433,6 +437,12 @@ importers:
       '@canopy/desktop-shared':
         specifier: workspace:*
         version: link:../../packages/desktop-shared
+      '@canopy/execution-engine':
+        specifier: workspace:*
+        version: link:../../packages/execution-engine
+      '@canopy/ipc-canopy-client':
+        specifier: workspace:*
+        version: link:../../packages/ipc-canopy-client
       '@canopy/mcp-oauth-core':
         specifier: workspace:*
         version: link:../../packages/mcp-oauth-core
@@ -497,6 +507,9 @@ importers:
         specifier: ^1.5.4
         version: 1.5.4
     devDependencies:
+      '@canopy/remote-session':
+        specifier: workspace:*
+        version: link:../../packages/remote-session
       '@types/dagre':
         specifier: ^0.7.54
         version: 0.7.54
@@ -670,6 +683,9 @@ importers:
       '@canopy/core-runtime':
         specifier: workspace:*
         version: link:../core-runtime
+      '@canopy/execution-engine':
+        specifier: workspace:*
+        version: link:../execution-engine
       '@canopy/pipeline-interop':
         specifier: workspace:*
         version: link:../pipeline-interop
@@ -703,6 +719,39 @@ importers:
       zod:
         specifier: 4.3.6
         version: 4.3.6
+
+  packages/execution-engine:
+    dependencies:
+      '@agentclientprotocol/sdk':
+        specifier: 1.4.0
+        version: 1.4.0(zod@4.3.6)
+      '@canopy/agent-transcript':
+        specifier: workspace:*
+        version: link:../agent-transcript
+      '@canopy/core-platform':
+        specifier: workspace:*
+        version: link:../core-platform
+      '@canopy/core-runtime':
+        specifier: workspace:*
+        version: link:../core-runtime
+      '@canopy/pipeline-interop':
+        specifier: workspace:*
+        version: link:../pipeline-interop
+      '@canopy/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+
+  packages/ipc-canopy-client:
+    dependencies:
+      '@canopy/agent-transcript':
+        specifier: workspace:*
+        version: link:../agent-transcript
+      '@canopy/app-core':
+        specifier: workspace:*
+        version: link:../app-core
+      '@canopy/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/mcp-oauth-core:
     dependencies:
@@ -752,6 +801,15 @@ importers:
 
   packages/protocol:
     dependencies:
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+
+  packages/remote-session:
+    dependencies:
+      '@canopy/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -927,7 +985,7 @@ importers:
         version: 19.2.4(react@19.2.4)
       skullet:
         specifier: 0.0.3
-        version: 0.0.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        version: 0.0.3(patch_hash=0e0c3de7f731b7638fd44a5e2ea87bee8468b7618c4c13db23b57e989b5925df)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
 
 packages:
 
@@ -10484,7 +10542,7 @@ snapshots:
 
   signal-exit@4.1.0: {}
 
-  skullet@0.0.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
+  skullet@0.0.3(patch_hash=0e0c3de7f731b7638fd44a5e2ea87bee8468b7618c4c13db23b57e989b5925df)(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
     optionalDependencies:
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)

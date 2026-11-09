@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   createCanopyClient,
+  createCanopyClientLease,
   type CanopyClient,
+  type CanopyClientLease,
+  type CanopyClientLeaseIdentity,
   type CanopyClientStreamFrame,
   type CanopyClientStreamHandle,
 } from '@canopy/core-client';
@@ -31,7 +34,11 @@ import type {
   InterfaceRelayAccessMode,
   InterfaceRelayOperationKind,
 } from './interface-allowlist.generated';
-import { relayAllows, type RendererRelaySurface } from './surface-allowlist';
+import {
+  isAdminMethod,
+  relayAllows,
+  type RendererRelaySurface,
+} from './surface-allowlist';
 
 export interface RendererRelayLimits {
   /** UTF-8 bytes of a JSON-encoded request input or reply value. */
@@ -78,9 +85,39 @@ export interface RendererRelayOptions {
     event: RendererRelayEvent,
   ) => RendererRelaySurfaceResolution;
   readonly accessMode?: InterfaceRelayAccessMode;
+  /** What this relay can reach; defaults to the local core's `RELAY_DEFINITIONS`. */
+  readonly definitions?: RelayDefinitions;
+  /**
+   * Replaces the generated interface allowlist (and `accessMode`) for an
+   * authority that is not the local core. Admin methods stay refused.
+   */
+  readonly allows?: RendererRelayAllows;
+  readonly host?: RendererRelayHostOptions;
   readonly clientVersion?: string;
   readonly limits?: Partial<RendererRelayLimits>;
 }
+
+/**
+ * What an authority needs from the host beyond relaying (the web core):
+ * operations only the host calls on the session's client, a client lease
+ * held for the session's life, and acknowledgement of each stream item once
+ * its frame is handed to the renderer.
+ */
+export interface RendererRelayHostOptions {
+  /** Never renderer-callable: the renderer's requests resolve only against `definitions`. */
+  readonly definitions: RelayDefinitions;
+  readonly lease?: {
+    readonly label: string;
+    readonly interfaceKind: CanopyClientLeaseIdentity['interfaceKind'];
+  };
+  readonly ackDelivered?: boolean;
+}
+
+export type RendererRelayAllows = (
+  surface: RendererRelaySurface,
+  kind: InterfaceRelayOperationKind,
+  method: string,
+) => boolean;
 
 export interface RendererRelay {
   invoke(
@@ -130,6 +167,8 @@ class RelayFailure extends Error {
 }
 
 const NEVER: CanopyRetryDirective = { kind: 'never' };
+/** Proposal only; the core's replies set the actual renewal timing. */
+const LEASE_RENEWAL_MS = 30_000;
 const failure = (
   kind: CanopyErrorKind,
   message: string,
@@ -209,6 +248,12 @@ function raceDeadline<T>(
 
 type RelayFrame = CanopyClientStreamFrame<unknown, unknown>;
 
+/** A reply value, and what runs once the reply carrying it is handed over. */
+interface Dispatched {
+  readonly value: unknown;
+  readonly onDelivered?: () => void;
+}
+
 interface RelayStream {
   readonly handle: CanopyClientStreamHandle<unknown, unknown>;
   readonly iterator: AsyncIterator<RelayFrame>;
@@ -222,6 +267,7 @@ class RelaySession {
   readonly signal = this.controller.signal;
   client: Promise<CanopyClient> | null = null;
   connection: RelayBindingConnection | null = null;
+  lease: CanopyClientLease<CanopyClient> | null = null;
   calls = 0;
   openingStreams = 0;
   readonly streams = new Map<string, RelayStream>();
@@ -243,6 +289,8 @@ class RelaySession {
     this.detach();
     this.streams.forEach((stream) => stream.handle.close());
     this.streams.clear();
+    void this.lease?.release('normal_shutdown');
+    this.lease = null;
     this.connection?.close();
     void this.client?.then(
       (client) => client.close(),
@@ -254,7 +302,10 @@ class RelaySession {
   /** Forgets a stream whose end was delivered; the hook, when present, also frees a locally ended one. */
   endStream(id: string, stream: RelayStream): void {
     if (this.streams.get(id) === stream) this.streams.delete(id);
-    this.connection?.releaseStream?.(stream.handle.openResult.subscriptionId);
+    this.connection?.releaseStream?.(
+      stream.handle.openResult.subscriptionId,
+      'ended',
+    );
     stream.handle.close();
   }
 
@@ -268,7 +319,7 @@ class RelaySession {
     const { connection } = this;
     if (!this.closed && connection?.releaseStream) {
       try {
-        connection.releaseStream(handle.openResult.subscriptionId);
+        connection.releaseStream(handle.openResult.subscriptionId, 'cancelled');
       } catch {
         this.close();
       }
@@ -290,6 +341,8 @@ export function createRendererRelay(
     ...options.limits,
   };
   const accessMode = options.accessMode ?? 'authority';
+  const relayDefinitions = options.definitions ?? RELAY_DEFINITIONS;
+  const allowOverride = options.allows;
   const sessions = new Map<RendererRelaySender, RelaySession>();
   const surfaceDefinitions = new Map<RendererRelaySurface, RelayDefinitions>();
   let disposed = false;
@@ -298,7 +351,10 @@ export function createRendererRelay(
     surface: RendererRelaySurface,
     kind: InterfaceRelayOperationKind,
     method: string,
-  ): boolean => relayAllows(surface, kind, method, accessMode);
+  ): boolean =>
+    allowOverride
+      ? !isAdminMethod(method) && allowOverride(surface, kind, method)
+      : relayAllows(surface, kind, method, accessMode);
 
   function pick<D>(
     map: Readonly<Record<string, D>>,
@@ -314,17 +370,32 @@ export function createRendererRelay(
     let definitions = surfaceDefinitions.get(surface);
     if (!definitions) {
       definitions = {
-        queries: pick(RELAY_DEFINITIONS.queries, surface, 'query'),
+        queries: pick(relayDefinitions.queries, surface, 'query'),
         instructions: pick(
-          RELAY_DEFINITIONS.instructions,
+          relayDefinitions.instructions,
           surface,
           'instruction',
         ),
-        streams: pick(RELAY_DEFINITIONS.streams, surface, 'stream'),
+        streams: pick(relayDefinitions.streams, surface, 'stream'),
       };
       surfaceDefinitions.set(surface, definitions);
     }
     return definitions;
+  }
+
+  /** The renderer's surface definitions plus the host-only ones. */
+  function clientDefinitions(surface: RendererRelaySurface): RelayDefinitions {
+    const surfaceDefinitions = definitionsFor(surface);
+    const host = options.host?.definitions;
+    if (!host) return surfaceDefinitions;
+    return {
+      queries: { ...surfaceDefinitions.queries, ...host.queries },
+      instructions: {
+        ...surfaceDefinitions.instructions,
+        ...host.instructions,
+      },
+      streams: { ...surfaceDefinitions.streams, ...host.streams },
+    };
   }
 
   function rendererCaller(
@@ -418,7 +489,7 @@ export function createRendererRelay(
       connection,
       clientName: 'canopy-desktop-renderer-relay',
       clientVersion: options.clientVersion ?? '0.0.0',
-      definitions: definitionsFor(session.surface),
+      definitions: clientDefinitions(session.surface),
       signal,
     });
     client.signal.addEventListener('abort', close, { once: true });
@@ -428,7 +499,36 @@ export function createRendererRelay(
       { once: true },
     );
     if (client.signal.aborted) session.close();
+    if (options.host?.lease)
+      await holdLease(session, client, options.host.lease);
     return client;
+  }
+
+  /** Acquires right after the handshake; the session ends with the lease. */
+  async function holdLease(
+    session: RelaySession,
+    client: CanopyClient,
+    identity: NonNullable<RendererRelayHostOptions['lease']>,
+  ): Promise<void> {
+    const lease = createCanopyClientLease({
+      client,
+      // The session never replaces its client: a dropped connection ends it.
+      attach: () => Promise.reject(connectionClosed()),
+      identity: {
+        clientInstanceId: session.caller.clientInstanceId,
+        interfaceKind: identity.interfaceKind,
+        label: identity.label,
+      },
+      renewalIntervalMs: LEASE_RENEWAL_MS,
+      presence: () => ({ interactive: true, foreground: true }),
+      onError: () => {
+        if (lease.state === 'failed' || lease.state === 'released')
+          session.close();
+      },
+    });
+    session.lease = lease;
+    if (session.closed) void lease.release('normal_shutdown');
+    await lease.acquire();
   }
 
   /**
@@ -496,10 +596,10 @@ export function createRendererRelay(
     failure('capability_unavailable', `${method} is not available here.`);
 
   function requestRecovery(method: string): CanopyRetryDirective {
-    if (hasOwn(RELAY_DEFINITIONS.queries, method))
+    if (hasOwn(relayDefinitions.queries, method))
       return { kind: 'same_request' };
-    const definition = hasOwn(RELAY_DEFINITIONS.instructions, method)
-      ? RELAY_DEFINITIONS.instructions[method]
+    const definition = hasOwn(relayDefinitions.instructions, method)
+      ? relayDefinitions.instructions[method]
       : undefined;
     if (definition?.idempotency === 'keyed')
       return { kind: 'same_idempotency_key' };
@@ -513,9 +613,9 @@ export function createRendererRelay(
     method: string,
     rawParams: RelayParams,
   ): Promise<unknown> {
-    const kind = hasOwn(RELAY_DEFINITIONS.queries, method)
+    const kind = hasOwn(relayDefinitions.queries, method)
       ? 'query'
-      : hasOwn(RELAY_DEFINITIONS.instructions, method)
+      : hasOwn(relayDefinitions.instructions, method)
         ? 'instruction'
         : null;
     if (!kind || !allows(session.surface, kind, method))
@@ -549,7 +649,7 @@ export function createRendererRelay(
     rawParams: RelayParams,
   ): Promise<unknown> {
     if (
-      !hasOwn(RELAY_DEFINITIONS.streams, method) ||
+      !hasOwn(relayDefinitions.streams, method) ||
       !allows(session.surface, 'stream', method)
     )
       throw unavailable(method);
@@ -616,10 +716,41 @@ export function createRendererRelay(
     });
   }
 
+  /** Acks an item once its reply is handed over, unless the stream was released meanwhile. */
+  function ackOnDelivery(
+    session: RelaySession,
+    subscriptionId: string,
+    stream: RelayStream,
+    frame: RelayFrame,
+  ): (() => void) | undefined {
+    if (!options.host?.ackDelivered || frame.kind !== 'item') return undefined;
+    return () => {
+      const client = session.client;
+      if (
+        session.closed ||
+        !client ||
+        session.streams.get(subscriptionId) !== stream
+      )
+        return;
+      void client
+        .then((connected) =>
+          connected.instruction(
+            'core.events.ack',
+            {
+              subscriptionId: stream.handle.openResult.subscriptionId,
+              cursor: frame.cursor,
+            },
+            { signal: session.signal },
+          ),
+        )
+        .catch(() => undefined);
+    };
+  }
+
   async function readStream(
     session: RelaySession,
     subscriptionId: string,
-  ): Promise<unknown> {
+  ): Promise<Dispatched> {
     const stream = session.streams.get(subscriptionId);
     if (!stream) throw failure('not_found', 'Unknown relay stream.');
     if (stream.reading)
@@ -646,7 +777,7 @@ export function createRendererRelay(
       stream.next = null;
       if (result.done) {
         session.endStream(subscriptionId, stream);
-        return null;
+        return { value: null };
       }
       const frame = result.value;
       const bytes = encodedBytes(frame);
@@ -660,7 +791,10 @@ export function createRendererRelay(
         );
       }
       if (frame.kind === 'end') session.endStream(subscriptionId, stream);
-      return frame;
+      return {
+        value: frame,
+        onDelivered: ackOnDelivery(session, subscriptionId, stream, frame),
+      };
     } finally {
       stream.reading = false;
       release();
@@ -670,21 +804,23 @@ export function createRendererRelay(
   async function dispatch(
     session: RelaySession,
     input: RelayRequest,
-  ): Promise<unknown> {
+  ): Promise<Dispatched> {
     switch (input.kind) {
       case 'close':
         session.close();
-        return null;
+        return { value: null };
       case 'closeStream': {
         const stream = session.streams.get(input.subscriptionId);
         if (!stream) throw failure('not_found', 'Unknown relay stream.');
         session.cancelStream(input.subscriptionId, stream);
-        return null;
+        return { value: null };
       }
       case 'request':
-        return request(session, input.method, input.params);
+        return { value: await request(session, input.method, input.params) };
       case 'openStream':
-        return openStream(session, input.method, input.params);
+        return {
+          value: await openStream(session, input.method, input.params),
+        };
       case 'readStream':
         return readStream(session, input.subscriptionId);
     }
@@ -718,7 +854,7 @@ export function createRendererRelay(
         const session = sessionFor(event);
         const request = parseRequest(input);
         if (request.kind === 'request') method = request.method;
-        const value = await dispatch(session, request);
+        const { value, onDelivered } = await dispatch(session, request);
         // Results never cross an identity change: a closed connection drops
         // them. Close requests carry no result and may close it themselves.
         const closes =
@@ -738,6 +874,7 @@ export function createRendererRelay(
                   resource: 'reply',
                 },
           );
+        onDelivered?.();
         return { ok: true, value: value ?? null };
       } catch (error) {
         // One exit for every layer's failure: dispatcher, binding and relay.

@@ -57,7 +57,7 @@ import {
   type GetReviewContextRequest,
   type GetReviewContextResult,
 } from '@canopy/desktop-shared/types/code-graph-tools';
-import { CODE_GRAPH_AGENT_BUILD_WAIT_TIMEOUT_MS } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { CODE_GRAPH_AGENT_BUILD_WAIT_TIMEOUT_MS } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   CODE_GRAPH_UNAVAILABLE_MESSAGE,
   isCodeGraphAvailableForWorkspace,
@@ -80,13 +80,27 @@ import type { CodeGraphServiceRead } from '@canopy/code-graph/host/read-service'
 import {
   readWorktreeCodeGraph,
   readWorktreeCodeGraphStatus,
+  type CodeGraphDispatchVia,
 } from '../code-graph/graph-reads';
-import { buildWorktreeCodeGraphForAgent } from '../code-graph/graph-builds';
+import {
+  buildWorktreeCodeGraphForAgent,
+  type CodeGraphBuildVia,
+} from '../code-graph/graph-builds';
 import {
   codeGraphBuildRefusalOf,
   type CodeGraphBuildRefusal,
 } from '@canopy/core-runtime/node/code-graph';
 import type { WorkerCodeGraphBuildFailure } from '@canopy/protocol/canopy-core';
+import {
+  agentCoreInstructions,
+  agentCoreOperations,
+} from './agent-core-operations';
+
+/** Agent Code Graph calls go through the granted table (CAN-5825). */
+const viaAgentTable: CodeGraphDispatchVia = (dispatcher) =>
+  agentCoreOperations('codeGraph', dispatcher);
+const viaAgentBuildTable: CodeGraphBuildVia = (dispatcher) =>
+  agentCoreInstructions('codeGraph', dispatcher);
 
 export interface CodeGraphToolRuntime {
   projectId: string;
@@ -291,7 +305,9 @@ async function resolveBaseRef(
  */
 async function hasCodeGraph(runtime: CodeGraphToolRuntime): Promise<boolean> {
   try {
-    const status = await readWorktreeCodeGraphStatus(runtime);
+    const status = await readWorktreeCodeGraphStatus(runtime, {
+      via: viaAgentTable,
+    });
     return status.presence === 'present';
   } catch {
     return true;
@@ -311,7 +327,9 @@ async function runReadTask(
     | 'review-context',
   read: CodeGraphServiceRead,
 ): Promise<CodeGraphWorkerReadResult> {
-  return (await readWorktreeCodeGraph(runtime, kind, read)).result;
+  return (
+    await readWorktreeCodeGraph(runtime, kind, read, { via: viaAgentTable })
+  ).result;
 }
 
 async function runReadCalls(
@@ -1222,10 +1240,10 @@ export async function buildOrUpdateCodeGraph(
     // run in read hosts. WAL keeps a read host's snapshot consistent while
     // this build commits.
     const result = await waitForAgentBuild(
-      buildWorktreeCodeGraphForAgent({
-        projectId: runtime.projectId,
-        worktreeId: runtime.worktreeId,
-      }),
+      buildWorktreeCodeGraphForAgent(
+        { projectId: runtime.projectId, worktreeId: runtime.worktreeId },
+        { via: viaAgentBuildTable },
+      ),
     );
     const buildResult: CodeGraphBuildToolResult = {
       status: 'ok',

@@ -19,6 +19,7 @@ async function checkedLinkTarget(
   text: string,
   paths: ReadonlySet<string>,
   prefixes: ReadonlySet<string>,
+  published: boolean,
 ): Promise<string> {
   const root = parse(text).root;
   if (root && !isAbsolute(text))
@@ -35,7 +36,9 @@ async function checkedLinkTarget(
       throw new RelocationRefusedError('unproven-owned-link-target');
     if (index !== parts.length - 1 && part !== '..') {
       // Check before consuming ..: lexical normalization can hide a link traversal.
-      const actual = relocationWorkingPath(transition, workingRoot, target);
+      const actual = published
+        ? target
+        : relocationWorkingPath(transition, workingRoot, target);
       const state = await lstat(actual);
       if (state.isSymbolicLink())
         throw new RelocationRefusedError('symlink-owned-parent');
@@ -55,9 +58,17 @@ export async function assertRelocationOwnedPathsSafe(
   transition: RelocationTransition,
   ownedPaths: readonly string[],
   workingRoot: string,
+  published = false,
 ): Promise<void> {
   const root = transition.to.canonicalDataRoot;
-  await assertRelocationWorkingRoot(transition, workingRoot);
+  if (published) {
+    if (
+      workingRoot !== root ||
+      !(await lstat(root)).isDirectory() ||
+      (await realpath(root)) !== root
+    )
+      throw new RelocationRefusedError('noncanonical-published-root');
+  } else await assertRelocationWorkingRoot(transition, workingRoot);
   const paths = new Set(
     ownedPaths.map((path) => movedOwnedPath(transition, path)),
   );
@@ -79,7 +90,9 @@ export async function assertRelocationOwnedPathsSafe(
     let current = base;
     for (let index = 0; index < parts.length; index++) {
       current = join(current, parts[index]);
-      const actual = relocationWorkingPath(transition, workingRoot, current);
+      const actual = published
+        ? current
+        : relocationWorkingPath(transition, workingRoot, current);
       const state = await lstat(actual).catch((error: unknown) => {
         if (
           typeof error === 'object' &&
@@ -106,6 +119,7 @@ export async function assertRelocationOwnedPathsSafe(
           await readlink(actual),
           paths,
           prefixes,
+          published,
         );
         if (index !== parts.length - 1)
           throw new RelocationRefusedError('symlink-owned-parent');

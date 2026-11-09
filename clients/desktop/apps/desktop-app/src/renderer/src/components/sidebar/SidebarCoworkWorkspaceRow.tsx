@@ -28,7 +28,6 @@ import { coworkProjectMenuItems } from './cowork-project-menu-items';
 import { CHAT_UNIT_LABEL, CHAT_UNIT_LABEL_PLURAL } from '@canopy/protocol';
 import { resolveArchiveRetentionDays } from '@canopy/desktop-shared/lib/archive-retention';
 import {
-  ChevronDownMediumIcon,
   MoreHorizontalIcon,
   PlusMediumIcon,
   SettingsIcon,
@@ -45,6 +44,7 @@ import {
   SidebarFadePresence,
   SidebarPinnedBadge,
   SidebarMoreRow,
+  SidebarToggleRow,
   WorkEntryRow,
   WorkEntryRowMenuItems,
   workEntryRowTestId,
@@ -111,7 +111,6 @@ import {
   DEFAULT_MENU_ROW_STYLE,
   DropdownMenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-  SIDEBAR_ROW_TRAILING_CELL_CLASSNAME,
   useContextMenuPlacement,
 } from '@canopy/ui-shared';
 import { openArchivedOverviewSurface } from '@/lib/archivedContainerNavigation';
@@ -2130,7 +2129,9 @@ function SidebarCoworkWorkspaceRowImpl({
           className="mt-px"
           data-sidebar-folder-content="cowork-workspace"
         >
-          <div className="space-y-px">{renderBlocks(cappedBlocks.visible)}</div>
+          <div className="flex flex-col gap-px">
+            {renderBlocks(cappedBlocks.visible)}
+          </div>
           {maxEntries !== undefined &&
             (hiddenEntryCount > 0 || showAllEntries) &&
             (compactDisclosure ? (
@@ -2149,48 +2150,20 @@ function SidebarCoworkWorkspaceRowImpl({
                 />
               </div>
             ) : (
-              <button
-                type="button"
-                className="focus-ring flex h-7 w-full items-center gap-1.5 rounded-row px-1.5 text-left text-s font-normal fg-tertiary hover:bg-subtle hover:fg-primary"
-                data-testid={`sidebar-cowork-project-${item.id}-show-all`}
-                aria-expanded={showAllEntries}
-                aria-label={
+              <SidebarToggleRow
+                label={showAllEntries ? 'Show fewer' : 'Show all'}
+                expanded={showAllEntries}
+                onToggle={(): void => setShowAllEntries((shown) => !shown)}
+                ariaLabel={
                   showAllEntries
                     ? `Show fewer ${CHAT_UNIT_LABEL_PLURAL.toLowerCase()}`
                     : `Show all ${visibleWorkEntries.length} ${CHAT_UNIT_LABEL_PLURAL.toLowerCase()}`
                 }
-                onClick={(): void => setShowAllEntries((shown) => !shown)}
-              >
-                {/* Mirrors an entry row's leading column + gap rather than
-                        padding to a number, so the label keeps sitting on the
-                        same line as the chat titles above it — and therefore
-                        the project and worktree names elsewhere in the
-                        sidebar — if that column's width ever changes. */}
-                <span className="w-5 shrink-0" aria-hidden="true" />
-                <span className="inline-flex min-w-0 items-center gap-1">
-                  <span className="truncate">
-                    {showAllEntries ? 'Show fewer' : 'Show all'}
-                  </span>
-                  {/* Disclosure direction matches the section headers:
-                          pointing right while the rest is still hidden, down
-                          once the list is open. */}
-                  <ChevronDownMediumIcon
-                    size="sm"
-                    className={`shrink-0 ${showAllEntries ? '' : '-rotate-90'}`}
-                    aria-hidden="true"
-                    data-testid={`sidebar-cowork-project-${item.id}-show-all-chevron`}
-                  />
-                </span>
-                {/* Trailing count in the rows' trailing cell, so the
-                        sidebar's numbers all sit on one right edge in one
-                        style instead of this one trailing its label. */}
-                <span
-                  className={SIDEBAR_ROW_TRAILING_CELL_CLASSNAME}
-                  data-testid={`sidebar-cowork-project-${item.id}-show-all-count`}
-                >
-                  {visibleWorkEntries.length}
-                </span>
-              </button>
+                count={visibleWorkEntries.length}
+                testId={`sidebar-cowork-project-${item.id}-show-all`}
+                chevronTestId={`sidebar-cowork-project-${item.id}-show-all-chevron`}
+                countTestId={`sidebar-cowork-project-${item.id}-show-all-count`}
+              />
             ))}
 
           <ArchivedContainersNavLink

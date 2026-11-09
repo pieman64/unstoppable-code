@@ -20,9 +20,25 @@ export type PlatformEndpointSemantics =
   | 'filesystem-socket'
   | 'first-instance-pipe';
 
+/**
+ * A short path to a long data root's runtime directory (CAN-5694). The socket
+ * stays in that directory; binding and connecting resolve the link, so every
+ * real directory on the way keeps its permission check.
+ */
+export interface PlatformSocketAlias {
+  /** `<tmp>/canopy-<uid>`: a real directory the user owns, mode 0700. */
+  readonly directory: string;
+  /** `<directory>/<hash of the data root>`: the user's link to `runtimeDirectory`. */
+  readonly link: string;
+  /** The canonical runtime directory the link must resolve to. */
+  readonly runtimeDirectory: string;
+}
+
 export interface PlatformUnixSocketAddress {
   readonly kind: 'unix-socket';
   readonly path: string;
+  /** Present when the runtime directory's own socket path is too long. */
+  readonly alias?: PlatformSocketAlias;
 }
 
 export interface PlatformNamedPipeAddress {
@@ -130,6 +146,13 @@ export interface PlatformSocketEndpointServices {
   address(request: PlatformEndpointAddressRequest): PlatformUnixSocketAddress;
   bind(address: PlatformUnixSocketAddress): Promise<PlatformSocketBindResult>;
   probe(address: PlatformUnixSocketAddress): Promise<PlatformSocketProbeResult>;
+  /**
+   * Before every connect: verifies the address's alias, or recreates a
+   * missing one, and refuses one that is not private or not this root's. A
+   * no-op without an alias. `bind`, `probe`, `verifyIdentity` and
+   * `unlinkStale` run the same check.
+   */
+  prepare(address: PlatformUnixSocketAddress): Promise<void>;
   verifyIdentity(
     address: PlatformUnixSocketAddress,
     expected: PlatformEndpointPathIdentity,

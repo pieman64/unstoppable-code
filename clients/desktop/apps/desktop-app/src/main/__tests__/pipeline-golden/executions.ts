@@ -2,7 +2,7 @@
 // projection and waits on the persisted execution record.
 import { readFile } from 'node:fs/promises';
 import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 
 function yaml(...rows: string[]): string {
   return `${rows.join('\n')}\n`;
@@ -150,6 +150,28 @@ export const SLOW_ONCE_YAML = yaml(
   '            sleep 30',
   '          env:',
   '            MARKER: ${{ inputs.marker }}',
+);
+
+/**
+ * Starts only from the Workflows page (CAN-5782): its inputs live under
+ * `on.workflow`, and it declares no `dispatch`.
+ */
+export const WORKFLOW_YAML = yaml(
+  'pipeline:',
+  '  name: Golden run workflow',
+  '  on:',
+  '    workflow:',
+  '      inputs:',
+  '        greeting:',
+  '          type: string',
+  '          default: hello',
+  '  jobs:',
+  '    build:',
+  '      steps:',
+  '        - id: greet',
+  '          run: echo "$GREETING"',
+  '          env:',
+  '            GREETING: ${{ inputs.greeting }}',
 );
 
 /** Runs with no project, in a scratch folder. */

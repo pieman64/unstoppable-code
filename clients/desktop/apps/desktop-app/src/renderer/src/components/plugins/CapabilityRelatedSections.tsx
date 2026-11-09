@@ -15,7 +15,7 @@ import {
   findRelatedPipelines,
   type CapabilitySubject,
 } from '@/lib/relatedCapabilities';
-import type { PipelineCapabilityRefsEntry } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineCapabilityRefsEntry } from '@canopy/execution-engine/types/pipeline';
 
 /**
  * Fetch the per-pipeline capability summaries, including project-local
@@ -159,7 +159,9 @@ export function CapabilityRelatedSections({
   return (
     <div
       className={
-        flush ? 'space-y-6 empty:hidden' : 'mt-8 space-y-8 empty:hidden'
+        flush
+          ? 'flex flex-col gap-6 empty:hidden'
+          : 'mt-8 flex flex-col gap-8 empty:hidden'
       }
       data-testid="capability-related-sections"
     >
@@ -175,8 +177,7 @@ export function CapabilityRelatedSections({
           key: `${item.source}:${item.id}`,
           icon: item.icon,
           title: item.name,
-          badge: PIPELINE_SOURCE_META[item.source].label,
-          badgeClass: PIPELINE_SOURCE_META[item.source].badgeClass,
+          sourceLabel: PIPELINE_SOURCE_META[item.source].label,
           reason: item.reason,
           onOpen: (): void => {
             const link: PipelineEditDeepLink = {

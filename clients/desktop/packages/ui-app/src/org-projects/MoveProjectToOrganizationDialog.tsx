@@ -154,7 +154,7 @@ export function MoveProjectToOrganizationDialog({
       trapFocus
       initialFocusRef={preselected ? moveRef : selectRef}
     >
-      <div className="space-y-3 px-6 py-4">
+      <div className="flex flex-col gap-3 px-6 py-4">
         <p className="text-s fg-secondary">
           Once <span className={REPLAY_MASK_CLASS}>{projectName}</span> moves to
           an organization, it stays there and cannot move back to your personal

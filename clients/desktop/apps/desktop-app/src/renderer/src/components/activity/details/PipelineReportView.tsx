@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type JSX } from 'react';
-import type { ReportOutputs } from '@canopy/desktop-shared/types/pipeline';
+import type { ReportOutputs } from '@canopy/execution-engine/types/pipeline';
 import { formatPipelineReportContent } from '@/lib/pipelineExecutionDetail';
 import { LoadingSpinner } from '../../shared/loading/spinners/LoadingSpinner';
 import { PipelineReportMarkdown } from '../PipelineReportMarkdown';
@@ -142,21 +142,25 @@ export function PipelineReportView({
       <div className="border-b px-4 py-2 text-xs font-medium fg-secondary">
         Report
       </div>
-      <div className="space-y-4 p-4">
+      <div className="flex flex-col p-4 gap-4">
         {entries.map((entry) => {
           const reportState = stateByKind[entry.kind] ?? { loading: true };
           const renderAsMarkdown =
             entry.kind === 'text' && isMarkdownPath(entry.path);
           return (
-            <div key={entry.kind} data-testid={`pipeline-report-${entry.kind}`}>
+            <div
+              key={entry.kind}
+              className="flex flex-col gap-1.5"
+              data-testid={`pipeline-report-${entry.kind}`}
+            >
               {entries.length > 1 && (
-                <div className="mb-1.5 text-2xs font-medium fg-secondary/70">
+                <div className="text-2xs font-medium fg-secondary/70">
                   {entry.label}
                 </div>
               )}
               {reportState.loading ? (
-                <div className="flex items-center text-s fg-secondary">
-                  <LoadingSpinner tone="active" className="mr-2" />
+                <div className="flex items-center gap-2 text-s fg-secondary">
+                  <LoadingSpinner tone="active" />
                   Loading report…
                 </div>
               ) : reportState.error !== undefined ? (

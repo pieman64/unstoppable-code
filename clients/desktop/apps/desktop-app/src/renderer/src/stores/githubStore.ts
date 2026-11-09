@@ -1,20 +1,16 @@
-import { isOrchestratorLabel, ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import { brandText } from '@/lib/brand';
 import type { BranchSyncAction } from '@/lib/githubBranchActions';
 import { probeGitHubConnected } from '@/lib/githubConnection';
-import {
-  isWorktreeKeyVisible,
-  maybeFireOsNotification,
-  shouldShowInAppNotification,
-  toastCategoryLabel,
-} from '@/lib/osNotifications';
+import { isWorktreeKeyVisible } from '@/lib/osNotifications';
 import type {
   CanopyApi,
   PreferencesData,
   RepoBranchInfo,
   SidebarItem,
 } from '@canopy/desktop-shared/types';
-import { SINGLE_REPO_USAGE_REPO_ID } from '@canopy/desktop-shared/types';
+import {
+  APP_ADVISOR_PROJECT_ID,
+  SINGLE_REPO_USAGE_REPO_ID,
+} from '@canopy/desktop-shared/types';
 import type {
   CancelGitActionResponse,
   CommitAndPushResponse,
@@ -59,11 +55,12 @@ import {
   hasMergedPr,
   shouldShowWorktreeMergedState,
 } from '@/lib/worktreeMergedState';
-import type { NoticeIntent } from '@canopy/ui-shared/components';
+import { toAppError } from '@canopy/protocol/app-errors';
 import {
-  recordSurfacedError,
-  toastStackLifetimeMs,
-} from '@canopy/ui-shared/lib';
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { create, type StoreApi } from 'zustand';
 import { requestLoadedChangedFilesRefresh } from './changedFilesRefreshRuntime';
 import {
@@ -73,9 +70,11 @@ import {
 } from './githubConnectOfferStore';
 import { useProjectsStore } from './projectsStore';
 import {
-  isScopedNotificationDeliverable,
-  type ScopedNotificationDescriptor,
-} from './spaceNotificationStore';
+  addToast,
+  resetToastStack,
+  type Toast,
+  type ToastMeta,
+} from './toastStore';
 
 type AgentResolutionMessageRepo = {
   repoName: string;
@@ -85,145 +84,16 @@ type AgentResolutionMessageRepo = {
 /** Who started a commit, PR or merge. Analytics only; main defaults to manual. */
 export type GitShippingSource = NonNullable<CreatePrRequest['source']>;
 
-export type ToastCategory =
-  | 'Chat'
-  | 'Script'
-  | 'Hook'
-  | 'Git Commit'
-  | 'Git Push'
-  | 'Git Pull'
-  | 'Git Merge'
-  | 'PR Create'
-  | 'Split PR'
-  | 'Pipeline'
-  | 'Worktree'
-  | 'Terminal'
-  | 'Automation'
-  | 'GitHub'
-  | 'Run Comment'
-  // Sign-in / account state changes. Deliberately absent from
-  // `CATEGORY_TO_PREF_KEY` in `lib/osNotifications.ts`: signing in happens with
-  // the app in the foreground, so a native banner would be pure noise.
-  | 'Account'
-  // Activity-sharing changes applied by a plan transition (paid ⇄ free).
-  // Unmapped in `CATEGORY_TO_PREF_KEY` for the same reason as `Account`: the
-  // in-app toast carries the action, and a native banner cannot.
-  | 'Privacy';
-
-/**
- * A shareable link surfaced on a toast/notification (e.g. after sharing a plan
- * or a run) so the user can copy or open it without hunting for the URL.
- */
-export interface ToastLink {
-  /** The full, shareable URL. Copied only by a click on Copy link. */
-  url: string;
+/** A failed git or pull request action, scoped to its originating worktree. */
+export interface GitActionFailure extends InlineFailure {
+  seq: number;
   /**
-   * The URL is a page of the signed-in cloud account (a share it just made):
-   * Open signs the browser in to that account first, as other account pages
-   * do. Copy link still copies the plain URL.
+   * Runs the failed action again with the same inputs, for actions where that
+   * can fix the failure. The banner offers it as `Try again` or `Start over`,
+   * whichever the error's recovery names.
    */
-  signedIn?: boolean;
+  retry?: () => void;
 }
-
-/**
- * A single labeled recovery action on a toast. Rendered with the shared
- * `NoticeButton` styling so it reads as the same family as inline notices.
- * Session-scoped: the handler lives only as long as the running renderer.
- */
-export interface ToastAction {
-  label: string;
-  /**
-   * Runs the action. Return a promise for work that takes a while (`Try
-   * again` on a failed action): the button spins inside its capsule until it
-   * settles, then the toast closes.
-   */
-  onClick: () => unknown;
-  /** The label while a returned promise runs (`Trying again…`). */
-  busyLabel?: string;
-}
-
-export interface ToastMeta {
-  category?: ToastCategory;
-  workspaceName?: string;
-  projectId?: string;
-  worktreeId?: string;
-  chatId?: string;
-  /**
-   * Optional shareable link surfaced as copy/open actions on the toast and its
-   * detail modal. Set by share flows so the "shared" notification carries the
-   * link the user needs to actually share the resource.
-   */
-  link?: ToastLink;
-  /**
-   * Display-only bold lead rendered in place of `category` on the toast and in
-   * its detail modal. Lets a toast carry a headline ("Sign in successful")
-   * while `category` stays the routing/preference key.
-   */
-  title?: string;
-  /**
-   * Optional labeled recovery action rendered on the toast and in its detail
-   * modal. Use it when the toast explains a blocked outcome the user can undo
-   * in one step (e.g. turning off "Only allow local sites").
-   */
-  action?: ToastAction;
-  /** Use an extended one-minute lifetime instead of the default 15 seconds. */
-  persistent?: boolean;
-  /** Transactional offer: available until use, explicit dismissal or invalidation. */
-  keepUntilDismissed?: boolean;
-  /**
-   * Deliver this in-app even when the in-app notification master toggle is
-   * disabled. Reserve for transactional outcomes that would otherwise have no
-   * visible confirmation or recovery signal after their originating surface
-   * closes. Share toasts set it: a share dialog closes on success, so its
-   * toast is feedback to the click rather than a notification, and must show
-   * even with in-app notifications off.
-   */
-  forceInApp?: boolean;
-  /**
-   * Never raise a native OS banner for this toast. Share toasts set it with
-   * `forceInApp`: the user just clicked Share with the app in the foreground,
-   * so a banner would be noise, like the `Account` and `Privacy` categories.
-   */
-  suppressOsNotification?: boolean;
-  /**
-   * Body for the native OS banner when it should differ from the toast
-   * message. A chat toast's headline names its worktree, so its message
-   * leaves the branch out; the native banner has no such headline and keeps
-   * it here.
-   */
-  osNotificationBody?: string;
-  /**
-   * Block the message from session replay. Set when the message names a
-   * person (for example "Invited {name}"); other messages are recorded unless
-   * `toastMessageReplayClass` blocks their type or category.
-   */
-  blockMessageFromReplay?: boolean;
-  /**
-   * The chat or pipeline occurrence this toast reports (CAN-3615). When its
-   * space's notification choice does not allow it, the toast is still
-   * recorded in notification history but raises no popup and no native
-   * banner.
-   */
-  notificationScope?: ScopedNotificationDescriptor;
-  /**
-   * The toast reports a finished chat turn or pipeline run. Passed to the OS
-   * notification gate, where it can arm the one-time notification offer
-   * (CAN-4005) while notifications are off.
-   */
-  agentCompletion?: boolean;
-}
-
-export interface Toast {
-  id: string;
-  message: string;
-  type: 'error' | 'info' | 'success' | 'warning';
-  onClick?: () => void;
-  onDismiss?: () => void;
-  createdAt: number;
-  meta?: ToastMeta;
-}
-
-export type Notification = Toast;
 
 export interface PrMergeWarningState {
   projectId: string;
@@ -235,15 +105,6 @@ export interface PrMergeWarningState {
   repoId?: string;
   repoName?: string;
 }
-
-/**
- * Maximum number of unread notifications retained for the overview
- * notifications panel. Older notifications are evicted when new ones arrive.
- */
-const MAX_NOTIFICATIONS = 50;
-// Legacy uncategorized toasts are primarily pipeline/action feedback. Route
-// them through the Pipeline preference instead of silently skipping OS alerts.
-const UNCATEGORIZED_TOAST_CATEGORY: ToastCategory = 'Pipeline';
 
 export interface PrCreationStep {
   phase: PrCreationPhase;
@@ -345,8 +206,6 @@ interface GitHubState {
   commitReviewPending: Record<string, CommitReviewPendingEntry>;
   /** Unresolved-comment confirmations currently open, keyed by worktree. */
   prMergeWarnings: Record<string, PrMergeWarningState | undefined>;
-  toasts: Toast[];
-  notifications: Notification[];
 
   /** Worktree keys with an in-flight `planSplitPr` request. */
   planningSplitPr: Set<string>;
@@ -386,6 +245,11 @@ interface GitHubState {
   >;
   /** Leftover artifacts returned by the most recent successful split discard. */
   splitPrDiscardedArtifacts: Record<string, SplitPrDiscardResponse>;
+  /**
+   * The latest failed git or pull request action per worktree key, shown
+   * under that worktree's top bar until dismissed or a new attempt starts.
+   */
+  gitActionFailures: Record<string, GitActionFailure>;
   /**
    * Worktree keys (`${projectId}/${worktreeId}`) currently under Split PR
    * lockdown. Mirrored from the main process via `onSplitLockChange` so
@@ -577,26 +441,26 @@ interface GitHubState {
     worktreeId: string,
   ) => Promise<boolean>;
   clearWorktreePrStatus: (projectId: string, worktreeId: string) => void;
+  /**
+   * Shows a git or pull request failure under the worktree it started in,
+   * never whichever worktree is selected when it settles.
+   */
+  raiseGitActionFailure: (
+    projectId: string,
+    worktreeId: string,
+    failure: InlineFailure,
+    attemptId?: string,
+  ) => void;
+  /** Dismisses one failure; a newer failure (another `seq`) stays. */
+  dismissGitActionFailure: (
+    projectId: string,
+    worktreeId: string,
+    seq: number,
+  ) => void;
   hydratePersistedPrStatuses: (items: SidebarItem[]) => void;
   subscribeToEvents: () => () => void;
-  addToast: (
-    message: string,
-    type: 'error' | 'info' | 'success' | 'warning',
-    onClick?: () => void,
-    meta?: ToastMeta,
-    onDismiss?: () => void,
-  ) => void;
-  /** Remove a toast from the visible stack AND mark it as read (user clicked X). */
-  dismissToast: (id: string) => void;
-  /**
-   * Remove a toast from the visible stack only, as running out of time does:
-   * it stays in notification history and its `onDismiss` does not run. The
-   * early-access notification stack calls it when a toast expires or is
-   * swiped away.
-   */
-  expireToast: (id: string) => void;
-  /** Remove a notification from the overview's unread list. */
-  dismissNotification: (id: string) => void;
+  /** Forwards to the neutral toast owner, so existing callers keep working. */
+  addToast: typeof addToast;
 }
 
 type GitHubSetState = StoreApi<GitHubState>['setState'];
@@ -636,6 +500,87 @@ function clearPrCreationProgress(set: GitHubSetState, key: string): void {
 
 export function worktreeKey(projectId: string, worktreeId: string): string {
   return `${projectId}/${worktreeId}`;
+}
+
+let gitActionFailureSeq = 0;
+const gitFailureAttempts = new Map<string, string>();
+/** How to run each worktree's current attempt again, keyed like the attempts. */
+const gitFailureRetries = new Map<string, () => void>();
+
+/**
+ * A new attempt supersedes the worktree's previous failure. `retry` runs this
+ * attempt again with the same inputs; a failure the attempt raises offers it.
+ * Merges and split workflows pass none: a partly finished merge is not safe
+ * to repeat blindly, and splits have their own Retry and Resume.
+ */
+function clearGitActionFailure(
+  set: GitHubStoreSet,
+  key: string,
+  retry?: () => void,
+): string {
+  const attemptId = createGitActionOperationId();
+  gitFailureAttempts.set(key, attemptId);
+  if (retry) gitFailureRetries.set(key, retry);
+  else gitFailureRetries.delete(key);
+  set((state) => {
+    if (!(key in state.gitActionFailures)) return {};
+    const next = { ...state.gitActionFailures };
+    delete next[key];
+    return { gitActionFailures: next };
+  });
+  return attemptId;
+}
+
+/**
+ * Once an attempt has done something that is not safe to replay (created
+ * PRs), its failures stop offering a retry, including one already showing.
+ */
+function dropGitActionRetry(
+  set: GitHubStoreSet,
+  key: string,
+  attemptId: string,
+): void {
+  if (gitFailureAttempts.get(key) !== attemptId) return;
+  gitFailureRetries.delete(key);
+  set((state) => {
+    const failure = state.gitActionFailures[key];
+    if (!failure?.retry) return {};
+    const next = { ...failure };
+    delete next.retry;
+    return { gitActionFailures: { ...state.gitActionFailures, [key]: next } };
+  });
+}
+
+/**
+ * The worktree's latest git action attempt. A failure raised outside an
+ * attempt (loading branches) compares it with the value it saw when it
+ * started, and drops itself when a newer attempt began in between.
+ */
+export function currentGitActionAttempt(
+  projectId: string,
+  worktreeId: string,
+): string | undefined {
+  return gitFailureAttempts.get(worktreeKey(projectId, worktreeId));
+}
+
+/**
+ * For a failure raised outside a git action attempt (opening a link, loading
+ * branches, starting a fix chat): call it when the work starts. The returned
+ * raise drops the failure when a newer attempt began in between, so a late
+ * rejection never replaces that attempt's failure or its Try again.
+ */
+export function gitActionFailureRaiser(
+  projectId: string,
+  worktreeId: string,
+): (failure: InlineFailure) => void {
+  const attemptAtStart = currentGitActionAttempt(projectId, worktreeId);
+  return (failure): void => {
+    if (currentGitActionAttempt(projectId, worktreeId) !== attemptAtStart)
+      return;
+    useGitHubStore
+      .getState()
+      .raiseGitActionFailure(projectId, worktreeId, failure);
+  };
 }
 
 function createGitActionOperationId(): string {
@@ -784,43 +729,16 @@ async function refreshGitHubWorktreeState(
   await useProjectsStore
     .getState()
     .refreshWorktreeDiffStats(projectId, worktreeId)
-    .catch(() => undefined);
+    .catch((error: unknown) => {
+      // Best effort: the fast refresh below still runs.
+      reportClientAppError(error);
+    });
 
   // The main process only enqueues the fast refresh and returns immediately, so
   // this does not extend the refresh window.
   await requestFastRefresh(projectId, worktreeId);
 }
 
-let toastCounter = 0;
-
-/** How long a toast stays on screen. */
-export const TOAST_LIFETIME_MS = 15_000;
-/** How long a `meta.persistent` toast stays on screen. */
-export const PERSISTENT_TOAST_LIFETIME_MS = 60_000;
-
-/** The shared notice intent that carries each toast type's glyph and ink. */
-export const TOAST_STACK_INTENT: Record<Toast['type'], NoticeIntent> = {
-  error: 'destructive',
-  warning: 'attention',
-  success: 'positive',
-  info: 'neutral',
-};
-
-/**
- * A toast's on-screen lifetime: a failure stays until it is closed, a success
- * leaves after 6 s, and a `meta.persistent` toast stays a minute.
- */
-export function toastLifetimeMs(toast: Pick<Toast, 'meta' | 'type'>): number {
-  return toastStackLifetimeMs(
-    TOAST_STACK_INTENT[toast.type],
-    TOAST_LIFETIME_MS,
-    toast.meta?.keepUntilDismissed === true
-      ? 0
-      : toast.meta?.persistent === true
-        ? PERSISTENT_TOAST_LIFETIME_MS
-        : undefined,
-  );
-}
 type SkippedRepoReason =
   | CommitAndPushSkippedRepo['reason']
   | PushOnlySkippedRepo['reason']
@@ -1026,6 +944,8 @@ function describeCommitAndPushSkipReason(reason: SkippedRepoReason): string {
       return 'no remote tracking branch';
     case 'no_uncommitted_changes':
       return 'no uncommitted changes';
+    case 'commits_not_pushed':
+      return 'commits not pushed';
     default:
       return reason;
   }
@@ -1083,6 +1003,19 @@ function buildFailedReposMessage<
     | GenerateCommitMessagesFailedRepo,
 >(actionLabel: string, failedRepos: T[]): string {
   return `${actionLabel} failed for ${failedRepos.length} ${failedRepos.length === 1 ? 'repo' : 'repos'}: ${formatRepoEntries(failedRepos, (repo) => `${repo.repoName} (${repo.error})`)}`;
+}
+
+/** Preserve the complete partial-success reason without rendering command output. */
+function buildFailedReposFailure<
+  T extends
+    | RepoFailureResult
+    | PullFailedRepo
+    | GenerateCommitMessagesFailedRepo,
+>(actionLabel: string, failedRepos: T[]): InlineFailure {
+  return {
+    error: `${actionLabel} failed for ${failedRepos.length} ${failedRepos.length === 1 ? 'repo' : 'repos'}.`,
+    details: buildFailedReposMessage(actionLabel, failedRepos),
+  };
 }
 
 function describeAgentResolutionKind(
@@ -1158,6 +1091,11 @@ interface RunCommitFlowParams {
   pullFirst?: boolean;
   source?: GitShippingSource;
   continuation?: GitHubActionContinuation;
+  /**
+   * Set by a Try again: called when a selected repository is already clean.
+   * Main then leaves that repository's pending commits for the bar's Push.
+   */
+  onNothingToCommit?: () => void;
 }
 
 type GitHubStoreSet = (
@@ -1169,16 +1107,21 @@ type GitHubStoreGet = () => GitHubState;
 
 function handleCommitAndPushResponse(
   get: GitHubStoreGet,
+  projectId: string,
+  worktreeId: string,
   response: CommitAndPushResponse,
   failureLabel: string,
   commitMeta: ToastMeta,
+  failureAttemptId: string,
 ): void {
   if (response.failedRepos.length > 0) {
-    get().addToast(
-      buildFailedReposMessage(failureLabel, response.failedRepos),
-      'error',
-      undefined,
-      commitMeta,
+    get().raiseGitActionFailure(
+      projectId,
+      worktreeId,
+      {
+        ...buildFailedReposFailure(failureLabel, response.failedRepos),
+      },
+      failureAttemptId,
     );
   }
   if (response.skippedRepos.length > 0) {
@@ -1214,7 +1157,7 @@ function handleCommitAndPushResponse(
 
 function hasReviewBlockingSkippedRepos(
   skippedRepos: ReadonlyArray<{
-    reason: 'no_uncommitted_changes' | 'no_remote_tracking';
+    reason: CommitAndPushSkippedRepo['reason'];
   }>,
 ): boolean {
   return skippedRepos.some((repo) => repo.reason !== 'no_uncommitted_changes');
@@ -1503,8 +1446,9 @@ async function selectedRepositoriesNeedGitHub(
         });
         const slug = await window.api.getRepoSlug({ repoPath });
         return Boolean(slug?.owner && slug.repo);
-      } catch {
+      } catch (error: unknown) {
         // Unknown metadata leaves main's structured errors as the safety net.
+        reportClientAppError(error);
         return false;
       }
     }),
@@ -1556,6 +1500,58 @@ async function runCommitFlow(
     return false;
   }
   const operationId = createGitActionOperationId();
+  // A commit that landed before its push failed leaves nothing to commit.
+  // Running the flow again would then push those commits on its own (main
+  // pushes a clean repository's pending commits) or stop silently. Guessing
+  // which repositories to push is not safe here, so say what is left: the
+  // bar's Push sends the commits with its own checks.
+  const settleNothingToCommit = (): void => {
+    const settledAttemptId = clearGitActionFailure(set, key);
+    if (isCommitOnly) return;
+    get().raiseGitActionFailure(
+      projectId,
+      worktreeId,
+      { error: 'Your changes are already committed. Push to send them.' },
+      settledAttemptId,
+    );
+  };
+  const retryCommitFlow = async (): Promise<void> => {
+    const verified = await useProjectsStore
+      .getState()
+      .refreshWorktreeDiffStatsVerified(projectId, worktreeId);
+    // A newer attempt owns the worktree now.
+    if (gitFailureAttempts.get(key) !== failureAttemptId) return;
+    if (gitHubActionBusy(get, key)) return;
+    if (!verified) {
+      get().raiseGitActionFailure(
+        projectId,
+        worktreeId,
+        { error: "Couldn't check this worktree for changes. Try again." },
+        failureAttemptId,
+      );
+      return;
+    }
+    if (useProjectsStore.getState().uncommittedChanges[key] !== true) {
+      settleNothingToCommit();
+      return;
+    }
+    // The changes can still be gone by the time the flow reaches main: the
+    // review finds nothing to generate, or main leaves a clean repository's
+    // commits unpushed (`skipCleanPush`).
+    let nothingToCommit = false;
+    await runCommitFlow(set, get, {
+      ...params,
+      onNothingToCommit: (): void => {
+        nothingToCommit = true;
+      },
+    });
+    // A failure the run raised for another repository stays, with its retry.
+    if (nothingToCommit && !get().gitActionFailures[key])
+      settleNothingToCommit();
+  };
+  const failureAttemptId = clearGitActionFailure(set, key, () => {
+    void retryCommitFlow();
+  });
   const branches = gitHubRepositorySnapshot(projectId, worktreeId);
   const telemetryRepoCount =
     continuation?.telemetryRepoCount ??
@@ -1619,6 +1615,21 @@ async function runCommitFlow(
           }),
         };
 
+  const skipCleanPushField =
+    params.onNothingToCommit && !isCommitOnly ? { skipCleanPush: true } : {};
+  // A clean repository main left unpushed for this Try again is not a skip
+  // to report: the retry says the commits still need a push instead.
+  const settleCleanSkips = (
+    response: CommitAndPushResponse,
+  ): CommitAndPushResponse => {
+    const reported = response.skippedRepos.filter(
+      (repo) => repo.reason !== 'commits_not_pushed',
+    );
+    if (reported.length === response.skippedRepos.length) return response;
+    params.onNothingToCommit?.();
+    return { ...response, skippedRepos: reported };
+  };
+
   try {
     const api: CanopyApi = window.api;
     const prefs: PreferencesData = await api.loadPreferences();
@@ -1666,18 +1677,22 @@ async function runCommitFlow(
       }
 
       if (generated.failedRepos.length > 0) {
-        get().addToast(
-          buildFailedReposMessage(
-            'Commit message generation',
-            generated.failedRepos,
-          ),
-          'error',
-          undefined,
-          commitMeta,
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          {
+            ...buildFailedReposFailure(
+              'Commit message generation',
+              generated.failedRepos,
+            ),
+          },
+          failureAttemptId,
         );
       }
 
       if (generated.repos.length === 0) {
+        // Clean, not failed: a failed generation is not "nothing to commit".
+        if (generated.failedRepos.length === 0) params.onNothingToCommit?.();
         return false;
       }
 
@@ -1728,11 +1743,8 @@ async function runCommitFlow(
         },
       }));
 
-      const response: CommitAndPushResponse = await runGitActionIpc(
-        set,
-        key,
-        operationId,
-        () =>
+      const response: CommitAndPushResponse = settleCleanSkips(
+        await runGitActionIpc(set, key, operationId, () =>
           api.github.commitAndPush({
             projectId,
             worktreeId,
@@ -1741,6 +1753,7 @@ async function runCommitFlow(
             operationId,
             ...sourceField,
             ...(isCommitOnly ? { commitOnly: true, repoIds } : { pullFirst }),
+            ...skipCleanPushField,
             ...(continuation
               ? {
                   repoIds,
@@ -1749,6 +1762,7 @@ async function runCommitFlow(
                 }
               : {}),
           }),
+        ),
       );
       if (
         !response.cancelled &&
@@ -1756,9 +1770,12 @@ async function runCommitFlow(
       ) {
         handleCommitAndPushResponse(
           get,
+          projectId,
+          worktreeId,
           withGitHubConnectOffer(response),
           failureLabel,
           commitMeta,
+          failureAttemptId,
         );
       }
       if (
@@ -1769,18 +1786,17 @@ async function runCommitFlow(
         return false;
       }
     } else {
-      const response: CommitAndPushResponse = await runGitActionIpc(
-        set,
-        key,
-        operationId,
-        () =>
+      const response: CommitAndPushResponse = settleCleanSkips(
+        await runGitActionIpc(set, key, operationId, () =>
           api.github.commitAndPush({
             projectId,
             worktreeId,
             operationId,
             ...sourceField,
             ...(isCommitOnly ? { commitOnly: true, repoIds } : { pullFirst }),
+            ...skipCleanPushField,
           }),
+        ),
       );
       if (
         !response.cancelled &&
@@ -1788,9 +1804,12 @@ async function runCommitFlow(
       ) {
         handleCommitAndPushResponse(
           get,
+          projectId,
+          worktreeId,
           withGitHubConnectOffer(response),
           failureLabel,
           commitMeta,
+          failureAttemptId,
         );
       }
       if (
@@ -1811,16 +1830,20 @@ async function runCommitFlow(
     );
     return !isGitActionCancellationRequested(get, key, operationId);
   } catch (error: unknown) {
-    const fallback = isCommitOnly
-      ? 'Failed to commit'
-      : 'Failed to commit and push';
-    const message = error instanceof Error ? error.message : fallback;
-    get().addToast(message, 'error', undefined, {
-      category: 'Git Commit',
-      workspaceName: lookupWorkspaceName(projectId),
-      projectId,
-      worktreeId,
-    });
+    const appError = toAppError(resolveClientAppError(error));
+    if (appError) {
+      get().raiseGitActionFailure(
+        projectId,
+        worktreeId,
+        inlineFailure(
+          appError,
+          isCommitOnly
+            ? "Couldn't commit your changes."
+            : "Couldn't commit and push your changes.",
+        ),
+        failureAttemptId,
+      );
+    }
     return false;
   } finally {
     set((state) => {
@@ -1881,6 +1904,9 @@ async function runCreatePr(
     return false;
   }
   const operationId = createGitActionOperationId();
+  const failureAttemptId = clearGitActionFailure(set, key, () => {
+    void runCreatePr(set, get, params);
+  });
   const branches = gitHubRepositorySnapshot(projectId, worktreeId);
   const telemetryRepoCount =
     continuation?.telemetryRepoCount ??
@@ -2001,14 +2027,16 @@ async function runCreatePr(
       }
 
       if (generated.failedRepos.length > 0) {
-        get().addToast(
-          buildFailedReposMessage(
-            'Commit message generation',
-            generated.failedRepos,
-          ),
-          'error',
-          undefined,
-          commitMeta,
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          {
+            ...buildFailedReposFailure(
+              'Commit message generation',
+              generated.failedRepos,
+            ),
+          },
+          failureAttemptId,
         );
       }
 
@@ -2028,12 +2056,14 @@ async function runCreatePr(
         const message =
           'Commit message review is required before PR creation, but no repositories were eligible for review.';
         markPrCreationProgressError(set, key, message);
-        get().addToast(message, 'error', undefined, {
-          category: 'PR Create',
-          workspaceName,
+        get().raiseGitActionFailure(
           projectId,
           worktreeId,
-        });
+          {
+            error: message,
+          },
+          failureAttemptId,
+        );
         return false;
       }
 
@@ -2153,6 +2183,8 @@ async function runCreatePr(
         if (!commitResponse.cancelled) {
           handleCommitAndPushResponse(
             get,
+            projectId,
+            worktreeId,
             offeredCommitAuth
               ? {
                   ...commitResponse,
@@ -2163,6 +2195,7 @@ async function runCreatePr(
               : commitResponse,
             'Commit & push',
             commitMeta,
+            failureAttemptId,
           );
         }
         if (
@@ -2269,46 +2302,43 @@ async function runCreatePr(
           ? { ...repo, commitPrepared: true, pushCompleted: true }
           : repo,
     );
-    if (
-      offerGitHubConnect({
-        kind: 'pr',
-        source,
-        telemetryRepoCount,
-        projectId,
-        worktreeId,
-        failed: authFailuresWithCompletedStages,
-        continuation,
-        branches,
-        operationId,
-      })
-    ) {
+    const authFailuresOffered = offerGitHubConnect({
+      kind: 'pr',
+      source,
+      telemetryRepoCount,
+      projectId,
+      worktreeId,
+      failed: authFailuresWithCompletedStages,
+      continuation,
+      branches,
+      operationId,
+    });
+    if (authFailuresOffered) {
       if (response.repos.length === 0) clearPrCreationProgress(set, key);
-    } else if (prAuthFailures.length > 0) {
-      const message = buildFailedReposMessage('PR creation', prAuthFailures);
-      if (response.repos.length === 0) {
-        markPrCreationProgressError(set, key, message);
-      }
-      get().addToast(message, 'error', undefined, {
-        category: 'PR Create',
-        workspaceName,
-        projectId,
-        worktreeId,
-      });
     }
 
-    const otherFailures = (response.failedRepos ?? []).filter(
-      (repo) => !isGitHubAuthFailure(repo),
+    // Some PRs were created: running the whole request again would replay
+    // them and fail on the PRs that now exist, so no failure of this attempt
+    // offers a retry, including an earlier partial one (a commit message that
+    // couldn't be generated). The bar's Create PR covers the rest.
+    if (response.repos.length > 0)
+      dropGitActionRetry(set, key, failureAttemptId);
+
+    const remainingFailures = (response.failedRepos ?? []).filter(
+      (repo) => !authFailuresOffered || !isGitHubAuthFailure(repo),
     );
-    if (otherFailures.length) {
-      const message = buildFailedReposMessage('PR creation', otherFailures);
+    if (remainingFailures.length) {
+      const message = buildFailedReposMessage('PR creation', remainingFailures);
       if (response.repos.length === 0)
         markPrCreationProgressError(set, key, message);
-      get().addToast(message, 'error', undefined, {
-        category: 'PR Create',
-        workspaceName,
+      get().raiseGitActionFailure(
         projectId,
         worktreeId,
-      });
+        {
+          ...buildFailedReposFailure('PR creation', remainingFailures),
+        },
+        failureAttemptId,
+      );
     }
 
     // Info toast for local-only repos that were committed (no remote push).
@@ -2357,15 +2387,22 @@ async function runCreatePr(
     );
     return !isGitActionCancellationRequested(get, key, operationId);
   } catch (error: unknown) {
+    const appError = toAppError(resolveClientAppError(error));
+    const current = gitFailureAttempts.get(key) === failureAttemptId;
+    // A cancellation ends the progress as the other cancelled paths do.
+    if (!appError) {
+      if (current) clearPrCreationProgress(set, key);
+      return false;
+    }
     const message =
       error instanceof Error ? error.message : 'Failed to create PR';
-    markPrCreationProgressError(set, key, message);
-    get().addToast(message, 'error', undefined, {
-      category: 'PR Create',
-      workspaceName: lookupWorkspaceName(projectId),
+    if (current) markPrCreationProgressError(set, key, message);
+    get().raiseGitActionFailure(
       projectId,
       worktreeId,
-    });
+      inlineFailure(appError, "Couldn't create the pull request."),
+      failureAttemptId,
+    );
     return false;
   } finally {
     set((state) => {
@@ -2416,6 +2453,9 @@ async function runPushOnly(
     return false;
   }
   const operationId = createGitActionOperationId();
+  const failureAttemptId = clearGitActionFailure(set, key, () => {
+    void runPushOnly(set, get, params);
+  });
   const branches = gitHubRepositorySnapshot(projectId, worktreeId);
   set((state) => {
     const nextCancellationRequested = new Set(
@@ -2490,11 +2530,13 @@ async function runPushOnly(
       operationId,
     });
     if (failedRepos.length > 0) {
-      get().addToast(
-        buildFailedReposMessage('Push', failedRepos),
-        'error',
-        undefined,
-        pushMeta,
+      get().raiseGitActionFailure(
+        projectId,
+        worktreeId,
+        {
+          ...buildFailedReposFailure('Push', failedRepos),
+        },
+        failureAttemptId,
       );
     }
     if (response.skippedRepos.length > 0) {
@@ -2519,13 +2561,15 @@ async function runPushOnly(
     );
     return !isGitActionCancellationRequested(get, key, operationId);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to push';
-    get().addToast(message, 'error', undefined, {
-      category: 'Git Push',
-      workspaceName: lookupWorkspaceName(projectId),
-      projectId,
-      worktreeId,
-    });
+    const appError = toAppError(resolveClientAppError(error));
+    if (appError) {
+      get().raiseGitActionFailure(
+        projectId,
+        worktreeId,
+        inlineFailure(appError, "Couldn't push this branch."),
+        failureAttemptId,
+      );
+    }
     return false;
   } finally {
     set((state) => {
@@ -2571,8 +2615,6 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
   commitPushProgress: {},
   commitReviewPending: {},
   prMergeWarnings: {},
-  toasts: [],
-  notifications: [],
   planningSplitPr: new Set<string>(),
   splittingPr: new Set<string>(),
   splitPrPlans: {},
@@ -2581,6 +2623,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
   splitPrRefusals: {},
   splitPrExecuteFailures: {},
   splitPrDiscardedArtifacts: {},
+  gitActionFailures: {},
   splitLockedWorktrees: new Set<string>(),
   splitWorkflowSessions: new Set<string>(),
 
@@ -2646,6 +2689,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     worktreeId: string,
   ): Promise<SplitPrPlanResult | null> => {
     const key = worktreeKey(projectId, worktreeId);
+    const failureAttemptId = clearGitActionFailure(set, key);
     set((state) => {
       const nextRefusals = { ...state.splitPrRefusals };
       delete nextRefusals[key];
@@ -2692,14 +2736,15 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
       }
       return result;
     } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to plan split PR';
-      get().addToast(message, 'error', undefined, {
-        category: 'PR Create',
-        workspaceName: lookupWorkspaceName(projectId),
-        projectId,
-        worktreeId,
-      });
+      const appError = toAppError(resolveClientAppError(error));
+      if (appError) {
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          inlineFailure(appError, "Couldn't plan the split."),
+          failureAttemptId,
+        );
+      }
       return null;
     } finally {
       set((state) => {
@@ -2732,6 +2777,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     if (get().splittingPr.has(key)) {
       return false;
     }
+    const failureAttemptId = clearGitActionFailure(set, key);
 
     // Open the renderer-side presentation session immediately (before the async
     // main-process call). It outlives the lock so the SplitWorkflowView stays
@@ -2830,12 +2876,14 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
           if (response.code !== 'plan_mismatch') {
             void get().loadSplitPrMap(projectId, worktreeId);
           }
-          get().addToast(response.message, 'error', undefined, {
-            category: 'PR Create',
-            workspaceName: lookupWorkspaceName(projectId),
+          get().raiseGitActionFailure(
             projectId,
             worktreeId,
-          });
+            {
+              error: response.message,
+            },
+            failureAttemptId,
+          );
           return true;
         }
         set((state) => {
@@ -2898,14 +2946,15 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
       // session too so the view swaps back rather than stranding the user on a
       // dead workflow panel.
       get().closeSplitWorkflowSession(projectId, worktreeId);
-      const message =
-        error instanceof Error ? error.message : 'Failed to start split PR';
-      get().addToast(message, 'error', undefined, {
-        category: 'PR Create',
-        workspaceName: lookupWorkspaceName(projectId),
-        projectId,
-        worktreeId,
-      });
+      const appError = toAppError(resolveClientAppError(error));
+      if (appError) {
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          inlineFailure(appError, "Couldn't start the split."),
+          failureAttemptId,
+        );
+      }
       return false;
     } finally {
       set((state) => {
@@ -2927,6 +2976,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     snapshot: PrDiffSnapshot,
   ): Promise<void> => {
     const key = worktreeKey(projectId, worktreeId);
+    const failureAttemptId = clearGitActionFailure(set, key);
     set((state) => {
       const nextFailures = { ...state.splitPrExecuteFailures };
       delete nextFailures[key];
@@ -2971,12 +3021,14 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         if (response.code !== 'plan_mismatch') {
           void get().loadSplitPrMap(projectId, worktreeId);
         }
-        get().addToast(response.message, 'error', undefined, {
-          category: 'PR Create',
-          workspaceName: lookupWorkspaceName(projectId),
+        get().raiseGitActionFailure(
           projectId,
           worktreeId,
-        });
+          {
+            error: response.message,
+          },
+          failureAttemptId,
+        );
         return;
       }
       // Completed settle: KEEP the presentation session open so the
@@ -3002,14 +3054,15 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
       // A thrown approve error released the lock; close the session so the view
       // swaps back to normal UX rather than stranding a dead workflow panel.
       get().closeSplitWorkflowSession(projectId, worktreeId);
-      const message =
-        error instanceof Error ? error.message : 'Failed to split PR';
-      get().addToast(message, 'error', undefined, {
-        category: 'PR Create',
-        workspaceName: lookupWorkspaceName(projectId),
-        projectId,
-        worktreeId,
-      });
+      const appError = toAppError(resolveClientAppError(error));
+      if (appError) {
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          inlineFailure(appError, "Couldn't split the pull request."),
+          failureAttemptId,
+        );
+      }
     } finally {
       set((state) => {
         const next = new Set(state.splittingPr);
@@ -3031,14 +3084,14 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
       const api: CanopyApi = window.api;
       await api.github.exitSplitWorkflow({ projectId, worktreeId });
     } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to exit split PR';
-      get().addToast(message, 'error', undefined, {
-        category: 'PR Create',
-        workspaceName: lookupWorkspaceName(projectId),
-        projectId,
-        worktreeId,
-      });
+      const appError = toAppError(resolveClientAppError(error));
+      if (appError) {
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          inlineFailure(appError, "Couldn't leave the split."),
+        );
+      }
     }
     // Belt-and-suspenders map refresh. The main-side exit releases the lock,
     // whose RELEASE event already triggers a `loadSplitPrMap` in the store's
@@ -3060,14 +3113,14 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
       const api: CanopyApi = window.api;
       await api.github.cancelSplitPr({ projectId, worktreeId });
     } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to cancel split PR';
-      get().addToast(message, 'error', undefined, {
-        category: 'PR Create',
-        workspaceName: lookupWorkspaceName(projectId),
-        projectId,
-        worktreeId,
-      });
+      const appError = toAppError(resolveClientAppError(error));
+      if (appError) {
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          inlineFailure(appError, "Couldn't cancel the split."),
+        );
+      }
     }
   },
 
@@ -3107,16 +3160,14 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
       });
       return response;
     } catch (error: unknown) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Failed to discard split state';
-      get().addToast(message, 'error', undefined, {
-        category: 'PR Create',
-        workspaceName: lookupWorkspaceName(projectId),
-        projectId,
-        worktreeId,
-      });
+      const appError = toAppError(resolveClientAppError(error));
+      if (appError) {
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          inlineFailure(appError, "Couldn't discard the split."),
+        );
+      }
       return null;
     }
   },
@@ -3194,8 +3245,9 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
           },
         };
       });
-    } catch {
-      // Silently ignore load errors; the UI falls back to "no split in progress".
+    } catch (error: unknown) {
+      // The UI falls back to "no split in progress"; record why.
+      reportClientAppError(error);
     }
   },
 
@@ -3236,6 +3288,8 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
   ): Promise<void> => {
     const key = worktreeKey(projectId, worktreeId);
     const operationId = createGitActionOperationId();
+    // No retry: a partly finished merge is not safe to run again blindly.
+    const failureAttemptId = clearGitActionFailure(set, key);
     set((state) => {
       const nextCancellationRequested = new Set(
         state.gitActionCancellationRequested,
@@ -3288,12 +3342,20 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         );
       }
 
-      for (const failed of response.failedRepos) {
-        get().addToast(
-          `Merge failed for ${failed.repoName}: ${failed.error}`,
-          'error',
-          undefined,
-          mergeMeta,
+      if (response.failedRepos.length > 0) {
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          {
+            error: "Couldn't merge all repositories.",
+            details: response.failedRepos
+              .map(
+                (failed) =>
+                  `Merge failed for ${failed.repoName}: ${failed.error}`,
+              )
+              .join(' '),
+          },
+          failureAttemptId,
         );
       }
 
@@ -3323,11 +3385,15 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         );
       }
     } catch (error: unknown) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Failed to merge local branches';
-      get().addToast(message, 'error', undefined, mergeMeta);
+      const appError = toAppError(resolveClientAppError(error));
+      if (appError) {
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          inlineFailure(appError, "Couldn't merge the local branches."),
+          failureAttemptId,
+        );
+      }
     } finally {
       set((state) => {
         const next = new Set(state.mergingLocalBranches);
@@ -3365,6 +3431,9 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     const key = worktreeKey(projectId, worktreeId);
     const dryRun = options?.dryRun === true;
     const operationId = createGitActionOperationId();
+    const failureAttemptId = dryRun
+      ? undefined
+      : clearGitActionFailure(set, key);
     const mergeMeta: ToastMeta = {
       category: 'Git Merge',
       workspaceName: lookupWorkspaceName(projectId),
@@ -3471,12 +3540,20 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         );
       }
 
-      for (const failed of response.failedRepos) {
-        get().addToast(
-          `Merge failed for ${failed.repoName}: ${failed.error}`,
-          'error',
-          undefined,
-          mergeMeta,
+      if (response.failedRepos.length > 0) {
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          {
+            error: "Couldn't merge all repositories.",
+            details: response.failedRepos
+              .map(
+                (failed) =>
+                  `Merge failed for ${failed.repoName}: ${failed.error}`,
+              )
+              .join(' '),
+          },
+          failureAttemptId,
         );
       }
 
@@ -3530,10 +3607,16 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
 
       return response;
     } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to merge pull request';
       if (!dryRun) {
-        get().addToast(message, 'error', undefined, mergeMeta);
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError) {
+          get().raiseGitActionFailure(
+            projectId,
+            worktreeId,
+            inlineFailure(appError, "Couldn't merge the pull request."),
+            failureAttemptId,
+          );
+        }
       }
       return null;
     } finally {
@@ -3570,6 +3653,9 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
   pull: async (projectId: string, worktreeId: string): Promise<void> => {
     const key = worktreeKey(projectId, worktreeId);
     const operationId = createGitActionOperationId();
+    const failureAttemptId = clearGitActionFailure(set, key, () => {
+      void get().pull(projectId, worktreeId);
+    });
     set((state) => {
       const nextCancellationRequested = new Set(
         state.gitActionCancellationRequested,
@@ -3621,11 +3707,13 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         worktreeId,
       };
       if (response.failedRepos.length > 0) {
-        get().addToast(
-          buildFailedReposMessage('Pull', response.failedRepos),
-          'error',
-          undefined,
-          pullMeta,
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          {
+            ...buildFailedReposFailure('Pull', response.failedRepos),
+          },
+          failureAttemptId,
         );
       }
       if (response.skippedRepos.length > 0) {
@@ -3661,13 +3749,15 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         get().requestFastRefresh,
       );
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to pull';
-      get().addToast(message, 'error', undefined, {
-        category: 'Git Pull',
-        workspaceName: lookupWorkspaceName(projectId),
-        projectId,
-        worktreeId,
-      });
+      const appError = toAppError(resolveClientAppError(error));
+      if (appError) {
+        get().raiseGitActionFailure(
+          projectId,
+          worktreeId,
+          inlineFailure(appError, "Couldn't pull this branch."),
+          failureAttemptId,
+        );
+      }
       // Pull preflight and failure handling prune deleted origin/* refs. Refresh
       // local branch stats even when the IPC rejects so a branch removed from
       // the remote immediately loses its stale Pull action.
@@ -3845,9 +3935,10 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         return { accepted: true, reason: 'cancel_requested' };
       }
       return response;
-    } catch {
+    } catch (error: unknown) {
       // The renderer-side flag remains authoritative between chained IPC
       // stages and still prevents the visible action from advancing.
+      reportClientAppError(error);
       return { accepted: false, reason: 'request_failed' };
     }
   },
@@ -3875,8 +3966,9 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         projectId,
         worktreeId,
       });
-    } catch {
-      // Silently ignore refresh errors
+    } catch (error: unknown) {
+      // Background refresh: record it, but show nothing; the next poll retries.
+      reportClientAppError(error);
     }
   },
 
@@ -3892,8 +3984,9 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         worktreeId,
         skipIfFresh,
       });
-    } catch {
-      // Silently ignore fast refresh errors
+    } catch (error: unknown) {
+      // Background refresh: record it, but show nothing; the next poll retries.
+      reportClientAppError(error);
     }
   },
 
@@ -3907,14 +4000,18 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         projectId,
         worktreeId,
       });
-    } catch {
-      // Silently ignore fast refresh errors
+    } catch (error: unknown) {
+      // Background refresh: record it, but show nothing; the next poll retries.
+      reportClientAppError(error);
       return false;
     }
   },
 
   clearWorktreePrStatus: (projectId, worktreeId): void => {
     const key = worktreeKey(projectId, worktreeId);
+    // A branch change drops the old branch's failure, but never the attempt
+    // still running: its failure (say, the branch changed) must still show.
+    if (!gitHubActionBusy(get, key)) clearGitActionFailure(set, key);
     set((state) => {
       const livePrStatusWorktreeKeys = new Set(state.livePrStatusWorktreeKeys);
       // An explicit clear (branch change) immediately requests a fresh poll,
@@ -3929,10 +4026,52 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     });
   },
 
+  raiseGitActionFailure: (projectId, worktreeId, failure, attemptId): void => {
+    const key = worktreeKey(projectId, worktreeId);
+    if (attemptId !== undefined && gitFailureAttempts.get(key) !== attemptId)
+      return;
+    gitActionFailureSeq += 1;
+    const seq = gitActionFailureSeq;
+    // Only the attempt that registered the retry may offer it, and it never
+    // starts while another git action (or this attempt's own cleanup) is
+    // still running on the worktree.
+    const registered =
+      attemptId === undefined ? undefined : gitFailureRetries.get(key);
+    const retry = registered
+      ? (): void => {
+          if (gitHubActionBusy(get, key)) return;
+          registered();
+        }
+      : undefined;
+    set((state) => ({
+      gitActionFailures: {
+        ...state.gitActionFailures,
+        [key]: { ...failure, seq, ...(retry ? { retry } : {}) },
+      },
+    }));
+  },
+
+  dismissGitActionFailure: (projectId, worktreeId, seq): void => {
+    const key = worktreeKey(projectId, worktreeId);
+    set((state) => {
+      if (state.gitActionFailures[key]?.seq !== seq) return {};
+      // Only the visible failure goes. The attempt keeps its id, so a later
+      // failure from the same run (a push after a partial commit message
+      // failure) still shows and still marks its progress as failed.
+      const next = { ...state.gitActionFailures };
+      delete next[key];
+      return { gitActionFailures: next };
+    });
+  },
+
   hydratePersistedPrStatuses: (items): void => {
     const prStatuses: Record<string, WorktreePrStatus | null> = {};
+    // Cowork and App Advisor list no work entries here, so their failures
+    // are kept per project: a chat's git failure shows on its own page.
+    const coworkPrefixes: string[] = [`${APP_ADVISOR_PROJECT_ID}/`];
     for (const item of items) {
       if (item.type === 'cowork') {
+        coworkPrefixes.push(`${item.id}/`);
         continue;
       }
 
@@ -3947,7 +4086,23 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     // confirmed set so a `null` written here is not mistaken for a
     // live-confirmed "no PR" until a fresh event actually arrives (CAN-3053
     // finding 8).
-    set({ prStatuses, livePrStatusWorktreeKeys: new Set() });
+    const live = (key: string): boolean =>
+      key in prStatuses ||
+      coworkPrefixes.some((prefix) => key.startsWith(prefix));
+    for (const key of gitFailureAttempts.keys()) {
+      if (!live(key)) {
+        gitFailureAttempts.delete(key);
+        gitFailureRetries.delete(key);
+      }
+    }
+    // A removed worktree's failure has nowhere to show; drop it.
+    set((state) => ({
+      prStatuses,
+      livePrStatusWorktreeKeys: new Set(),
+      gitActionFailures: Object.fromEntries(
+        Object.entries(state.gitActionFailures).filter(([key]) => live(key)),
+      ),
+    }));
   },
 
   subscribeToEvents: (): (() => void) => {
@@ -4022,7 +4177,9 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
       if (parentRefreshTargets.length > 0) {
         void projectsStore
           .refreshWorktreesDiffStatsFromRemote(parentRefreshTargets)
-          .catch(() => undefined);
+          .catch((error: unknown) => {
+            reportClientAppError(error);
+          });
       }
 
       for (const target of parentRefreshTargets) {
@@ -4056,13 +4213,17 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
 
           void projectsStore
             .refreshWorktreesDiffStatsFromRemote(refreshTargets)
-            .catch(() => undefined);
+            .catch((error: unknown) => {
+              reportClientAppError(error);
+            });
 
           for (const target of refreshTargets) {
             void requestLoadedChangedFilesRefresh(
               target.projectId,
               target.worktreeId,
-            ).catch(() => undefined);
+            ).catch((error: unknown) => {
+              reportClientAppError(error);
+            });
           }
         },
       ) ?? ((): void => undefined);
@@ -4326,118 +4487,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     };
   },
 
-  addToast: (
-    message: string,
-    type: 'error' | 'info' | 'success' | 'warning',
-    onClick?: () => void,
-    meta?: ToastMeta,
-    onDismiss?: () => void,
-  ): void => {
-    const id = `toast-${++toastCounter}`;
-    const entry: Toast = {
-      id,
-      message,
-      type,
-      onClick,
-      onDismiss,
-      createdAt: Date.now(),
-      meta,
-    };
-    const category = entry.meta?.category ?? UNCATEGORIZED_TOAST_CATEGORY;
-    const showInApp =
-      entry.meta?.forceInApp === true || shouldShowInAppNotification(category);
-    const scope = entry.meta?.notificationScope;
-    const deliverable = !scope || isScopedNotificationDeliverable(scope);
-    if (type === 'error') {
-      recordSurfacedError({
-        chokePoint: 'toast',
-        // Not the routing default above: a missing category stays visible.
-        identifier: meta?.category ?? 'uncategorized',
-        // Omitted when no popup shows, so nothing claims it was displayed.
-        ...(deliverable && showInApp ? { surface: 'toast' as const } : {}),
-        text: message,
-        // Every error toast is blocked from replay (toastMessageReplayClass);
-        // showing it locally does not clear it for export.
-        textIsSensitive: true,
-      });
-    }
-    if (!deliverable) {
-      // Recording is unchanged: history keeps exactly what it would have
-      // held, with no popup, timer, or native banner.
-      if (showInApp) {
-        set((state) => ({
-          notifications: [entry, ...state.notifications].slice(
-            0,
-            MAX_NOTIFICATIONS,
-          ),
-        }));
-      }
-      return;
-    }
-    if (showInApp) {
-      set((state) => {
-        const nextNotifications = [entry, ...state.notifications];
-        return {
-          toasts: [...state.toasts, entry],
-          notifications:
-            nextNotifications.length > MAX_NOTIFICATIONS
-              ? nextNotifications.slice(0, MAX_NOTIFICATIONS)
-              : nextNotifications,
-        };
-      });
-      // ToastStack owns expiry and pauses its clock on hover or in the background.
-    }
-    if (entry.meta?.suppressOsNotification === true) return;
-    maybeFireOsNotification({
-      title:
-        // Orchestrator chat toasts carry no projectId (getChatToastAttribution);
-        // project chat toasts always do, so a project named "Orchestrator"
-        // keeps its chat title.
-        category === 'Chat' &&
-        entry.meta?.projectId === undefined &&
-        isOrchestratorLabel(entry.meta?.workspaceName)
-          ? ORCHESTRATOR_LABEL
-          : (entry.meta?.title ??
-            (entry.meta?.category === undefined
-              ? brandText.appName
-              : toastCategoryLabel(entry.meta.category))),
-      body: entry.meta?.osNotificationBody ?? entry.message,
-      category,
-      toastId: entry.id,
-      projectId: entry.meta?.projectId,
-      worktreeId: entry.meta?.worktreeId,
-      chatId: entry.meta?.chatId,
-      onClick: entry.onClick,
-      ...(entry.meta?.agentCompletion === true
-        ? { agentCompletion: true }
-        : {}),
-    });
-  },
-
-  dismissToast: (id: string): void => {
-    const toast =
-      get().toasts.find((entry) => entry.id === id) ??
-      get().notifications.find((entry) => entry.id === id);
-    toast?.onDismiss?.();
-    set((state) => ({
-      toasts: state.toasts.filter((t) => t.id !== id),
-      notifications: state.notifications.filter((n) => n.id !== id),
-    }));
-  },
-
-  expireToast: (id: string): void => {
-    set((state) => ({
-      toasts: state.toasts.filter((t) => t.id !== id),
-    }));
-  },
-
-  dismissNotification: (id: string): void => {
-    const notification = get().notifications.find((entry) => entry.id === id);
-    notification?.onDismiss?.();
-    set((state) => ({
-      notifications: state.notifications.filter((n) => n.id !== id),
-    }));
-  },
+  addToast,
 }));
 
 interface E2eToastTestApi {
@@ -4494,7 +4544,7 @@ if (__CANOPY_E2E__) {
         );
     },
     clear: (): void => {
-      useGitHubStore.setState({ toasts: [] });
+      resetToastStack();
     },
   };
 }

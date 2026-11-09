@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
 import {
+  isPathInsideExecutionsDir,
   loadExecutionState,
   prepareActiveExecutionResume,
+  relativeToExecutionsDir,
   saveExecutionState,
 } from '../execution-state';
 import { createInitialState, resumePipeline } from '../pipeline-executor';
@@ -402,6 +404,95 @@ describe('current-format execution state', () => {
         expect(listStateDirectory(dir)).toEqual([`${EXECUTION_ID}.json`]);
       },
     );
+  });
+
+  // The daemon's pipeline host writes through the canonical data root, and
+  // Electron main reads the same store through the root it was given, which
+  // can be a symlink (CAN-5958).
+  describe('a store named through a symlink', () => {
+    let alias: string;
+    let canonical: string;
+
+    beforeEach(() => {
+      alias = `${dir}-alias`;
+      fs.symlinkSync(dir, alias);
+      canonical = fs.realpathSync(dir);
+    });
+
+    afterEach(async () => {
+      await rm(alias, { force: true });
+    });
+
+    it('loads and saves a state whose paths name the store canonically', async () => {
+      const state = pausedState(canonical);
+      const logFile = join(
+        canonical,
+        EXECUTION_ID,
+        'logs',
+        'ask--question.log',
+      );
+      state.jobs.ask.steps.question.log_file = logFile;
+      await writeRaw(state);
+
+      const loaded = await loadExecutionState(EXECUTION_ID, alias);
+      if (!loaded) throw new Error('Expected the stored state');
+
+      expect(loaded.jobs.ask.steps.question.log_file).toBe(logFile);
+      expect(
+        loaded.jobs.agent.steps.prompt.agent_recovery?.transcript_file,
+      ).toBe(join(canonical, EXECUTION_ID, 'agent', 'transcript.jsonl'));
+      await saveExecutionState(loaded, alias);
+      await expect(
+        loadExecutionState(EXECUTION_ID, alias),
+      ).resolves.toMatchObject({ status: 'paused' });
+    });
+
+    /** A log path under the canonical root that a symlink takes outside the store. */
+    function escapingSymlink(): string {
+      const outside = `${dir}-outside`;
+      fs.mkdirSync(outside, { recursive: true });
+      fs.writeFileSync(join(outside, 'secret.log'), 'secret\n');
+      const logs = join(canonical, EXECUTION_ID, 'logs');
+      fs.mkdirSync(logs, { recursive: true });
+      const link = join(logs, 'escape.log');
+      fs.symlinkSync(join(outside, 'secret.log'), link);
+      return link;
+    }
+
+    /** A `..` path that starts under the canonical root and leaves it. */
+    const dotDotPath = (): string =>
+      `${canonical}/${EXECUTION_ID}/../../outside.log`;
+
+    afterEach(async () => {
+      await rm(`${dir}-outside`, { recursive: true, force: true });
+    });
+
+    it.each([
+      ['a `..` path under the canonical root', dotDotPath],
+      [
+        'a symlink under the canonical root that leaves the store',
+        escapingSymlink,
+      ],
+    ])('still rejects %s', async (_label, logFile) => {
+      const state = pausedState(canonical);
+      state.jobs.ask.steps.question.log_file = logFile();
+      await writeRaw(state);
+
+      await expect(loadExecutionState(EXECUTION_ID, alias)).rejects.toThrow(
+        /log_file escapes the execution output directory/,
+      );
+    });
+
+    it('places a log file named canonically inside the store, for log reads', () => {
+      const logFile = join(canonical, EXECUTION_ID, 'logs', 'work--emit.log');
+
+      expect(isPathInsideExecutionsDir(alias, logFile)).toBe(true);
+      expect(relativeToExecutionsDir(alias, logFile)).toBe(
+        join(EXECUTION_ID, 'logs', 'work--emit.log'),
+      );
+      expect(isPathInsideExecutionsDir(alias, dotDotPath())).toBe(false);
+      expect(isPathInsideExecutionsDir(alias, escapingSymlink())).toBe(false);
+    });
   });
 
   describe('resuming a migrated provider pause by reason', () => {

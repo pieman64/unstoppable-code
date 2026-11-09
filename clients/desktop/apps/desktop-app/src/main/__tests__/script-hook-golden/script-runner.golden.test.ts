@@ -42,7 +42,7 @@ jest.mock('node:child_process', () => {
     execFile: jest.fn(),
   };
 });
-jest.mock('@canopy/desktop-shared/node/lib/path-lookup', () => ({
+jest.mock('@canopy/execution-engine/node/lib/path-lookup', () => ({
   findExecutableOnPath: jest.fn(),
 }));
 jest.mock('../../lib/windows-git-bash', () => ({
@@ -58,7 +58,7 @@ jest.mock('../../resource-monitor', () => ({
   }),
 }));
 
-import { findExecutableOnPath } from '@canopy/desktop-shared/node/lib/path-lookup';
+import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import {
   drainOwnedProcess,
   killChildProcessGroup,

@@ -21,7 +21,7 @@ import { focusableWithin } from '../lib/focusable';
  */
 
 export interface ShareInstallDialogPrimary {
-  readonly label: string;
+  readonly label: ReactNode;
   readonly onClick: () => void;
   readonly disabled?: boolean;
   /** Shows the button's own spinner; `busyLabel` replaces the label meanwhile. */

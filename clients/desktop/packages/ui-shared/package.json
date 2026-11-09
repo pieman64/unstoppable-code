@@ -26,6 +26,10 @@
     "./components/DataSharingOptInCta": "./src/components/DataSharingOptInCta.tsx",
     "./components/InvoiceDetailView": "./src/components/InvoiceDetailView.tsx",
     "./components/Badge": "./src/components/Badge.tsx",
+    "./components/Field": "./src/components/Field.tsx",
+    "./components/Notice": "./src/components/Notice.tsx",
+    "./components/RemoteControlPairingCode": "./src/components/RemoteControlPairingCode.tsx",
+    "./components/StatusBlocks": "./src/components/StatusBlocks.tsx",
     "./components/Disclosure": "./src/components/Disclosure.tsx",
     "./components/StatusGlyph": "./src/components/StatusGlyph.tsx",
     "./components/InstalledShareMenu": "./src/components/InstalledShareMenu.tsx",
@@ -115,7 +119,8 @@
     "./components/chat/QuestionPrompt": "./src/components/chat/QuestionPrompt.tsx",
     "./components/chat/useQuestionPrompt": "./src/components/chat/useQuestionPrompt.ts",
     "./components/chat/question-prompt-progress": "./src/components/chat/question-prompt-progress.ts",
-    "./lib/github-workflow-display": "./src/lib/github-workflow-display.ts"
+    "./lib/github-workflow-display": "./src/lib/github-workflow-display.ts",
+    "./components/Stack": "./src/components/Stack.tsx"
   },
   "peerDependencies": {
     "react": ">=18",

@@ -200,4 +200,19 @@ describe('host-local pipeline launches', () => {
       ).success,
     ).toBe(false);
   });
+
+  it('admits Windows drive paths and refuses UNC, device and relative ones (CAN-5091)', () => {
+    const at = (cwd: string): boolean =>
+      WorkerPipelineHostLaunchSchema.safeParse({ ...pipelineLaunch, cwd })
+        .success;
+    expect(at('C:\\Users\\me\\worktree')).toBe(true);
+    expect(at('d:/work/tree')).toBe(true);
+    expect(at('\\\\server\\share\\tree')).toBe(false);
+    expect(at('\\\\?\\C:\\tree')).toBe(false);
+    expect(at('//server/share/tree')).toBe(false);
+    expect(at('//?/C:/tree')).toBe(false);
+    expect(at('/\\server\\share')).toBe(false);
+    expect(at('work\\tree')).toBe(false);
+    expect(at('C:tree')).toBe(false);
+  });
 });

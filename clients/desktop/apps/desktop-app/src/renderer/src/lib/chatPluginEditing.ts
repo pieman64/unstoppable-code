@@ -135,6 +135,10 @@ export function renderedChatPluginEditingState(
     : null;
 }
 
+/** Thrown when a chat cannot take a plugin change yet; callers may match on it. */
+export const CHAT_PLUGINS_BUSY_MESSAGE =
+  'Wait for this chat to finish before changing plugins.';
+
 export async function editChatPlugins(
   getState: () => ChatState,
   target: PluginChatTarget,
@@ -154,7 +158,7 @@ export async function editChatPlugins(
       tab.pendingInitialCreation ||
       tab.status === 'streaming'
     )
-      throw new Error('Wait for this chat to finish before changing plugins.');
+      throw new Error(CHAT_PLUGINS_BUSY_MESSAGE);
     const chosen = edit(effective);
     const stripped = stripAgentOnlyChatPluginSelections(
       chosen,
@@ -243,7 +247,7 @@ export async function setChatAuthPreferencesFromEffective(
       tab.pendingInitialCreation ||
       tab.status === 'streaming'
     )
-      throw new Error('Wait for this chat to finish before changing plugins.');
+      throw new Error(CHAT_PLUGINS_BUSY_MESSAGE);
     const inherited = inheritedPluginSelections({
       projectDefaults,
       global,

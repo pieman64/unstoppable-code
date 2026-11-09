@@ -762,16 +762,22 @@ export interface WorkspaceCloudBindingSnapshot {
   personalCatalogId: string | undefined;
   temporary: boolean;
   cloudBinding: CloudProjectBinding | undefined;
+  /** The repositories this device does not clone (`suppressedRepoIds`). */
+  suppressedRepoIds: readonly string[];
 }
 
 /**
  * Decides a workspace's cloud project binding from the one read in the
  * manifest queue: the replacement (`undefined` removes it), or `null` to
- * leave the workspace as it is.
+ * leave the workspace as it is. `suppressedRepoIds`, when given, replaces the
+ * workspace's declined repositories in the same write (CAN-5192).
  */
 export type WorkspaceCloudBindingCompare = (
   current: WorkspaceCloudBindingSnapshot,
-) => { cloudBinding: CloudProjectBinding | undefined } | null;
+) => {
+  cloudBinding: CloudProjectBinding | undefined;
+  suppressedRepoIds?: readonly string[];
+} | null;
 
 /** Binds inherited organization hooks in the local hooks. */
 export interface OrganizationHookBindingsDecision {

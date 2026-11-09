@@ -2,6 +2,7 @@ import type { BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
 import type {
   ExecutionLifecycleHooks,
+  PipelineStepNotification,
   StepPostProcessContext,
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import { getExecutionAccounting } from '../execution-accounting';
@@ -71,31 +72,43 @@ function parseGitCommitPushResults(
   }
 }
 
+/**
+ * Shows a step's desktop notifications, for in-process runs and for daemon
+ * runs Electron main follows (CAN-5868).
+ */
+export function deliverPipelineStepNotifications(
+  notifications: readonly PipelineStepNotification[],
+  scope: { projectId?: string; worktreeId?: string },
+  getWindow?: () => BrowserWindow | null,
+): void {
+  // A custom notification step carries no typed attention or failure
+  // reason, so it is routine activity in the run's space (CAN-3615).
+  if (
+    scope.projectId &&
+    scope.worktreeId &&
+    !isSpaceNotificationDeliverable(
+      { projectId: scope.projectId, worktreeId: scope.worktreeId },
+      'routine',
+    )
+  )
+    return;
+  for (const notification of notifications) {
+    showOsNotification(
+      {
+        id: `pipeline-${randomUUID()}`,
+        title: notification.title,
+        body: notification.body,
+      },
+      () => getWindow?.() ?? null,
+    );
+  }
+}
+
 export function createDesktopStepPostProcess(
   getWindow?: () => BrowserWindow | null,
 ): (ctx: StepPostProcessContext) => Promise<void> {
   return async (ctx) => {
-    // A custom notification step carries no typed attention or failure
-    // reason, so it is routine activity in the run's space (CAN-3615).
-    const notifications =
-      !ctx.projectId ||
-      !ctx.worktreeId ||
-      isSpaceNotificationDeliverable(
-        { projectId: ctx.projectId, worktreeId: ctx.worktreeId },
-        'routine',
-      )
-        ? (ctx.notifications ?? [])
-        : [];
-    for (const notification of notifications) {
-      showOsNotification(
-        {
-          id: `pipeline-${randomUUID()}`,
-          title: notification.title,
-          body: notification.body,
-        },
-        () => getWindow?.() ?? null,
-      );
-    }
+    deliverPipelineStepNotifications(ctx.notifications ?? [], ctx, getWindow);
 
     if (
       ctx.step.uses !== 'builtin/git-commit-push' ||

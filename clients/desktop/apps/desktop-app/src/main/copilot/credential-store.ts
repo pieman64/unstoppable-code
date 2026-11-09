@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { syncDirectory, writeFileAtomically } from '../lib/atomic-file';
 import { isE2eBuild } from '../lib/e2e-gate';
 import { getCopilotCredentialFilePath } from '../lib/paths';
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import {
   getSecretStoragePolicy,
   getSecureStorageFailure,

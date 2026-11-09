@@ -62,6 +62,8 @@ export function blockFingerprint(block: PersistedChatBlock): string {
       return `claude_terminal_sync_warning:${String(block.timestamp)}:${normalizeFingerprintText(block.message ?? '')}`;
     case 'account_proxy_switch':
       return `account_proxy_switch:${block.sourceEventId ?? String(block.timestamp)}:${normalizeFingerprintText(block.account)}`;
+    case 'claude_mods_skipped':
+      return `claude_mods_skipped:${block.sourceEventId ?? String(block.timestamp)}:${block.mods.map((mod) => `${mod.pluginId}\u0000${mod.reason}`).join('\n')}`;
     case 'turn_timer':
       return `turn_timer:${String(block.startedAt)}:${String(block.pausedAt)}:${String(block.resumedAt)}:${String(block.accumulatedPausedDurationMs)}:${String(block.completedAt)}`;
     case 'hook_info':
@@ -107,6 +109,7 @@ export const LAYOUT_BLOCK_TYPES: ReadonlySet<string> = new Set<string>([
   'automation_info',
   'claude_terminal_sync_warning',
   'account_proxy_switch',
+  'claude_mods_skipped',
   'rebase_resolution_info',
   'builtin_gh_chat_info',
   'pending_setup_info',

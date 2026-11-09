@@ -1,3 +1,4 @@
+import { Badge } from './Badge';
 import {
   useEffect,
   useRef,
@@ -15,10 +16,12 @@ import {
   type PlanReviewAuthorKind,
 } from '../lib/plan-comments';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import type { StatusGlyphState } from '../lib/status-glyph';
 import { Button } from './Button';
 import { DISPLAY_AVATAR_GLYPH_SIZE, DisplayAvatar } from './DisplayAvatar';
 import { RichHoverTooltip } from './RichHoverTooltip';
 import { Tooltip } from './Tooltip';
+import { StatusGlyph } from './StatusGlyph';
 
 // ---------------------------------------------------------------------------
 // Shared, display-only plan review (comment thread) primitives — a GitHub
@@ -113,16 +116,8 @@ export function PlanReviewComment({
           >
             {author.name}
           </span>
-          {author.isYou && (
-            <span className="rounded-full bg-fg-primary/[0.06] px-1.5 py-px text-3xs font-medium fg-secondary">
-              you
-            </span>
-          )}
-          {author.kind === 'agent' && (
-            <span className="rounded-full bg-fg-primary/[0.06] px-1.5 py-px text-3xs font-medium fg-secondary">
-              agent
-            </span>
-          )}
+          {author.isYou && <Badge>you</Badge>}
+          {author.kind === 'agent' && <Badge>agent</Badge>}
           {time && (
             <time
               dateTime={timestamp}
@@ -133,10 +128,9 @@ export function PlanReviewComment({
             </time>
           )}
           {pending && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-warning-subtle px-1.5 py-px text-3xs font-medium fg-warning">
-              <WarningIcon size={12} exactSize />
+            <Badge tone="warning" icon={WarningIcon}>
               Not sent
-            </span>
+            </Badge>
           )}
           {actions && (
             <div className="ml-auto flex items-center">{actions}</div>
@@ -249,6 +243,13 @@ export interface PlanReviewThreadProps {
   dataAttributes?: Record<string, string>;
 }
 
+/** An unresolved review needs attention; resolving it finishes that work. */
+function planReviewThreadGlyphState(
+  status: PlanReviewThreadProps['status'],
+): StatusGlyphState {
+  return status === 'resolved' ? 'done' : 'needs-you';
+}
+
 /**
  * A review conversation card: a header summarizing status + the anchored
  * reference, a connected stack of comments, and a footer slot for the reply
@@ -304,12 +305,7 @@ export function PlanReviewThread({
             resolved ? 'fg-success' : 'fg-secondary'
           }`}
         >
-          <span
-            aria-hidden="true"
-            className={`inline-block h-2 w-2 rounded-full ${
-              resolved ? 'bg-success' : 'bg-fg-success-strong'
-            }`}
-          />
+          <StatusGlyph state={planReviewThreadGlyphState(status)} size={12} />
           {resolved ? 'Resolved' : 'Open'}
         </span>
         <span className="shrink-0 text-2xs fg-secondary">
@@ -352,11 +348,7 @@ export function PlanReviewThread({
         ) : (
           <span className="min-w-0 flex-1" />
         )}
-        {reference?.outdated && (
-          <span className="shrink-0 rounded-full border border-line-attention bg-warning-subtle px-1.5 py-0.5 text-3xs font-medium fg-warning">
-            outdated
-          </span>
-        )}
+        {reference?.outdated && <Badge tone="warning">outdated</Badge>}
       </div>
       {!collapsed && (
         <div className={compact ? 'px-3 py-2.5' : 'px-3.5 py-3'}>

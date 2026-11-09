@@ -19,13 +19,14 @@ import { getCanopyDataDir } from '../canopy-paths';
 import {
   ensurePrivateLockDirectorySync,
   withOwnerLockFileSync,
-} from '../node/lib/owner-lock-file';
+} from '@canopy/execution-engine/node/lib/owner-lock-file';
 import { writeFileAtomicallySync } from '../node/lib/atomic-file';
 import {
   damagedCopyPath,
   pruneDamagedCopiesSync,
-} from '../node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
+import { flushDirectorySync } from '@canopy/core-platform/directory-flush';
 import { normalizePipeline } from './normalize-pipeline';
 import {
   getTriggerTypes,
@@ -38,7 +39,7 @@ import {
   type PipelineInfo,
   type PipelineSaveInput,
   type PipelineTriggerType,
-} from '../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { normalizePipelineScopes } from './scope';
 import { parsePipelineText } from './parse-pipeline';
 import { serializePipelineDocument } from '@canopy/pipeline-interop/serialize-pipeline';
@@ -68,7 +69,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isPipelineTriggerType(value: unknown): value is PipelineTriggerType {
   return (
-    value === 'dispatch' || value === 'plan_ready' || value === 'task_ready'
+    value === 'dispatch' ||
+    value === 'plan_ready' ||
+    value === 'task_ready' ||
+    value === 'workflow'
   );
 }
 
@@ -442,6 +446,23 @@ function installDurably(filePath: string, data: string): void {
     if (!isStorageOutcomeUnknownError(error)) throw error;
     process.stderr.write(
       `[pipelines] ${filePath} installed, but its folder flush failed: ${errorMessage(error)}\n`,
+    );
+  }
+}
+
+/**
+ * A removed document persists only with its folder. Without the flush, power
+ * loss could bring back a copy an install rollback removed after its record
+ * is gone (CAN-5678). A failed flush leaves the removal made but unconfirmed,
+ * which is logged, as for a write.
+ */
+function flushRemovedDocuments(): void {
+  const directory = getUserPipelinesDir();
+  try {
+    flushDirectorySync(directory);
+  } catch (error) {
+    process.stderr.write(
+      `[pipelines] ${directory} removal made, but its folder flush failed: ${errorMessage(error)}\n`,
     );
   }
 }
@@ -945,6 +966,7 @@ export function removeUnlistedStoredPipelineDocument(
     )
       return refused('invalid', `Workflow ${id} changed; it was not removed.`);
     unlinkSync(path.join(getUserPipelinesDir(), `${id}.yaml`));
+    flushRemovedDocuments();
     return { ok: true, value: { removed: true } };
   });
 }
@@ -1315,6 +1337,7 @@ export function removeStoredPipeline(
             : [],
         ),
       );
+      let unlinked = false;
       for (const filename of filenames) {
         if (!/^[A-Za-z0-9_-]+\.yaml$/.test(filename)) continue;
         const filePath = resolveUserPipelineFilePath(filename);
@@ -1323,6 +1346,7 @@ export function removeStoredPipeline(
         if (identity !== null && retainedIdentities.has(identity)) continue;
         try {
           unlinkSync(filePath);
+          unlinked = true;
         } catch (error) {
           if (errorCode(error) !== 'ENOENT')
             process.stderr.write(
@@ -1330,6 +1354,7 @@ export function removeStoredPipeline(
             );
         }
       }
+      if (unlinked) flushRemovedDocuments();
     }
     return result;
   });

@@ -36,8 +36,6 @@ import {
 } from '../approvals/live-approval-modes';
 import {
   FAIL_CLOSED_APPROVAL_MODE,
-  type AppAdvisorAction,
-  type AppAdvisorJson,
   type ApprovalMode,
   type ApprovalRule,
   type ChatSendMessageRequest,
@@ -80,29 +78,15 @@ export type DesktopEnvironmentRuntime = Pick<
   'query' | 'instruction'
 >;
 
-export interface DesktopRendererActionResult {
-  ok: boolean;
-  result?: AppAdvisorJson;
-  /**
-   * `retryable` alone: the stage did not run. A retryable `timeout` or
-   * `surface_unavailable` `code` from the bridge: it may have run.
-   */
-  error?: { message: string; retryable?: boolean; code?: string };
-}
-
-/** The port error for a failed renderer stage, keeping an unknown outcome. */
-function rendererStageError(
-  error: DesktopRendererActionResult['error'],
-  fallback: string,
-): AgentPortError {
-  const retryable = error?.retryable === true;
-  const code =
-    retryable &&
-    (error?.code === 'timeout' || error?.code === 'surface_unavailable')
-      ? error.code
-      : 'execution_failed';
-  return new AgentPortError(code, error?.message ?? fallback, retryable);
-}
+/** A new worktree for a started chat, or why none was created (CAN-5830). */
+export type DesktopChatWorktreeResult =
+  | { ok: true; worktreeId: string }
+  | {
+      ok: false;
+      code: 'surface_unavailable' | 'execution_failed';
+      message: string;
+      retryable: boolean;
+    };
 
 /**
  * The host services the desktop port composes. Registered reads and chat
@@ -129,12 +113,18 @@ export interface DesktopEnvironmentPortDeps {
     messageId: string,
     call: DesktopAgentActionCall,
   ): Promise<boolean>;
-  /** Retained renderer bridge for worktree creation. */
-  rendererAction(
-    action: AppAdvisorAction,
-    requestId: string,
+  /**
+   * A new worktree branched from the calling chat's, created in main through
+   * the keyed W5 writer; refused while no interface shows the chat (CAN-5830).
+   */
+  createChatWorktree(
+    request: {
+      workspaceId: string;
+      baseWorktreeId: string;
+      idempotencyKey: string;
+    },
     call: DesktopAgentActionCall,
-  ): Promise<DesktopRendererActionResult>;
+  ): Promise<DesktopChatWorktreeResult>;
   /** The model catalog for the owner of the calling chat's work. */
   listModels(call: DesktopAgentActionCall): Promise<AgentModelList>;
   /**
@@ -896,30 +886,21 @@ export function createDesktopEnvironmentPort(
         "The new chat would run outside this chat's folder.",
       );
     }
-    const created = await deps.rendererAction(
+    const created = await deps.createChatWorktree(
       {
-        type: 'worktree.create',
         workspaceId: input.scope.workspaceId,
         baseWorktreeId: input.scope.worktreeId,
-        select: false,
+        idempotencyKey: `${input.idempotencyKey}:worktree`,
       },
-      `${input.idempotencyKey}:worktree`,
       call,
     );
-    const worktreeId =
-      created.ok &&
-      typeof created.result === 'object' &&
-      created.result !== null &&
-      !Array.isArray(created.result) &&
-      typeof created.result.worktreeId === 'string'
-        ? created.result.worktreeId
-        : null;
-    if (!worktreeId) {
-      throw rendererStageError(
-        created.error,
-        'The new worktree could not be created.',
+    if (!created.ok)
+      throw new AgentPortError(
+        created.code,
+        created.message,
+        created.retryable,
       );
-    }
+    const { worktreeId } = created;
     return { chatId, worktreeId, delivery: 'queued_for_setup' };
   }
 
@@ -1538,44 +1519,7 @@ const defaultDeps: DesktopEnvironmentPortDeps = {
       userMessageId: messageId,
     });
   },
-  rendererAction: async (action, requestId, call) => {
-    const runtime = call.host.worktreeActionRuntime;
-    if (!runtime) {
-      return {
-        ok: false,
-        error: { message: 'Starting chats needs a worktree chat.' },
-      };
-    }
-    const [{ requestAppAdvisorRendererTool }, { mainWindowOnlyToolSurfaces }] =
-      await Promise.all([
-        import('../ipc/app-advisor'),
-        import('../canopy-tools/show-files-runtime'),
-      ]);
-    const response = await requestAppAdvisorRendererTool(
-      {
-        kind: 'dispatch_action',
-        requestId,
-        originWorktreeId: runtime.worktreeId,
-        originChatTabId: runtime.chatId,
-        action,
-      },
-      mainWindowOnlyToolSurfaces(runtime.getWindow),
-      call.signal ? { signal: call.signal } : undefined,
-    );
-    return {
-      ok: response.ok,
-      ...(response.result !== undefined ? { result: response.result } : {}),
-      ...(response.error
-        ? {
-            error: {
-              message: response.error.message,
-              code: response.error.code,
-              ...(response.error.retryable === true ? { retryable: true } : {}),
-            },
-          }
-        : {}),
-    };
-  },
+  createChatWorktree: createDesktopChatWorktree,
   listModels: async (call): Promise<AgentModelList> => {
     // Deferred: the projection reads provider, policy, and flag state that
     // most injected tool calls never need.
@@ -1708,6 +1652,79 @@ const defaultDeps: DesktopEnvironmentPortDeps = {
   },
   lineage: desktopAgentLineage,
 };
+
+/**
+ * CAN-5830: the new worktree a started chat runs in, created in main through
+ * the keyed W5 writer. Refused, before anything is written, while no
+ * interface shows the calling chat (D9).
+ */
+export async function createDesktopChatWorktree(
+  request: Parameters<DesktopEnvironmentPortDeps['createChatWorktree']>[0],
+  call: DesktopAgentActionCall,
+): Promise<DesktopChatWorktreeResult> {
+  const runtime = call.host.worktreeActionRuntime;
+  if (!runtime)
+    return {
+      ok: false,
+      code: 'execution_failed',
+      message: 'Starting chats needs a worktree chat.',
+      retryable: false,
+    };
+  const [
+    { agentChatInterfacePresent, AGENT_CHAT_INTERFACE_TEXTS },
+    { createAgentChatWorktree },
+  ] = await Promise.all([
+    import('../canopy-tools/agent-chat-interface'),
+    import('../lib/agent-chat-worktree'),
+  ]);
+  if (
+    !agentChatInterfacePresent({
+      projectId: runtime.projectId,
+      worktreeId: runtime.worktreeId,
+      chatId: runtime.chatId,
+      action: {
+        type: 'worktree.create',
+        workspaceId: request.workspaceId,
+        baseWorktreeId: request.baseWorktreeId,
+        select: false,
+      },
+    })
+  )
+    return {
+      ok: false,
+      code: 'surface_unavailable',
+      message: AGENT_CHAT_INTERFACE_TEXTS.needsWindow,
+      retryable: true,
+    };
+  call.signal?.throwIfAborted();
+  try {
+    const created = await createAgentChatWorktree({
+      ...request,
+      getWindow: runtime.getWindow,
+    });
+    if (created.status === 'created')
+      return { ok: true, worktreeId: created.worktreeId };
+    return {
+      ok: false,
+      code:
+        created.status === 'needs-repair'
+          ? 'surface_unavailable'
+          : 'execution_failed',
+      message: created.message,
+      retryable: false,
+    };
+  } catch (cause) {
+    return {
+      ok: false,
+      code: 'execution_failed',
+      message:
+        cause instanceof Error
+          ? cause.message
+          : 'The new worktree could not be created.',
+      retryable: false,
+    };
+  }
+}
 
 export function desktopEnvironmentPortDeps(
   overrides: Partial<DesktopEnvironmentPortDeps> = {},

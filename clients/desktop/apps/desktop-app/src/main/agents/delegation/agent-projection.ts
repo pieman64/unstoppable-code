@@ -13,7 +13,7 @@ import {
   mcpHttpAuthTargetKey,
 } from '@canopy/desktop-shared/lib/mcp-http-auth';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
-import { normalizeMcpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
+import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import type {
   AgentCapabilitySnapshot,
   AgentMcpHttpAuthPin,

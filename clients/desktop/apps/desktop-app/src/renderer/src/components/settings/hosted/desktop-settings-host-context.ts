@@ -15,9 +15,16 @@ import {
   classifyAuthenticatedPortalPath,
   normalizeAuthenticatedPortalOrigin,
 } from '@canopy/desktop-shared/lib/authenticated-portal-request';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { settingsActionErrorCopy } from '@canopy/ui-app/settings/errors';
-import { useGitHubStore } from '@/stores/githubStore';
+import { inlineFailure } from '@/lib/inline-app-error';
 import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  beginHostedSettingsAction,
+  hostedSettingsFailureScope,
+  raiseHostedSettingsFailure,
+} from './hosted-settings-host-failure';
 import {
   hostedSettingsPathname,
   hostedSettingsSearchParams,
@@ -130,11 +137,17 @@ function currentHostedSettingsPath(
   return `${hostedSettingsPathname(location.route)}${query ? `?${query}` : ''}${location.hash ? `#${location.hash}` : ''}`;
 }
 
-/** One activation owns one failure notice; no destination or server text is shown. */
+/**
+ * One activation owns one failure notice, shown on the page it started from
+ * (see `hosted-settings-host-failure`); no destination or server text is
+ * shown.
+ */
 export async function openHostedSettingsExternalUrl(
   href: string,
   { account, webOrigin, location }: HostedSettingsLinkContext,
 ): Promise<boolean> {
+  const attempt = beginHostedSettingsAction();
+  const scope = hostedSettingsFailureScope(location, account);
   let action = 'open this page';
   try {
     if (!safeHostedSettingsHref(href)) throw new Error('Invalid destination');
@@ -184,14 +197,20 @@ export async function openHostedSettingsExternalUrl(
       result.data.reason === 'browser_failed'
     )
       action = 'open your browser';
-  } catch {
+  } catch (error: unknown) {
     // A rejected invoke may follow a launch. Never retry or downgrade it.
+    const appError = toAppError(resolveClientAppError(error));
+    if (appError)
+      raiseHostedSettingsFailure(
+        attempt,
+        scope,
+        inlineFailure(appError, settingsActionErrorCopy(null, { action })),
+      );
+    return false;
   }
-  useGitHubStore
-    .getState()
-    .addToast(settingsActionErrorCopy(null, { action }), 'error', undefined, {
-      forceInApp: true,
-    });
+  raiseHostedSettingsFailure(attempt, scope, {
+    error: settingsActionErrorCopy(null, { action }),
+  });
   return false;
 }
 
@@ -206,17 +225,21 @@ export function followHostedSettingsHref(
     return;
   }
   const origin = normalizeAuthenticatedPortalOrigin(context.webOrigin);
-  try {
-    const url = new URL(
-      href,
-      new URL(
-        currentHostedSettingsPath(context.location),
-        origin ?? 'https://settings.invalid',
-      ),
-    );
-    if (url.username || url.password || /^https?:\/\/[^/]*@/i.test(href))
-      throw new Error('Invalid destination');
-  } catch {
+  const baseOrigin = origin ?? 'https://settings.invalid';
+  const basePath = currentHostedSettingsPath(context.location);
+  const base = URL.canParse(basePath, baseOrigin)
+    ? new URL(basePath, baseOrigin)
+    : null;
+  const url =
+    base !== null && URL.canParse(href, base) ? new URL(href, base) : null;
+  // A destination that doesn't parse, or carries credentials, goes through
+  // the guarded external open, which refuses it and says so.
+  if (
+    url === null ||
+    url.username ||
+    url.password ||
+    /^https?:\/\/[^/]*@/i.test(href)
+  ) {
     void openHostedSettingsExternalUrl(href, context);
     return;
   }

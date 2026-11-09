@@ -27,6 +27,7 @@ export function ActivityCardSettingsRow(): JSX.Element | null {
     : entry?.enabled === true;
   return (
     <SettingsRow
+      contentGap="block"
       label="Activity card"
       description="Show Activity beside the chat and keep new chats in the main chat group."
       dataTestId="settings-activity-card-row"
@@ -45,7 +46,7 @@ export function ActivityCardSettingsRow(): JSX.Element | null {
         />
       }
     >
-      <ErrorBanner error={error} className="mt-2" />
+      <ErrorBanner error={error} className="" />
     </SettingsRow>
   );
 }

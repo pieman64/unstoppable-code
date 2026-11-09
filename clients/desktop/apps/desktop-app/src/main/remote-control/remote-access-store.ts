@@ -1,10 +1,15 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { z } from 'zod';
-import { DEVICE_PLATFORMS, isDeviceId } from '@canopy/protocol/device-relay';
+import {
+  DEVICE_KINDS,
+  DEVICE_PLATFORMS,
+  deviceKindOrDefault,
+  isDeviceId,
+} from '@canopy/protocol/device-relay';
 import { writeFileAtomically } from '../lib/atomic-file';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import {
   getSecureStorageFailure,
   type SecretStoragePolicy,
@@ -22,6 +27,11 @@ const PairedDeviceSchema = z
     deviceId: z.string().refine(isDeviceId),
     name: z.string().min(1).max(120),
     platform: z.enum(DEVICE_PLATFORMS),
+    /**
+     * The controller profile the relay authenticated when it paired or last
+     * narrowed. Absent in pairings saved before kinds: those are desktop.
+     */
+    kind: z.enum(DEVICE_KINDS).optional(),
     publicKey: z.string().min(1),
     pairedAt: z.string().min(1),
   })
@@ -38,6 +48,11 @@ const RemoteControlFileSchema = z.object({
   pairedHosts: z.array(PairedDeviceSchema),
   /** Devices allowed to control this computer. */
   pairedControllers: z.array(PairedDeviceSchema),
+  /**
+   * Set once the Portal opt-in was folded into `allowIncoming`, so the
+   * one-time migration never runs again.
+   */
+  migratedOptIn: z.boolean().optional(),
 });
 
 export type RemoteControlFile = z.infer<typeof RemoteControlFileSchema>;
@@ -85,6 +100,27 @@ function isKnownDevice(
   );
 }
 
+/**
+ * The controller `previous` already allowed for this device: the new record
+ * when it grants nothing more (same kind, or desktop narrowed to a restricted
+ * profile), the old one while a different profile waits for its save, or
+ * null when the device is new.
+ */
+function withoutNewControllerGrant(
+  previous: readonly PairedDevice[],
+  device: PairedDevice,
+): PairedDevice | null {
+  const known = previous.find(
+    (entry) =>
+      entry.deviceId === device.deviceId &&
+      entry.publicKey === device.publicKey,
+  );
+  if (!known) return null;
+  const before = deviceKindOrDefault(known);
+  const after = deviceKindOrDefault(device);
+  return before === after || before === 'desktop' ? device : known;
+}
+
 /** `next` with every permission `previous` did not already grant removed. */
 function withoutNewGrants(
   next: RemoteControlFile,
@@ -96,9 +132,13 @@ function withoutNewGrants(
     pairedHosts: next.pairedHosts.filter((device) =>
       isKnownDevice(previous.pairedHosts, device),
     ),
-    pairedControllers: next.pairedControllers.filter((device) =>
-      isKnownDevice(previous.pairedControllers, device),
-    ),
+    pairedControllers: next.pairedControllers.flatMap((device) => {
+      const allowed = withoutNewControllerGrant(
+        previous.pairedControllers,
+        device,
+      );
+      return allowed ? [allowed] : [];
+    }),
   };
 }
 

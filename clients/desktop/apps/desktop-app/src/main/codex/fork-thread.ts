@@ -1,4 +1,4 @@
-import { applyCodexMultiAgentConfig } from '@canopy/desktop-shared/lib/codex-multi-agent';
+import { applyCodexMultiAgentConfig } from '@canopy/execution-engine/lib/codex-multi-agent';
 import {
   CODEX_PROJECT_DOC_THREAD_CONFIG,
   flattenCodexThreadConfig,
@@ -13,7 +13,7 @@ import { codexLifecycleServiceTier } from './speed-policy';
 import {
   readCodexSpeedRecord,
   withCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 
 /**
  * Forks a persisted thread through the host-owned Codex runtime service.

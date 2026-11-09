@@ -52,7 +52,7 @@ import type {
   InstallSkillCapabilityPackageResult,
   SharedSkillDetail,
 } from '@canopy/desktop-shared/types/skills';
-import type { CapabilityPackageInstallOwner } from '@canopy/desktop-shared/types/pipeline';
+import type { CapabilityPackageInstallOwner } from '@canopy/execution-engine/types/pipeline';
 import type { PipelinePackageDownload } from '../pipelines/canopy-server-client';
 import { getSkillDir, getSourceDir } from './paths';
 import { getSharedSkill } from './canopy-server-client';

@@ -1,3 +1,4 @@
+import { sourceChangeGit } from '../canopy-runtime/worker-git-worktree-adapter';
 import type { ScriptActionsAddMetadata } from '@canopy/protocol/script-actions';
 import { normalizeRepositoryCloneUrl } from '@canopy/protocol/portal';
 import { bindCombinationAfterJoin } from '../lib/adhoc-combination-binding';
@@ -807,6 +808,11 @@ export function registerWorkspaceHandlers(
           () =>
             applySourceChanges({
               kind: 'workspace',
+              git: sourceChangeGit(
+                request.workspaceId,
+                runtime.dispatcher,
+                runtime.resolveCaller(event),
+              ),
               source: 'workspace_settings',
               request,
               getWindow,

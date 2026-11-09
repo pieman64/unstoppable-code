@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { computeUsageLimitResumePrompt } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { computeUsageLimitResumePrompt } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import { useChatStore, useChatTabRenderState } from '@/stores/chatStore';
 import type { ChatTab } from '@/stores/chat/types';
 

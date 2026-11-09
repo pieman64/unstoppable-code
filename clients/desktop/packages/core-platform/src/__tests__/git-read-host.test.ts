@@ -1,3 +1,4 @@
+import { createChildServices } from '../supervision/child';
 import { createWindowsClosureWitness } from '../supervision/windows-closure';
 import { GitIgnoreHostError } from '@canopy/core-runtime/node';
 import { GitReadError, type GitReadCommand } from '../git-read/commands';
@@ -520,6 +521,25 @@ describe('createGitReadHost requests', () => {
     },
   );
 
+  it('preserves an inaccessible saved Windows selection instead of spawning a fallback', async () => {
+    const saved = 'C:\\Saved Git\\git.exe';
+    const fallback = 'C:\\Found Git\\git.exe';
+    const world = createWorld('win32', {
+      filesystem: { [saved]: version('2.48.0'), [fallback]: version('2.49.0') },
+      whereExe: { git: `${fallback}\r\n` },
+    });
+    const { resolve } = fakeHost(world);
+    await expect(resolve(saved)).resolves.toEqual({ resolved: saved });
+    const probes = world.probes.length;
+    world.filesystem[saved] = { kind: 'eacces' };
+    await expect(resolve(saved)).resolves.toEqual({
+      resolved: null,
+      failure: 'selection_rejected',
+    });
+    expect(world.probes).toHaveLength(probes);
+    expect(world.chosen).toEqual([saved]);
+  });
+
   // The Win32 fsmonitor discharge is planned from this version.
   it('gives each chunk the version validation parsed, only while the file is unchanged', async () => {
     const saved = 'C:\\Git\\cmd\\git.exe';
@@ -1041,7 +1061,7 @@ describe('createGitReadHost shared detection', () => {
       expect(started(world, second)).toBe(1);
       await expect(resolve(first)).resolves.toEqual({ resolved: first });
       heldB.open();
-      await expect(pending).resolves.toEqual({ resolved: null, failure: 'git_unavailable' }); // prettier-ignore
+      await expect(pending).resolves.toEqual({ resolved: null, failure: os === 'win32' ? 'selection_rejected' : 'git_unavailable' }); // prettier-ignore
       const firstRuns = started(world, first);
       await expect(resolve(first)).resolves.toEqual({ resolved: first });
       expect(started(world, first)).toBe(firstRuns);
@@ -1086,10 +1106,10 @@ describe('createGitReadHost shared detection', () => {
       const newerRuns = started(world, newer);
       await expect(resolve(newer)).resolves.toEqual({ resolved: newer });
       expect(started(world, newer)).toBe(newerRuns);
-      // Recorded while current, the saved value's rejection is kept: it is not
-      // checked again. The override, rejected after supersession, is.
+      // macOS keeps the rejection; Windows retries on every detection.
+      // The override, rejected after supersession, is retried on both.
       await expect(resolve(saved)).resolves.toEqual({ resolved: discovered });
-      expect(started(world, saved)).toBe(1);
+      expect(started(world, saved)).toBe(os === 'win32' ? 2 : 1);
       expect(started(world, override)).toBe(2);
     },
   );
@@ -1126,10 +1146,15 @@ describe('createGitReadHost shared detection', () => {
       world.filesystem[override] = version('2.45.0');
       held.open();
       await expect(superseded).resolves.toEqual({ resolved: override });
-      // It did not clear the rejection: the override is not checked again.
+      // Supersession never clears a newer rejection. macOS keeps its TTL;
+      // Windows detection retries and selects the now-usable override.
       const overrideRuns = started(world, override);
-      await expect(resolve('')).resolves.toEqual({ resolved: discovered });
-      expect(started(world, override)).toBe(overrideRuns);
+      await expect(resolve('')).resolves.toEqual({
+        resolved: os === 'win32' ? override : discovered,
+      });
+      expect(started(world, override)).toBe(
+        overrideRuns + (os === 'win32' ? 1 : 0),
+      );
     },
   );
 
@@ -1978,28 +2003,123 @@ describe('deliberate divergences (R6 §2.7), each named', () => {
     },
   );
 
-  divergence(
-    'no-winget-probe',
-    'Windows detection runs only where.exe git and validation',
-    async () => {
-      const world = createWorld('win32', {
-        whereExe: {
-          git: 'C:\\Missing\\git.exe\r\n',
-          winget: 'C:\\winget.exe\r\n',
-        },
-        filesystem: { 'C:\\Program Files\\Git\\cmd\\git.exe': version('2.50.0.windows.1') }, // prettier-ignore
-      });
-      const { resolve } = fakeHost(world, {
-        environment: snapshotFor('win32', {
+  it.each([
+    'git',
+    'git.exe',
+    '.\\git.exe',
+    'C:git.exe',
+    '\\git.exe',
+    '/git.exe',
+    '\\\\?\\C:\\git.exe',
+    '\\\\.\\C:\\git.exe',
+    '//?/C:/git.exe',
+    '  git.exe  ',
+    '  C:git.exe  ',
+    'git;other',
+    ' ',
+    '\u00a0\ufeff',
+  ])(
+    'Windows launch preserves override %j but never probes or selects it',
+    async (override) => {
+      const discovered = 'C:\\Program Files\\Git\\cmd\\git.exe';
+      const environment = createChildServices('win32').childEnvironment({
+        source: snapshotFor('win32', {
+          APPDATA: 'C:\\Users\\tester\\AppData\\Roaming',
           ProgramFiles: 'C:\\Program Files',
+          canopy_git_executable: override,
         }),
       });
-      await expect(resolve('')).resolves.toEqual({ resolved: 'C:\\Program Files\\Git\\cmd\\git.exe' }); // prettier-ignore
-      expect(new Set(kinds(world))).toEqual(
-        new Set(['where-git', 'git-version']),
-      );
+      expect(environment.CANOPY_GIT_EXECUTABLE).toBe(override);
+      for (const available of [true, false]) {
+        const world = createWorld('win32', {
+          filesystem: available
+            ? { [discovered]: version('2.50.0.windows.1') }
+            : {},
+        });
+        // A runnable decoy must not turn a rejected hint into a selection.
+        if (override.trim())
+          world.filesystem[override.trim()] = version('2.99.0.windows.1');
+        const { host } = fakeHost(world, { environment });
+        try {
+          await expect(
+            host.repository.selectExecutable({
+              readSavedExecutablePath: () => Promise.resolve(''),
+              signal: neverAborted(),
+              recheck: false,
+            }),
+          ).resolves.toMatchObject(
+            available
+              ? {
+                  ready: true,
+                  origin: 'discovered',
+                  override: Boolean(override.trim()),
+                }
+              : {
+                  ready: false,
+                  code: override.trim()
+                    ? 'selection_rejected'
+                    : 'git_unavailable',
+                  explicit: false,
+                  wingetAvailable: false,
+                },
+          );
+          const selected = host.selectWriteExecutable(
+            () => Promise.resolve(''),
+            neverAborted(),
+          );
+          if (available) await expect(selected).resolves.toBe(discovered);
+          else
+            await expect(selected).rejects.toMatchObject({
+              code: override.trim() ? 'selection_rejected' : 'git_unavailable',
+            });
+          expect(world.attempts).not.toContain(override);
+          expect(world.attempts).not.toContain(override.trim());
+          expect(world.ran).not.toContain(override);
+          expect(world.ran).not.toContain(override.trim());
+          const probes = world.probes.filter(
+            ({ command }) => command.kind === 'git-version',
+          );
+          if (available) expect(probes.length).toBeGreaterThan(0);
+          else expect(probes).toEqual([]);
+          for (const { command } of probes)
+            expect(command).toEqual({
+              kind: 'git-version',
+              executable: discovered,
+            });
+        } finally {
+          await expect(host.stop(neverAborted())).resolves.toEqual({
+            state: 'stopped',
+          });
+        }
+      }
     },
   );
+
+  it('Windows discovery probes winget before Git and validates the standard fallback', async () => {
+    const world = createWorld('win32', {
+      whereExe: {
+        git: 'C:\\Missing\\git.exe\r\n',
+        winget: 'C:\\winget.exe\r\n',
+      },
+      filesystem: {
+        'C:\\Program Files\\Git\\cmd\\git.exe': version('2.50.0.windows.1'),
+      },
+    });
+    const { host, resolve } = fakeHost(world, {
+      environment: snapshotFor('win32', { ProgramFiles: 'C:\\Program Files' }),
+    });
+    await expect(resolve('')).resolves.toEqual({
+      resolved: 'C:\\Program Files\\Git\\cmd\\git.exe',
+    });
+    expect(kinds(world)).toEqual(['where-winget', 'where-git', 'git-version']);
+    await expect(
+      host.repository.selectExecutable({
+        readSavedExecutablePath: () => Promise.resolve(''),
+        signal: neverAborted(),
+        recheck: false,
+      }),
+    ).resolves.toMatchObject({ ready: true, wingetAvailable: true });
+  });
 
   divergence(
     'detection-deadline',
@@ -2113,7 +2233,7 @@ describe('deliberate divergences (R6 §2.7), each named', () => {
         gone.clock.now += 60_000;
         delete gone.world.filesystem[discovered];
         await expect(gone.resolve(saved)).resolves.toEqual({ resolved: override }); // prettier-ignore
-        expect(started(gone.world, saved)).toBe(1);
+        expect(started(gone.world, saved)).toBe(os === 'win32' ? 2 : 1);
       },
     );
 
@@ -2132,7 +2252,7 @@ describe('deliberate divergences (R6 §2.7), each named', () => {
       expect(world.attempts).toEqual(['C:\\Tools\\git.exe']);
       world.whereExe = {};
       world.filesystem['C:\\Tools\\git.exe'] = { kind: 'missing' };
-      await expect(resolve('git.exe')).resolves.toMatchObject({ failure: 'git_unavailable' }); // prettier-ignore
+      await expect(resolve('git.exe')).resolves.toMatchObject({ failure: 'selection_rejected' }); // prettier-ignore
       expect(world.attempts.every((attempt) => /^[A-Za-z]:\\/.test(attempt))).toBe(true); // prettier-ignore
     },
   );

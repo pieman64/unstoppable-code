@@ -1,6 +1,6 @@
 'use client';
 
-import { Heading } from '@canopy/ui-shared/components';
+import { Surface, Stack, Heading } from '@canopy/ui-shared/components';
 import { DEFAULT_ARCHIVE_RETENTION_DAYS } from '@canopy/protocol/archive-retention';
 import { useSidebarHeaderRest } from '@canopy/ui-shared/lib';
 import {
@@ -666,6 +666,14 @@ export interface SidebarSurfaceProps {
     workspaceLocalId: string,
     worktreeLocalId: string,
   ) => void;
+  /**
+   * Stops every script running in a worktree: its menu's Stop running
+   * scripts, and the bulk selection's, row by row.
+   */
+  readonly onStopRunningScripts?: (
+    workspaceLocalId: string,
+    worktreeLocalId: string,
+  ) => void;
   readonly getSplitPrEligibilityInputs?: (
     workspaceLocalId: string,
     worktreeLocalId: string,
@@ -809,6 +817,11 @@ export interface SidebarSurfaceProps {
     workspaceLocalId: string,
   ) => boolean;
   readonly isLaunchRunning?: (
+    worktreeLocalId: string,
+    workspaceLocalId: string,
+  ) => boolean;
+  /** Any of the row's scripts is running (the row's Scripts running badge). */
+  readonly hasRunningScripts?: (
     worktreeLocalId: string,
     workspaceLocalId: string,
   ) => boolean;
@@ -1848,6 +1861,22 @@ function withHostMenuItems(
   return [...items.slice(0, anchor + 1), ...extra, ...items.slice(anchor + 1)];
 }
 
+/**
+ * Extends a list's binding with Work Entry selectability. Built outside the
+ * render on purpose: the cached binding outlives the render that created it,
+ * and a closure made inside the render would keep that render's whole scope
+ * (and the host data its props hold) alive for as long as the cache does.
+ */
+function withWorkEntrySelectability(
+  base: SidebarRowMultiSelect,
+  isSelectableRef: { readonly current: (workspaceLocalId: string) => boolean },
+): WorkEntryMultiSelectBinding {
+  return {
+    ...base,
+    isSelectable: (workspace) => isSelectableRef.current(workspace),
+  };
+}
+
 export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
   const {
     variant,
@@ -2483,6 +2512,9 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             hidden: true,
           })
       : undefined,
+    hasRunningScripts: (workspaceLocalId, worktreeLocalId) =>
+      props.hasRunningScripts?.(worktreeLocalId, workspaceLocalId) === true,
+    stopRunningScripts: props.onStopRunningScripts,
     getNotificationState: props.getWorktreeNotificationSettings,
     setNotificationChoice: props.onSetWorktreeNotificationLevel,
     requestNotificationState: props.onWorktreeNotificationSettingsRequested,
@@ -2555,10 +2587,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
     const base = bulk.bindingFor(workspaceLocalId);
     const cached = workEntryBindingsRef.current.get(base);
     if (cached !== undefined) return cached;
-    const extended: WorkEntryMultiSelectBinding = {
-      ...base,
-      isSelectable: (workspace) => workEntryIsSelectableRef.current(workspace),
-    };
+    const extended = withWorkEntrySelectability(base, workEntryIsSelectableRef);
     workEntryBindingsRef.current.set(base, extended);
     return extended;
   };
@@ -2764,6 +2793,12 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           true,
         launchRunning:
           props.isLaunchRunning?.(worktree.localId, workspace.localId) === true,
+        // Main's snapshot covers every worktree; the host's live read sees a
+        // run that started since the snapshot was built.
+        scriptsRunning:
+          worktree.scriptStatus === 'running' ||
+          props.hasRunningScripts?.(worktree.localId, workspace.localId) ===
+            true,
         pipelineAvailable: hostDispatch !== undefined || pipelines.length > 0,
         sentenceCaseLabels: props.sentenceCaseMenuLabels === true,
         splitPrEligible:
@@ -2866,6 +2901,10 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         onLaunchRequested: gate(props.onLaunchWorktree)
           ? (): void =>
               props.onLaunchWorktree?.(workspace.localId, worktree.localId)
+          : undefined,
+        onStopRunningScriptsRequested: gate(props.onStopRunningScripts)
+          ? (): void =>
+              props.onStopRunningScripts?.(workspace.localId, worktree.localId)
           : undefined,
         onDispatchPipelineRequested: hostDispatch
           ? (): void => hostDispatch(workspace.localId, worktree.localId)
@@ -3002,6 +3041,10 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             testIds?.worktreeActionLaunch,
             'portal-worktree-actions-launch',
           ),
+          stopScripts: worktreeTestId(
+            undefined,
+            'portal-worktree-actions-stop-scripts',
+          ),
           dispatchPipeline: worktreeTestId(
             testIds?.worktreeActionDispatchPipeline,
             'portal-worktree-actions-dispatch-pipeline',
@@ -3061,6 +3104,10 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           bulkPin: worktreeTestId(
             undefined,
             'portal-worktree-actions-bulk-pin',
+          ),
+          bulkStopScripts: worktreeTestId(
+            undefined,
+            'portal-worktree-actions-bulk-stop-scripts',
           ),
           bulkArchive: worktreeTestId(
             undefined,
@@ -4282,7 +4329,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
               {SHARED_WITH_YOU_SECTION_LABEL}
             </Heading>
           </div>
-          <div className="space-y-1">
+          <Stack gap="tight">
             {renderWorkspaceList(
               sharedSections,
               {
@@ -4291,7 +4338,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
               },
               true,
             )}
-          </div>
+          </Stack>
         </section>
       )}
       {/* A host rail seats the header inside its own sticky band, HERE
@@ -4331,8 +4378,8 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             // neither.
             className={
               props.scrollOwner === 'host'
-                ? 'sidebar-workspaces-rows-clip space-y-1 pb-1'
-                : 'space-y-1'
+                ? 'sidebar-workspaces-rows-clip flex flex-col gap-1 pb-1'
+                : 'flex flex-col gap-1'
             }
             {...(props.scrollOwner === 'host'
               ? { 'data-sidebar-workspaces-rows': '' }
@@ -4541,41 +4588,43 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           </div>
         )}
         {props.chatSearch && chatSearchVisible && (
-          <div className="relative flex shrink-0 items-center gap-1.5 border-b px-2.5 py-1.5">
-            <SearchField
-              id={chatSearchInputId}
-              className="min-w-0 flex-1"
-              clearLabel="Clear chat search"
-              clearTestId="portal-sidebar-chat-search-clear"
-              // Escape is handled below: clear first, then collapse.
-              clearOnEscape={false}
-              ref={chatSearchInputRef}
-              // Revealing a disclosure that the user cannot then type into is
-              // a dead click; focus follows the reveal, never the row default.
-              autoFocus={chatSearchDisclosed}
-              value={chatSearchQuery}
-              onValueChange={setChatSearchQuery}
-              onKeyDown={(event) => {
-                if (event.key !== 'Escape') return;
-                // Clear first, collapse second: Escape on a typed query means
-                // "undo the query", and only an already-empty one means
-                // "put the affordance away".
-                if (chatSearchQuery.length > 0) {
-                  event.stopPropagation();
-                  setChatSearchQuery('');
-                  return;
-                }
-                if (chatSearchDisclosed) {
-                  event.stopPropagation();
-                  collapseChatSearch();
-                  chatSearchToggleRef.current?.focus();
-                }
-              }}
-              placeholder="Search chats"
-              aria-label="Search chats"
-              data-testid="portal-sidebar-chat-search-input"
-            />
-          </div>
+          <Surface variant="section" boundary="bottom" className="shrink-0">
+            <div className="relative flex shrink-0 items-center gap-1.5 px-2.5 py-1.5">
+              <SearchField
+                id={chatSearchInputId}
+                className="min-w-0 flex-1"
+                clearLabel="Clear chat search"
+                clearTestId="portal-sidebar-chat-search-clear"
+                // Escape is handled below: clear first, then collapse.
+                clearOnEscape={false}
+                ref={chatSearchInputRef}
+                // Revealing a disclosure that the user cannot then type into is
+                // a dead click; focus follows the reveal, never the row default.
+                autoFocus={chatSearchDisclosed}
+                value={chatSearchQuery}
+                onValueChange={setChatSearchQuery}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape') return;
+                  // Clear first, collapse second: Escape on a typed query means
+                  // "undo the query", and only an already-empty one means
+                  // "put the affordance away".
+                  if (chatSearchQuery.length > 0) {
+                    event.stopPropagation();
+                    setChatSearchQuery('');
+                    return;
+                  }
+                  if (chatSearchDisclosed) {
+                    event.stopPropagation();
+                    collapseChatSearch();
+                    chatSearchToggleRef.current?.focus();
+                  }
+                }}
+                placeholder="Search chats"
+                aria-label="Search chats"
+                data-testid="portal-sidebar-chat-search-input"
+              />
+            </div>
+          </Surface>
         )}
         <div className="relative min-h-0 flex-1">
           {chatSearchActive && props.chatSearch && (
@@ -4600,7 +4649,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
                   No chats match &ldquo;{chatSearchQuery.trim()}&rdquo;.
                 </p>
               ) : (
-                <ul className="space-y-0.5">
+                <ul className="flex flex-col gap-0.5">
                   {chatSearchResults.map((result) => (
                     <li key={`${result.kind}-${result.chatId}`}>
                       <button
@@ -4908,13 +4957,13 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
                       label: 'Repositories',
                       content:
                         settingsWorkspace.type === 'multi-repo' ? (
-                          <ul aria-label="Repositories" className="space-y-2">
+                          <Stack aria-label="Repositories" as="ul" gap="inline">
                             {settingsWorkspace.repos?.map((repo) => (
                               <li key={repo.id} className="text-s fg-primary">
                                 {repo.name}
                               </li>
                             ))}
-                          </ul>
+                          </Stack>
                         ) : (
                           props.renderWorkspaceRepositoriesAccessory?.(
                             settingsWorkspace.localId,

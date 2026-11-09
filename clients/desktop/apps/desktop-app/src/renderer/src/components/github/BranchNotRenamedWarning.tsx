@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import type { JSX } from 'react';
 import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
@@ -33,7 +34,7 @@ export function BranchNotRenamedWarning({
       maxWidth="sm"
       dataTestId="branch-not-renamed-warning"
     >
-      <div className="">
+      <Stack gap="block">
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-warning-subtle">
             <AppCatalogWarningIcon
@@ -42,21 +43,21 @@ export function BranchNotRenamedWarning({
               aria-hidden="true"
             />
           </div>
-          <div className="min-w-0 flex-1">
+          <Stack gap="inline" className="min-w-0 flex-1">
             <p className="text-s fg-primary">
               {isMultiRepo
                 ? 'Some branches have not been renamed from the default worktree name. You may want to rename them before pushing or creating a pull request.'
                 : 'The branch has not been renamed from the default worktree name. You may want to rename it before pushing or creating a pull request.'}
             </p>
             {uniqueBranchNames.length === 1 && (
-              <p className="mt-2 text-xs fg-secondary">
+              <p className="text-xs fg-secondary">
                 <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
                   {uniqueBranchNames[0]}
                 </code>
               </p>
             )}
             {uniqueBranchNames.length > 1 && (
-              <ul className="mt-2 space-y-1">
+              <ul className="flex flex-col gap-1">
                 {uniqueBranchNames.map((branchName) => (
                   <li key={branchName} className="text-xs">
                     <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
@@ -67,7 +68,7 @@ export function BranchNotRenamedWarning({
               </ul>
             )}
             {isMultiRepo && unrenamedRepos.length > 0 && (
-              <ul className="mt-2 space-y-0.5">
+              <ul className="flex flex-col gap-0.5">
                 {unrenamedRepos.map((repo) => (
                   <li key={repo.repoId} className="text-xs fg-secondary">
                     {repo.repoName}
@@ -75,9 +76,9 @@ export function BranchNotRenamedWarning({
                 ))}
               </ul>
             )}
-          </div>
+          </Stack>
         </div>
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="flex justify-end gap-2">
           <Button variant="secondary" size="compact" onClick={onRename}>
             {isMultiRepo ? 'Rename branches' : 'Rename branch'}
           </Button>
@@ -85,7 +86,7 @@ export function BranchNotRenamedWarning({
             Continue anyway
           </Button>
         </div>
-      </div>
+      </Stack>
     </DialogModal>
   );
 }

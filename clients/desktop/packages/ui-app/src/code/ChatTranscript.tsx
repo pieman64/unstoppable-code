@@ -953,7 +953,9 @@ export function ChatTranscript({
             working row (a first send's own status). */}
         {delivering.length > 0 && (
           <div
-            className={cleanChatLook ? 'space-y-2' : 'space-y-1'}
+            className={
+              cleanChatLook ? 'flex flex-col gap-2' : 'flex flex-col gap-1'
+            }
             data-testid="chat-transcript-delivering"
           >
             {delivering.map((message) => (

@@ -1,7 +1,7 @@
 import { ORCHESTRATOR_AGENT_NAME, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { isChatVisualsEnabled } from '../lib/chat-visuals-feature-flag';
 import { BRAND } from '@canopy/brand/current';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 
 export function buildBrowserToolSteering(searchToolName: string): string {
   return [
@@ -303,7 +303,7 @@ function gitHubWatcherPromptLines(
  * Cowork variant of {@link buildWorktreeInjectedToolPrompt}: the same
  * action/watcher tool surface, folder-scoped. Kept in sync with the
  * `native-sdk-standalone` allowlist in
- * `@canopy/desktop-shared/lib/canopy-injected-tools`, its Cursor projection
+ * `@canopy/execution-engine/lib/canopy-injected-tools`, its Cursor projection
  * `cursor-acp-standalone`, and the Codex `mode: 'cowork'` dynamic specs — no
  * worktree script-run, git-preference, tracked-plan, hook, or code-graph
  * tooling is advertised (GetScriptOutput is named only for watcher output).

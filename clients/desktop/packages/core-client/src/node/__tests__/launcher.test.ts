@@ -1201,3 +1201,20 @@ describe('the W5 handoff contract (GB12)', () => {
     });
   });
 });
+
+it('refuses a live same-protocol daemon with an older secure layout before token reads or leases', async () => {
+  const world = new ScriptedDaemon();
+  world.publish(7);
+  const result = await run(launch(world, { secureStorageLayout: 'nested-v1' }));
+  expect(result).toMatchObject({ error: { kind: 'failed_precondition' } });
+  expect(world.events).toEqual(['read', 'inspect:7']);
+});
+
+it('attaches when secure layout and protocol both match', async () => {
+  const world = new ScriptedDaemon();
+  world.publish(7);
+  world.raw = { ...descriptorFor(7), secureStorageLayout: 'nested-v1' };
+  expect(
+    await run(launch(world, { secureStorageLayout: 'nested-v1' })),
+  ).toMatchObject({ value: 'client-1', started: false });
+});

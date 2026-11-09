@@ -4,7 +4,7 @@ import {
   type PipelineEditorToolKey,
 } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 import { CURSOR_PLAN_MODE_STEERING } from '@canopy/desktop-shared/node/cursor/headless-policy';
-import { extractProposedPlan } from '@canopy/desktop-shared/codex-plan-mode';
+import { extractProposedPlan } from '@canopy/execution-engine/codex-plan-mode';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   IPC_CHANNELS,
@@ -21,7 +21,7 @@ import { assertCursorHarnessEnabled } from '../cursor/feature-flag';
 import {
   getRawCursorModelId,
   isCursorModel,
-} from '@canopy/desktop-shared/lib/cursor-models';
+} from '@canopy/execution-engine/lib/cursor-models';
 import type { BrowserWindow } from 'electron';
 import { createHash, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
@@ -34,7 +34,7 @@ import {
 import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   type CanopyInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   cursorCanopyMcpServerNames,
   parseCursorMcpToolCall,
@@ -55,7 +55,6 @@ import {
   getEffectiveSupportedThinkingLevelsForModel,
   hasAnySelections,
   initCursorModels,
-  SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
   STANDALONE_CHAT_PROJECT_ID,
   type ApprovalMode,
   type ThinkingLevel,
@@ -120,7 +119,8 @@ import { loadMarketplacesCacheOnly } from '../plugins/plugin-service';
 import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inventory-service';
 import { verifyCursorVersion } from '../cursor/approval-check';
 import type { CursorProviderProcess } from '@canopy/desktop-shared/node/cursor/runtime-process';
-import { spawnProviderProcess } from '../agent-runs/provider-process-host';
+import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
+import { cursorProcessForWorkerRun } from '../agent-runs/cursor-worker-runtime';
 import { CursorForkContext } from '../cursor/fork-context';
 import { getWorktreeDataDir } from '../lib/paths';
 import { resolveWorktreeTargetIds } from '../lib/resolve-worktree';
@@ -245,6 +245,7 @@ export class CursorProvider implements AgentProvider {
     onEvent: (data: unknown) => void | Promise<void>,
     getWindow: () => BrowserWindow | null,
   ): AgentSession {
+    assertAgentWorkerContext('CursorProvider.createSession');
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const lifecycleScope = {
       projectId: opts.projectId,
@@ -582,10 +583,8 @@ export class CursorProvider implements AgentProvider {
         // Node executable runs approval hooks without starting another app.
         const hookRuntime = join(dirname(launch.command), target.hookRuntime);
         // CAN-4118: the CLI and its probe are children of the provider process host.
-        const providerProcess: CursorProviderProcess = {
-          spawner: spawnProviderProcess,
-          owner: { kind: 'turn', id: currentTurn ?? randomUUID() },
-        };
+        const providerProcess: CursorProviderProcess =
+          cursorProcessForWorkerRun('CursorSession.run');
         await verifyCursorVersion(providerProcess, launch, env, abort.signal);
         abort.signal.throwIfAborted();
         const currentApproval = createApprovalSession({
@@ -1023,11 +1022,7 @@ export class CursorProvider implements AgentProvider {
                         observedDuringTurnId: hostTurnId,
                       });
                   },
-                  onSetAutoArchive: (enabled) =>
-                    emitTurn({
-                      type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
-                      enabled,
-                    }),
+                  autoArchiveAvailable: true,
                   authorizeToolCall: async (
                     toolKey,
                     args,

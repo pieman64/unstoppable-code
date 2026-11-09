@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
+  Stack,
   Button,
   Notice,
   NoticeButton,
@@ -173,10 +174,9 @@ function SplitProgressOverlay({
       variant="group"
       size="small"
       padding="compact"
-      className="mt-3"
       data-testid="split-progress"
     >
-      <div className="space-y-2">
+      <div className="flex flex-col gap-2">
         <SplitProgressChecklist view={view} />
         <div className="flex flex-wrap gap-2">
           {isSplitting && (
@@ -239,15 +239,15 @@ function SplitResultView({
       variant="group"
       size="small"
       padding="compact"
-      className="mt-3"
       data-testid="split-result"
     >
-      <div className="space-y-2">
+      <div className="flex flex-col gap-2">
         <SplitResultSummary map={map} />
         {(map.status === 'failed' || map.status === 'cancelled') && (
-          <div className="space-y-1.5">
+          <div className="flex flex-col gap-1.5">
             {canResume ? (
               <Button
+                className="self-start"
                 size="compact"
                 onClick={onResume}
                 data-testid="split-result-resume"
@@ -261,6 +261,7 @@ function SplitResultView({
                   available. Plan a new split to continue.
                 </p>
                 <Button
+                  className="self-start"
                   size="compact"
                   onClick={onPlanNewSplit}
                   data-testid="split-result-replan"
@@ -270,6 +271,7 @@ function SplitResultView({
               </>
             )}
             <Button
+              className="self-start"
               variant="ghost-destructive"
               size="compact"
               onClick={onDiscard}
@@ -303,7 +305,7 @@ function SplitDiscardArtifacts({
       padding="tight"
       data-testid="split-pr-discard-artifacts"
     >
-      <div className="space-y-1 text-2xs fg-secondary">
+      <div className="flex flex-col text-2xs fg-secondary gap-1">
         <p className="fg-primary/80">Split state discarded.</p>
         {hasArtifacts ? (
           <>
@@ -359,7 +361,6 @@ function SplitExecuteFailureNotice({
     <Notice
       intent="attention"
       data-testid="split-pr-execute-failure"
-      className="mt-3"
       onDismiss={onDismiss}
       dismissLabel="Dismiss split failure notice"
       dismissTestId="split-pr-execute-failure-dismiss"
@@ -825,6 +826,7 @@ export function PullRequestSection({
       collapsedIconColor={headerChrome.collapsedIconColor}
     >
       <PullRequestSectionBody
+        extensionGap="item"
         repos={bodyRepos}
         isCreating={isCreating}
         creationProgress={creationProgress}
@@ -834,44 +836,45 @@ export function PullRequestSection({
           <Notice
             intent="attention"
             data-testid="split-pr-refusal"
-            className="mt-3"
             onDismiss={() => clearSplitPlan(projectId, worktreeId)}
             dismissLabel="Dismiss split refusal notice"
             dismissTestId="split-pr-refusal-dismiss"
           >
-            <span className="whitespace-pre-wrap break-words">
-              {getSplitRefusalCopy(splitRefusal)}
-            </span>
-            {splitRefusal.issues !== undefined &&
-              splitRefusal.issues.length > 0 && (
-                <ul
-                  data-testid="split-pr-refusal-issues"
-                  className="mt-1 list-disc space-y-0.5 pl-4"
-                >
-                  {splitRefusal.issues
-                    .slice(0, SPLIT_PR_REFUSAL_ISSUES_DISPLAY_CAP)
-                    .map((issue, index) => (
+            <Stack gap="tight">
+              <span className="whitespace-pre-wrap break-words">
+                {getSplitRefusalCopy(splitRefusal)}
+              </span>
+              {splitRefusal.issues !== undefined &&
+                splitRefusal.issues.length > 0 && (
+                  <ul
+                    data-testid="split-pr-refusal-issues"
+                    className="flex flex-col list-disc pl-4 gap-0.5"
+                  >
+                    {splitRefusal.issues
+                      .slice(0, SPLIT_PR_REFUSAL_ISSUES_DISPLAY_CAP)
+                      .map((issue, index) => (
+                        <li
+                          key={`${issue.code}-${issue.childIndex ?? ''}-${issue.file ?? ''}-${issue.hunkIndex ?? ''}-${index}`}
+                          className="whitespace-pre-wrap break-words"
+                        >
+                          {formatSplitPlanIssue(issue)}
+                        </li>
+                      ))}
+                    {splitRefusal.issues.length >
+                      SPLIT_PR_REFUSAL_ISSUES_DISPLAY_CAP && (
                       <li
-                        key={`${issue.code}-${issue.childIndex ?? ''}-${issue.file ?? ''}-${issue.hunkIndex ?? ''}-${index}`}
-                        className="whitespace-pre-wrap break-words"
+                        data-testid="split-pr-refusal-issues-more"
+                        className="fg-secondary"
                       >
-                        {formatSplitPlanIssue(issue)}
+                        +
+                        {splitRefusal.issues.length -
+                          SPLIT_PR_REFUSAL_ISSUES_DISPLAY_CAP}{' '}
+                        more
                       </li>
-                    ))}
-                  {splitRefusal.issues.length >
-                    SPLIT_PR_REFUSAL_ISSUES_DISPLAY_CAP && (
-                    <li
-                      data-testid="split-pr-refusal-issues-more"
-                      className="fg-secondary"
-                    >
-                      +
-                      {splitRefusal.issues.length -
-                        SPLIT_PR_REFUSAL_ISSUES_DISPLAY_CAP}{' '}
-                      more
-                    </li>
-                  )}
-                </ul>
-              )}
+                    )}
+                  </ul>
+                )}
+            </Stack>
           </Notice>
         )}
         {splitExecuteFailure !== undefined && (
@@ -884,7 +887,7 @@ export function PullRequestSection({
         {isPlanningSplit && (
           <div
             data-testid="split-pr-planning"
-            className="mt-3 flex items-center gap-2 text-xs fg-secondary"
+            className="flex items-center gap-2 text-xs fg-secondary"
           >
             <LoadingSpinner />
             <span>Analyzing PR diff…</span>
@@ -919,7 +922,7 @@ export function PullRequestSection({
           <SplitDiscardArtifacts artifacts={discardedArtifacts} />
         )}
         {showSplitButton && (
-          <div className="mt-3">
+          <div>
             {splitBlocked ? (
               <ActionTooltip
                 title="Split PR"

@@ -1,6 +1,7 @@
 import type * as StructuredShared from '@canopy/desktop-shared/lib/structured-helper-query';
 import type { HelperRunRequest } from '../helper-runs';
 import type * as HelperRuns from '../helper-runs';
+import type * as ClaudeModAdmissionLaunchModule from '../../agents/claude-mod-admission-launch';
 import type { StructuredHelperDispatchOptions } from '../../integration/structured-helper-dispatch';
 import {
   initClaudeModels,
@@ -36,6 +37,15 @@ jest.mock('../../lib/preferences-store', () => ({
     Promise.resolve({ canopyBackgroundProcessesMode: mockMode }),
   ),
   readLocalMemoryEnabledPreference: jest.fn(() => Promise.resolve(false)),
+}));
+// Mod admission reads the real Claude config before a helper launch; this
+// golden runs with it off, and the admission goldens cover it.
+jest.mock('../../agents/claude-mod-admission-launch', () => ({
+  ...jest.requireActual<typeof ClaudeModAdmissionLaunchModule>(
+    '../../agents/claude-mod-admission-launch',
+  ),
+  resolveClaudeModAdmissionLaunch: (): Promise<undefined> =>
+    Promise.resolve(undefined),
 }));
 jest.mock('../../lib/claude-tui-workers', () => ({
   getEffectiveClaudeWorkerModePreferences: jest.fn(() => ({

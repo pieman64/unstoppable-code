@@ -24,6 +24,33 @@ export const APP_ERROR_CATALOG = {
     copy: { title: 'Check what you entered.' },
     summary: 'Input was not accepted',
   },
+  'app.runtime_unreachable': {
+    kind: 'defect',
+    copy: {
+      title: "Couldn't reach the agent runtime.",
+      description:
+        "Agents on it can't start. Try again, or report this if it continues.",
+    },
+    summary: 'Bundled agent runtime unreachable',
+  },
+  'external.runtime_unreachable': {
+    kind: 'external',
+    recovery: 'fix_first',
+    copy: {
+      title: "Couldn't reach the agent runtime.",
+      description: 'Start it or check its connection settings.',
+    },
+    summary: 'Agent runtime unreachable',
+  },
+  'external.sync_paused': {
+    kind: 'external',
+    recovery: 'wait',
+    copy: {
+      title: 'Sync is paused.',
+      description: 'Your work is saved on this device and syncs later.',
+    },
+    summary: 'Activity sync paused',
+  },
   'external.offline': {
     kind: 'external',
     recovery: 'try_again',

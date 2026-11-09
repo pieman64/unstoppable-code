@@ -1,5 +1,6 @@
 import { app, type WebContents } from 'electron';
 import { is } from '@electron-toolkit/utils';
+import { restoreStartupEnvironmentForRelaunch } from '@canopy/desktop-shared/pipelines/config-paths';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { UnsavedCloseGuard } from '../lifecycle/unsaved-close-guard';
 import { registerIpcHandler } from './register';
@@ -62,6 +63,7 @@ export function registerAppWindowHandlers(
     }
 
     setTimeout(() => {
+      restoreStartupEnvironmentForRelaunch();
       app.relaunch();
       app.quit();
     }, 0);

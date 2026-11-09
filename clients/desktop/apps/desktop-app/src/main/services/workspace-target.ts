@@ -1,4 +1,4 @@
-import type { ResourceContextDecision } from '@canopy/desktop-shared/lib/resource-context-policy';
+import type { ResourceContextDecision } from '@canopy/execution-engine/lib/resource-context-policy';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import { getOrgProjectCatalogService } from './org-project-catalog-service';

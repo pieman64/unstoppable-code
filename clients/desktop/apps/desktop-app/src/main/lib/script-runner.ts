@@ -1,6 +1,7 @@
 import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
 import { spawn } from 'node:child_process';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { withW5ProcessFileLocks } from '@canopy/core-platform/w5-process-file-lock';
 import {
   buildScriptShellCommand,
   ScriptExecutionWorker,
@@ -11,10 +12,11 @@ import {
   type ScriptShellCommand,
   type StoppedScriptRun,
 } from '@canopy/core-runtime/node/script/execution';
-import { findExecutableOnPath } from '@canopy/desktop-shared/node/lib/path-lookup';
-import { buildCmdCommandLine } from '@canopy/desktop-shared/node/lib/windows-process';
+import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
+import { buildCmdCommandLine } from '@canopy/execution-engine/node/lib/windows-process';
 import type { ScriptRunResponse } from '@canopy/desktop-shared/types';
 import { MAX_SCRIPT_TIMEOUT_SECONDS } from '@canopy/desktop-shared/scripts';
+import { getResolvedCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
 import { CANOPY_IN_PROCESS_WORKER_TARGET_ID } from '@canopy/protocol/canopy-core';
 import type { ScriptRunLogRef } from './script-log-store';
 import {
@@ -123,6 +125,15 @@ const desktopScriptHost: ScriptExecutionWorkerHost = {
       writeFileAtomically(path, text, { encoding: 'utf8' }),
   },
   writerFence: desktopScriptRunWriterFence,
+  // The daemon writes the same run logs under the same lock (CAN-5839).
+  logLock: {
+    run: (runDir, work) =>
+      withW5ProcessFileLocks(
+        [runDir],
+        { dataRoot: getResolvedCanopyDataDir().path },
+        work,
+      ),
+  },
   // Manual runs reveal their terminal, as before the move (CAN-5062).
   revealTerminal: (tracking) =>
     tracking.invocation?.startsWith('manual') === true,

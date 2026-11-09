@@ -6,11 +6,16 @@ import {
   normalizeNeeds,
   type NormalizedPipeline,
   type Pipeline,
+  type PipelineTriggerType,
   type Step,
-} from '../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
-const TRIGGER_LABELS: Record<'dispatch' | 'plan_ready' | 'task_ready', string> =
-  { dispatch: 'Manual', plan_ready: 'Plan ready', task_ready: 'Task ready' };
+const TRIGGER_LABELS: Record<PipelineTriggerType, string> = {
+  dispatch: 'Manual',
+  plan_ready: 'Plan ready',
+  task_ready: 'Task ready',
+  workflow: 'Workflow',
+};
 
 /** A job as both a parsed definition and a run's recorded snapshot carry it. */
 interface ReadDetailJob {

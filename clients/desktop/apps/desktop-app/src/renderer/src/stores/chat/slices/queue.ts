@@ -1,7 +1,11 @@
 import { MESSAGE_NO_LONGER_EDITABLE_NOTICE } from '@canopy/ui-shared/components';
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { getWorktreeChatContext } from '../context';
-import { getChatToastAttribution } from '../notifications';
-import { useGitHubStore } from '../../githubStore';
 import { blockedPersistenceKeys } from '../persistence';
 import { isTerminalBackedInterfaceMode } from '@canopy/desktop-shared/types';
 import { useClaudeTerminalStore } from '@/stores/claudeTerminalStore';
@@ -14,7 +18,11 @@ import {
   scheduleIdleChatUnload,
 } from '../hydration';
 import type { StateCreator } from 'zustand';
-import type { ChatState, ChatQueueSlice } from '../state';
+import type {
+  ChatState,
+  ChatQueueSlice,
+  QueuedMessageEditFailure,
+} from '../state';
 
 // The pending host lock request per edited entry. Leaving the editor (cancel,
 // switch, or save) forgets the attempt, so a rejection the host reports only
@@ -25,12 +33,85 @@ function editLockKey(key: string, chatId: string, entryId: string): string {
   return JSON.stringify([key, chatId, entryId]);
 }
 
+/**
+ * The identity a queued row keeps across host queue refreshes, which rebuild
+ * the row objects. Its edit failure is stored and found by this key.
+ */
+export function queuedMessageEditFailureKey(
+  message: QueuedChatMessage,
+): string | undefined {
+  return (
+    message.hostQueueEntryId ??
+    message.dispatchOptions?.acceptedInputId ??
+    message.dispatchOptions?.userMessageId
+  );
+}
+
+type ChatSet = Parameters<StateCreator<ChatState, [], [], ChatQueueSlice>>[0];
+
+interface QueuedEditScope {
+  worktreeKey: string;
+  chatId: string;
+}
+
+/**
+ * Replaces the chat's queued-edit failure: `failure` shows on `row`, or the
+ * chat has none when either is missing. A row that already left the queue has
+ * nowhere to show it; its disappearance is the outcome the person sees.
+ */
+function setQueuedEditFailure(
+  set: ChatSet,
+  scope: QueuedEditScope,
+  row: QueuedChatMessage | undefined,
+  failure: InlineFailure | null,
+): void {
+  set((state) => {
+    const current = state.queuedMessageEditFailures;
+    const next: Record<string, QueuedMessageEditFailure> = {};
+    let removed = false;
+    for (const [entryKey, existing] of Object.entries(current)) {
+      if (
+        existing.worktreeKey === scope.worktreeKey &&
+        existing.chatId === scope.chatId
+      )
+        removed = true;
+      else next[entryKey] = existing;
+    }
+    const entryKey = row ? queuedMessageEditFailureKey(row) : undefined;
+    if (!row || !entryKey || !failure)
+      return removed ? { queuedMessageEditFailures: next } : state;
+    next[entryKey] = { ...failure, ...scope, text: row.text };
+    return { queuedMessageEditFailures: next };
+  });
+}
+
+function findQueuedRow(
+  state: ChatState,
+  scope: QueuedEditScope,
+  entryId: string,
+): QueuedChatMessage | undefined {
+  return state.worktreeChats[scope.worktreeKey]?.tabs
+    .find((tab) => tab.id === scope.chatId)
+    ?.queuedMessages.find((row) => row.hostQueueEntryId === entryId);
+}
+
 export const createQueueSlice: StateCreator<
   ChatState,
   [],
   [],
   ChatQueueSlice
 > = (set, get, api) => ({
+  queuedMessageEditFailures: {},
+
+  dismissQueuedMessageEditFailure: (entryKey): void => {
+    if (get().queuedMessageEditFailures[entryKey] === undefined) return;
+    set((state) => {
+      const next = { ...state.queuedMessageEditFailures };
+      delete next[entryKey];
+      return { queuedMessageEditFailures: next };
+    });
+  },
+
   clearQueuedMessage: (index, target): void => {
     const context = getWorktreeChatContext(get(), target);
     if (!context) return;
@@ -161,8 +242,9 @@ export const createQueueSlice: StateCreator<
         .forceQueuedHookChat({
           queueId: targetMessage.queuedHookQueueId,
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           // Leave the placeholder intact so the user can retry forcing it.
+          reportClientAppError(error);
         });
       return;
     }
@@ -212,7 +294,8 @@ export const createQueueSlice: StateCreator<
           });
           void window.api.terminal
             .write({ terminalId: runtime.terminalId, data: '\x03' })
-            .catch(() => {
+            .catch((error: unknown) => {
+              reportClientAppError(error);
               set((state) => {
                 const currentWc = state.worktreeChats[key];
                 if (!currentWc) return state;
@@ -311,22 +394,12 @@ export const createQueueSlice: StateCreator<
     if (!context) return;
     const { selection: sel, key, chatId, activeTab } = context;
     const attemptKey = editLockKey(key, chatId, '');
-    const notifyUnavailable = (error?: unknown): void => {
-      const { meta, onClick } = getChatToastAttribution({
-        projectId: sel.projectId,
-        worktreeId: sel.worktreeId,
-        chatId,
+    const scope: QueuedEditScope = { worktreeKey: key, chatId };
+    // The failure shows on the row the person chose to edit.
+    const showUnavailable = (row: QueuedChatMessage | undefined): void => {
+      setQueuedEditFailure(set, scope, row, {
+        error: MESSAGE_NO_LONGER_EDITABLE_NOTICE,
       });
-      useGitHubStore
-        .getState()
-        .addToast(
-          error instanceof Error
-            ? error.message
-            : MESSAGE_NO_LONGER_EDITABLE_NOTICE,
-          'error',
-          onClick,
-          meta,
-        );
     };
     const updateEditing = (
       index: number | null,
@@ -401,9 +474,10 @@ export const createQueueSlice: StateCreator<
       message.editLocked ||
       activeTab?.editingQueuedMessageIndex !== undefined
     ) {
-      notifyUnavailable();
+      showUnavailable(message);
       return;
     }
+    setQueuedEditFailure(set, scope, undefined, null);
     if (!message.hostQueueEntryId) {
       updateEditing(index);
       return;
@@ -464,13 +538,23 @@ export const createQueueSlice: StateCreator<
           locked: false,
         });
         if (pendingEditLocks.get(attemptKey) === attempt && stillInContext())
-          notifyUnavailable();
+          showUnavailable(findQueuedRow(get(), scope, entryId));
         return;
       }
       updateEditing(currentIndex, !focusMoved);
     } catch (error) {
-      if (pendingEditLocks.get(attemptKey) === attempt && stillInContext())
-        notifyUnavailable(error);
+      const appError = toAppError(resolveClientAppError(error));
+      if (
+        appError &&
+        pendingEditLocks.get(attemptKey) === attempt &&
+        stillInContext()
+      )
+        setQueuedEditFailure(
+          set,
+          scope,
+          findQueuedRow(get(), scope, entryId),
+          inlineFailure(appError, 'Couldn’t open this message for editing.'),
+        );
     } finally {
       unsubscribe();
       globalThis.document?.removeEventListener('focusin', onFocus);
@@ -498,19 +582,7 @@ export const createQueueSlice: StateCreator<
     const context = getWorktreeChatContext(get(), target);
     if (!context) return;
     const { selection: sel, key, chatId, activeTab } = context;
-    const notifyFailure = (error?: unknown): void => {
-      const { meta, onClick } = getChatToastAttribution({ ...sel, chatId });
-      useGitHubStore
-        .getState()
-        .addToast(
-          error instanceof Error
-            ? error.message
-            : MESSAGE_NO_LONGER_EDITABLE_NOTICE,
-          'error',
-          onClick,
-          meta,
-        );
-    };
+    const scope: QueuedEditScope = { worktreeKey: key, chatId };
     const index = expected
       ? (activeTab?.queuedMessages.findIndex(
           (candidate) =>
@@ -519,10 +591,8 @@ export const createQueueSlice: StateCreator<
               candidate.hostQueueEntryId === expected.hostQueueEntryId),
         ) ?? -1)
       : requestedIndex;
-    if (index < 0 || !activeTab?.queuedMessages[index]) {
-      notifyFailure();
-      return;
-    }
+    // The edited row already left the queue: nothing is left to save to.
+    if (index < 0 || !activeTab?.queuedMessages[index]) return;
     const hostQueueEntryId = activeTab.queuedMessages[index]?.hostQueueEntryId;
     if (hostQueueEntryId) {
       pendingEditLocks.delete(editLockKey(key, chatId, ''));
@@ -564,7 +634,14 @@ export const createQueueSlice: StateCreator<
           ...(inputMode ? { inputMode } : {}),
         })
         .catch((error: unknown) => {
-          notifyFailure(error);
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setQueuedEditFailure(
+              set,
+              scope,
+              findQueuedRow(get(), scope, hostQueueEntryId),
+              inlineFailure(appError, 'Couldn’t save your edit.'),
+            );
           // A failed edit leaves the host lock intact; release it so the queue
           // can continue draining after the local editor has closed.
           void window.api.chat.setQueuedMessageEditLock({
@@ -677,6 +754,16 @@ export const createQueueSlice: StateCreator<
   dropWorktreeQueuedState: (projectId, worktreeId): void => {
     const key = `${projectId}/${worktreeId}`;
     set((state) => removeWorktreeRuntimeState(state, projectId, worktreeId));
+    set((state) => {
+      const failures = Object.entries(state.queuedMessageEditFailures);
+      if (!failures.some(([, failure]) => failure.worktreeKey === key))
+        return state;
+      return {
+        queuedMessageEditFailures: Object.fromEntries(
+          failures.filter(([, failure]) => failure.worktreeKey !== key),
+        ),
+      };
+    });
 
     blockedPersistenceKeys.delete(key);
     clearWorktreeHydrationState(key);

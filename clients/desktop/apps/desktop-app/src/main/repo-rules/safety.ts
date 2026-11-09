@@ -5,7 +5,7 @@ export {
   safePath,
   readBounded,
   readBoundedBytes,
-} from '@canopy/desktop-shared/node/lib/bounded-file-reader';
+} from '@canopy/execution-engine/node/lib/bounded-file-reader';
 
 export const MAX_RULES = 200;
 export const MAX_ENTRIES = 10000;

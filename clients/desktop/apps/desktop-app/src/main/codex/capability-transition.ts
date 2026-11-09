@@ -1,4 +1,4 @@
-import { applyCodexMultiAgentConfig } from '@canopy/desktop-shared/lib/codex-multi-agent';
+import { applyCodexMultiAgentConfig } from '@canopy/execution-engine/lib/codex-multi-agent';
 import { getAppAdvisorLedgerToolNames } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { randomUUID } from 'node:crypto';
 import { BRAND } from '@canopy/brand/current';
@@ -27,7 +27,7 @@ import { resolveEffectiveChatPluginContext } from '../plugins/global-plugin-over
 import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { resolveCodexRuntimeEnvironmentProfile } from '../lib/user-environment-runtime';
-import { resolveCodexMockAppServerOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import { resolveCodexMockAppServerOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { buildWorktreeInjectedToolPrompt } from '../canopy-tools/prompting';
 import { buildCoworkDispatchSystemPromptAppend } from '../lib/cowork-chat-system-prompt';
@@ -49,7 +49,7 @@ import {
   isGatewayReasoningRouteFamily,
   resolveCodexReasoningRouteFamily,
   resolveGatewayToolSchemaProfile,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { buildCodexSessionDynamicToolSpecs } from './session-dynamic-tools';
 import { resolveCodexCompatibleOllamaInvocation } from '../ollama/codex-compatible';
 

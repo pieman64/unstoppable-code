@@ -1,4 +1,4 @@
-import type { ExecutionState } from '../../../types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 
 /*
  * Orphan detection for an execution's owning process (CAN-4140). A running

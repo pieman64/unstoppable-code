@@ -1,5 +1,5 @@
 import type { AgentModelConfig } from '@canopy/desktop-shared/types';
-import { readCodexSpeedRecord } from '@canopy/desktop-shared/lib/codex-speed';
+import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 
 /** Pipelines retain their existing Regular/Fast execution contract. */
 export function pipelineSpeedError(

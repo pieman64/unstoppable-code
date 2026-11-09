@@ -1,3 +1,5 @@
+import { Fieldset } from '@canopy/ui-shared/components';
+import { Stack } from '@canopy/ui-shared/components';
 import { useEffect, useState, type JSX } from 'react';
 import { CHAT_LABEL } from '@canopy/protocol';
 import type {
@@ -104,18 +106,12 @@ export function AutomationAuthorTargetRequirement({
   // refusal is worth showing.
   if (isGlobalPipelineAutomationAction(action))
     return resolved.status === 'error' ? (
-      <div
-        className="space-y-2"
-        data-testid="automations-form-target-requirement"
-      >
+      <Stack gap="inline" data-testid="automations-form-target-requirement">
         <Notice intent="attention">{resolved.error}</Notice>
-      </div>
+      </Stack>
     ) : null;
   return (
-    <div
-      className="space-y-2"
-      data-testid="automations-form-target-requirement"
-    >
+    <Stack gap="inline" data-testid="automations-form-target-requirement">
       {resolved.status === 'error' ? (
         <Notice intent="attention">{resolved.error}</Notice>
       ) : (
@@ -129,6 +125,7 @@ export function AutomationAuthorTargetRequirement({
         supported.status === 'resolved' &&
         resolved.status === 'error' && (
           <Button
+            className="self-start"
             variant="secondary"
             data-testid="automations-form-target-reset"
             onClick={(): void => onChange(undefined)}
@@ -140,34 +137,40 @@ export function AutomationAuthorTargetRequirement({
         !installed &&
         supported.status === 'resolved' &&
         supported.contexts.length > 1 && (
-          <fieldset className="space-y-1 text-s">
-            <legend className="fg-secondary">Allow runs in</legend>
-            {supported.contexts.map((context) => {
-              const selected = requirement?.contexts ?? supported.contexts;
-              return (
-                <ShareCheckbox
-                  key={context}
-                  checked={selected.includes(context)}
-                  disabled={selected.includes(context) && selected.length === 1}
-                  inputTestId={`automations-form-target-${context}`}
-                  onChange={(checked): void =>
-                    onChange(
-                      supported.contexts.filter((candidate) =>
-                        candidate === context
-                          ? checked
-                          : selected.includes(candidate),
-                      ),
-                    )
-                  }
-                >
-                  {context === 'cowork'
-                    ? `${CHAT_LABEL} projects`
-                    : 'Code projects'}
-                </ShareCheckbox>
-              );
-            })}
-          </fieldset>
+          <div className="text-s">
+            <Fieldset
+              gap="tight"
+              legend={<span className="fg-secondary">Allow runs in</span>}
+            >
+              {supported.contexts.map((context) => {
+                const selected = requirement?.contexts ?? supported.contexts;
+                return (
+                  <ShareCheckbox
+                    key={context}
+                    checked={selected.includes(context)}
+                    disabled={
+                      selected.includes(context) && selected.length === 1
+                    }
+                    inputTestId={`automations-form-target-${context}`}
+                    onChange={(checked): void =>
+                      onChange(
+                        supported.contexts.filter((candidate) =>
+                          candidate === context
+                            ? checked
+                            : selected.includes(candidate),
+                        ),
+                      )
+                    }
+                  >
+                    {context === 'cowork'
+                      ? `${CHAT_LABEL} projects`
+                      : 'Code projects'}
+                  </ShareCheckbox>
+                );
+              })}
+            </Fieldset>
+          </div>
         )}
-    </div>
+    </Stack>
   );
 }

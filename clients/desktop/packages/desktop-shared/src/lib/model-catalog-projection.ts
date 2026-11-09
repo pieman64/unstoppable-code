@@ -45,7 +45,7 @@ import {
 import {
   isGatewayOnlyModel,
   resolveGatewayModelEntry,
-} from './gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isOpenCodeGatewayRouteSupported } from './opencode-gateway-models';
 
 // Stale Agents still need a stable catalog section for display. This explicit

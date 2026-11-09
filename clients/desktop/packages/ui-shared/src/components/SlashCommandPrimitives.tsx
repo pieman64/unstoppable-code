@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { Badge } from './Badge';
+import { LoadingSpinner } from './LoadingSpinner';
 
 /** Selecting this row explicitly enables it before insertion. */
 export function SlashCommandAvailabilityTag(): JSX.Element {
@@ -20,12 +21,7 @@ export function SlashCommandAvailabilityTag(): JSX.Element {
  * portal Commands popup) share the same pending treatment.
  */
 export function SlashCommandLoadingIcon(): JSX.Element {
-  return (
-    <span
-      aria-hidden="true"
-      className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
-    />
-  );
+  return <LoadingSpinner decorative sizePx={14} />;
 }
 
 export interface SlashCommandAvailableDividerProps {

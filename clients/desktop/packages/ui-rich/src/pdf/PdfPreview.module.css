@@ -198,7 +198,6 @@
 .linkLayer a {
   position: absolute;
   pointer-events: auto;
-  cursor: default;
 }
 
 .linkLayer a:hover,

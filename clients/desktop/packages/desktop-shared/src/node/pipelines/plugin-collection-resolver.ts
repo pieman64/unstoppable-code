@@ -1,7 +1,7 @@
 import type {
   PipelinePluginCollectionPreference,
   ResolvedPipelinePluginCollectionSnapshot,
-} from '../../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 export interface PipelinePluginCollectionResolution {
   snapshots: Record<string, ResolvedPipelinePluginCollectionSnapshot>;

@@ -1,4 +1,4 @@
-import type { AgentAuditEntry } from '@canopy/desktop-shared/types/observability';
+import type { AgentAuditEntry } from '@canopy/execution-engine/types/observability';
 import type { SharedRunRollup } from '@canopy/protocol/runs';
 
 /**

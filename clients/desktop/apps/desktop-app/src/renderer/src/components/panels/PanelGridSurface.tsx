@@ -1,7 +1,6 @@
 import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import { ActivityCardToggle } from '@/components/activity/ActivityCardControl';
 import { useChatTabRename } from '@/components/chat/ChatTabRenameDialog';
-import { ChatGroupArchivedChatsAccessory } from '@/components/panels/ChatGroupArchivedChatsAccessory';
 import { PanelAddTabMenu } from '@/components/panels/PanelAddTabMenu';
 import { ExportSessionConfirmationModal } from '@/components/shared/ExportSessionConfirmationModal';
 import { ShareRunModal } from '@/components/shared/ShareRunModal';
@@ -13,6 +12,7 @@ import { useCanopyDesktopStartPageEnabled } from '@/hooks/useCanopyDesktopStartP
 import { useExportSessionAction } from '@/hooks/useExportSessionAction';
 import { useShareRunAction } from '@/hooks/useShareRunAction';
 import { dispatchBrowserViewBoundsInvalidated } from '@/lib/browserViewBounds';
+import { panelErrorBoundaryHost } from '@/lib/desktop-error-boundary-host';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { formatFileReferencePath } from '@/lib/file-reference-paths';
 import { addChatPanelToGroup } from '@/lib/panels/addChatPanel';
@@ -143,13 +143,6 @@ export interface PanelGridSurfaceProps {
    */
   addMenuExcludeKinds?: readonly PanelKind[];
   /**
-   * Whether this grid mounts the archived-chats control as a tab-strip
-   * accessory. Worktree surfaces pass `false`: their header (PrStatusBar)
-   * hosts the control instead, so the grid must not render a second copy.
-   * Header-less surfaces (cowork, App Advisor) keep the accessory.
-   */
-  archivedChatsAccessory?: boolean;
-  /**
    * Surface-specific New Chat creator for the tab-strip `+`. Cowork and App
    * Advisor pass their standalone `startNewChat()` (empty-tab reuse, model
    * defaults, archive-overlay dismissal); worktree surfaces omit it and get
@@ -247,7 +240,6 @@ export function PanelGridSurface({
   hostState,
   includeAuxWindowContent = true,
   addMenuExcludeKinds,
-  archivedChatsAccessory = true,
   onNewChatTab,
 }: PanelGridSurfaceProps): JSX.Element {
   const worktreeKey = makeWorktreePanelKey(projectId, worktreeId);
@@ -489,42 +481,22 @@ export function PanelGridSurface({
     [projectId, worktreeId],
   );
 
-  // Worktrees keep their primary archive control in PrStatusBar. Header-less
-  // scopes retain their existing scoped archive accessory.
-  const archiveInTabStrip = archivedChatsAccessory && !readOnly;
+  // Archived chats live in each surface's top bar, never the tab strip.
+  // Early access puts the Activity toggle at the main chat group's right end,
+  // beside the card it opens, while that group shows a chat.
   const renderTabStripAccessory = useCallback(
-    // Offered to EVERY group (not just chat groups): the accessory elects one
-    // owner itself, and its last-resort fallback is a non-chat group so the
-    // archive control survives the sole chat group being popped out.
-    //
-    // Header-less surfaces (cowork, App Advisor) mount scoped, never-primary
-    // instances. A worktree's primary control stays in PrStatusBar.
-    //
-    // Early access also puts the Activity toggle at the main chat group's
-    // right end, beside the card it opens, while that group shows a chat.
     (group: PanelGroupModel): ReactNode => (
-      <>
-        {archiveInTabStrip ? (
-          <ChatGroupArchivedChatsAccessory
-            projectId={projectId}
-            worktreeId={worktreeId}
-            group={group}
-            primarySurface={false}
-            variant={'tabStrip'}
-          />
-        ) : null}
-        <ActivityCardToggle
-          projectId={projectId}
-          worktreeId={worktreeId}
-          groupId={group.groupId}
-          activeTabKind={
-            group.tabs.find((tab) => tab.panelId === group.activePanelId)
-              ?.kind ?? null
-          }
-        />
-      </>
+      <ActivityCardToggle
+        projectId={projectId}
+        worktreeId={worktreeId}
+        groupId={group.groupId}
+        activeTabKind={
+          group.tabs.find((tab) => tab.panelId === group.activePanelId)?.kind ??
+          null
+        }
+      />
     ),
-    [archiveInTabStrip, projectId, worktreeId],
+    [projectId, worktreeId],
   );
 
   const handleAddChatTab = useCallback(
@@ -558,6 +530,7 @@ export function PanelGridSurface({
               ? renderPanelContent(props)
               : renderReadOnlyRefusedPanel(props)
         : renderPanelContent,
+      panelErrorHost: panelErrorBoundaryHost,
       renderTabIcon: renderPanelTabIcon,
       renderCollapsedTabIcon: renderPanelCollapsedTabIcon,
       renderTabLabel: renderPanelTabLabel,
@@ -757,10 +730,9 @@ export function PanelGridSurface({
         }
       },
       addTabLabel: readOnly ? 'Add panel' : `New ${CHAT_UNIT_LABEL}`,
-      tabStripAccessoryForGroup:
-        archiveInTabStrip || activityIsCard
-          ? renderTabStripAccessory
-          : undefined,
+      tabStripAccessoryForGroup: activityIsCard
+        ? renderTabStripAccessory
+        : undefined,
       // Early access: an empty Side Panel lists what can be opened there.
       emptyContentForGroup: (group, actions): ReactNode =>
         group.groupId === DEFAULT_EXTRAS_GROUP_ID ? (
@@ -776,7 +748,6 @@ export function PanelGridSurface({
     }),
     [
       activityIsCard,
-      archiveInTabStrip,
       canCloseMinimalTab,
       effectiveAddMenuExcludeKinds,
       busyChatIds,

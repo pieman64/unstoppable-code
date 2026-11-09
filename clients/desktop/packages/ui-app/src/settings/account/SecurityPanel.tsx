@@ -20,7 +20,6 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   Skeleton,
-  StatusLabel,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
@@ -367,15 +366,19 @@ export function AuthSourceRow({
     <li className={`${SETTINGS_CARD_ROW_CLASS} flex-wrap`}>
       <div className="flex items-center gap-3">
         <AuthSourceIcon providerId={source.providerId} />
-        <div className="min-w-0">
-          <p className="text-s font-medium fg-primary">{source.label}</p>
-          <p className="text-xs fg-secondary">
-            Linked {formatLinkedDate(source.linkedAt)}
-          </p>
-          {error && (
-            <p className="mt-1" role="alert">
-              <StatusLabel size="xs">{error.copy}</StatusLabel>
+        <div className="min-w-0 flex flex-col gap-1">
+          <div>
+            <p className="text-s font-medium fg-primary">{source.label}</p>
+
+            <p className="text-xs fg-secondary">
+              Linked {formatLinkedDate(source.linkedAt)}
             </p>
+          </div>
+
+          {error && (
+            <div>
+              <ErrorBanner className="" error={error.copy} />
+            </div>
           )}
         </div>
       </div>

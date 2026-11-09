@@ -1,5 +1,6 @@
 'use client';
 
+import { Stack } from './Stack';
 import { type JSX, useState } from 'react';
 import {
   StoreBadgeLink,
@@ -85,12 +86,12 @@ export function MobileAppQrPromo({
       data-testid={dataTestId ?? 'mobile-app-qr-promo'}
       className="flex w-64 flex-col items-center gap-3 p-4 text-center"
     >
-      <div className="space-y-1">
+      <Stack gap="tight">
         <p className="text-s font-semibold fg-primary">{resolvedHeading}</p>
         <p className="text-xs fg-secondary">
           {description ?? DEFAULT_MOBILE_APP_PROMO_DESCRIPTION}
         </p>
-      </div>
+      </Stack>
 
       {/* The shared SegmentedControl in its default toggle semantics (a
           labelled group of `aria-pressed` buttons), deliberately NOT

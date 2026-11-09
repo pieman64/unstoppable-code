@@ -9,6 +9,10 @@ import type {
   SuggestionsQueryMap,
 } from '@canopy/protocol/suggestions';
 import type {
+  ClaudeModsCommandMap,
+  ClaudeModsQueryMap,
+} from '@canopy/protocol/claude-mods';
+import type {
   RepoRulesScanRequest,
   RepoRulesScanResponse,
   RepoRulesApplyRequest,
@@ -103,6 +107,9 @@ import type {
 import type {
   PortalChatHistoryChunk,
   PortalChatHistoryRequest,
+  PortalAppAdvisorChatSummary,
+  PortalEntityEnvelope,
+  PortalChatCloudAttachmentRef,
   PortalAppAdvisorSettings,
   PortalAppAdvisorSettingsGetPayload,
   PortalAppAdvisorSettingsSavePayload,
@@ -171,6 +178,7 @@ import type { TranscriptReadClient } from '../transcripts';
 import type { ExternalAgentsClient } from './external-agents-client';
 import type { MarketplaceSourcesClient } from './marketplace-sources-client';
 import type { AccountOrganizationSettingsClient } from '../settings/settings-client';
+import type { ShellCommandMap, ShellQueryMap } from './shell-commands';
 
 export type { StarSourceRepositoryResult };
 
@@ -183,6 +191,25 @@ export interface SessionSnapshotArgs {
   readonly includeChatSummaries?: boolean;
   readonly workspaceLocalId?: string;
   readonly worktreeLocalId?: string;
+  /**
+   * Read one standalone chat with its latest turn end and questions (the
+   * desktop reads them from the chat's tabs file). Hosts that predate it
+   * return every standalone chat without them.
+   */
+  readonly standaloneChatLocalId?: string;
+}
+
+/** One composer attachment for `chat.attachments.upload`. */
+export interface ChatAttachmentUploadArgs {
+  /** The workspace the chat belongs to; routes the upload to its computer. */
+  readonly workspaceLocalId: string;
+  readonly worktreeLocalId?: string;
+  readonly chatId: string;
+  readonly fileName: string;
+  readonly mediaType: string;
+  readonly bytes: Uint8Array;
+  /** Lowercase hex SHA-256 of `bytes`, for the composer's duplicate check. */
+  readonly contentSha256: string;
 }
 
 /** Optional project/worktree scope applied after the host lists live PTYs. */
@@ -203,7 +230,12 @@ export type TerminalShellSpawnArgs = Omit<
  * snapshot; feature slices extend this map here.
  */
 export interface QueryMap
-  extends ScriptActionsQueryMap, OnboardingTipsQueryMap, SuggestionsQueryMap {
+  extends
+    ScriptActionsQueryMap,
+    OnboardingTipsQueryMap,
+    SuggestionsQueryMap,
+    ClaudeModsQueryMap,
+    ShellQueryMap {
   /** Read the authoritative managed-delegation allowance for one worktree. */
   'delegation.lifetimeStatus': {
     args: { readonly projectId: string; readonly worktreeId: string };
@@ -283,6 +315,27 @@ export interface QueryMap
   'appAdvisor.settings.get': {
     args: PortalAppAdvisorSettingsGetPayload;
     result: PortalAppAdvisorSettings | null;
+  };
+  /**
+   * The paired computer's Orchestrator chats, one row per tab in Work Entry
+   * order, with each chat's open questions (CAN-5985). Served by clients
+   * whose capabilities report `appAdvisorChats`; the Portal session carries
+   * the same rows in its shell state instead.
+   */
+  'appAdvisor.chats': {
+    args: Record<string, never>;
+    result: { readonly chats: readonly PortalAppAdvisorChatSummary[] };
+  };
+  /**
+   * One worktree's plan, script, hook, pipeline and summary rows on the
+   * paired computer: the entity envelopes Portal's worktree snapshot carries
+   * for those panels (CAN-5985). Served by clients whose capabilities report
+   * `worktreeActivityRows`; the Portal session carries the same rows in its
+   * shell state instead.
+   */
+  'worktree.activity': {
+    args: { readonly projectId: string; readonly worktreeId: string };
+    result: { readonly entities: readonly PortalEntityEnvelope[] };
   };
   /**
    * Turn-level thumbs up/down ratings for one chat (CAN-1521), keyed by the
@@ -446,7 +499,9 @@ export interface CommandMap
   extends
     ScriptActionsCommandMap,
     OnboardingTipsCommandMap,
-    SuggestionsCommandMap {
+    SuggestionsCommandMap,
+    ClaudeModsCommandMap,
+    ShellCommandMap {
   /** User-authorized extension of one worktree's managed-delegation allowance. */
   'delegation.extendLifetimeLimit': {
     args: { readonly projectId: string; readonly worktreeId: string };
@@ -642,6 +697,18 @@ export interface CommandMap
   'appAdvisor.settings.save': {
     args: PortalAppAdvisorSettingsSavePayload;
     result: void;
+  };
+  /**
+   * Store one composer attachment on the paired computer before the send
+   * that carries it (CAN-5985). The reference goes in the send's
+   * `cloudAttachments`; only the client that minted it can send it. Served by
+   * clients whose capabilities report `chatAttachments` without their own
+   * attachment route (a directly controlled computer); Portal and cloud
+   * composers keep their storage routes.
+   */
+  'chat.attachments.upload': {
+    args: ChatAttachmentUploadArgs;
+    result: PortalChatCloudAttachmentRef;
   };
   /**
    * Activity actions (Scripts / Hooks sections). Fire-and-forget mutations: the

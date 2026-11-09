@@ -41,7 +41,7 @@ import {
   APP_ADVISOR_PROJECT_ID,
   STANDALONE_CHAT_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import type { PipelineExecutionDetailTarget } from '@/components/activity/details/pipelineDetailTypes';
 import { dismissPageLikeViewers } from '@/lib/dismissPageLikeViewers';
 import { isRegisteredCoworkWorkspaceId } from '@/lib/cowork-registry';

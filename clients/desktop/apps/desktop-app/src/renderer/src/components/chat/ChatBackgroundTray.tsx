@@ -1,3 +1,7 @@
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { extractIpcErrorMessage } from '@/lib/errors';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { inlineFailure } from '@/lib/inline-app-error';
 import type { ComposerWorkDrawerSections } from '@canopy/ui-app';
 import {
   useCallback,
@@ -27,7 +31,7 @@ import type {
   GitHubWorkflowRunArtifactReceiptV1,
   PipelineRunArtifactReceiptV1,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import type { PipelineRunRowState } from '@/lib/pipelineRunRowState';
 import { useActivityStore } from '@/stores/activityStore';
 import {
@@ -51,9 +55,8 @@ import {
 } from '@/stores/chatBackgroundWorkStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { usePipelineExecutionSummaryInterest } from '@/stores/pipelineDetailCoordinator';
-import { useGitHubStore } from '@/stores/githubStore';
+import { gitActionFailureRaiser, useGitHubStore } from '@/stores/githubStore';
 import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
-import { extractIpcErrorMessage } from '@/lib/errors';
 import { detectChatStoreSurface } from '@/stores/chat/surface';
 import { backgroundProcessToTask } from '@/lib/background-tasks';
 import { WatcherManagementButton } from '@/components/watchers/WatcherManagementButton';
@@ -125,14 +128,20 @@ function showPipelineError(message: string): void {
     .addToast(message, 'error', undefined, { category: 'Pipeline' });
 }
 
-function openOnGitHub(url: string): void {
-  void window.api.browser.openLink({ url }).catch((error: unknown) =>
-    useGitHubStore
-      .getState()
-      .addToast(extractIpcErrorMessage(error), 'error', undefined, {
-        category: 'GitHub',
-      }),
+function openOnGitHub(
+  url: string,
+  target: ChatBackgroundTrayProps['target'],
+): void {
+  // A git action that starts while the link opens owns the banner.
+  const raiseFailure = gitActionFailureRaiser(
+    target.projectId,
+    target.worktreeId,
   );
+  void window.api.browser.openLink({ url }).catch((error: unknown): void => {
+    const appError = toAppError(resolveClientAppError(error));
+    if (appError)
+      raiseFailure(inlineFailure(appError, "Couldn't open GitHub."));
+  });
 }
 
 /** A watched pull request: its last snapshot and the watcher following it. */
@@ -538,7 +547,7 @@ export function ChatBackgroundTray({
     (runKey: string): void => {
       const pullRequest = pullRequests.get(runKey);
       if (pullRequest !== undefined) {
-        openOnGitHub(pullRequest.pr.url);
+        openOnGitHub(pullRequest.pr.url, target);
         return;
       }
       const receipt = receipts[runKey];
@@ -568,7 +577,7 @@ export function ChatBackgroundTray({
         ...owner,
       });
     },
-    [chatId, projectId, pullRequests, receipts, worktreeId],
+    [chatId, projectId, pullRequests, receipts, worktreeId, target],
   );
   const openRunJob = useCallback(
     (runKey: string, jobId: string): void => {
@@ -581,9 +590,9 @@ export function ChatBackgroundTray({
       }
       const job = receipt.jobs?.find((item) => item.jobId === jobId);
       if (job === undefined) return;
-      openOnGitHub(job.htmlUrl);
+      openOnGitHub(job.htmlUrl, target);
     },
-    [liveGitHubReceipts, openRun],
+    [liveGitHubReceipts, openRun, target],
   );
   const renderRunWatcher = useCallback(
     (run: BackgroundTrayRun): JSX.Element | null => {

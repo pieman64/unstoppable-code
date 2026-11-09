@@ -1,3 +1,4 @@
+import { LoadingSpinner } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useRef, type JSX, type ReactNode } from 'react';
 import type { FileMentionOption } from '../types';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
@@ -14,15 +15,6 @@ export interface FileTypeaheadMenuProps {
   onSelect: (file: FileMentionOption) => void;
   /** Replaces the default loading spinner. */
   loadingIcon?: ReactNode;
-}
-
-function DefaultLoadingIcon(): JSX.Element {
-  return (
-    <span
-      aria-hidden="true"
-      className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
-    />
-  );
 }
 
 function highlightPath(path: string, indices: number[] | undefined): ReactNode {
@@ -49,7 +41,7 @@ export function FileTypeaheadMenu({
   loadingIcon,
 }: FileTypeaheadMenuProps): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
-  const spinner = loadingIcon ?? <DefaultLoadingIcon />;
+  const spinner = loadingIcon ?? <LoadingSpinner decorative sizePx={14} />;
 
   useEffect(() => {
     const container = listRef.current;

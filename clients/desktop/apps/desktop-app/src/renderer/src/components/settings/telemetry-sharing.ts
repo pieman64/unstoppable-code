@@ -96,21 +96,6 @@ export function resolveTelemetryScopeDescriptions(
   };
 }
 
-/**
- * Label used by the "Set all to" bulk control for each visibility value. The
- * section heading already reads "Set all to", so each button is just the bare
- * scope label ("Off" / "Just me" / "Organization"). `team` is retained for type
- * completeness but is never rendered (the bulk row omits any scope outside
- * `resolveAvailableTelemetryScopes`).
- */
-export const TELEMETRY_BULK_LABELS: Record<TelemetrySharingVisibility, string> =
-  {
-    off: 'Off',
-    private: 'Just me',
-    team: 'Team',
-    organization: 'Organization',
-  };
-
 export interface TelemetryDataTypeMeta {
   key: keyof TelemetrySharingPreferences;
   label: string;
@@ -132,7 +117,10 @@ export const TELEMETRY_DATA_TYPES: readonly TelemetryDataTypeMeta[] =
     (key): TelemetryDataTypeMeta => ({
       key,
       label: DATA_SHARING_SCOPE_LABELS[key],
-      description: DATA_SHARING_SCOPE_DESCRIPTIONS[key],
+      // Row hints on the Privacy page are fragments without a closing period,
+      // matching the Usage data rows above them. The shared vocabulary keeps
+      // its sentences for the org admin card.
+      description: DATA_SHARING_SCOPE_DESCRIPTIONS[key].replace(/\.$/, ''),
     }),
   );
 

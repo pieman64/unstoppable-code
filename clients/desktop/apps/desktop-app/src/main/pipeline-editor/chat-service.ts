@@ -33,8 +33,8 @@ import {
   PIPELINE_EDITOR_TOOL_REGISTRY,
 } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 import { stableHash } from '@canopy/desktop-shared/lib/stable-hash';
-import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
-import { applyAgentSessionCodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
+import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
+import { applyAgentSessionCodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
 import { validateId } from '../lib/validation';
 import { buildSubmittedMessageText } from '../lib/chat-submitted-message';
 import {

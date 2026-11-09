@@ -27,8 +27,8 @@ import {
 } from './canopy-json';
 import { writeFileAtomically, type AtomicFileStorage } from './atomic-file';
 import { assertImportFolderExists } from './import-folder';
-import { withStorageAdmission } from './storage-admission';
-import { isPathInside } from './path-safety';
+import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
+import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 import {
   WORKSPACE_SOURCE_REPO_INITIAL_COMMIT_MESSAGE,
   ensureGitignoreContainsReposEntry,

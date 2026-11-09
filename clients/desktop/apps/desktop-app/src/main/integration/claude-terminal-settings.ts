@@ -13,7 +13,7 @@ import {
 import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import { BRAND } from '@canopy/brand/current';
-import { brandEnvName } from '@canopy/desktop-shared/brand/env';
+import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import {
   getBundledClaudeBinaryPath,
   getBundledRgBinaryPath,
@@ -32,7 +32,7 @@ import {
   isModelBlockedByStoredPolicy,
   isOrgModelPolicyActiveForStoredAccount,
 } from '../lib/model-policy-state';
-import { nativeMemorySettingsOverride } from '@canopy/desktop-shared/node/lib/native-memory';
+import { nativeMemorySettingsOverride } from '@canopy/execution-engine/node/lib/native-memory';
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
 import {
   buildClaudeTerminalHookCallbackScript,
@@ -41,6 +41,14 @@ import {
 } from './claude-terminal-hooks';
 import { buildRtkHookWrapperScript } from './rtk-hook-wrapper';
 import { resolveSessionWorkOwner } from '../agents/work-owner';
+import { claudeManagedSettingsGuard } from '../agents/claude-managed-settings';
+import { resolveClaudeModAdmissionContext } from '../agents/claude-mod-admission-launch';
+import { desktopTerminalEnvironmentFor } from '../terminal/worker-terminal';
+import {
+  mergeClaudeModAdmissionSettings,
+  type ClaudeModAdmissionSettings,
+} from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+import type { SkippedClaudeMod } from '@canopy/desktop-shared/types/claude-mod-admission';
 
 /**
  * `input.model` is pushed straight into the Claude Code CLI as `--model`, so
@@ -119,6 +127,10 @@ export interface ClaudeTerminalLaunchConfig {
   sessionKey: string;
   authToken: string;
   sdkSessionId: string;
+  claudeModAdmission?: {
+    settings?: ClaudeModAdmissionSettings;
+    skippedMods: readonly SkippedClaudeMod[];
+  };
 }
 
 function quotePosixShellArg(value: string): string {
@@ -461,8 +473,34 @@ export async function buildClaudeTerminalLaunchConfig(
     chatSurfaceUsesGlobalPluginDefaults(input.projectId),
   );
   const effectiveSelections = pluginContext.selections;
+  const requestedSettingSources: SettingSource[] = input.settingSources ?? [
+    'user',
+    'project',
+    'local',
+  ];
+  // Admission reads the config folder the terminal's Claude will: the
+  // worktree's terminal environment (workspace assignments included), then
+  // the launch override.
+  const terminalEnv = desktopTerminalEnvironmentFor(
+    input.projectId,
+    input.worktreeId,
+  );
+  const claudeConfigDir =
+    input.claudeEnvOverride?.CLAUDE_CONFIG_DIR ?? terminalEnv.CLAUDE_CONFIG_DIR;
+  const claudeHome = input.claudeEnvOverride?.HOME || terminalEnv.HOME;
+  const claudeModAdmissionContext = await resolveClaudeModAdmissionContext({
+    cwd: input.cwd,
+    settingSources: requestedSettingSources,
+    environment: false,
+    ...(claudeConfigDir !== undefined ? { claudeConfigDir } : {}),
+    ...(claudeHome ? { home: claudeHome } : {}),
+  });
+  let claudeModAdmission: ClaudeTerminalLaunchConfig['claudeModAdmission'];
   let resolvedMcpServers: Record<string, unknown> = {};
-  if (hasAnySelections(effectiveSelections)) {
+  if (
+    hasAnySelections(effectiveSelections) ||
+    claudeModAdmissionContext !== undefined
+  ) {
     const resolved = await resolvePlugins(
       effectiveSelections,
       input.projectId,
@@ -470,16 +508,20 @@ export async function buildClaudeTerminalLaunchConfig(
       input.chatId,
       {
         purpose: 'claude-session',
+        cwd: input.cwd,
+        settingSources: requestedSettingSources,
         installExternalPlugins: true,
         enableHttpMcpProxy: true,
         mcpHttpProxyService: server,
         sessionId: input.sessionKey,
+        claudeModAdmissionContext,
         ...(pluginContext.preferences
           ? { preferences: pluginContext.preferences }
           : {}),
       },
     );
     resolvedMcpServers = resolved.mcpServers;
+    claudeModAdmission = resolved.claudeModAdmission;
     for (const warning of resolved.warnings) {
       // eslint-disable-next-line no-console
       console.warn('[claude-terminal-settings]', warning);
@@ -510,24 +552,21 @@ export async function buildClaudeTerminalLaunchConfig(
     ),
   );
   const localMemoryEnabled = await readLocalMemoryEnabledPreference();
-  await writeFile(
-    settingsPath,
-    JSON.stringify(
-      {
-        ...buildSettings(
-          callbackStub,
-          rtkStub,
-          input.approvalMode !== 'full-access',
-          input.approvalHookEnabled !== false,
-          localMemoryEnabled,
-        ),
-        ...(thinking.settings ?? {}),
-      },
-      null,
-      2,
+  const terminalSettings = {
+    ...buildSettings(
+      callbackStub,
+      rtkStub,
+      input.approvalMode !== 'full-access',
+      input.approvalHookEnabled !== false,
+      localMemoryEnabled,
     ),
-    'utf8',
+    ...(thinking.settings ?? {}),
+  };
+  const settings = mergeClaudeModAdmissionSettings(
+    terminalSettings,
+    claudeModAdmission?.settings,
   );
+  await writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
   await writeFile(
     mcpConfigPath,
     JSON.stringify(
@@ -577,11 +616,6 @@ export async function buildClaudeTerminalLaunchConfig(
   );
 
   const permission = resolvePermission(input);
-  const requestedSettingSources: SettingSource[] = input.settingSources ?? [
-    'user',
-    'project',
-    'local',
-  ];
   const args = [
     '--settings',
     settingsPath,
@@ -590,6 +624,8 @@ export async function buildClaudeTerminalLaunchConfig(
     '--strict-mcp-config',
     '--setting-sources',
     requestedSettingSources.join(','),
+    '--managed-settings',
+    JSON.stringify(claudeManagedSettingsGuard()),
   ];
   if (permission.allowDangerouslySkipPermissions) {
     args.push('--allow-dangerously-skip-permissions');
@@ -646,6 +682,7 @@ export async function buildClaudeTerminalLaunchConfig(
     sessionKey: input.sessionKey,
     authToken: input.authToken,
     sdkSessionId: input.sdkSessionId,
+    ...(claudeModAdmission ? { claudeModAdmission } : {}),
     env: compactEnv({
       [brandEnvName('CLAUDE_TERMINAL_MODE')]: '1',
       [brandEnvName('PROJECT_ID')]: input.projectId,

@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import {
   Profiler,
   useCallback,
@@ -263,13 +264,15 @@ function ParityReadout({
         onOpenChange={onToggle}
         dataTestId="desktop-sidebar-shadow-parity-disclosure"
       >
-        <div>
-          refreshes {refreshCount} · build{' '}
-          {Number(lastBuildDuration.toFixed(2))} ms · commits {commitCount}
-        </div>
-        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap">
-          {JSON.stringify(mismatches, null, 2)}
-        </pre>
+        <Stack gap="tight">
+          <div>
+            refreshes {refreshCount} · build{' '}
+            {Number(lastBuildDuration.toFixed(2))} ms · commits {commitCount}
+          </div>
+          <pre className="max-h-32 overflow-auto whitespace-pre-wrap">
+            {JSON.stringify(mismatches, null, 2)}
+          </pre>
+        </Stack>
       </Disclosure>
     </div>
   );

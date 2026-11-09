@@ -16,6 +16,7 @@ import type { InstalledItemUninstallTarget } from '@canopy/protocol/installed-it
 import { useOptionalCanopyClient } from '@canopy/app-state';
 import { isFeatureSurfaceAvailable } from '@canopy/app-core/gating';
 import {
+  Stack,
   CustomizeInstalledList,
   CustomizeInstalledRow,
   CustomizeInstalledUnavailable,
@@ -1749,10 +1750,10 @@ export function CustomizeTabSections(
   }
 
   return (
-    <div
+    <Stack
       data-testid="customize-sections"
       data-result-count={model.resultCount}
-      className="space-y-10"
+      gap="hero"
     >
       {searchActive && (
         <p
@@ -1840,6 +1841,6 @@ export function CustomizeTabSections(
         />
       )}
       {renderRemovalDialog()}
-    </div>
+    </Stack>
   );
 }

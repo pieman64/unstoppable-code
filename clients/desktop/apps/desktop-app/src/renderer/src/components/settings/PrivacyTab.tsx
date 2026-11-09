@@ -20,7 +20,6 @@ import {
 } from '@/stores/workspaceContextStore';
 import { CanopyCloudAccountSection } from './CanopyCloudAccountSection';
 import { CloudSyncStatus } from './CloudSyncStatus';
-import { TelemetrySharingIntro } from './TelemetrySharingIntro';
 import { TelemetrySharingControls } from './TelemetrySharingControls';
 import { SettingsGroup, SettingsPage, SettingsSection } from './SettingsLayout';
 import {
@@ -30,6 +29,8 @@ import {
 } from './telemetry-sharing';
 import { resolveTelemetryLocks } from './telemetryLocks';
 import { useHostedSettingsAvailable } from './hosted/hosted-settings-availability';
+import { UsageDataSection } from './UsageDataSection';
+import { brandText } from '@/lib/brand';
 
 const UNLINKED_SCOPES: TelemetrySharingVisibility[] =
   resolveAvailableTelemetryScopes(null);
@@ -50,9 +51,13 @@ const UNLINKED_SCOPES: TelemetrySharingVisibility[] =
  * also kicks off an on-demand server re-probe so the locks are current the
  * moment the user opens the tab, rather than up to one re-probe interval stale.
  *
+ * Usage data sits above Activity sharing: its switches turn off the
+ * product's own usage and diagnostic flows, and main resolves their org
+ * prohibitions (see `UsageDataSection`).
+ *
  * With hosted account settings available, the cloud account row lives on the
  * hosted Account page and the personal-catalog choice on Public profile, so
- * this tab keeps only Activity sharing.
+ * this tab keeps only Usage data and Activity sharing.
  */
 export function PrivacyTab(): JSX.Element {
   const [sharing, setSharing] = useState<TelemetrySharingPreferences>(
@@ -92,7 +97,7 @@ export function PrivacyTab(): JSX.Element {
     },
     [],
   );
-  const { locked, lockTooltip, blockedTooltip } = useMemo(
+  const { locked, lockTooltip, blockedTooltip, organizationName } = useMemo(
     () => resolveTelemetryLocks(account, workspaceContext),
     [account, workspaceContext],
   );
@@ -217,22 +222,26 @@ export function PrivacyTab(): JSX.Element {
       {/* Its own section, and nothing while its flag is off. */}
       {!hostedSettingsAvailable && <PersonalCatalogSettings />}
 
-      {/* The sync status line is the section's description: it reports on
-          the data types this section controls, and the heading holds only
-          text. The disclosure says what sharing is for before the choices;
-          the choices are one group of rows. */}
+      <UsageDataSection />
+
+      {/* What sharing is for and how the data is protected is the section's
+          description. The sync status is a quiet line right-aligned under the
+          choices it reports on, and the heading holds only text. */}
       <SettingsSection
         title="Activity sharing"
+        dataTestId="telemetry-disclosure"
         description={
-          syncStatus ? (
-            <CloudSyncStatus
-              status={syncStatus}
-              cloudConnected={cloudCredentialUsable}
-            />
-          ) : undefined
+          <p>
+            Sync your agent activity to {brandText.appName} Cloud to search past
+            runs, pick up work across machines, and share runs with your team.{' '}
+            <span data-testid="telemetry-disclosure-protection">
+              Secrets like API keys are scrubbed before anything leaves the app,
+              and uploaded transcripts and plans are encrypted on{' '}
+              {brandText.appName} Cloud.
+            </span>
+          </p>
         }
       >
-        <TelemetrySharingIntro />
         <TelemetrySharingControls
           value={sharing}
           rawValue={sharing}
@@ -242,8 +251,17 @@ export function PrivacyTab(): JSX.Element {
           locked={locked}
           lockTooltip={lockTooltip}
           blockedTooltip={blockedTooltip}
+          lockOrganizationName={organizationName}
           scopeDescriptions={scopeDescriptions}
         />
+        {syncStatus ? (
+          <div className="flex justify-end">
+            <CloudSyncStatus
+              status={syncStatus}
+              cloudConnected={cloudCredentialUsable}
+            />
+          </div>
+        ) : null}
       </SettingsSection>
     </SettingsPage>
   );

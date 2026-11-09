@@ -1,7 +1,11 @@
 'use client';
 
 import { memo, useMemo, type JSX, type MemoExoticComponent } from 'react';
-import { Markdown, type MarkdownOptions } from '@canopy/ui-shared/components';
+import {
+  Stack,
+  Markdown,
+  type MarkdownOptions,
+} from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   FILE_MARKDOWN_PROSE_CLASSES,
@@ -305,7 +309,7 @@ function CodeCell({ cell, language, options }: CodeCellProps): JSX.Element {
         </p>
       ) : null}
       {outputs.length > 0 ? (
-        <div className="space-y-2">
+        <Stack gap="inline">
           {outputs.map((output, index) => (
             <NotebookOutputView
               key={`output-${index}`}
@@ -323,7 +327,7 @@ function CodeCell({ cell, language, options }: CodeCellProps): JSX.Element {
               {outputCount.toLocaleString('en-US')} outputs.
             </p>
           ) : null}
-        </div>
+        </Stack>
       ) : null}
     </>
   );
@@ -337,8 +341,9 @@ function NotebookCellView({
   resolveAssetSrc,
 }: NotebookCellProps): JSX.Element {
   return (
-    <div
-      className="min-w-0 space-y-2"
+    <Stack
+      gap="inline"
+      className="min-w-0"
       data-testid="notebook-cell"
       data-cell-type={cell.cellType}
     >
@@ -355,7 +360,7 @@ function NotebookCellView({
       ) : (
         <RawCell source={cell.source} />
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -395,7 +400,7 @@ function NotebookViewImpl({
       className={`${REPLAY_BLOCK_CLASS} min-h-0 flex-1 overflow-auto`}
       data-testid="file-notebook-preview"
     >
-      <div className="min-w-0 space-y-8 px-6 py-6">
+      <div className="min-w-0 flex flex-col gap-8 px-6 py-6">
         {cells.map((cell, index) => (
           <NotebookCellView
             key={`cell-${index}`}

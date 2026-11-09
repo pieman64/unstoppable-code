@@ -9,7 +9,7 @@
 // dispatch admission in main re-verifies the trusted route before any effect.
 
 import { useMemo, useSyncExternalStore } from 'react';
-import type { CodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
+import type { CodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
 import {
   deriveCodexSpeedOptions,
   describeCodexSpeedAvailability,
@@ -17,8 +17,8 @@ import {
   type CodexSpeedAvailability,
   type CodexSpeedRouteFacts,
   type CodexSpeedRouteProfile,
-} from '@canopy/desktop-shared/lib/codex-speed-availability';
-import type { CodexSpeedCatalog } from '@canopy/desktop-shared/types/codex-speed-capabilities';
+} from '@canopy/execution-engine/lib/codex-speed-availability';
+import type { CodexSpeedCatalog } from '@canopy/execution-engine/types/codex-speed-capabilities';
 import {
   getExecutionHarnessForModel,
   getModelSource,

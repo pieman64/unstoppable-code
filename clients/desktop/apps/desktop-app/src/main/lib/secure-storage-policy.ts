@@ -3,7 +3,7 @@ import type {
   SecureStorageBackendState,
   SecureStorageFailure,
   SecureStorageFailureCode,
-} from '@canopy/desktop-shared/types/secure-storage';
+} from '@canopy/execution-engine/types/secure-storage';
 import {
   disableSafeStoragePlainTextEncryption,
   getReadableSafeStorage,

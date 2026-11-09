@@ -4,6 +4,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { WORKFLOW_NO_PROJECT } from '@canopy/ui-app/workflows';
 import { pipelineAutomationWorkspaceId } from '@canopy/desktop-shared/lib/automation-pipeline-target';
+import { workflowScheduleDestination } from '@canopy/desktop-shared/lib/workflow-schedule-destination';
 
 /**
  * The project an automation runs in; `undefined` for App Advisor and for a
@@ -27,13 +28,33 @@ export function automationProjectId(
   }
 }
 
+/**
+ * The project a record runs in. A workflow schedule (CAN-5782) stores a
+ * global pipeline, so its project comes from where its run values point.
+ */
+export function activityProjectId(
+  activity: Pick<
+    ScheduledActivity,
+    'action' | 'ownedPipeline' | 'workflowSchedule'
+  >,
+): string | undefined {
+  const destination = workflowScheduleDestination(activity);
+  if (destination?.kind === 'chat_action')
+    return automationProjectId(destination.action);
+  if (destination?.kind === 'inputs') return destination.projectId;
+  return automationProjectId(activity.action);
+}
+
 /** Whether an automation passes the Schedule tab's Project filter. */
 export function matchesScheduleProject(
-  activity: Pick<ScheduledActivity, 'action'>,
+  activity: Pick<
+    ScheduledActivity,
+    'action' | 'ownedPipeline' | 'workflowSchedule'
+  >,
   project: string | null,
 ): boolean {
   if (project === null) return true;
-  const projectId = automationProjectId(activity.action);
+  const projectId = activityProjectId(activity);
   return project === WORKFLOW_NO_PROJECT
     ? projectId === undefined
     : projectId === project;

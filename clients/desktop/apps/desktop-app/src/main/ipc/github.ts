@@ -40,6 +40,7 @@ import {
   type SearchPullRequestsResponse,
   type GetRepoSlugRequest,
   type GetRepoSlugResponse,
+  type PortalPullRequestState,
 } from '@canopy/desktop-shared/types';
 import { NoDispatchableModelError } from '../lib/default-model-lane-resolver';
 import type {
@@ -1896,6 +1897,23 @@ export function registerGitHubHandlers(
     },
   );
 
+  // A worktree's pull request status, read live as Portal's `pr` state
+  // refresh reads it, for hosted controllers (CAN-5985). Read-only.
+  registerIpcHandler(
+    IPC_CHANNELS.githubGetPrState,
+    (
+      _event: IpcMainInvokeEvent,
+      request: { projectId: string; worktreeId: string },
+    ): Promise<PortalPullRequestState> => {
+      validateId(request.projectId, 'projectId');
+      validateId(request.worktreeId, 'worktreeId');
+      return refreshPullRequestState({
+        workspaceLocalId: request.projectId,
+        worktreeLocalId: request.worktreeId,
+      });
+    },
+  );
+
   registerIpcHandler(
     IPC_CHANNELS.githubRequestFastRefresh,
     (
@@ -2262,6 +2280,12 @@ export function registerGitHubHandlers(
                   );
                   continue;
                 }
+                // A Try again never pushes commits on its own: they wait for
+                // the bar's Push.
+                if (request.skipCleanPush === true) {
+                  pushSkippedRepo(skippedRepos, entry, 'commits_not_pushed');
+                  continue;
+                }
 
                 if (request.pullFirst && (await hasUnpulledCommits(repoPath))) {
                   sendRepoCommitProgress(request, 'pulling', repoName);
@@ -2416,7 +2440,8 @@ export function registerGitHubHandlers(
           if (
             successRepos.length === 0 &&
             failedRepos.length === 0 &&
-            agentResolutionRepos.length === 0
+            agentResolutionRepos.length === 0 &&
+            !skippedRepos.some((repo) => repo.reason === 'commits_not_pushed')
           ) {
             throw new Error('No repos had uncommitted changes to commit.');
           }

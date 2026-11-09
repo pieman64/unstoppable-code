@@ -6,12 +6,14 @@ import {
   presentAppError,
   toAppError,
   type AppError,
+  type AppErrorDisplayPolicy,
   type AppErrorPresentation,
   type AppErrorSurface,
 } from '@canopy/protocol/app-errors';
 import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
 import {
   recordBoundaryError,
+  recordToastError,
   type RendererErrorBoundaryId,
 } from './surfaced-error-recording';
 
@@ -57,9 +59,39 @@ export function captureRendererAppError(
   }
 }
 
+/** The renderer's raw-detail policy, shared by boundaries and banners. */
+export const rendererAppErrorDisplayPolicy: AppErrorDisplayPolicy = {
+  releaseFlavor: __CANOPY_RELEASE_FLAVOR__,
+  isDevelopment: process.env.NODE_ENV === 'development',
+};
+
+export interface CapturedToastFailure {
+  /** The recorder's error, whose reference a repeat within its window shares. */
+  error: AppError;
+  telemetry?: FeedbackReportTelemetry;
+}
+
+/**
+ * Records a background failure once and reads what a report of it needs. The
+ * person's own work is not a defect: it is neither recorded nor reportable.
+ * With no recorder the failure keeps its own error, unrecorded.
+ */
+export function captureToastFailure(
+  error: AppError,
+  identifier: string,
+  shown: boolean,
+): CapturedToastFailure {
+  if (error.kind === 'input') return { error };
+  const recorded = recordToastError(identifier, shown, error)?.error ?? error;
+  if (recorded.kind !== 'defect') return { error: recorded };
+  try {
+    return { error: recorded, telemetry: readClientErrorTelemetry() };
+  } catch (failure) {
+    reportClientAppError(failure, { surface: 'toast' });
+    return { error: recorded };
+  }
+}
+
 export function presentRendererAppError(error: AppError): AppErrorPresentation {
-  return presentAppError(error, {
-    releaseFlavor: __CANOPY_RELEASE_FLAVOR__,
-    isDevelopment: process.env.NODE_ENV === 'development',
-  });
+  return presentAppError(error, rendererAppErrorDisplayPolicy);
 }

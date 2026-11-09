@@ -69,6 +69,8 @@ export interface FeedbackDialogProps {
    * the user just hit pass `bug`, because there the assumption is correct.
    */
   readonly initialReportType?: FeedbackDialogReportType;
+  /** The window to draw in, when it isn't the one this code loaded in. */
+  readonly ownerDocument?: Document | undefined;
 }
 
 const SUBMIT_ERROR_FALLBACK =
@@ -103,6 +105,7 @@ export function FeedbackDialog({
   onDescriptionChange,
   onDraftChange,
   initialReportType,
+  ownerDocument,
 }: FeedbackDialogProps): JSX.Element {
   const errorMode = mode === 'error';
   const [type, setType] = useState<FeedbackDialogReportType>(
@@ -176,6 +179,7 @@ export function FeedbackDialog({
       appName={appName}
       errorMode={errorMode}
       onClose={onClose}
+      ownerDocument={ownerDocument}
     >
       {submitted ? (
         <>
@@ -230,11 +234,11 @@ export function FeedbackDialog({
           }}
         >
           <div
-            className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4"
+            className="grid grid-cols-1 content-start min-h-0 flex-1 overflow-y-auto px-6 py-4 gap-4"
             data-testid="feedback-modal-body"
           >
             {errorMode ? null : (
-              <div className="space-y-1.5">
+              <div className="flex flex-col gap-1.5">
                 <span className={FIELD_LABEL_CLASSNAME}>Type</span>
                 <SegmentedControl
                   label="Feedback type"

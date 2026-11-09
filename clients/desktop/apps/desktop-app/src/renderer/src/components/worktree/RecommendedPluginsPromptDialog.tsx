@@ -1,4 +1,5 @@
-import { Button, Heading, Surface } from '@canopy/ui-shared/components';
+import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Stack, Button, Heading, Surface } from '@canopy/ui-shared/components';
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import type {
   RecommendedPluginApplyResult,
@@ -295,20 +296,22 @@ export function RecommendedPluginsPromptDialog({
                       className="mt-0.5"
                       aria-label={`Apply ${item.displayName}`}
                     />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium fg-primary">
-                          {item.displayName}
-                        </span>
-                        <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
-                          {item.kind === 'claude_plugin' ? 'plugin' : item.kind}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 fg-secondary">
-                        {item.displaySource}
+                    <Stack gap="tight" className="min-w-0 flex-1">
+                      <div className="flex flex-col gap-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium fg-primary">
+                            {item.displayName}
+                          </span>
+                          <Badge>
+                            {item.kind === 'claude_plugin'
+                              ? 'plugin'
+                              : item.kind}
+                          </Badge>
+                        </div>
+                        <div className="fg-secondary">{item.displaySource}</div>
                       </div>
                       <div
-                        className={`mt-1 text-2xs ${
+                        className={`text-2xs ${
                           status.state === 'error'
                             ? 'fg-destructive-strong'
                             : status.state === 'selected' ||
@@ -319,7 +322,7 @@ export function RecommendedPluginsPromptDialog({
                       >
                         {describeStatus(status)}
                       </div>
-                    </div>
+                    </Stack>
                   </li>
                 );
               })}
@@ -328,7 +331,7 @@ export function RecommendedPluginsPromptDialog({
         )}
 
         {informational.length > 0 && (
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <div className="text-2xs font-medium fg-secondary">
               Already configured
             </div>
@@ -336,16 +339,16 @@ export function RecommendedPluginsPromptDialog({
               <ul className="divide-y">
                 {informational.map((item) => (
                   <li key={item.key} className="p-3 text-xs">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium fg-primary">
-                        {item.displayName}
-                      </span>
-                      <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
-                        {item.kind === 'claude_plugin' ? 'plugin' : item.kind}
-                      </span>
-                    </div>
-                    <div className="mt-0.5 fg-secondary">
-                      {item.displaySource}
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium fg-primary">
+                          {item.displayName}
+                        </span>
+                        <Badge>
+                          {item.kind === 'claude_plugin' ? 'plugin' : item.kind}
+                        </Badge>
+                      </div>
+                      <div className="fg-secondary">{item.displaySource}</div>
                     </div>
                   </li>
                 ))}
@@ -356,16 +359,17 @@ export function RecommendedPluginsPromptDialog({
 
         {prompt.requirements.length > 0 && (
           <Surface
+            gap="item"
             as="section"
             variant="outline"
             padding="compact"
             data-testid="recommended-plugin-requirements"
           >
-            <div className="space-y-2">
+            <Stack gap="inline">
               <Heading level={3} variant="title">
                 Environment setup
               </Heading>
-              <ul className="space-y-2">
+              <ul className="flex flex-col gap-2">
                 {prompt.requirements.map((requirement) => (
                   <li
                     key={requirement.id}
@@ -381,13 +385,13 @@ export function RecommendedPluginsPromptDialog({
                             requirement.kind,
                           )}
                         </span>
-                        <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
+                        <Badge>
                           {requirement.status === 'available'
                             ? 'Available'
                             : requirement.status === 'missing'
                               ? 'Needs setup'
                               : 'Unknown'}
-                        </span>
+                        </Badge>
                       </div>
                       <p className="mt-0.5 fg-secondary">
                         {requirement.detail ?? requirement.setupHint}
@@ -422,6 +426,7 @@ export function RecommendedPluginsPromptDialog({
                   requirement.kind !== 'connector',
               ) && (
                 <Button
+                  className="self-start"
                   size="compact"
                   onClick={() => openSettings('environment')}
                 >
@@ -431,7 +436,7 @@ export function RecommendedPluginsPromptDialog({
               <p className="text-2xs fg-secondary">
                 Missing setup does not block applying recommendations.
               </p>
-            </div>
+            </Stack>
           </Surface>
         )}
 

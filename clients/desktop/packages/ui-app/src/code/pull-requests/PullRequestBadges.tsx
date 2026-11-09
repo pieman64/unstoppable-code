@@ -1,5 +1,6 @@
 'use client';
 
+import { Dot, type DotTone } from '@canopy/ui-shared/components/Badge';
 import type { JSX } from 'react';
 import {
   PrBadgeTooltipContent,
@@ -111,20 +112,18 @@ interface CiStatusBadgeProps {
  * header menu / `FileLabelFilterDropdown`), with the label left
  * plain (`CI`, no colon) in `fg-primary`.
  */
-const CI_STATUS_DOT: Record<PullRequestSectionCheckStatus, { dot: string }> = {
-  passing: { dot: OPERATIONAL_STATUS_COLORS.success.background },
-  failing: { dot: OPERATIONAL_STATUS_COLORS.failed.background },
+const CI_STATUS_DOT: Record<PullRequestSectionCheckStatus, DotTone> = {
+  passing: 'success',
+  failing: 'danger',
   // Grey, but pulsing: colour is reserved for OUTCOMES (green/red), so a
   // check still running says so through motion instead — the same
   // `animate-pulse` dots the sidebar uses for in-flight work.
-  pending: { dot: 'bg-fg-quaternary animate-pulse' },
-  neutral: { dot: 'bg-fg-quaternary' },
-  none: { dot: 'bg-fg-quaternary' },
+  pending: 'filter',
+  neutral: 'filter',
+  none: 'filter',
 };
 
 export function CiStatusBadge({ status }: CiStatusBadgeProps): JSX.Element {
-  const { dot } = CI_STATUS_DOT[status];
-
   return (
     <span
       // The dot carries the state and the visible text is just `CI`, so the
@@ -140,9 +139,12 @@ export function CiStatusBadge({ status }: CiStatusBadgeProps): JSX.Element {
       className="electron-no-drag inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-normal fg-primary transition-colors hover:bg-subtle"
     >
       <span
-        aria-hidden="true"
-        className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dot}`}
-      />
+        className={
+          status === 'pending' ? 'inline-flex animate-pulse' : 'inline-flex'
+        }
+      >
+        <Dot tone={CI_STATUS_DOT[status]} />
+      </span>
       CI
     </span>
   );

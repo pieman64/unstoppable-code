@@ -27,6 +27,7 @@ const PACKAGE_ROOTS = [
   'packages/plugin-interop',
   'packages/memory-consolidation',
   'packages/desktop-shared',
+  'packages/execution-engine',
   'packages/ui-shared',
   'packages/ui-rich',
 ];

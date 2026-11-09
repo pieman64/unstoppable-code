@@ -1,5 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import {
+  Stack,
   AgentBlockCard,
   EmptyStateRow,
   Markdown,
@@ -141,8 +142,8 @@ function WorkflowAgentBlock({
         <>
           {agent.promptPreview && (
             <Surface variant="group" size="small">
-              <div className="px-2.5 py-1.5">
-                <div className="mb-1 text-3xs font-medium fg-secondary/80">
+              <div className="flex flex-col px-2.5 py-1.5 gap-1">
+                <div className="text-3xs font-medium fg-secondary/80">
                   Prompt
                 </div>
                 <div className="max-h-32 overflow-auto whitespace-pre-wrap text-2xs fg-secondary">
@@ -220,7 +221,7 @@ export function WorkflowRunView({
   }
 
   return (
-    <div className="space-y-4">
+    <Stack gap="group">
       {/* Aggregate header: counts only, recorded. */}
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs fg-secondary">
         <span>
@@ -239,12 +240,15 @@ export function WorkflowRunView({
 
       {/* Phases → agents. Agent labels, prompts, tool activity, results, and
           transcripts are conversation content: blocked from session replay. */}
-      <div className={`${POSTHOG_REPLAY_BLOCK_CLASS} space-y-3`}>
+      <div className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex flex-col gap-3`}>
         {effectivePhases.map((phase, phaseIndex) => {
           const phaseAgents = agentsByPhase[phaseIndex] ?? [];
           return (
-            <div key={`${phase.title}-${phaseIndex}`}>
-              <div className="mb-1.5 flex items-baseline gap-2">
+            <div
+              key={`${phase.title}-${phaseIndex}`}
+              className="flex flex-col gap-1.5"
+            >
+              <div className="flex items-baseline gap-2">
                 <span className="text-xs font-semibold fg-primary/70">
                   {phase.title}
                 </span>
@@ -254,7 +258,7 @@ export function WorkflowRunView({
                   </span>
                 )}
               </div>
-              <div className="space-y-1.5">
+              <div className="flex flex-col gap-1.5">
                 {phaseAgents.map((agent) => (
                   <WorkflowAgentBlock
                     key={agent.agentId}
@@ -273,8 +277,8 @@ export function WorkflowRunView({
 
       {/* Final result */}
       {run.result && (
-        <div>
-          <div className="mb-1 text-xs font-medium fg-secondary">Result</div>
+        <Stack gap="tight">
+          <div className="text-xs font-medium fg-secondary">Result</div>
           <Surface variant="inset" className="max-w-none">
             <div
               className={`prose prose-sm dark:prose-invert break-words px-3 py-2 ${POSTHOG_REPLAY_BLOCK_CLASS}`}
@@ -282,8 +286,8 @@ export function WorkflowRunView({
               <Markdown>{run.result}</Markdown>
             </div>
           </Surface>
-        </div>
+        </Stack>
       )}
-    </div>
+    </Stack>
   );
 }

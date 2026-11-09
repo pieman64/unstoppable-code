@@ -1,3 +1,4 @@
+import { Badge, type BadgeTone } from './Badge';
 import {
   memo,
   useCallback,
@@ -9,7 +10,6 @@ import {
   type KeyboardEvent,
   type MouseEvent,
 } from 'react';
-import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import {
   runStatusGlyphState,
   type StatusGlyphState,
@@ -78,44 +78,48 @@ function jobGlyphState(status: DagJobStatus | undefined): StatusGlyphState {
 
 function getPopoverStatusBadge(status: DagJobStatus | undefined): {
   label: string;
-  className: string;
+  tone: BadgeTone;
+  muted?: boolean;
 } {
   switch (status) {
     case 'running':
     case 'restarting':
       return {
         label: status,
-        className: `${OPERATIONAL_STATUS_COLORS.active.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.active.foreground}`,
+        tone: 'info',
       };
     case 'success':
       return {
         label: 'success',
-        className: `${OPERATIONAL_STATUS_COLORS.success.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.success.foreground}`,
+        tone: 'success',
       };
     case 'failure':
       return {
         label: 'failure',
-        className: `${OPERATIONAL_STATUS_COLORS.failed.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.failed.foreground}`,
+        tone: 'danger',
       };
     case 'paused':
       return {
         label: 'paused',
-        className: `${OPERATIONAL_STATUS_COLORS.paused.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.paused.foreground}`,
+        tone: 'neutral',
       };
     case 'cancelled':
       return {
         label: 'cancelled',
-        className: `${OPERATIONAL_STATUS_COLORS.paused.backgroundSubtle} ${OPERATIONAL_STATUS_COLORS.paused.foregroundMuted}`,
+        tone: 'neutral',
+        muted: true,
       };
     case 'skipped':
       return {
         label: 'skipped',
-        className: `${OPERATIONAL_STATUS_COLORS.paused.backgroundSubtle} ${OPERATIONAL_STATUS_COLORS.paused.foregroundMuted}`,
+        tone: 'neutral',
+        muted: true,
       };
     default:
       return {
         label: status ?? 'pending',
-        className: `${OPERATIONAL_STATUS_COLORS.paused.backgroundSubtle} ${OPERATIONAL_STATUS_COLORS.paused.foregroundMuted}`,
+        tone: 'neutral',
+        muted: true,
       };
   }
 }
@@ -229,11 +233,9 @@ function JobDot({
       </div>
       <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
         <span>Status</span>
-        <span
-          className={`inline-block rounded px-1.5 py-px text-3xs font-semibold ${statusBadge.className}`}
-        >
+        <Badge tone={statusBadge.tone} muted={statusBadge.muted}>
           {statusBadge.label}
-        </span>
+        </Badge>
       </div>
       {duration && (
         <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">

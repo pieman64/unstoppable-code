@@ -4,6 +4,9 @@ import type {
   ExternalAgentPendingAction,
   ExternalAgentsOverview,
   ExternalAgentDesktopList,
+  ExternalAgentComputerConnectOutcome,
+  ExternalAgentComputerList,
+  ExternalAgentComputerRemoval,
 } from '@canopy/protocol/external-agents';
 
 /** Why an External agents operation did not apply. */
@@ -63,4 +66,26 @@ export interface ExternalAgentsClient {
   getWaitingCount(): Promise<ExternalAgentsResult<number>>;
   /** Every desktop the person has paired, for the desktop selector. */
   listDesktops(): Promise<ExternalAgentsResult<ExternalAgentDesktopList>>;
+  /**
+   * Computers hosted agents can work on over the direct Remote Control
+   * protocol (CAN-5985). Absent where the host cannot pair them; the page
+   * then omits the section.
+   */
+  readonly computers?: ExternalAgentComputersClient;
+}
+
+export interface ExternalAgentComputersClient {
+  list(): Promise<ExternalAgentsResult<ExternalAgentComputerList>>;
+  /**
+   * Asks the computer to approve hosted agents. `onCode` receives the code to
+   * compare on the computer. Aborting stops waiting and cancels the request.
+   */
+  connect(
+    deviceId: string,
+    onCode: (code: string) => void,
+    signal: AbortSignal,
+  ): Promise<ExternalAgentsResult<ExternalAgentComputerConnectOutcome>>;
+  remove(
+    remoteId: string,
+  ): Promise<ExternalAgentsResult<ExternalAgentComputerRemoval>>;
 }

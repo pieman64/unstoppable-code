@@ -133,8 +133,9 @@ export function CuratedWorkflowsSpecimen(): JSX.Element {
         {open ? (
           <CuratedPipelinePreviewDialog
             catalog={previewCatalog(open, () => setOpen(null))}
+            breadcrumbsGap="item"
             breadcrumbs={
-              <p className="mb-3 text-xs fg-tertiary">Browse / Workflows</p>
+              <p className="text-xs fg-tertiary">Browse / Workflows</p>
             }
           />
         ) : null}

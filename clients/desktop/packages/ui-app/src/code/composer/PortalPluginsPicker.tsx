@@ -1,5 +1,6 @@
 'use client';
 
+import { Count } from '@canopy/ui-shared/components/Badge';
 import {
   memo,
   useCallback,
@@ -1061,12 +1062,12 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
           labelClassName="hidden lg:inline"
           trailing={
             countPortalPluginSelections(selections) > 0 ? (
-              <span
+              <Count
+                value={countPortalPluginSelections(selections)}
+                placement="icon"
                 data-testid="portal-plugins-count"
-                className="ml-0.5 inline-flex min-w-4.5 items-center justify-center rounded-full bg-fg-primary/10 px-1 text-3xs font-medium"
-              >
-                {countPortalPluginSelections(selections)}
-              </span>
+                className="ml-0.5"
+              />
             ) : undefined
           }
           active={countPortalPluginSelections(selections) > 0}

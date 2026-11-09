@@ -41,6 +41,7 @@ export async function runDesktopCopilotPipelinePrompt(
         workspaceId: request.projectId,
         executionKind: 'pipeline',
         environment: request.environment,
+        owner: { kind: 'pipeline', id: request.executionId },
       });
       generation = runtime.generation;
       return runtime;

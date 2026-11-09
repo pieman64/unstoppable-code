@@ -1,5 +1,6 @@
 import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
 import {
+  marketplaceDisplayName,
   pluginDisplayName,
   Notice,
   type UnifiedEntryAlternative,
@@ -15,6 +16,7 @@ import {
   useState,
 } from 'react';
 import {
+  ClaudeModAdmissionControl,
   PluginDetailHost,
   type PluginDetailHostPlugin,
   type PluginDetailInstallRequest,
@@ -36,6 +38,7 @@ import {
   type PluginHarnessRow,
 } from '@canopy/plugin-interop/harness-support';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { claudeModPluginId } from '@canopy/protocol/claude-mods';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { brandText } from '@/lib/brand';
 import {
@@ -90,8 +93,10 @@ export function PluginDetailView({
   renderPrimaryAction,
   alternatives,
   onOpenEntryId,
+  onOpenSource,
   bundledServerRows,
 }: {
+  onOpenSource?: () => void;
   mcpTarget?: PluginMcpNavigationTarget;
   plugin: PluginInfo;
   marketplace: MarketplaceInfo;
@@ -351,6 +356,14 @@ export function PluginDetailView({
     <>
       <PluginDetailHost
         plugin={plugin}
+        modsControl={
+          <ClaudeModAdmissionControl
+            pluginId={claudeModPluginId(
+              plugin.facets?.claude?.name ?? plugin.name,
+              plugin.marketplaceId,
+            )}
+          />
+        }
         mcpTarget={mcpTarget}
         onBack={onBack}
         loadDetail={(): Promise<PluginInfo> => Promise.resolve(plugin)}
@@ -362,6 +375,8 @@ export function PluginDetailView({
         headerActions={headerActions}
         renderPrimaryAction={renderPrimaryAction}
         alternatives={alternatives}
+        onOpenSource={onOpenSource}
+        sourceName={marketplaceDisplayName(marketplace.name)}
         onOpenEntryId={onOpenEntryId}
         bundledServerRows={bundledServerRows}
         mcpServerHealth={mcpServerHealth}

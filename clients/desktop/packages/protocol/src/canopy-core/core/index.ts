@@ -1,6 +1,9 @@
 export * from './registry';
 export * from './chat/commands-lifecycle';
 export * from './chat/snapshot';
+export * from './chat/task-list';
+export * from './chat/live';
+export * from './chat/attachment-upload';
 export * from './workspace/reads';
 export * from './workspace/commands';
 export * from './workspace/guarded-commands';
@@ -18,6 +21,8 @@ export * from './chat/child-page';
 export * from './worktree/reads';
 export * from './initiatedWork/sources';
 export * from './initiatedWork/runs';
+export * from './initiatedWork/watchers';
+export * from './agent/deferred-tools';
 export * from './execution/status';
 export * from './terminal/settings';
 export * from './observability';
@@ -58,8 +63,11 @@ export * from './catalog/sources';
 export * from './catalog/materialization';
 export * from './catalog/skills';
 export * from './config/operations';
+export * from './memory/operations';
 export * from './pullRequest/operations';
 export * from './integration/operations';
 export * from './integration/credential';
 
 export * from './pullRequest/merge-queue';
+
+export * from './workspace/cowork-folder';

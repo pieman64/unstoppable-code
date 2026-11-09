@@ -90,6 +90,11 @@ import { resetGitHubMergeQueueReadModel } from '../lib/github-merge-queue-read-m
 import { getSharedContainerReconciliationService } from '../shared-containers/reconciliation-service';
 import { organizationSnapshotTransition } from '../shared-containers/organization-snapshot-transition';
 import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
+import {
+  beginCanopyCloudSessionProbe,
+  isCurrentCanopyCloudSessionProbe,
+  type CanopyCloudSessionProbe,
+} from '../canopy-cloud/session-status';
 import { parseAuthoritativeOrganizationSnapshot } from '../canopy-cloud/organization-snapshot';
 import { normalizeCanopyOrganizationSummaries } from '../canopy-cloud/organization-summary';
 import { openAuthenticatedPortalPage } from '../canopy-cloud/authenticated-portal';
@@ -129,6 +134,7 @@ import {
 import {
   CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
   assertCanopyCloudStorageAvailable,
+  applyCanopyCloudSessionProbeResult,
   readCanopyCloudAccountWithStatus,
   type CanopyCloudAccountEntry,
   clearCanopyCloudAccountUnlessGuest,
@@ -216,6 +222,8 @@ const SUPERSEDED_MANUAL_KEY_SAVE_ERROR =
   'The connected account changed while the API key was being validated. Review the current account and try again.';
 
 type DesktopCanopyServerStatus = CanopyServerStatus & {
+  /** Definitive rejection by the authenticated account endpoint only. */
+  credentialRejected?: boolean;
   /** @deprecated Read `memorySearchOrganizationExternalIds` (CAN-3457). */
   memorySearchOrganizationExternalId?: string;
   /** Normalized eligible memory orgs; absent when none. */
@@ -446,6 +454,7 @@ async function probeCanopyCloud(
 
     if (!accountResponse.ok) {
       return {
+        ...(accountResponse.status === 401 ? { credentialRejected: true } : {}),
         authenticated: false,
         capabilities,
         missingCapabilities,
@@ -584,6 +593,8 @@ const accountRefreshes = new Map<string, PendingAccountRefresh>();
  * starts after the active save so a newer snapshot cannot lose its save fence.
  */
 export async function reprobeAndApplyCanopyCloudEnforcedSettings(): Promise<boolean> {
+  // Capture before any read/wait: clear + same-key replacement invalidates it.
+  const sessionProbe = beginCanopyCloudSessionProbe();
   const expected = await loadCanopyCloudAccount();
   if (!expected || expected.apiKey.trim().length === 0) return false;
   const previous = accountRefreshes.get(expected.apiKey);
@@ -594,7 +605,7 @@ export async function reprobeAndApplyCanopyCloudEnforcedSettings(): Promise<bool
   };
   const run = (): Promise<boolean> => {
     pending.waiting = false;
-    return reprobeAndApplyAccountSnapshot(expected);
+    return reprobeAndApplyAccountSnapshot(expected, sessionProbe);
   };
   pending.promise = (
     previous ? previous.promise.catch(() => false).then(run) : run()
@@ -623,11 +634,13 @@ async function applyCachedAccountEnforcementIfCurrent(
 
 async function reprobeAndApplyAccountSnapshot(
   expected: CanopyCloudAccountEntry,
+  sessionProbe: CanopyCloudSessionProbe,
 ): Promise<boolean> {
   // A waiting refresh reads the active refresh's saved version, while keeping
   // the caller's identity/credential fence across the wait.
   const entry = await loadCanopyCloudAccount();
   if (
+    !isCurrentCanopyCloudSessionProbe(sessionProbe) ||
     !entry ||
     entry.apiKey !== expected.apiKey ||
     hasCanopyCloudIdentityChanged(expected, entry)
@@ -640,6 +653,14 @@ async function reprobeAndApplyAccountSnapshot(
   } catch {
     await applyCachedAccountEnforcementIfCurrent(entry);
     return false;
+  }
+
+  if (status.credentialRejected || (status.authenticated && status.account)) {
+    await applyCanopyCloudSessionProbeResult(
+      entry,
+      sessionProbe,
+      status.credentialRejected ? 'rejected' : 'accepted',
+    );
   }
 
   if (!status.authenticated || !status.account) {
@@ -721,6 +742,7 @@ async function reprobeAndApplyAccountSnapshot(
           status.personalOrganizationId,
         )
       : undefined,
+    sessionProbe,
   );
   if (saveResult.status === 'superseded') {
     return false;
@@ -1799,12 +1821,24 @@ async function searchLinearIssues(
         isLinearApiError(error) &&
         (error.type === 'authentication' || error.type === 'forbidden')
       ) {
-        throw new Error('Reconnect Linear to look up this issue.');
+        throw Object.defineProperty(
+          new Error('Reconnect Linear to look up this issue.'),
+          'cause',
+          { value: error, configurable: true },
+        );
       }
       if (isLinearApiError(error) && error.type === 'ratelimited') {
-        throw new Error('Linear is rate limiting requests. Try again shortly.');
+        throw Object.defineProperty(
+          new Error('Linear is rate limiting requests. Try again shortly.'),
+          'cause',
+          { value: error, configurable: true },
+        );
       }
-      throw new Error('Couldn’t reach Linear. Try again.');
+      throw Object.defineProperty(
+        new Error('Couldn’t reach Linear. Try again.'),
+        'cause',
+        { value: error, configurable: true },
+      );
     }
     return [];
   }

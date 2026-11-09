@@ -39,7 +39,7 @@ import {
 import {
   isGatewayOnlyModel,
   isGatewayRoutableModel,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   isModelExcludedByGatewayRequirement,
   listOrgGatewayModelsForOrganization,

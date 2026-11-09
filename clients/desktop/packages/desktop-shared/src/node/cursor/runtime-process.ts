@@ -222,7 +222,7 @@ export async function verifyCursorRuntimeVersion(
         env,
         owner: providerProcess.owner,
       });
-      child.stdin.end();
+      child.stdin?.end();
       child.stderr.resume();
       let stdout = '';
       const stop = (outcome: 'timeout' | 'output-limit'): void => {

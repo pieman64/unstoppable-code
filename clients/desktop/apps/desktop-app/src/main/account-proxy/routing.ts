@@ -7,9 +7,9 @@ import { waitForAccountProxyCapacity } from './quota-wait';
 
 import { createHash } from 'node:crypto';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
-import { resolveGatewayModelEntry } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { resolveGatewayModelEntry } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isOllamaModel } from '@canopy/desktop-shared/types';
-import type { CodexConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { getCodexGatewayProxyService } from '../agents/codex-gateway-proxy-service';
 import {
   CLAUDE_BROKER_ALLOWED_PATHS,

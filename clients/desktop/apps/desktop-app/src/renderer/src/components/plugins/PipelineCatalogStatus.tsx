@@ -33,7 +33,7 @@ export function PipelineCatalogStatus({
   return (
     <div
       data-testid="pipeline-catalog-status"
-      className="mt-6 flex flex-col items-start gap-4"
+      className="flex flex-col items-start gap-4"
     >
       {hasMore && (
         <Button

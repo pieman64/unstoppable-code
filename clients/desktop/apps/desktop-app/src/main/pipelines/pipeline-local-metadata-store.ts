@@ -21,7 +21,11 @@ import type {
   PipelineAgentAuthor,
   PipelineAgentChatAddress,
   PipelinePreferenceLocator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
+import type {
+  WorkflowScheduleTarget,
+  WorkflowScheduleValues,
+} from '@canopy/protocol/pipelines';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
 import { getPipelineLocalMetadataFilePath } from '../lib/paths';
 
@@ -54,6 +58,20 @@ export interface PipelineLocalMetadata {
    * no plugin catalog. Written by main alone.
    */
   chatPluginDefaults?: ChatPluginDefault[];
+  /**
+   * CAN-5782: the pipeline is a workflow page although no live automation
+   * owns it: a second schedule targets it, or its owner marker was cleared
+   * while the pipeline stayed.
+   */
+  workflowPage?: true;
+  /**
+   * CAN-5782: the pipeline holds an Orchestrator prompt whose owner marker
+   * was cleared. Agents denied Orchestrator access don't see it, and a
+   * schedule on it counts as an Orchestrator automation.
+   */
+  agentHidden?: true;
+  /** CAN-5782: the removed last schedule's run values, for the next one. */
+  lastScheduleValues?: WorkflowScheduleValues;
 }
 
 /**
@@ -135,7 +153,59 @@ function normalizeEntry(value: unknown): PipelineLocalMetadata {
     value.chatPluginDefaults,
   );
   if (chatPluginDefaults) entry.chatPluginDefaults = chatPluginDefaults;
+  if (value.workflowPage === true) entry.workflowPage = true;
+  if (value.agentHidden === true) entry.agentHidden = true;
+  const lastScheduleValues = normalizeScheduleValues(value.lastScheduleValues);
+  if (lastScheduleValues) entry.lastScheduleValues = lastScheduleValues;
   return entry;
+}
+
+function normalizeStringRecord(
+  value: unknown,
+): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const entries = Object.entries(value).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string',
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function normalizeScheduleTarget(
+  value: unknown,
+): WorkflowScheduleTarget | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    value.kind === 'global' ||
+    value.kind === 'new_worktree' ||
+    value.kind === 'project'
+  )
+    return { kind: value.kind };
+  const taskId = nonEmptyString(value.taskId);
+  return value.kind === 'task' && taskId ? { kind: 'task', taskId } : undefined;
+}
+
+/** Values it can't read are dropped; the next schedule fills them in. */
+function normalizeScheduleValues(
+  value: unknown,
+): WorkflowScheduleValues | undefined {
+  if (!isRecord(value)) return undefined;
+  const inputs = normalizeStringRecord(value.inputs);
+  const target = normalizeScheduleTarget(value.target);
+  const workspaceId = nonEmptyString(value.workspaceId);
+  const repoId = nonEmptyString(value.repoId);
+  const values: WorkflowScheduleValues = {
+    ...(inputs ? { inputs } : {}),
+    ...(target ? { target } : {}),
+    ...(workspaceId ? { workspaceId } : {}),
+    ...(repoId ? { repoId } : {}),
+    ...(isRecord(value.modelAliasPreferences)
+      ? { modelAliasPreferences: value.modelAliasPreferences }
+      : {}),
+    ...(isRecord(value.pluginCollectionPreferences)
+      ? { pluginCollectionPreferences: value.pluginCollectionPreferences }
+      : {}),
+  };
+  return Object.keys(values).length > 0 ? values : undefined;
 }
 
 function normalizeChatPluginSelection(
@@ -461,6 +531,62 @@ export function setUserPipelineOwnerAutomation(
     return automationId === null
       ? rest
       : { ...rest, ownerAutomationId: automationId };
+  });
+}
+
+/**
+ * CAN-5782: what a cleared owner marker leaves on a pipeline that stays.
+ * `agentHidden` keeps an Orchestrator prompt hidden from denied agents.
+ */
+export interface ReleasedOwnerFacts {
+  agentHidden: boolean;
+  /** The removed last schedule's run values; absent keeps any stored. */
+  lastScheduleValues?: WorkflowScheduleValues;
+}
+
+/**
+ * CAN-5782: clears the owner marker of a pipeline that stays, and marks it
+ * a workflow page, in one write: nothing reads the pipeline without its
+ * owner and still a workflow page in between. Returns whether the write is
+ * read back; a write this store failed (it logs and never throws) is not.
+ */
+export function releaseUserPipelineOwnerAutomation(
+  pipelineId: string,
+  facts: ReleasedOwnerFacts,
+): boolean {
+  updateUserPipelineEntry(pipelineId, (entry) => {
+    const { ownerAutomationId, ...rest } = entry;
+    void ownerAutomationId;
+    return {
+      ...rest,
+      workflowPage: true,
+      ...(facts.agentHidden ? { agentHidden: true } : {}),
+      ...(facts.lastScheduleValues
+        ? { lastScheduleValues: facts.lastScheduleValues }
+        : {}),
+    };
+  });
+  const written = readMetadataFile().entries[userPipelineKey(pipelineId)];
+  return (
+    written?.workflowPage === true &&
+    written.ownerAutomationId === undefined &&
+    (!facts.agentHidden || written.agentHidden === true) &&
+    (facts.lastScheduleValues === undefined ||
+      written.lastScheduleValues !== undefined)
+  );
+}
+
+/**
+ * CAN-5782: marks a pipeline a workflow page (a second schedule targets
+ * it). A schedule writing it again drops the last removed one's values.
+ */
+export function markUserPipelineWorkflowPage(pipelineId: string): void {
+  const current = readMetadataFile().entries[userPipelineKey(pipelineId)];
+  if (current?.workflowPage && !current.lastScheduleValues) return;
+  updateUserPipelineEntry(pipelineId, (entry) => {
+    const { lastScheduleValues, ...rest } = entry;
+    void lastScheduleValues;
+    return { ...rest, workflowPage: true };
   });
 }
 

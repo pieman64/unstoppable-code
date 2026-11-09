@@ -94,6 +94,17 @@ describe('preference repository qualification (CAN-4471)', () => {
     expect(onRecoveryLatched).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps a failed recovery latched after its notice is acknowledged', async () => {
+    const document = new MemoryPreferencesDocument();
+    document.slots.set('primary', '{');
+    const store = repository(document);
+    await expect(store.read('runtime')).resolves.toBe(codec.defaults);
+    expect(store.isRecoveryLatched()).toBe(true);
+    // Acknowledging the notice clears the load error, not the latch.
+    store.acknowledgeLoadError();
+    expect(store.isRecoveryLatched()).toBe(true);
+  });
+
   it('never writes over a newer-version primary', async () => {
     const document = new MemoryPreferencesDocument();
     const primary = JSON.stringify({ version: 2, preferences: {} });

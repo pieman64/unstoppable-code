@@ -9,7 +9,7 @@ import {
   PIPELINE_PACKAGE_NOT_INCLUDED_HEADING,
   PIPELINE_PACKAGE_PUBLISHER_NOTE,
 } from '@canopy/ui-shared/lib/pipeline-package-display';
-import type { PipelinePackageSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageSummary } from '@canopy/execution-engine/types/pipeline';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { MarkdownFrontmatterContent } from '@canopy/ui-app';
 import {
@@ -27,6 +27,7 @@ import { hasMarkdownDescriptionText } from '@canopy/ui-shared/lib/markdown-plain
 import { ErrorBanner } from '../shared';
 import { Button } from '../shared/Button';
 import {
+  Stack,
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   Fact,
@@ -179,19 +180,23 @@ export function MarketplaceSkillDetailBody({
       >
         {state.phase === 'loading' && (
           <DelayedLoadingPlaceholder
+            className=""
             slowNote={`Still loading shared ${entity}…`}
           >
-            <CenteredLoadingSpinner className="my-12" />
+            <div className="box-content flex min-h-full flex-1 py-12">
+              <CenteredLoadingSpinner className="" />
+            </div>
           </DelayedLoadingPlaceholder>
         )}
         {state.phase === 'error' && (
-          <div data-testid="deep-link-share-error" className="space-y-2">
+          <Stack data-testid="deep-link-share-error" gap="inline">
             <ErrorBanner
               error={shareLandingErrorCopy(state.reason, entity)}
               className="mb-0"
             />
             {recovery !== undefined && (
               <Button
+                className="self-start"
                 variant="primary"
                 size="compact"
                 data-testid={recovery.testId}
@@ -200,7 +205,7 @@ export function MarketplaceSkillDetailBody({
                 {recovery.label}
               </Button>
             )}
-          </div>
+          </Stack>
         )}
         {/* A failure reports under the action row, not under the README. */}
         {installError !== '' && (
@@ -233,7 +238,7 @@ export function MarketplaceSkillDetailBody({
         )}
         {skillPackage && <PackageReview summary={skillPackage} />}
         {skillReadiness && (
-          <div data-testid="deep-link-share-skill-readiness">
+          <div className="pb-4" data-testid="deep-link-share-skill-readiness">
             <CapabilityPackageReadiness
               readiness={skillReadiness}
               subjectLabel="skill"
@@ -391,10 +396,11 @@ function PackageReview({
   return (
     <Surface
       as="section"
+      gap="item"
       variant="inset"
       data-testid="deep-link-share-package-summary"
     >
-      <div className="space-y-3 px-3 py-2.5">
+      <div className="flex flex-col gap-3 px-3 py-2.5">
         <div>
           <Heading level={3} variant="title">
             {PIPELINE_PACKAGE_INCLUDED_HEADING}
@@ -406,7 +412,7 @@ function PackageReview({
             )}
           </p>
         </div>
-        <ul className="space-y-1.5">
+        <ul className="flex flex-col gap-1.5">
           {summary.resources.map((resource) => (
             <li key={resource.id} className="text-xs">
               <span className="fg-primary">{resource.displayName}</span>{' '}
@@ -438,14 +444,16 @@ function PackageReview({
           ))}
         </ul>
         {(summary.publisherNotes?.length ?? 0) > 0 && (
-          <div data-testid="deep-link-share-package-notes">
-            <Heading level={3} variant="title">
-              {PIPELINE_PACKAGE_NOT_INCLUDED_HEADING}
-            </Heading>
-            <p className="text-xs fg-secondary">
-              {PIPELINE_PACKAGE_PUBLISHER_NOTE}
-            </p>
-            <ul className="mt-1 space-y-1">
+          <Stack gap="tight" data-testid="deep-link-share-package-notes">
+            <div className="flex flex-col gap-0">
+              <Heading level={3} variant="title">
+                {PIPELINE_PACKAGE_NOT_INCLUDED_HEADING}
+              </Heading>
+              <p className="text-xs fg-secondary">
+                {PIPELINE_PACKAGE_PUBLISHER_NOTE}
+              </p>
+            </div>
+            <ul className="flex flex-col gap-1">
               {summary.publisherNotes?.map((note) => (
                 <li key={note.id} className="text-xs">
                   <span className="fg-primary">{note.label}</span>
@@ -457,7 +465,7 @@ function PackageReview({
                 </li>
               ))}
             </ul>
-          </div>
+          </Stack>
         )}
         <p className="text-xs fg-secondary">
           {PIPELINE_PACKAGE_NO_CREDENTIALS_NOTE}

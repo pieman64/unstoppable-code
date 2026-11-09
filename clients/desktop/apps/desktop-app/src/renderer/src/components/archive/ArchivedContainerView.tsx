@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 /**
  * Read-only viewer for an archived container (a deleted-but-retained worktree
  * or cowork/App Advisor work entry).
@@ -21,6 +22,7 @@
  * and collapses to 0px inside an unconstrained `min-h` block (see
  * `StandaloneArchiveViewer`). No composer is ever rendered here.
  */
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import {
   lazy,
   Suspense,
@@ -40,7 +42,7 @@ import type {
   TrackedPlanData,
   WorkspaceAttachmentItem,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
 import { toPipelineRunRowState } from '@/lib/pipelineRunRowState';
 import type { PipelineRunRowState } from '@/lib/pipelineRunRowState';
 import type { ChatTab } from '@/stores/chatStore';
@@ -763,10 +765,10 @@ export function ArchivedContainerView({
         {summary?.branchName !== undefined &&
           summary.branchName !== '' &&
           summary.branchName !== displayName && (
-            <span
-              className={`${POSTHOG_REPLAY_MASK_CLASS} shrink-0 rounded-full border bg-fg-primary/[0.04] px-2 py-0.5 font-mono text-3xs fg-secondary`}
-            >
-              {summary.branchName}
+            <span className="text-xs fg-secondary">
+              <span className={`${POSTHOG_REPLAY_MASK_CLASS} font-mono`}>
+                {summary.branchName}
+              </span>
             </span>
           )}
         {baseBranches.map((baseBranch) => {
@@ -780,15 +782,17 @@ export function ArchivedContainerView({
               : `${repositoryLabel}base branch ${branchLabel}; archive-time commit unavailable`;
           return (
             <span
+              className="text-xs fg-secondary"
               key={baseBranch.repoId}
               data-testid={`archived-base-branch-${baseBranch.repoId}`}
               title={title}
-              className="shrink-0 rounded-full border bg-fg-primary/[0.04] px-2 py-0.5 font-mono text-3xs fg-secondary"
             >
-              {repositoryLabel}Base {branchLabel}
-              {baseBranch.status === 'complete'
-                ? ` @ ${baseBranch.commit.slice(0, 8)}`
-                : ' @ unavailable'}
+              <span className="font-mono">
+                {repositoryLabel}Base {branchLabel}
+                {baseBranch.status === 'complete'
+                  ? ` @ ${baseBranch.commit.slice(0, 8)}`
+                  : ' @ unavailable'}
+              </span>
             </span>
           );
         })}
@@ -848,16 +852,16 @@ export function ArchivedContainerView({
                   tooltipPr !== null ? (
                     <PrBadgeTooltipContent pr={tooltipPr} />
                   ) : (
-                    <>
+                    <Stack gap="tight">
                       {entry.captured !== null && (
-                        <div className="mb-1 font-medium fg-primary">
+                        <div className="font-medium fg-primary">
                           {entry.captured.title}
                         </div>
                       )}
                       <span className="fg-secondary">
                         {capturedDescription}
                       </span>
-                    </>
+                    </Stack>
                   )
                 }
               >
@@ -890,8 +894,8 @@ export function ArchivedContainerView({
           surfaceClassName="min-w-55 max-w-80"
           surfacePadding="card"
           content={
-            <>
-              <div className="mb-1 font-medium fg-primary">
+            <Stack gap="tight">
+              <div className="font-medium fg-primary">
                 {getArchivedContainerStateLabel(archivedState)}
               </div>
               <span className="fg-secondary">
@@ -900,26 +904,22 @@ export function ArchivedContainerView({
                   formatDateOrEmpty(summary?.expiresAt),
                 )}
               </span>
-            </>
+            </Stack>
           }
         >
           <span
             data-testid="archived-state-badge"
             data-state={archivedState}
-            className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-medium ring-1 ring-inset ${
-              locked
-                ? 'bg-sky-500/10 text-sky-700 ring-sky-500/30 dark:text-sky-300'
-                : 'bg-destructive-subtle fg-destructive ring-line-destructive'
-            }`}
+            className="flex shrink-0"
           >
-            {locked ? (
-              <ArchiveIcon size="sm" aria-hidden="true" />
-            ) : (
-              <TrashIcon size="sm" aria-hidden="true" />
-            )}
-            {locked
-              ? `Archived ${formatDateOrEmpty(summary?.lockedAt)}`
-              : `Deleted ${formatDateOrEmpty(summary?.archivedAt)}`}
+            <Badge
+              tone={locked ? 'info' : 'danger'}
+              icon={locked ? ArchiveIcon : TrashIcon}
+            >
+              {locked
+                ? `Archived ${formatDateOrEmpty(summary?.lockedAt)}`
+                : `Deleted ${formatDateOrEmpty(summary?.archivedAt)}`}
+            </Badge>
           </span>
         </RichHoverTooltip>
         {!locked && summary?.expiresAt !== undefined && (
@@ -1017,28 +1017,30 @@ export function ArchivedContainerView({
         </div>
       </div>
 
-      {summary?.version === 3 && (
-        <Notice
-          intent="attention"
-          className="mx-4 my-2 shrink-0"
-          data-testid="archived-file-recovery-banner"
-        >
-          {summary.recovery.source === 'absent'
-            ? 'Restore brings back the remaining chats and saved artifacts. The original checkout is unavailable.'
-            : 'Restore brings back the remaining files. Git history and staging require separate recovery.'}
-          {summary.recovery.gitCleanupPending &&
-            ' Git registration cleanup is still pending.'}
-        </Notice>
-      )}
+      {(summary?.version === 3 || partiallyRestored) && (
+        <div className="flex shrink-0 flex-col gap-4 px-4 py-2">
+          {summary?.version === 3 && (
+            <Notice
+              intent="attention"
+              data-testid="archived-file-recovery-banner"
+            >
+              {summary.recovery.source === 'absent'
+                ? 'Restore brings back the remaining chats and saved artifacts. The original checkout is unavailable.'
+                : 'Restore brings back the remaining files. Git history and staging require separate recovery.'}
+              {summary.recovery.gitCleanupPending &&
+                ' Git registration cleanup is still pending.'}
+            </Notice>
+          )}
 
-      {partiallyRestored && (
-        <Notice
-          intent="attention"
-          className="mx-4 my-2 shrink-0"
-          data-testid="archived-partial-restore-banner"
-        >
-          Partially restored — workflow runs pending
-        </Notice>
+          {partiallyRestored && (
+            <Notice
+              intent="attention"
+              data-testid="archived-partial-restore-banner"
+            >
+              Partially restored — workflow runs pending
+            </Notice>
+          )}
+        </div>
       )}
 
       {showTabBar && (
@@ -1128,32 +1130,36 @@ export function ArchivedContainerView({
             {/* Chat left nav: persistent list for quick transcript switching. */}
             <div
               data-testid="archived-chat-nav"
-              className="flex w-64 shrink-0 flex-col overflow-y-auto border-r p-2"
+              className="flex w-64 shrink-0 flex-col gap-1 overflow-y-auto border-r p-2 [&>*]:shrink-0"
             >
-              {activeChats.map((chat) => {
-                const provider = toStandaloneRowProvider(chat.providerType);
-                const providerIcon =
-                  provider === 'codex'
-                    ? STANDALONE_CODEX_PROVIDER_ICON
-                    : provider === 'claude'
-                      ? STANDALONE_CLAUDE_PROVIDER_ICON
-                      : null;
-                const isSelected = chat.chatId === selectedChatId;
-                return (
-                  <ListRow
-                    key={chat.chatId}
-                    data-testid={`archived-chat-row-${chat.chatId}`}
-                    onClick={() => selectChat(chat.chatId)}
-                    selected={isSelected}
-                    aria-current={isSelected ? 'true' : undefined}
-                    icon={providerIcon ?? undefined}
-                  >
-                    {getArchivedChatDisplayLabel(chat)}
-                  </ListRow>
-                );
-              })}
+              {activeChats.length > 0 && (
+                <div>
+                  {activeChats.map((chat) => {
+                    const provider = toStandaloneRowProvider(chat.providerType);
+                    const providerIcon =
+                      provider === 'codex'
+                        ? STANDALONE_CODEX_PROVIDER_ICON
+                        : provider === 'claude'
+                          ? STANDALONE_CLAUDE_PROVIDER_ICON
+                          : null;
+                    const isSelected = chat.chatId === selectedChatId;
+                    return (
+                      <ListRow
+                        key={chat.chatId}
+                        data-testid={`archived-chat-row-${chat.chatId}`}
+                        onClick={() => selectChat(chat.chatId)}
+                        selected={isSelected}
+                        aria-current={isSelected ? 'true' : undefined}
+                        icon={providerIcon ?? undefined}
+                      >
+                        {getArchivedChatDisplayLabel(chat)}
+                      </ListRow>
+                    );
+                  })}
+                </div>
+              )}
               {archivedInnerChats.length > 0 && (
-                <div className={activeChats.length > 0 ? 'mt-1 pl-2' : 'pl-2'}>
+                <div className="pl-2">
                   <Disclosure
                     open={archivedChatsExpanded}
                     onOpenChange={setArchivedChatsExpanded}
@@ -1192,9 +1198,9 @@ export function ArchivedContainerView({
               )}
             </div>
 
-            {/* Transcript pane for the selected chat. */}
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div className="flex shrink-0 items-center gap-2 px-4 py-2">
+            {/* Transcript pane owns the viewport and title insets. */}
+            <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+              <div className="flex shrink-0 items-center gap-2 py-2">
                 <span className="min-w-0 truncate text-xs font-medium fg-primary/85">
                   {selectedChatSummary !== undefined
                     ? getArchivedChatDisplayLabel(selectedChatSummary)
@@ -1210,7 +1216,7 @@ export function ArchivedContainerView({
                   `absolute inset-0` and needs a resolved height. */}
               <Surface
                 variant="group"
-                className="flex flex-col mx-4 mb-4 min-h-0 flex-1 overflow-hidden"
+                className="flex flex-col min-h-0 flex-1 overflow-hidden"
               >
                 {transcriptLoading ? (
                   <div className="flex flex-1 items-center justify-center">
@@ -1360,7 +1366,7 @@ export function ArchivedContainerView({
           {/* Plan left nav: persistent list for quick plan switching. */}
           <div
             data-testid="archived-plan-nav"
-            className="flex w-64 shrink-0 flex-col overflow-y-auto border-r p-2"
+            className="flex w-64 shrink-0 flex-col gap-1 overflow-y-auto border-r p-2 [&>*]:shrink-0"
           >
             {plans.map((plan) => {
               const isSelected = plan.id === selectedPlanId;
@@ -1381,10 +1387,12 @@ export function ArchivedContainerView({
           </div>
 
           {/* Document pane for the selected plan. */}
-          <div className="flex min-h-0 flex-1 flex-col">
+          <div
+            className={`flex min-h-0 flex-1 flex-col ${selectedPlan !== null ? 'px-4 pb-4' : ''}`}
+          >
             {selectedPlan !== null ? (
               <>
-                <div className="flex shrink-0 items-center gap-2 px-4 py-2">
+                <div className="flex shrink-0 items-center gap-2 py-2">
                   <span className="min-w-0 truncate text-xs font-medium fg-primary/85">
                     <Markdown options={INLINE_PLAN_MARKDOWN_OPTIONS}>
                       {selectedPlan.title}
@@ -1400,7 +1408,7 @@ export function ArchivedContainerView({
                 </div>
                 <Surface
                   variant="group"
-                  className="mx-4 mb-4 min-h-0 flex-1 flex flex-col overflow-hidden"
+                  className="min-h-0 flex-1 flex flex-col overflow-hidden"
                   data-testid="archived-plan-content"
                 >
                   <div

@@ -13,8 +13,7 @@ jest.mock('@/lib/app-actions/dispatcher', () => ({
   dispatchAppAction: (): Promise<{ ok: true }> => mockDispatchAppAction(),
 }));
 jest.mock('@/client/interface-tools-client', () => ({
-  registerInterfaceTools: (): Promise<void> => Promise.resolve(),
-  unregisterAllInterfaceTools: (): Promise<void> => Promise.resolve(),
+  contributeInterfaceTools: (): (() => void) => (): void => undefined,
 }));
 
 jest.mock('@/stores/appAdvisorStore', () => ({
@@ -119,6 +118,48 @@ describe('App Advisor bridge presentation guard (CAN-4133)', () => {
     expect(mockDispatchAppAction).toHaveBeenCalledTimes(1);
     expect(completed).toEqual([
       expect.objectContaining({ requestId: 'call-2', ok: true }),
+    ]);
+  });
+
+  it('a model change main hands over when its guard fails runs in the window (CAN-5999 D3)', async () => {
+    await deliver({
+      kind: 'dispatch_action',
+      requestId: 'call-3',
+      action: {
+        type: 'worktree-chat.set_model',
+        projectId: 'proj',
+        worktreeId: 'wt',
+        chatId: 'chat-1',
+        model: 'sonnet',
+      },
+      originWorktreeId: 'global',
+      interfaceToolCall: true,
+    });
+
+    expect(mockDispatchAppAction).toHaveBeenCalledTimes(1);
+    expect(completed).toEqual([
+      expect.objectContaining({ requestId: 'call-3', ok: true }),
+    ]);
+  });
+
+  it('a speed change is never handed to the window through the lease', async () => {
+    await deliver({
+      kind: 'dispatch_action',
+      requestId: 'call-4',
+      action: {
+        type: 'worktree-chat.set_speed',
+        projectId: 'proj',
+        worktreeId: 'wt',
+        chatId: 'chat-1',
+        speed: 'fast',
+      },
+      originWorktreeId: 'global',
+      interfaceToolCall: true,
+    });
+
+    expect(mockDispatchAppAction).not.toHaveBeenCalled();
+    expect(completed).toEqual([
+      expect.objectContaining({ requestId: 'call-4', ok: false }),
     ]);
   });
 });

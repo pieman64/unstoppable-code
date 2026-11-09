@@ -48,7 +48,7 @@ import { isPersistedChatTab } from '../lib/chat-tabs-reader';
 import { normalizeWorkspaceChatsForInheritedPluginDefaults } from '../lib/inherited-plugin-defaults-normalization';
 import { setBeforeProjectPluginDefaultsChangeHandler } from '../lib/workspace-persistence';
 import { outsideW5CommitScope } from '../lib/w5-commit-scope';
-import { outsideStorageAdmission } from '@canopy/desktop-shared/node/lib/storage-admission';
+import { outsideStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import { settlePersistedInterruptedMessages } from '../lib/persisted-chat-settle';
 import {
   projectAppAdvisorChatSummariesStrict,

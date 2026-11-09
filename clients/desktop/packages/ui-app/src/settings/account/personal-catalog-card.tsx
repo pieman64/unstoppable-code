@@ -6,7 +6,12 @@ import {
   isPersonalCatalogProject,
   type PersonalCatalogProject,
 } from '@canopy/protocol/settings/personal-catalog';
-import { Button, Notice, Heading } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ErrorBanner,
+  Notice,
+  Heading,
+} from '@canopy/ui-shared/components';
 import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
 import {
   SettingsConfirmDialog,
@@ -14,8 +19,11 @@ import {
   useSettingsClient,
   useSettingsWorkspaceContext,
 } from '../host';
-
-const REMOVE_ERROR = "Couldn't remove your projects. Try again.";
+import {
+  settingsActionErrorCopy,
+  settingsFailure,
+  type SettingsFailure,
+} from '../errors';
 
 /** One state, so a removed list can never also be loading or listed. */
 type CatalogState =
@@ -66,7 +74,7 @@ export function PersonalCatalogCard(): JSX.Element | null {
   const [state, setState] = useState<CatalogState>({ kind: 'loading' });
   const [confirming, setConfirming] = useState(false);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const mountedRef = useRef(true);
 
@@ -109,20 +117,22 @@ export function PersonalCatalogCard(): JSX.Element | null {
   const remove = async (): Promise<void> => {
     setPending(true);
     setError(null);
-    let removed = false;
+    let failure: SettingsFailure | null = null;
     try {
       await client.write('account.profile.projects.remove', {});
-      removed = true;
-    } catch {
-      removed = false;
+    } catch (caught: unknown) {
+      failure = settingsFailure(
+        caught,
+        settingsActionErrorCopy(caught, { action: 'remove your projects' }),
+      );
     }
     if (!mountedRef.current) return;
     setPending(false);
-    if (removed) {
+    if (failure === null) {
       setState({ kind: 'removed' });
       setConfirming(false);
     } else {
-      setError(REMOVE_ERROR);
+      setError(failure);
     }
   };
 
@@ -170,7 +180,14 @@ export function PersonalCatalogCard(): JSX.Element | null {
                 them again, turn sharing off and back on in the{' '}
                 {brand.displayName} desktop app.
               </p>
-              {error ? <Notice intent="destructive">{error}</Notice> : null}
+              <ErrorBanner
+                className=""
+                error={error?.copy}
+                {...(error?.details === undefined
+                  ? {}
+                  : { details: error.details })}
+                testId="personal-catalog-remove-error"
+              />
             </div>
           }
           confirmLabel="Remove"

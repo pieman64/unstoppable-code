@@ -7,7 +7,7 @@ import {
   type ResolveSkillShareNudgeRequest,
   type PendingSkillShareNudge,
 } from '@canopy/desktop-shared/lib/skill-share-nudge';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import { skillShareNudgeState } from '../agents/skill-share-nudge-state';
 import { validateId } from '../lib/validation';
 import { sendToWebContents } from '../lib/web-contents-send';

@@ -16,13 +16,16 @@ import {
   SettingsSelect,
 } from '@canopy/ui-shared';
 import {
+  Stack,
   DetailMoreMenu,
   DetailPageActions,
   ErrorBanner,
   Heading,
   Notice,
-  SettingsRowsGroup,
-  SettingsRowsRow,
+  DETAIL_FACT_VALUE_OFFSET_CLASS,
+  DetailFact,
+  DetailFactList,
+  Tooltip,
   useContributeDetailMoreItems,
   type DetailMoreMenuItem,
 } from '@canopy/ui-shared/components';
@@ -37,7 +40,6 @@ import {
   type McpConnectionStatusSource,
   type McpServerPlacement,
 } from '@canopy/ui-shared/lib/mcp-card-display';
-import { badgeClassName } from '@canopy/ui-shared/lib/badge';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import type { HostAction } from '@canopy/ui-shared/lib/host-action';
 
@@ -108,9 +110,32 @@ function UnavailableReason({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <p id={id} data-testid={testId} className="text-xs fg-tertiary">
+    <p id={id} data-testid={testId} className="sr-only">
       {children}
     </p>
+  );
+}
+
+/** Says why a button is disabled on hover; the button itself can't take focus. */
+function UnavailableTooltip({
+  reason,
+  children,
+}: {
+  reason: string | undefined;
+  children: JSX.Element;
+}): JSX.Element {
+  if (reason === undefined) return children;
+  return (
+    <Tooltip label={reason}>
+      <span
+        tabIndex={0}
+        role="group"
+        aria-label={reason}
+        className="focus-ring inline-flex"
+      >
+        {children}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -285,7 +310,7 @@ function McpServerHealthSectionForTarget({
   );
   const authListOf = (rows: typeof authRows): ReactNode =>
     rows.length > 0 && (
-      <ul className="space-y-1">
+      <Stack as="ul" gap="tight">
         {rows.map((config) => (
           <li
             key={config.configId}
@@ -303,7 +328,7 @@ function McpServerHealthSectionForTarget({
             </span>
           </li>
         ))}
-      </ul>
+      </Stack>
     );
   const testButtons = (
     <div className="flex flex-wrap items-center gap-2">
@@ -321,18 +346,20 @@ function McpServerHealthSectionForTarget({
           }))}
         />
       )}
-      <Button
-        variant="secondary"
-        size="compact"
-        data-testid="mcp-health-test"
-        disabled={testReason !== undefined || pending || busy}
-        aria-describedby={testReason !== undefined ? reasonId : undefined}
-        onClick={(): void => {
-          void handleTest();
-        }}
-      >
-        {pending ? 'Testing…' : 'Test connection'}
-      </Button>
+      <UnavailableTooltip reason={testReason}>
+        <Button
+          variant="secondary"
+          size="compact"
+          data-testid="mcp-health-test"
+          disabled={testReason !== undefined || pending || busy}
+          aria-describedby={testReason !== undefined ? reasonId : undefined}
+          onClick={(): void => {
+            void handleTest();
+          }}
+        >
+          {pending ? 'Testing…' : 'Test connection'}
+        </Button>
+      </UnavailableTooltip>
     </div>
   );
   const testFeedback = (
@@ -347,27 +374,34 @@ function McpServerHealthSectionForTarget({
   );
 
   if (presentation === 'row') {
-    // One configuration's "Connected" under a Connected badge repeats it; any
-    // other status adds what the badge does not say, so that line stays.
+    // One configuration's "Connected" under a Connected badge repeats it, and
+    // its "No auth" repeats the Connection row. Other statuses add something.
     const onlyRow =
       configs.length === 1 && authRows.length === 1 ? authRows[0] : undefined;
     const repeatsBadge =
-      onlyRow?.authStatus === 'connected' && badge.status === 'connected';
+      onlyRow?.authStatus === 'not_configured' ||
+      (onlyRow?.authStatus === 'connected' && badge.status === 'connected');
     return (
-      <section data-testid="mcp-health-section" aria-label={label}>
-        <SettingsRowsRow
-          label={
-            <div className="flex flex-wrap items-center gap-2">
-              Health
-              {badgeNode}
-            </div>
-          }
-          description={lastCheckedNode}
-          control={testConnection !== undefined ? testButtons : undefined}
+      <section
+        data-testid="mcp-health-section"
+        aria-label={label}
+        className="flex flex-col gap-1"
+      >
+        <DetailFactList>
+          <DetailFact label="Health">
+            {badgeNode}
+            {lastCheckedNode}
+            {testConnection !== undefined && (
+              <span className="ml-auto">{testButtons}</span>
+            )}
+          </DetailFact>
+        </DetailFactList>
+        <div
+          className={`${DETAIL_FACT_VALUE_OFFSET_CLASS} flex flex-col gap-2 empty:hidden`}
         >
           {!repeatsBadge && authListOf(authRows)}
           {testConnection !== undefined && testFeedback}
-        </SettingsRowsRow>
+        </div>
       </section>
     );
   }
@@ -390,13 +424,13 @@ function McpServerHealthSectionForTarget({
         aria-label={label}
         className="flex flex-wrap items-center justify-between gap-3"
       >
-        <div className="min-w-0 space-y-1">
+        <Stack gap="tight" className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             {badgeNode}
             {lastCheckedNode}
           </div>
           {authList}
-        </div>
+        </Stack>
         {testConnection !== undefined && (
           <div className="flex min-w-0 flex-col items-end gap-2">
             {testControls}
@@ -407,10 +441,11 @@ function McpServerHealthSectionForTarget({
   }
 
   return (
-    <section
+    <Stack
       data-testid="mcp-health-section"
       aria-labelledby={`${reasonId}-heading`}
-      className="space-y-3"
+      as="section"
+      gap="item"
     >
       <div className="flex flex-wrap items-center gap-2">
         <Heading level={3} variant="title" id={`${reasonId}-heading`}>
@@ -421,9 +456,9 @@ function McpServerHealthSectionForTarget({
       {lastCheckedNode}
       {authList}
       {testConnection !== undefined && (
-        <div className="space-y-2">{testControls}</div>
+        <Stack gap="inline">{testControls}</Stack>
       )}
-    </section>
+    </Stack>
   );
 }
 
@@ -702,47 +737,56 @@ function McpServerManagementActionsForTarget({
   );
 
   return (
-    <section data-testid="mcp-management-section" aria-label="Placement">
-      <SettingsRowsRow
-        label={
-          <div className="flex flex-wrap items-center gap-2">
-            Placement
-            <span
-              data-testid="mcp-management-placement"
-              data-placement={placement}
-              className={badgeClassName('neutral')}
-            >
-              {mcpPlacementLabel(placement)}
-            </span>
-          </div>
-        }
-        control={
-          rows.length > 0 ? (
-            <div className="flex flex-wrap items-center justify-end gap-2">
+    <section
+      data-testid="mcp-management-section"
+      aria-label="Placement"
+      className="flex flex-col gap-1"
+    >
+      <DetailFactList>
+        <DetailFact label="Placement">
+          <span
+            data-testid="mcp-management-placement"
+            data-placement={placement}
+          >
+            {mcpPlacementLabel(placement)}
+          </span>
+          {rows.length > 0 && (
+            <span className="ml-auto flex flex-wrap items-center justify-end gap-2">
               {rows.map((row) => {
                 const reasonId = row.action.available
                   ? undefined
                   : reasonIds.get(row.action.reason);
                 return (
-                  <Button
+                  <UnavailableTooltip
                     key={row.id}
-                    variant="secondary"
-                    size="compact"
-                    data-testid={`mcp-management-${row.id}`}
-                    disabled={!row.action.available || pending !== null || busy}
-                    aria-describedby={reasonId}
-                    onClick={(): void => {
-                      if (!row.action.available) return;
-                      void runAction(row.id, row.action.run);
-                    }}
+                    reason={
+                      row.action.available ? undefined : row.action.reason
+                    }
                   >
-                    {pending === row.id ? row.pendingLabel : row.label}
-                  </Button>
+                    <Button
+                      variant="secondary"
+                      size="compact"
+                      data-testid={`mcp-management-${row.id}`}
+                      disabled={
+                        !row.action.available || pending !== null || busy
+                      }
+                      aria-describedby={reasonId}
+                      onClick={(): void => {
+                        if (!row.action.available) return;
+                        void runAction(row.id, row.action.run);
+                      }}
+                    >
+                      {pending === row.id ? row.pendingLabel : row.label}
+                    </Button>
+                  </UnavailableTooltip>
                 );
               })}
-            </div>
-          ) : undefined
-        }
+            </span>
+          )}
+        </DetailFact>
+      </DetailFactList>
+      <div
+        className={`${DETAIL_FACT_VALUE_OFFSET_CLASS} flex flex-col gap-2 empty:hidden`}
       >
         {reasonLines}
         <ErrorBanner className="" error={error} testId="mcp-management-error" />
@@ -784,7 +828,7 @@ function McpServerManagementActionsForTarget({
             }}
           />
         )}
-      </SettingsRowsRow>
+      </div>
     </section>
   );
 }
@@ -793,31 +837,25 @@ export interface McpServerManagementCardProps {
   /** Each section's host wiring, unchanged; the card owns the presentation. */
   readonly health: Omit<McpServerHealthSectionProps, 'presentation' | 'label'>;
   readonly management: McpServerManagementActionsProps;
-  /** The server's tools; a host with no tools read omits the row. */
-  readonly tools?: ReactNode;
 }
 
 /**
- * Health, Placement and Tools for one MCP server, as rows of one box. The MCP
- * server page on desktop and web both mount it.
+ * Health and Placement as facts for one MCP server. The MCP server page on
+ * desktop and web both mount it.
  */
 export function McpServerManagementCard({
   health,
   management,
-  tools,
 }: McpServerManagementCardProps): JSX.Element {
   return (
-    <SettingsRowsGroup
-      dataTestId="mcp-management-card"
-      ariaLabel="Server management"
+    <div
+      role="group"
+      data-testid="mcp-management-card"
+      aria-label="Server management"
+      className="flex flex-col gap-1"
     >
       <McpServerHealthSection {...health} presentation="row" />
       <McpServerManagementActions {...management} />
-      {tools !== undefined && tools !== null && (
-        <SettingsRowsRow label="Tools" dataTestId="mcp-management-tools">
-          {tools}
-        </SettingsRowsRow>
-      )}
-    </SettingsRowsGroup>
+    </div>
   );
 }

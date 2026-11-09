@@ -1,7 +1,7 @@
 import type {
   BrowserActionError,
   BrowserActionErrorCode,
-} from '../types/browser';
+} from '@canopy/execution-engine/types/browser';
 
 /**
  * Why a snapshot or inspect could not resolve its target (phase 04b E3):

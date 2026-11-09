@@ -2,7 +2,7 @@ import { type JSX, useState } from 'react';
 import type {
   PipelineExecutionScope,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   CheckIcon,
   CopyIcon,

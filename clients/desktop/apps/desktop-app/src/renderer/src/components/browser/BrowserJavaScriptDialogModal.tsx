@@ -6,7 +6,7 @@ import {
   type FormEvent,
   type JSX,
 } from 'react';
-import type { BrowserJavaScriptDialog } from '@canopy/desktop-shared/types/browser';
+import type { BrowserJavaScriptDialog } from '@canopy/execution-engine/types/browser';
 import { Button } from '@/components/shared/Button';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {

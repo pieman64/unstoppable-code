@@ -1,3 +1,4 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import { memo, type ComponentType, type JSX } from 'react';
 import {
   Bot,
@@ -150,12 +151,9 @@ function PaletteResultRowInner({
           hasTrailing ? (
             <span className="flex shrink-0 items-center gap-2">
               {item.statusBadge && (
-                <span
-                  data-testid="command-palette-status-badge"
-                  className="rounded-full bg-secondary px-2 py-0.5 text-3xs fg-secondary"
-                >
+                <Badge data-testid="command-palette-status-badge">
                   {item.statusBadge}
-                </span>
+                </Badge>
               )}
               {item.shortcut && (
                 <span
@@ -205,9 +203,11 @@ function PaletteResultRowInner({
             <span
               data-testid="command-palette-archive-badge"
               data-archive-state={item.archiveState ?? 'archived'}
-              className="shrink-0 rounded-full bg-secondary px-1.5 py-0.5 text-3xs fg-secondary"
+              className="inline-flex shrink-0"
             >
-              {item.archiveState === 'deleted' ? 'Deleted' : 'Archived'}
+              <Badge>
+                {item.archiveState === 'deleted' ? 'Deleted' : 'Archived'}
+              </Badge>
             </span>
           )}
         </span>

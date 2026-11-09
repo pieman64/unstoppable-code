@@ -1,4 +1,4 @@
-import { brandEnvName } from '@canopy/desktop-shared/brand/env';
+import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import { BRAND } from '@canopy/brand/current';
 
 const RTK_BINARY_PATH_ENV = brandEnvName('RTK_BINARY_PATH');

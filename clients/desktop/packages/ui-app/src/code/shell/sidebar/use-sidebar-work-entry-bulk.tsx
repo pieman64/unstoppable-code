@@ -294,7 +294,8 @@ export function useSidebarWorkEntryBulk(
           );
           return undefined;
         case 'hide':
-          // Work Entries have no Hide.
+        case 'stop-scripts':
+          // Work Entries have no Hide and run no scripts.
           return undefined;
       }
     },

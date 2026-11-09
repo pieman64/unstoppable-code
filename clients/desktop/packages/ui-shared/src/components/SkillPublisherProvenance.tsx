@@ -9,7 +9,7 @@ export function SkillPublisherProvenance({
 }): JSX.Element {
   return (
     <div
-      className="space-y-3 text-s fg-secondary"
+      className="flex flex-col gap-3 text-s fg-secondary"
       data-testid="publisher-skill-provenance"
     >
       <p>License: {publisher.license ?? 'See source for license terms'}</p>
@@ -17,7 +17,7 @@ export function SkillPublisherProvenance({
         href={publisher.sourceUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="fg-accent hover:underline"
+        className="self-start fg-accent hover:underline"
       >
         View source
       </a>

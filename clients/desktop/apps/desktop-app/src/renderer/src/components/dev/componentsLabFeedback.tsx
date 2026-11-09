@@ -117,6 +117,18 @@ export function NoticeSpecimen(): JSX.Element {
             </Notice>
           </div>
         </SpecimenCell>
+        <SpecimenCell label="Static, announced detail" wide>
+          <div className="w-full">
+            <Notice
+              intent="neutral"
+              role="none"
+              detail="Couldn’t run it now."
+              announceDetail
+            >
+              Runs every weekday at 9:00.
+            </Notice>
+          </div>
+        </SpecimenCell>
       </SpecimenPanel>
       <SpecimenPanel title="Shapes">
         {SHAPES.map((shape) => (

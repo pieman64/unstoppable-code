@@ -12,6 +12,7 @@ import type {
   SessionCloudExportSummary,
 } from '@canopy/desktop-shared/types';
 import {
+  Stack,
   BusyLabel,
   Button,
   ChoiceField,
@@ -158,7 +159,7 @@ const noop = (): void => undefined;
 
 function RepoSummaryList({ repos }: RepoSummaryListProps): JSX.Element {
   return (
-    <ul className="space-y-1 text-xs fg-secondary">
+    <ul className="flex flex-col text-xs fg-secondary gap-1">
       {repos.map((repo, index) => (
         <Surface
           as="li"
@@ -422,14 +423,14 @@ export function ImportSessionModal({
       closeOnBackdrop={!isBusy}
       dataTestId="import-session-modal"
     >
-      <div className="max-h-[75vh] space-y-4 overflow-y-auto text-s fg-primary">
+      <div className="flex flex-col max-h-[75vh] overflow-y-auto text-s fg-primary gap-4 [&>*]:shrink-0">
         <Notice intent="attention" role="none" title="Exports are not redacted">
           They hold the full transcript and uncommitted repository changes, are
           private to your account, and leave out unpushed commits.
         </Notice>
 
         {phase === 'list' && (
-          <div className="space-y-3" data-testid="import-session-cloud-list">
+          <Stack gap="item" data-testid="import-session-cloud-list">
             <SearchField
               value={search}
               onValueChange={setSearch}
@@ -445,7 +446,7 @@ export function ImportSessionModal({
                   label="Loading exports"
                   testId="import-session-cloud-loading"
                 >
-                  <div className="flex flex-col gap-2">
+                  <Stack gap="inline">
                     {SAMPLE_EXPORTS.map((exportItem) => (
                       <CloudExportRow
                         key={exportItem.id}
@@ -456,7 +457,7 @@ export function ImportSessionModal({
                         onDelete={noop}
                       />
                     ))}
-                  </div>
+                  </Stack>
                 </Skeleton>
               </DelayedLoadingPlaceholder>
             ) : exports.length === 0 ? (
@@ -468,7 +469,7 @@ export function ImportSessionModal({
                 </div>
               </Surface>
             ) : (
-              <div className="space-y-2">
+              <Stack gap="inline">
                 {exports.map((exportItem) => (
                   <CloudExportRow
                     key={exportItem.id}
@@ -479,7 +480,7 @@ export function ImportSessionModal({
                     onDelete={() => void handleDeleteExport(exportItem.id)}
                   />
                 ))}
-              </div>
+              </Stack>
             )}
 
             {nextCursor && !isLoadingList && (
@@ -492,7 +493,7 @@ export function ImportSessionModal({
                 <BusyLabel busy={isLoadingMore}>Load more</BusyLabel>
               </Button>
             )}
-          </div>
+          </Stack>
         )}
 
         {phase === 'inspecting' && (
@@ -508,7 +509,7 @@ export function ImportSessionModal({
               data-testid="import-session-bundle-summary"
             >
               <Surface as="section" variant="group" padding="compact">
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Heading level={3} variant="label">
                     Exported session
                   </Heading>
@@ -535,7 +536,7 @@ export function ImportSessionModal({
               </Surface>
 
               <Surface as="section" variant="group" padding="compact">
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Heading level={3} variant="label">
                     Destination project
                   </Heading>
@@ -590,7 +591,7 @@ export function ImportSessionModal({
                 <Notice intent="destructive" role="status">
                   <ul
                     data-testid="import-session-missing-repos"
-                    className="space-y-2"
+                    className="flex flex-col gap-2"
                   >
                     {inspection.missingRepos.map((repo, index) => (
                       <li key={`${repo.remoteUrl ?? repo.name}-${index}`}>
@@ -606,7 +607,7 @@ export function ImportSessionModal({
 
             <div
               data-testid="import-session-warnings"
-              className={warnings.length > 0 ? 'space-y-2' : 'hidden'}
+              className={warnings.length > 0 ? 'flex flex-col gap-2' : 'hidden'}
             >
               {warnings.map((warning) => (
                 <Notice key={warning} intent="attention">
@@ -618,15 +619,16 @@ export function ImportSessionModal({
             {capabilityReadiness.length > 0 && (
               <Surface
                 as="section"
+                gap="inline"
                 variant="group"
                 padding="compact"
                 data-testid="import-session-capability-readiness"
               >
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Heading level={3} variant="title">
                     Capabilities and setup
                   </Heading>
-                  <ul className="space-y-1.5">
+                  <ul className="flex flex-col gap-1.5">
                     {capabilityReadiness.map((capability) => (
                       <li
                         key={`${capability.kind}:${capability.name}`}

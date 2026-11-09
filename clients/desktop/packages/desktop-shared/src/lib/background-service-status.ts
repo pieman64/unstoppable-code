@@ -29,6 +29,8 @@ export const BACKGROUND_SERVICE_CONSUMERS = [
   'code_graph',
   // Eligible local renderer script runs placed in the daemon (CAN-5087).
   'scripts',
+  // Eligible local window workflows without model steps (CAN-5086).
+  'pipelines',
 ] as const;
 export type BackgroundServiceConsumer =
   (typeof BACKGROUND_SERVICE_CONSUMERS)[number];

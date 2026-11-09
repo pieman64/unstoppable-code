@@ -32,13 +32,15 @@ import {
   loadShareablePluginCatalog,
   resolveShareablePluginRefs,
 } from './shareable-plugin-resolution';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { IpcMainInvokeEvent } from 'electron';
 import { registerIpcHandler } from '../ipc/register';
 import { reportCuratedPluginInstalled } from './curated-plugin-events';
 import { refreshInvocableInventoryAfterMutation } from './invocable-inventory-service';
 import { validateId } from '../lib/validation';
 import * as service from './plugin-service';
+import { installPluginForPrincipal } from './remote-install-source-gate';
+import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
 import {
   createSharedPlugin,
   deleteSharedPlugin,
@@ -51,7 +53,7 @@ import {
 } from './canopy-server-client';
 import { sendToWebContents } from '../lib/web-contents-send';
 import { analyzeSubjectCapabilityPackage } from '../pipelines/pipeline-package-service';
-import type { PipelinePackageAnalysisSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageAnalysisSummary } from '@canopy/execution-engine/types/pipeline';
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -352,9 +354,17 @@ export function registerPluginHandlers(): void {
   );
   registerIpcHandler(
     PLUGINS_CHANNELS.INSTALL_PLUGIN,
-    (_event, marketplaceId: string, pluginName: string, sourceUrl: string) =>
+    (event, marketplaceId: string, pluginName: string, sourceUrl: string) =>
       refreshAfterSuccess('plugins:install-plugin', () =>
-        service.installPlugin(marketplaceId, pluginName, sourceUrl),
+        installPluginForPrincipal(
+          {
+            remote: resolveRemoteBridgeSender(event.sender) !== null,
+            marketplaceId,
+            pluginName,
+            sourceUrl,
+          },
+          service.installPlugin,
+        ),
       ),
   );
   registerIpcHandler(

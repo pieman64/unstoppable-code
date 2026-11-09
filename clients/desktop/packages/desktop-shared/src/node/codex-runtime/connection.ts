@@ -11,7 +11,7 @@ import {
   DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
   type ResourceMetadata,
 } from '../../types';
-import { killChildProcessGroup } from '../lib/process-kill';
+import { killChildProcessGroup } from '@canopy/execution-engine/node/lib/process-kill';
 import { extractApprovalThreadId } from './approval-thread-id';
 import type { ClientNotification } from './generated/ClientNotification';
 import type { ClientRequest } from './generated/ClientRequest';

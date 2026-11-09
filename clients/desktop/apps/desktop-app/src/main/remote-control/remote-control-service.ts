@@ -2,19 +2,31 @@ import type {
   PairingTelemetryAttempt,
   PairingTelemetryRecorder,
   PairingTelemetryOutcome,
+  RemoteControlPairingFailureReason,
+  RemoteControlSessionEndReason,
+  RemoteControlTelemetryEvent,
+  RemoteControlTelemetryRecorder,
 } from '@canopy/desktop-instrumentation/pairing';
 import { beginPairingTelemetry } from '../lib/pairing-telemetry';
-import { randomUUID } from 'node:crypto';
+import { REMOTE_CONTROL_LABEL } from '@canopy/protocol/ui-labels';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
-import type {
-  DevicePlatform,
-  DeviceRelayDeviceInfo,
-  DeviceRelayTokenResponse,
+import {
+  DEVICE_RELAY_FEATURE_DEVICE_KIND,
+  deviceKindOrDefault,
+  type DeviceKind,
+  type DevicePlatform,
+  type DeviceRelayDeviceInfo,
+  type DeviceRelayTokenResponse,
 } from '@canopy/protocol/device-relay';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type {
   RemoteControlForgetDeviceRequest,
+  RemoteControlOpenPairingWindowResult,
+  RemoteControlPairingEvent,
+  RemoteControlPairingRequestOutcome,
+  RemoteControlPairingWindowCloseReason,
   RemoteControlRespondToPairingRequest,
   RemoteControlState,
   RemoteIncomingPairing,
@@ -31,11 +43,21 @@ import {
   remoteImageForLocalOpen,
 } from './client/remote-file-opens';
 import type { RemoteControlWindows } from './client/remote-windows';
-import type { DeviceKeyPair } from './crypto/device-key';
-import type { HandshakePurpose } from './crypto/handshake';
+import { encodeBase64Url, type DeviceKeyPair } from './crypto/device-key';
 import type { RemoteSurface } from '@canopy/desktop-shared/remote-control/surfaces';
 import type { RemoteAppAdvisorSurface } from './host/app-advisor-surface';
 import type { HostBridge } from './host/bridge-window';
+import {
+  HOST_FEATURES,
+  accountUserIdFrom,
+  authenticatedPresenceKind,
+  decidePairedKind,
+  hostedAgentSender,
+  kindMayPairByProof,
+  pairingProofMatches,
+  verifyHostedDelegation,
+} from './host/controller-profile';
+import type { HostedChatAttribution } from './host/hosted-chat-dispatch';
 import type { HostFileReader } from './host/file-reads';
 import { RemoteHostSession } from './host/host-session';
 import type { MainWindowPushSource } from './host/main-window-pushes';
@@ -46,8 +68,10 @@ import {
   type RemoteAccessStore,
 } from './remote-access-store';
 import {
+  HelloParamsSchema,
   PairRequestParamsSchema,
   PairRequestResultSchema,
+  buildPairingLink,
   REMOTE_METHODS,
   RemoteChannelUnavailableError,
   isUnknownRemoteMethodError,
@@ -56,6 +80,7 @@ import {
   type AccountProxySignInOpenParams,
   type DialogOpenResult,
   type HelloResult,
+  type PairRequestParams,
   type PairRequestResult,
   type RemoteVersion,
   type RemoteSessionEndReason,
@@ -67,7 +92,9 @@ import type {
 import { RpcPeer } from './transport/rpc-peer';
 import {
   RemoteSessionManager,
+  type HandshakeAdmission,
   type SecureSession,
+  type SessionGrant,
 } from './transport/session-manager';
 
 export type { RemoteControlWindows, RemoteRelay };
@@ -86,8 +113,26 @@ export interface RemoteRelayFactoryOptions {
   onPeersChange: () => void;
 }
 
+/**
+ * The Portal opt-in as its state store reads it. `reliable: false` means the
+ * store could not be read with confidence, so the migration waits.
+ */
+export type PortalOptInRead =
+  | { reliable: true; active: boolean }
+  | { reliable: false };
+
+/** The Portal lifecycle the single Remote Control opt-in coordinates. */
+export interface RemotePortalPort {
+  /** Whether the Portal feature flag is on now. */
+  isEnabled(): boolean;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
 export interface RemoteControlServiceDeps {
   recordPairing?: PairingTelemetryRecorder;
+  /** Host product events (`remote_control:*`); bounded values only. */
+  recordTelemetry?: RemoteControlTelemetryRecorder;
   store: RemoteAccessStore;
   createRelay: (options: RemoteRelayFactoryOptions) => RemoteRelay;
   fetchToken: (deviceId: string) => Promise<DeviceRelayTokenResponse>;
@@ -124,6 +169,15 @@ export interface RemoteControlServiceDeps {
   openLocalFile: (path: string) => Promise<void>;
   /** Bytes per `file.read`; tests shorten it. */
   fileReadChunkBytes?: number;
+  /**
+   * Serves a hosted agent session's `chat:command` with the attribution this
+   * computer derived from the session (CAN-5985). Without it hosted sessions
+   * cannot start chats, send messages or answer questions.
+   */
+  dispatchHostedChatCommand?: (
+    request: unknown,
+    attribution: HostedChatAttribution,
+  ) => Promise<unknown>;
   /** Hands a controller's account proxy sign-in redirect to the proxy here. */
   completeAccountProxySignIn?: (
     controllerDeviceId: string,
@@ -138,6 +192,20 @@ export interface RemoteControlServiceDeps {
   }) => AccountProxySignInListener;
   windows: RemoteControlWindows;
   broadcastState: (state: RemoteControlState) => void;
+  broadcastPairingEvent?: (event: RemoteControlPairingEvent) => void;
+  /**
+   * Reads the Portal opt-in through the Portal state store's reader, for the
+   * one-time `allowIncoming` migration.
+   */
+  readPortalOptIn: () => Promise<PortalOptInRead>;
+  /** Portal sessions the opt-in starts and ends; absent when not wired. */
+  portal?: RemotePortalPort;
+  /** The web origin pairing links open; throws when it is not configured. */
+  webOrigin: () => string;
+  /** How long a pairing link stays valid; tests shorten it. */
+  pairingWindowMs?: number;
+  /** Delay before retrying an opt-in migration that could not read Portal. */
+  migrationRetryMs?: number;
   log?: (message: string, context?: unknown) => void;
   now?: () => number;
   /** How long a discovery request keeps the relay up; tests shorten it. */
@@ -146,6 +214,41 @@ export interface RemoteControlServiceDeps {
 
 const DISCOVERY_WINDOW_MS = 5 * 60_000;
 const PAIRING_DECISION_TIMEOUT_MS = 3 * 60_000;
+const PAIRING_WINDOW_MS = 10 * 60_000;
+const PAIRING_SECRET_BYTES = 32;
+const MIGRATION_RETRY_MS = 60_000;
+
+interface PairingWindow {
+  /** Single-use link secret; held only in this process's memory. */
+  secret: Buffer;
+  expiresAt: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/** What a pairing that may still be saved was admitted under. */
+interface PairingAdmission {
+  incomingEpoch: number;
+  removalMark: number;
+}
+
+function pairingFailureFor(
+  outcome: RemoteControlPairingRequestOutcome,
+): RemoteControlPairingFailureReason {
+  switch (outcome) {
+    case 'declined':
+      return 'denied';
+    case 'timed-out':
+      return 'expired';
+    case 'approved':
+    case 'cancelled':
+    case 'failed':
+      return 'cancelled';
+  }
+}
+
+type ProofOutcome =
+  | { approved: true }
+  | { approved: false; reason: RemoteControlPairingFailureReason };
 
 interface IncomingPairingEntry {
   view: RemoteIncomingPairing;
@@ -191,6 +294,29 @@ export class RemoteControlService {
   private readonly revokingControllers = new Set<string>();
   private disallowingIncoming = 0;
   private settingsCache: { allowIncoming: boolean } = { allowIncoming: false };
+  private pairingWindow: PairingWindow | null = null;
+  /** Serializes proof verification, consumption and pinning. */
+  private proofChain: Promise<unknown> = Promise.resolve();
+  /** Bumped by every disable; pairings admitted before it cannot save. */
+  private incomingEpoch = 0;
+  /** Bumped by every explicit opt-in change; the migration yields to it. */
+  private allowIncomingGeneration = 0;
+  /** Removal marks per controller, so a removal beats a racing pairing. */
+  private removalCounter = 0;
+  private readonly removalMarks = new Map<string, number>();
+  private readonly sessionExpiries = new Map<
+    RemoteHostSession,
+    { expiresAt: number; timer: ReturnType<typeof setTimeout> }
+  >();
+  private migrationRun: Promise<void> | null = null;
+  /** Why each live session is being ended, for its `session_end` event. */
+  private readonly sessionEndReasons = new Map<
+    RemoteHostSession,
+    RemoteControlSessionEndReason
+  >();
+  /** The last pairing window was spent by a proof (not expired or closed). */
+  private pairingWindowConsumed = false;
+  private migrationTimer: ReturnType<typeof setTimeout> | null = null;
   private identityCache: { deviceId: string; publicKey: string } | null = null;
   private broadcastScheduled = false;
   private disposed = false;
@@ -207,6 +333,10 @@ export class RemoteControlService {
 
   async initialize(): Promise<void> {
     await this.refreshCaches();
+    await this.migrateOptIn().catch((error: unknown) => {
+      this.deps.log?.('Remote Control opt-in migration failed', error);
+      this.scheduleMigrationRetry();
+    });
     await this.deps.uploads.pruneExpired().catch(() => undefined);
     await this.deps.openedFiles.pruneExpired().catch(() => undefined);
     await this.reconcile();
@@ -264,7 +394,71 @@ export class RemoteControlService {
     this.disposed = true;
     if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
     this.discoveryTimer = null;
+    if (this.migrationTimer) clearTimeout(this.migrationTimer);
+    this.migrationTimer = null;
+    this.endPairingWindow('disabled');
     this.stopRelay();
+  }
+
+  // -------------------------------------------------------------------------
+  // One-time opt-in migration
+  // -------------------------------------------------------------------------
+
+  /**
+   * Folds the Portal opt-in into `allowIncoming` once:
+   * `allowIncoming = allowIncoming || Portal active`, saved together with
+   * `migratedOptIn` in one atomic write. When Portal state cannot be read
+   * reliably the settings stay as they are and the migration retries later.
+   */
+  migrateOptIn(): Promise<void> {
+    this.migrationRun ??= this.runOptInMigration().finally(() => {
+      this.migrationRun = null;
+    });
+    return this.migrationRun;
+  }
+
+  private async runOptInMigration(): Promise<void> {
+    if (this.disposed) return;
+    const settings = await this.deps.store.read();
+    if (settings.migratedOptIn === true) return;
+    const generation = this.allowIncomingGeneration;
+    let portal: PortalOptInRead;
+    try {
+      portal = await this.deps.readPortalOptIn();
+    } catch {
+      portal = { reliable: false };
+    }
+    if (!portal.reliable) {
+      this.scheduleMigrationRetry();
+      return;
+    }
+    const portalActive = portal.active;
+    await this.deps.store.update((current) => {
+      if (current.migratedOptIn === true) return current;
+      // An explicit choice made meanwhile wins over the Portal opt-in.
+      const explicit = generation !== this.allowIncomingGeneration;
+      return {
+        ...current,
+        allowIncoming: explicit
+          ? current.allowIncoming
+          : current.allowIncoming || portalActive,
+        migratedOptIn: true,
+      };
+    });
+    if (this.migrationTimer) clearTimeout(this.migrationTimer);
+    this.migrationTimer = null;
+    await this.refreshCaches();
+    this.scheduleBroadcast();
+    if (!this.disposed) void this.reconcile().catch(() => undefined);
+  }
+
+  private scheduleMigrationRetry(): void {
+    if (this.disposed || this.migrationTimer) return;
+    this.migrationTimer = setTimeout(() => {
+      this.migrationTimer = null;
+      void this.migrateOptIn().catch(() => this.scheduleMigrationRetry());
+    }, this.deps.migrationRetryMs ?? MIGRATION_RETRY_MS);
+    this.migrationTimer.unref?.();
   }
 
   private async refreshCaches(): Promise<
@@ -321,11 +515,8 @@ export class RemoteControlService {
     this.sessions = new RemoteSessionManager({
       transport: relay,
       identity: (): DeviceKeyPair => identity,
-      authorize: (
-        purpose: HandshakePurpose,
-        initiatorKey: string,
-        peerDeviceId: string,
-      ): boolean => this.authorize(purpose, initiatorKey, peerDeviceId),
+      authorize: (request: HandshakeAdmission): Promise<SessionGrant | null> =>
+        this.authorizeHandshake(request),
       onIncomingSession: (session: SecureSession): void =>
         this.handleIncomingSession(session),
     });
@@ -359,6 +550,7 @@ export class RemoteControlService {
       this.deps.windows.close(deviceId);
     }
     this.connections.clear();
+    this.endPairingWindow('disabled');
     for (const session of Array.from(this.hostSessions))
       session.close('shutdown');
     for (const entry of Array.from(this.incoming.values())) entry.cancel();
@@ -425,7 +617,7 @@ export class RemoteControlService {
     );
     const connectedControllers = new Set(
       Array.from(this.hostSessions).map(
-        (session) => session.controllerDeviceId,
+        (session) => session.attributedDeviceId,
       ),
     );
     const pairedHostIds = new Set(
@@ -465,9 +657,11 @@ export class RemoteControlService {
           deviceId: controller.deviceId,
           name: peer?.name ?? controller.name,
           platform: peer?.platform ?? controller.platform,
+          kind: deviceKindOrDefault(controller),
           pairedAt: controller.pairedAt,
           online: peer !== undefined,
           connected: connectedControllers.has(controller.deviceId),
+          hostedSessions: this.hostedChildren(controller.deviceId),
         };
       }),
       discoverable: Array.from(peers.values())
@@ -484,7 +678,59 @@ export class RemoteControlService {
       incomingPairings: Array.from(this.incoming.values()).map((entry) => ({
         ...entry.view,
       })),
+      pairingWindow: this.pairingWindow
+        ? { expiresAt: new Date(this.pairingWindow.expiresAt).toISOString() }
+        : null,
     };
+  }
+
+  /** Delegated sessions attributed to a hosted root. */
+  private hostedChildren(
+    rootDeviceId: string,
+  ): RemoteControlState['controllers'][number]['hostedSessions'] {
+    const children: RemoteControlState['controllers'][number]['hostedSessions'] =
+      [];
+    for (const [session, expiry] of Array.from(this.sessionExpiries)) {
+      if (
+        session.attributedDeviceId === rootDeviceId &&
+        session.controllerDeviceId !== rootDeviceId
+      ) {
+        children.push({
+          deviceId: session.controllerDeviceId,
+          expiresAt: new Date(expiry.expiresAt).toISOString(),
+        });
+      }
+    }
+    return children;
+  }
+
+  private telemetry(event: RemoteControlTelemetryEvent): void {
+    try {
+      this.deps.recordTelemetry?.(event);
+    } catch {
+      // Telemetry never affects Remote Control.
+    }
+  }
+
+  /** Ends a session on purpose, remembering why for its `session_end`. */
+  private endHostSession(
+    session: RemoteHostSession,
+    reason: RemoteSessionEndReason,
+    telemetryReason: RemoteControlSessionEndReason,
+  ): void {
+    if (!this.sessionEndReasons.has(session)) {
+      this.sessionEndReasons.set(session, telemetryReason);
+    }
+    session.end(reason);
+  }
+
+  private emitPairingEvent(event: RemoteControlPairingEvent): void {
+    if (this.disposed) return;
+    try {
+      this.deps.broadcastPairingEvent?.(event);
+    } catch (error) {
+      this.deps.log?.('Remote Control pairing event failed to send', error);
+    }
   }
 
   private scheduleBroadcast(): void {
@@ -504,16 +750,23 @@ export class RemoteControlService {
   // -------------------------------------------------------------------------
 
   async setAllowIncoming(allow: boolean): Promise<RemoteControlState> {
+    this.allowIncomingGeneration += 1;
+    const wasAllowed = this.settingsCache.allowIncoming;
+    // An explicit choice also settles the one-time Portal migration.
     const saving = this.deps.store.update((current) => ({
       ...current,
       allowIncoming: allow,
+      migratedOptIn: true,
     }));
     if (!allow) {
       // Revocation takes effect at once, without waiting for the save, and
       // holds even if saving fails; the error still reaches the caller.
       this.disallowingIncoming += 1;
+      this.incomingEpoch += 1;
       this.settingsCache = { allowIncoming: false };
+      this.endPairingWindow('disabled');
       this.endAllControl();
+      this.stopPortal();
     }
     try {
       await saving;
@@ -525,8 +778,27 @@ export class RemoteControlService {
         this.disallowingIncoming -= 1;
       }
     }
+    if (allow && !wasAllowed) this.startPortalIfEnabled();
     await this.reconcile();
     return this.snapshot();
+  }
+
+  /** Ends any Portal session; the direct pairings are kept. */
+  private stopPortal(): void {
+    const portal = this.deps.portal;
+    if (!portal) return;
+    void portal.stop().catch((error: unknown) => {
+      this.deps.log?.('Portal could not stop with Remote Control', error);
+    });
+  }
+
+  /** Re-enabling starts Portal only while its own flag is on. */
+  private startPortalIfEnabled(): void {
+    const portal = this.deps.portal;
+    if (!portal || !portal.isEnabled()) return;
+    void portal.start().catch((error: unknown) => {
+      this.deps.log?.('Portal could not start with Remote Control', error);
+    });
   }
 
   async forgetDevice(
@@ -548,25 +820,61 @@ export class RemoteControlService {
         this.deps.windows.close(request.deviceId);
       }
     } else {
-      const saving = this.deps.store.update((current) => ({
-        ...current,
-        pairedControllers: current.pairedControllers.filter(
-          (controller) => controller.deviceId !== request.deviceId,
-        ),
-      }));
-      // Cut the controller off at once, not once the save lands, and even if
-      // saving fails.
-      this.revokingControllers.add(request.deviceId);
-      this.closeControllerSessions(request.deviceId, 'revoked');
-      try {
-        await saving;
-      } finally {
-        this.closeControllerSessions(request.deviceId, 'revoked');
-        this.revokingControllers.delete(request.deviceId);
-      }
+      await this.removeController(request.deviceId, { cutOffFirst: true });
     }
     await this.reconcile();
     return this.snapshot();
+  }
+
+  /**
+   * Removes one controller's pairing and ends every session attributed to
+   * it, delegated hosted sessions included. A pairing of that device still
+   * in progress can no longer save. `cutOffFirst` ends sessions before the
+   * save; otherwise they end once it settles, so a controller revoking its
+   * own pairing hears the answer first.
+   */
+  private async removeController(
+    deviceId: string,
+    options: { cutOffFirst: boolean },
+  ): Promise<void> {
+    const removed = this.deps.store
+      .peek()
+      ?.pairedControllers.find(
+        (controller) => controller.deviceId === deviceId,
+      );
+    if (removed) {
+      this.telemetry({
+        event: 'device_remove',
+        device_kind: deviceKindOrDefault(removed),
+      });
+    }
+    this.removalCounter += 1;
+    this.removalMarks.set(deviceId, this.removalCounter);
+    const saving = this.deps.store.update((current) => ({
+      ...current,
+      pairedControllers: current.pairedControllers.filter(
+        (controller) => controller.deviceId !== deviceId,
+      ),
+    }));
+    // Refused at once, even before the save lands and if saving fails.
+    this.revokingControllers.add(deviceId);
+    if (options.cutOffFirst) {
+      this.closeControllerSessions(deviceId, 'revoked', 'removed');
+    }
+    try {
+      await saving;
+    } finally {
+      if (options.cutOffFirst) {
+        this.closeControllerSessions(deviceId, 'revoked', 'removed');
+      } else {
+        // After the reply to the revoking request has been sent.
+        setImmediate(() =>
+          this.closeControllerSessions(deviceId, 'revoked', 'removed'),
+        );
+      }
+      this.revokingControllers.delete(deviceId);
+      this.scheduleBroadcast();
+    }
   }
 
   /**
@@ -574,44 +882,304 @@ export class RemoteControlService {
    * reconnect on its own: it waits until its user opens this computer again.
    */
   async disconnectController(deviceId: string): Promise<RemoteControlState> {
-    this.closeControllerSessions(deviceId, 'disconnected');
+    this.closeControllerSessions(deviceId, 'disconnected', 'disconnected');
     return this.snapshot();
   }
 
   private endAllControl(): void {
-    for (const session of Array.from(this.hostSessions)) session.end('revoked');
+    for (const session of Array.from(this.hostSessions)) {
+      this.endHostSession(session, 'revoked', 'disabled');
+    }
     for (const entry of Array.from(this.incoming.values())) entry.cancel();
   }
 
+  /** Sessions of the device itself and those attributed to it. */
   private closeControllerSessions(
     deviceId: string,
     reason: RemoteSessionEndReason,
+    telemetryReason: RemoteControlSessionEndReason,
   ): void {
     for (const session of Array.from(this.hostSessions)) {
-      if (session.controllerDeviceId === deviceId) session.end(reason);
+      if (
+        session.controllerDeviceId === deviceId ||
+        session.attributedDeviceId === deviceId
+      ) {
+        this.endHostSession(session, reason, telemetryReason);
+      }
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Pairing window
+  // -------------------------------------------------------------------------
+
+  /**
+   * Arms a ten-minute, single-use pairing secret, replacing any earlier one,
+   * and returns the link that carries it. The secret lives only in this
+   * process: disabling Remote Control or restarting the app invalidates it.
+   */
+  async openPairingWindow(): Promise<RemoteControlOpenPairingWindowResult> {
+    if (!this.deps.isFeatureEnabled() || this.deps.signedInAccount() === null) {
+      throw new Error(`${REMOTE_CONTROL_LABEL} is not available.`);
+    }
+    await this.refreshCaches();
+    if (!this.incomingAllowed()) {
+      throw new Error(
+        `Turn on ${REMOTE_CONTROL_LABEL} before pairing a device.`,
+      );
+    }
+    const generation = this.incomingEpoch;
+    const identity = await this.ensureIdentity();
+    const secret = randomBytes(PAIRING_SECRET_BYTES);
+    const link = buildPairingLink(
+      this.deps.webOrigin(),
+      identity.deviceId,
+      encodeBase64Url(secret),
+    );
+    if (!this.incomingAllowed() || generation !== this.incomingEpoch) {
+      secret.fill(0);
+      throw new Error(`${REMOTE_CONTROL_LABEL} was turned off.`);
+    }
+    this.endPairingWindow('replaced');
+    this.pairingWindowConsumed = false;
+    const windowMs = this.deps.pairingWindowMs ?? PAIRING_WINDOW_MS;
+    const expiresAt = this.now() + windowMs;
+    const timer = setTimeout(() => this.endPairingWindow('expired'), windowMs);
+    timer.unref?.();
+    this.pairingWindow = { secret, expiresAt, timer };
+    const expiresAtIso = new Date(expiresAt).toISOString();
+    this.emitPairingEvent({ type: 'window-opened', expiresAt: expiresAtIso });
+    this.scheduleBroadcast();
+    await this.reconcile();
+    return { link, expiresAt: expiresAtIso };
+  }
+
+  async closePairingWindow(): Promise<RemoteControlState> {
+    this.endPairingWindow('closed');
+    return this.snapshot();
+  }
+
+  private endPairingWindow(
+    reason: RemoteControlPairingWindowCloseReason,
+  ): void {
+    const window = this.pairingWindow;
+    if (!window) return;
+    this.pairingWindow = null;
+    this.pairingWindowConsumed = reason === 'consumed';
+    clearTimeout(window.timer);
+    window.secret.fill(0);
+    this.emitPairingEvent({ type: 'window-closed', reason });
+    this.scheduleBroadcast();
   }
 
   // -------------------------------------------------------------------------
   // Host side: this computer being controlled
   // -------------------------------------------------------------------------
 
-  private authorize(
-    purpose: 'control' | 'pair',
-    initiatorKey: string,
-    peerDeviceId: string,
-  ): boolean {
-    // Synchronous: uses the settings snapshot refreshed on every change.
-    if (this.disallowingIncoming > 0) return false;
-    const settings = this.deps.store.peek();
-    if (!settings?.allowIncoming) return false;
-    if (purpose === 'pair') return true;
-    if (this.revokingControllers.has(peerDeviceId)) return false;
-    return settings.pairedControllers.some(
-      (controller) =>
-        controller.deviceId === peerDeviceId &&
-        controller.publicKey === initiatorKey,
+  /** Synchronous: uses the settings snapshot refreshed on every change. */
+  private incomingAllowed(): boolean {
+    return (
+      this.disallowingIncoming === 0 &&
+      this.deps.store.peek()?.allowIncoming === true
     );
+  }
+
+  /** What the relay authenticated this peer as, or null when unknown. */
+  private presenceKind(peerDeviceId: string): DeviceKind | null {
+    const relay = this.relay;
+    if (!relay) return null;
+    return authenticatedPresenceKind(
+      relay.peers.find((peer) => peer.deviceId === peerDeviceId),
+      relay.features,
+    );
+  }
+
+  /**
+   * Authorizes an incoming handshake, before hello2 and again after hello3.
+   * The grant names the controller profile the session is held to.
+   */
+  private async authorizeHandshake(
+    request: HandshakeAdmission,
+  ): Promise<SessionGrant | null> {
+    if (!this.incomingAllowed()) return null;
+    const presence = this.presenceKind(request.peerDeviceId);
+    // A relay that authenticates kinds lists every connected peer, so a peer
+    // missing from its presence is refused, never read as a legacy desktop.
+    if (
+      presence === null &&
+      this.relay?.features.includes(DEVICE_RELAY_FEATURE_DEVICE_KIND) === true
+    )
+      return null;
+    if (request.purpose === 'pair') {
+      if (request.delegation !== null) return null;
+      // Pairing ignores versions and pins; the kind is what the relay says,
+      // or the legacy desktop profile when it cannot say.
+      return {
+        kind: presence ?? 'desktop',
+        kindAuthenticated: presence !== null,
+        rootDeviceId: null,
+        expiresAt: null,
+      };
+    }
+    if (request.delegation !== null) {
+      return this.authorizeDelegated(request, presence);
+    }
+    return this.authorizePaired(request, presence);
+  }
+
+  private async authorizePaired(
+    request: HandshakeAdmission,
+    presence: DeviceKind | null,
+  ): Promise<SessionGrant | null> {
+    const deviceId = request.peerDeviceId;
+    const record = this.pairedController(deviceId, request.initiatorKey);
+    if (!record || this.revokingControllers.has(deviceId)) return null;
+    const decision = decidePairedKind(deviceKindOrDefault(record), presence);
+    if (decision.outcome === 'deny') return null;
+    if (decision.outcome === 'grant') {
+      return {
+        kind: decision.kind,
+        kindAuthenticated: decision.authenticated,
+        rootDeviceId: null,
+        expiresAt: null,
+      };
+    }
+    // Narrow desktop to the authenticated restricted kind, durably, before
+    // granting anything.
+    const narrowed = await this.narrowController(record, decision.kind);
+    if (
+      !narrowed ||
+      !this.incomingAllowed() ||
+      this.revokingControllers.has(deviceId)
+    ) {
+      return null;
+    }
+    return {
+      kind: decision.kind,
+      kindAuthenticated: true,
+      rootDeviceId: null,
+      expiresAt: null,
+    };
+  }
+
+  private pairedController(
+    deviceId: string,
+    publicKey: string,
+  ): PairedDevice | undefined {
+    return this.deps.store
+      .peek()
+      ?.pairedControllers.find(
+        (controller) =>
+          controller.deviceId === deviceId &&
+          controller.publicKey === publicKey,
+      );
+  }
+
+  /** Persists a desktop pairing's narrowing; false when it did not save. */
+  private async narrowController(
+    record: PairedDevice,
+    kind: Exclude<DeviceKind, 'desktop'>,
+  ): Promise<boolean> {
+    let narrowed = false;
+    try {
+      await this.deps.store.update((current) => {
+        narrowed = false;
+        const pairedControllers = current.pairedControllers.map(
+          (controller) => {
+            if (
+              controller.deviceId !== record.deviceId ||
+              controller.publicKey !== record.publicKey
+            ) {
+              return controller;
+            }
+            const pinned = deviceKindOrDefault(controller);
+            if (pinned === kind) narrowed = true;
+            if (pinned !== 'desktop') return controller;
+            narrowed = true;
+            return { ...controller, kind };
+          },
+        );
+        return narrowed ? { ...current, pairedControllers } : current;
+      });
+    } catch (error) {
+      this.deps.log?.(
+        'Remote Control could not save a narrowed pairing',
+        error,
+      );
+      return false;
+    }
+    if (narrowed) {
+      // Sessions opened under the wider profile lose their authority now.
+      for (const session of Array.from(this.hostSessions)) {
+        if (
+          session.controllerDeviceId === record.deviceId &&
+          session.kind !== kind
+        ) {
+          this.endHostSession(session, 'revoked', 'revoked');
+        }
+      }
+      this.scheduleBroadcast();
+    }
+    return narrowed;
+  }
+
+  private authorizeDelegated(
+    request: HandshakeAdmission,
+    presence: DeviceKind | null,
+  ): SessionGrant | null {
+    const delegation = request.delegation;
+    if (delegation === null || request.purpose !== 'control') return null;
+    // Only a relay-authenticated hosted device may present a delegation.
+    if (presence !== 'hosted') return null;
+    if (!verifyHostedDelegation(delegation, request.initiatorKey, this.now())) {
+      return null;
+    }
+    const root = this.deps.store
+      .peek()
+      ?.pairedControllers.find(
+        (controller) =>
+          controller.publicKey === delegation.rootPublicKey &&
+          deviceKindOrDefault(controller) === 'hosted',
+      );
+    if (!root || this.revokingControllers.has(root.deviceId)) return null;
+    return {
+      kind: 'hosted',
+      kindAuthenticated: true,
+      rootDeviceId: root.deviceId,
+      expiresAt: delegation.expiresAt,
+    };
+  }
+
+  /**
+   * Whether a live session keeps its authority. Checked on every request and
+   * event, so a revocation, a narrowing or a lapsed delegation holds even if
+   * the session outlived it. Nothing is cached past the current settings.
+   */
+  private sessionStillAuthorized(session: SecureSession): boolean {
+    const grant = session.grant;
+    if (grant === null || !this.incomingAllowed()) return false;
+    if (grant.rootDeviceId !== null) {
+      const rootDeviceId = grant.rootDeviceId;
+      if (grant.expiresAt === null || this.now() >= grant.expiresAt) {
+        return false;
+      }
+      if (this.revokingControllers.has(rootDeviceId)) return false;
+      return (
+        this.deps.store
+          .peek()
+          ?.pairedControllers.some(
+            (controller) =>
+              controller.deviceId === rootDeviceId &&
+              deviceKindOrDefault(controller) === 'hosted',
+          ) === true
+      );
+    }
+    if (this.revokingControllers.has(session.peerDeviceId)) return false;
+    const record = this.pairedController(
+      session.peerDeviceId,
+      session.handshake.peerPublicKey,
+    );
+    return record !== undefined && deviceKindOrDefault(record) === grant.kind;
   }
 
   private handleIncomingSession(session: SecureSession): void {
@@ -619,17 +1187,13 @@ export class RemoteControlService {
       this.handleIncomingPairing(session);
       return;
     }
+    const grant = session.grant;
     // Authorized at the handshake, but revoked while it finished.
-    if (
-      !this.authorize(
-        'control',
-        session.handshake.peerPublicKey,
-        session.peerDeviceId,
-      )
-    ) {
+    if (grant === null || !this.sessionStillAuthorized(session)) {
       session.close('closed');
       return;
     }
+    const attributedDeviceId = grant.rootDeviceId ?? session.peerDeviceId;
     let appAdvisor: RemoteAppAdvisorSurface | null = null;
     const hostSession = new RemoteHostSession({
       session,
@@ -640,20 +1204,31 @@ export class RemoteControlService {
       uploads: this.deps.uploads,
       readFile: this.deps.readHostFile,
       disposition: getRemoteChannelDisposition,
-      isAuthorized: (): boolean =>
-        this.authorize(
-          'control',
-          session.handshake.peerPublicKey,
-          session.peerDeviceId,
-        ),
+      kind: grant.kind,
+      attributedDeviceId,
+      revokeOwnPairing: (): Promise<void> =>
+        this.removeController(attributedDeviceId, { cutOffFirst: false }),
+      isAuthorized: (): boolean => this.sessionStillAuthorized(session),
       version: this.deps.version,
       hello: (): Pick<HelloResult, 'name' | 'platform'> => ({
         name: this.deps.deviceName(),
         platform: this.deps.platform,
       }),
       onClose: (): void => {
+        if (this.hostSessions.has(hostSession)) {
+          this.telemetry({
+            event: 'session_end',
+            device_kind: grant.kind,
+            end_reason:
+              this.sessionEndReasons.get(hostSession) ?? 'disconnected',
+          });
+        }
+        this.sessionEndReasons.delete(hostSession);
         this.hostSessions.delete(hostSession);
         this.appAdvisorSurfaces.delete(hostSession);
+        const expiry = this.sessionExpiries.get(hostSession);
+        if (expiry) clearTimeout(expiry.timer);
+        this.sessionExpiries.delete(hostSession);
         this.scheduleBroadcast();
       },
       onBridgeError: (error: unknown): void => {
@@ -662,14 +1237,83 @@ export class RemoteControlService {
       ...(this.deps.completeAccountProxySignIn
         ? { completeAccountProxySignIn: this.deps.completeAccountProxySignIn }
         : {}),
+      ...(grant.kind === 'hosted'
+        ? {
+            hostedChat: (request: unknown): Promise<unknown> =>
+              this.dispatchHostedChat(
+                request,
+                attributedDeviceId,
+                session.peerDeviceId,
+              ),
+          }
+        : {}),
     });
+    if (hostSession.rpc.isClosed) return;
     this.hostSessions.add(hostSession);
+    this.telemetry({
+      event: 'session_start',
+      device_kind: grant.kind,
+      is_delegated: grant.rootDeviceId !== null,
+    });
+    if (grant.expiresAt !== null) {
+      // A delegated session closes when its delegation does.
+      const timer = setTimeout(
+        () => {
+          if (!this.sessionEndReasons.has(hostSession)) {
+            this.sessionEndReasons.set(hostSession, 'expired');
+          }
+          hostSession.close('revoked');
+        },
+        Math.max(0, grant.expiresAt - this.now()),
+      );
+      timer.unref?.();
+      this.sessionExpiries.set(hostSession, {
+        expiresAt: grant.expiresAt,
+        timer,
+      });
+    }
     appAdvisor = this.deps.createAppAdvisorSurface?.(hostSession) ?? null;
     if (appAdvisor) this.appAdvisorSurfaces.set(hostSession, appAdvisor);
     this.deps.log?.('Remote control session started', {
       controllerDeviceId: session.peerDeviceId,
+      kind: grant.kind,
+      delegated: grant.rootDeviceId !== null,
     });
     this.scheduleBroadcast();
+  }
+
+  /**
+   * A hosted session's chat command, attributed to the pinned hosted root it
+   * acts for and this computer's signed-in account, both read now. Refused
+   * when either is unknown: an agent's message is never sent unattributed.
+   */
+  private dispatchHostedChat(
+    request: unknown,
+    rootDeviceId: string,
+    sessionDeviceId: string,
+  ): Promise<unknown> {
+    const dispatch = this.deps.dispatchHostedChatCommand;
+    const root = this.deps.store
+      .peek()
+      ?.pairedControllers.find(
+        (controller) =>
+          controller.deviceId === rootDeviceId &&
+          deviceKindOrDefault(controller) === 'hosted',
+      );
+    const sender =
+      root === undefined
+        ? null
+        : hostedAgentSender({
+            rootDeviceId,
+            rootName: root.name,
+            accountUserId: accountUserIdFrom(this.deps.signedInAccount()),
+          });
+    if (!dispatch || sender === null) {
+      return Promise.reject(
+        new RemoteChannelUnavailableError(IPC_CHANNELS.chatCommand),
+      );
+    }
+    return dispatch(request, { sender, rootDeviceId, sessionDeviceId });
   }
 
   /** A connected controller's App Advisor window, for its calls and tools. */
@@ -688,12 +1332,165 @@ export class RemoteControlService {
     return null;
   }
 
+  private pairingAdmission(): PairingAdmission {
+    return {
+      incomingEpoch: this.incomingEpoch,
+      removalMark: this.removalCounter,
+    };
+  }
+
+  /** Whether a pairing admitted under `admission` may still be saved. */
+  private pairingStillAdmissible(
+    deviceId: string,
+    admission: PairingAdmission,
+  ): boolean {
+    return (
+      this.incomingAllowed() &&
+      admission.incomingEpoch === this.incomingEpoch &&
+      (this.removalMarks.get(deviceId) ?? 0) <= admission.removalMark
+    );
+  }
+
+  /**
+   * Pins the controller, atomically refusing when the connection closed,
+   * Remote Control was turned off or the device was removed meanwhile.
+   * True only once the pairing is durable.
+   */
+  private async persistController(
+    session: SecureSession,
+    rpc: RpcPeer,
+    request: PairRequestParams,
+    kind: DeviceKind,
+    admission: PairingAdmission,
+  ): Promise<boolean> {
+    let persisted = false;
+    await this.deps.store.update((current) => {
+      persisted = false;
+      if (
+        rpc.isClosed ||
+        !current.allowIncoming ||
+        !this.pairingStillAdmissible(session.peerDeviceId, admission)
+      ) {
+        return current;
+      }
+      persisted = true;
+      return {
+        ...current,
+        pairedControllers: upsertPairedDevice(current.pairedControllers, {
+          deviceId: session.peerDeviceId,
+          name: request.name,
+          platform: request.platform,
+          kind,
+          publicKey: session.handshake.peerPublicKey,
+          pairedAt: new Date(this.now()).toISOString(),
+        }),
+      };
+    });
+    return persisted && !rpc.isClosed;
+  }
+
+  /**
+   * Link pairing: verifies `HMAC-SHA256(secret, label || transcriptHash)` in
+   * constant time, consumes the secret, and pins the device, one request at
+   * a time so a proof is never used twice. Any failure refuses outright; it
+   * never falls back to asking on this computer.
+   */
+  private pairWithProof(
+    session: SecureSession,
+    rpc: RpcPeer,
+    request: PairRequestParams,
+    proof: string,
+    grant: SessionGrant,
+    admission: PairingAdmission,
+  ): Promise<ProofOutcome> {
+    const run = this.proofChain.then(() =>
+      this.consumeProofAndPin(session, rpc, request, proof, grant, admission),
+    );
+    this.proofChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async consumeProofAndPin(
+    session: SecureSession,
+    rpc: RpcPeer,
+    request: PairRequestParams,
+    proof: string,
+    grant: SessionGrant,
+    admission: PairingAdmission,
+  ): Promise<ProofOutcome> {
+    // Only a relay-authenticated interactive kind may pair by link.
+    if (!grant.kindAuthenticated || !kindMayPairByProof(grant.kind)) {
+      return { approved: false, reason: 'denied' };
+    }
+    if (
+      rpc.isClosed ||
+      !this.pairingStillAdmissible(session.peerDeviceId, admission)
+    ) {
+      return { approved: false, reason: 'cancelled' };
+    }
+    const window = this.pairingWindow;
+    if (!window || this.now() >= window.expiresAt) {
+      return {
+        approved: false,
+        reason: this.pairingWindowConsumed ? 'proof_consumed' : 'expired',
+      };
+    }
+    if (
+      !pairingProofMatches(
+        proof,
+        window.secret,
+        session.handshake.transcriptHash,
+      )
+    ) {
+      return { approved: false, reason: 'proof_invalid' };
+    }
+    // Single use: spent before pinning, so a failed save needs a new link.
+    this.endPairingWindow('consumed');
+    try {
+      const persisted = await this.persistController(
+        session,
+        rpc,
+        request,
+        grant.kind,
+        admission,
+      );
+      return persisted
+        ? { approved: true }
+        : { approved: false, reason: 'cancelled' };
+    } catch (error) {
+      this.deps.log?.('Remote Control could not save a link pairing', error);
+      return { approved: false, reason: 'persist_failed' };
+    }
+  }
+
   private handleIncomingPairing(session: SecureSession): void {
+    const grant = session.grant;
+    if (grant === null) {
+      session.close('closed');
+      return;
+    }
+    const admission = this.pairingAdmission();
     const pairingId = randomUUID();
     let requested = false;
     const rpc = new RpcPeer(session, {
       onEvent: (): void => undefined,
       onRequest: async (method: string, params: unknown): Promise<unknown> => {
+        // Portable controllers check this computer's features before they
+        // pair. Identity only: a pairing session serves nothing else.
+        if (method === REMOTE_METHODS.hello) {
+          HelloParamsSchema.parse(params);
+          const hello: HelloResult = {
+            name: this.deps.deviceName(),
+            platform: this.deps.platform,
+            appVersion: this.deps.version.appVersion,
+            version: this.deps.version,
+            features: { ...HOST_FEATURES },
+          };
+          return hello;
+        }
         if (method !== REMOTE_METHODS.pairRequest) {
           throw new Error(`Unknown remote method ${method}.`);
         }
@@ -702,90 +1499,178 @@ export class RemoteControlService {
         }
         requested = true;
         const request = PairRequestParamsSchema.parse(params);
-        const telemetry = beginPairingTelemetry(this.deps.recordPairing, {
-          pairing_kind: 'computer_incoming',
-          pairing_entry: 'incoming_prompt',
-          peer_platform: request.platform,
-        });
-        let decisionOutcome: PairingTelemetryOutcome = 'declined';
-        let stopWatchingClose = (): void => undefined;
-        const approved = await new Promise<boolean>((resolve) => {
-          let settled = false;
-          const settle = (
-            approve: boolean,
-            outcome: PairingTelemetryOutcome,
-          ): void => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            decisionOutcome = outcome;
-            resolve(approve);
-          };
-          const timer = setTimeout(() => {
-            settle(false, 'timed_out');
-          }, PAIRING_DECISION_TIMEOUT_MS);
-          this.incoming.set(pairingId, {
-            view: {
-              pairingId,
-              deviceId: session.peerDeviceId,
-              name: request.name,
-              platform: request.platform,
-              code: session.handshake.shortAuthenticationString,
-            },
-            publicKey: session.handshake.peerPublicKey,
-            cancel: () => {
-              settle(false, 'failed');
-            },
-            decide: (approve) => {
-              settle(approve, 'declined');
-            },
-          });
-          stopWatchingClose = rpc.onClose(() => {
-            settle(false, 'failed');
-          });
-          this.scheduleBroadcast();
-        });
-        stopWatchingClose();
-        this.incoming.delete(pairingId);
-        this.scheduleBroadcast();
-        // The other computer saves the pairing only once it hears the answer;
-        // after the connection closes it never will, so neither does this one.
-        if (approved && !rpc.isClosed) {
-          let persisted = false;
-          try {
-            await this.deps.store.update((current) => {
-              if (rpc.isClosed) return current;
-              persisted = true;
-              return {
-                ...current,
-                pairedControllers: upsertPairedDevice(
-                  current.pairedControllers,
-                  {
-                    deviceId: session.peerDeviceId,
-                    name: request.name,
-                    platform: request.platform,
-                    publicKey: session.handshake.peerPublicKey,
-                    pairedAt: new Date(this.now()).toISOString(),
-                  },
-                ),
-              };
-            });
-            telemetry?.end(persisted && !rpc.isClosed ? 'approved' : 'failed');
-          } catch (error) {
-            telemetry?.end('failed');
-            throw error;
-          }
-        } else {
-          telemetry?.end(approved ? 'failed' : decisionOutcome);
-        }
-        const result: PairRequestResult = {
+        const answer = (approved: boolean): PairRequestResult => ({
           approved,
           name: this.deps.deviceName(),
           platform: this.deps.platform,
-        };
-        return result;
+        });
+        if (request.proof !== undefined) {
+          const outcome = await this.pairWithProof(
+            session,
+            rpc,
+            request,
+            request.proof,
+            grant,
+            admission,
+          );
+          if (outcome.approved) {
+            this.telemetry({
+              event: 'device_add',
+              device_kind: grant.kind,
+              pair_method: 'link',
+            });
+            this.emitPairingEvent({
+              type: 'paired',
+              deviceId: session.peerDeviceId,
+              name: request.name,
+              kind: grant.kind,
+              method: 'link',
+            });
+            this.scheduleBroadcast();
+          } else {
+            this.telemetry({
+              event: 'pairing_fail',
+              device_kind: grant.kind,
+              pair_method: 'link',
+              failure_reason: outcome.reason,
+            });
+          }
+          return answer(outcome.approved);
+        }
+        const approved = await this.askToPair(
+          session,
+          rpc,
+          request,
+          grant,
+          admission,
+          pairingId,
+        );
+        return answer(approved);
       },
     });
+  }
+
+  /** A pairing without a link: the person here compares codes and decides. */
+  private async askToPair(
+    session: SecureSession,
+    rpc: RpcPeer,
+    request: PairRequestParams,
+    grant: SessionGrant,
+    admission: PairingAdmission,
+    pairingId: string,
+  ): Promise<boolean> {
+    const telemetry = beginPairingTelemetry(this.deps.recordPairing, {
+      pairing_kind: 'computer_incoming',
+      pairing_entry: 'incoming_prompt',
+      peer_platform: request.platform,
+    });
+    let decisionOutcome: PairingTelemetryOutcome = 'declined';
+    let requestOutcome: RemoteControlPairingRequestOutcome = 'declined';
+    let stopWatchingClose = (): void => undefined;
+    const view: RemoteIncomingPairing = {
+      pairingId,
+      deviceId: session.peerDeviceId,
+      name: request.name,
+      platform: request.platform,
+      kind: grant.kind,
+      code: session.handshake.shortAuthenticationString,
+    };
+    const approved = await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const settle = (
+        approve: boolean,
+        outcome: PairingTelemetryOutcome,
+        ended: RemoteControlPairingRequestOutcome,
+      ): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        decisionOutcome = outcome;
+        requestOutcome = ended;
+        resolve(approve);
+      };
+      const timer = setTimeout(() => {
+        settle(false, 'timed_out', 'timed-out');
+      }, PAIRING_DECISION_TIMEOUT_MS);
+      this.incoming.set(pairingId, {
+        view,
+        publicKey: session.handshake.peerPublicKey,
+        cancel: () => {
+          settle(false, 'failed', 'cancelled');
+        },
+        decide: (approve) => {
+          settle(approve, 'declined', approve ? 'approved' : 'declined');
+        },
+      });
+      stopWatchingClose = rpc.onClose(() => {
+        settle(false, 'failed', 'cancelled');
+      });
+      this.emitPairingEvent({ type: 'request', pairing: { ...view } });
+      this.scheduleBroadcast();
+    });
+    stopWatchingClose();
+    this.incoming.delete(pairingId);
+    this.scheduleBroadcast();
+    // The other device saves the pairing only once it hears the answer;
+    // after the connection closes it never will, so neither does this one.
+    const fail = (failure_reason: RemoteControlPairingFailureReason): void =>
+      this.telemetry({
+        event: 'pairing_fail',
+        device_kind: grant.kind,
+        pair_method: 'code',
+        failure_reason,
+      });
+    if (approved && !rpc.isClosed) {
+      let persisted = false;
+      try {
+        persisted = await this.persistController(
+          session,
+          rpc,
+          request,
+          grant.kind,
+          admission,
+        );
+      } catch (error) {
+        telemetry?.end('failed');
+        fail('persist_failed');
+        this.emitPairingEvent({
+          type: 'request-ended',
+          pairingId,
+          outcome: 'failed',
+        });
+        throw error;
+      }
+      telemetry?.end(persisted ? 'approved' : 'failed');
+      this.emitPairingEvent({
+        type: 'request-ended',
+        pairingId,
+        outcome: persisted ? 'approved' : 'failed',
+      });
+      if (persisted) {
+        this.telemetry({
+          event: 'device_add',
+          device_kind: grant.kind,
+          pair_method: 'code',
+        });
+        this.emitPairingEvent({
+          type: 'paired',
+          deviceId: session.peerDeviceId,
+          name: request.name,
+          kind: grant.kind,
+          method: 'code',
+        });
+      } else {
+        fail('cancelled');
+      }
+      return persisted;
+    }
+    telemetry?.end(approved ? 'failed' : decisionOutcome);
+    const ended: RemoteControlPairingRequestOutcome = approved
+      ? 'failed'
+      : requestOutcome;
+    fail(pairingFailureFor(ended));
+    this.emitPairingEvent({ type: 'request-ended', pairingId, outcome: ended });
+    return false;
   }
 
   async respondToPairing(

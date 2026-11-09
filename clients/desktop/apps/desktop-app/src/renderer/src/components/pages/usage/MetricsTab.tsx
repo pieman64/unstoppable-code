@@ -6,6 +6,7 @@ import { useObservabilityEntriesInterest } from '@/lib/chat-interest';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import { RefreshSpinner } from '@/components/shared/loading';
 import {
+  Stack,
   Disclosure,
   ErrorBanner,
   Heading,
@@ -54,15 +55,18 @@ export function MetricsTab({
   }, [spec.id, loadUsageTabSummary]);
 
   return (
-    <section className="space-y-4" data-testid={`usage-metrics-tab-${spec.id}`}>
-      <div className="space-y-1">
+    <section
+      className="flex flex-col gap-4"
+      data-testid={`usage-metrics-tab-${spec.id}`}
+    >
+      <Stack gap="tight">
         <Heading level={2} variant="section">
           {title}
         </Heading>
         {spec.subtitle && (
           <p className="max-w-3xl text-s fg-secondary">{spec.subtitle}</p>
         )}
-      </div>
+      </Stack>
       {spec.notice && (
         <div role="note">
           <Disclosure
@@ -77,7 +81,7 @@ export function MetricsTab({
           </Disclosure>
         </div>
       )}
-      {error && <ErrorBanner error={error} className="" />}
+      {error && <ErrorBanner className="" error={error} />}
       {summary === null ? (
         <Surface variant="group">
           <div className="flex items-center gap-2 px-4 py-3 text-s fg-secondary">

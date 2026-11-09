@@ -19,6 +19,21 @@ import {
   POSTHOG_DEAD_CLICK_OPTIONS,
 } from './posthog-autocapture-options';
 import { POSTHOG_HEATMAP_EVENT } from './posthog-heatmaps';
+import {
+  APP_ERROR_POSTHOG_EVENT,
+  APP_ERROR_VIEW_POSTHOG_EVENT,
+} from '../app-error-telemetry';
+
+/** Events that follow Error reports rather than Usage analytics. */
+const POSTHOG_ERROR_EVENTS: ReadonlySet<string> = new Set([
+  '$exception',
+  APP_ERROR_POSTHOG_EVENT,
+  APP_ERROR_VIEW_POSTHOG_EVENT,
+]);
+
+export function isPostHogErrorEvent(name: string): boolean {
+  return POSTHOG_ERROR_EVENTS.has(name);
+}
 
 export function createPostHogRuntimeController(
   sdk: PostHog,
@@ -35,7 +50,9 @@ export function createPostHogRuntimeController(
 } {
   let policy = resolvePostHogRuntimePolicy(config, initialFlags);
   let captureEnabled = false;
+  let errorCaptureEnabled = false;
   let epoch = 0;
+  let draining = false;
   let sessionId = '';
   let sessionRate = policy.sessionReplaySampleRate;
   let autocaptureEnabled = false;
@@ -45,8 +62,11 @@ export function createPostHogRuntimeController(
   // batch/retry is dispatched. These typed SDK seams cover batch flush,
   // retries (including responses arriving after opt-out), and unload beacons.
   // Keep the real-SDK Electron test when upgrading the pinned dependency.
+  // Batches can't be split by category, so the transport only blocks when
+  // both categories are off; `allowsEvent` filters at capture time and any
+  // narrowing bumps the epoch so earlier batches are dropped.
   const allowsRequest = (request: { data?: unknown }): boolean => {
-    if (!captureEnabled) return false;
+    if (draining || (!captureEnabled && !errorCaptureEnabled)) return false;
     const data = request.data;
     if (data !== null && typeof data === 'object') {
       const requestEpoch = requestEpochs.get(data);
@@ -160,24 +180,44 @@ export function createPostHogRuntimeController(
 
   const update = (flags?: PostHogRuntimeFlags): void => {
     const next = resolvePostHogRuntimePolicy(config, flags);
+    // Replay turning off drops the recordings already queued, like a category.
+    // The drain can't split batches, so it also drops queued product and
+    // error events: deliberate, and safe in the direction that matters.
+    const replayNarrowed =
+      captureEnabled && sessionRate > 0 && next.sessionReplaySampleRate === 0;
     // Publish lower caps immediately; the SDK retains its sampling decision
     // until the next session. Zero additionally stops an active recording.
     // Higher caps wait for the next session.
     sessionRate = Math.min(sessionRate, next.sessionReplaySampleRate);
     policy = next;
     autocaptureEnabled = next.autocaptureEnabled;
-    if (!next.captureEnabled) captureEnabled = false;
+    const wasSending = captureEnabled || errorCaptureEnabled;
+    const narrowed =
+      replayNarrowed ||
+      (captureEnabled && !next.captureEnabled) ||
+      (errorCaptureEnabled && !next.errorCaptureEnabled);
+    captureEnabled = next.captureEnabled;
+    errorCaptureEnabled = next.errorCaptureEnabled;
     publishConfig();
-    if (!next.captureEnabled) {
-      captureEnabled = false;
+    if (narrowed) {
+      // Queued batches can't be split by category: drop both kinds.
       epoch++;
+      if (!captureEnabled) stopReplay();
+      // unload empties the queues by beaconing them synchronously, building
+      // fresh batch objects the epoch check has never seen; refuse every
+      // dispatch while it runs so the guards above discard them.
+      draining = true;
+      try {
+        sdk._requestQueue?.unload();
+        sdk._retryQueue?.unload();
+      } finally {
+        draining = false;
+      }
+    }
+    if (!captureEnabled && !errorCaptureEnabled) {
       sdk.opt_out_capturing();
       stopReplay();
-      // unload empties the queues; the dispatch guards above discard them.
-      sdk._requestQueue?.unload();
-      sdk._retryQueue?.unload();
-    } else if (!captureEnabled) {
-      captureEnabled = true;
+    } else if (!wasSending) {
       sdk.opt_in_capturing({ captureEventName: false });
       sdk._retryQueue?.resume();
     }
@@ -192,11 +232,14 @@ export function createPostHogRuntimeController(
   return {
     update,
     allowsEvent: (name) =>
-      captureEnabled &&
-      name !== POSTHOG_COPY_EVENT &&
-      (name !== '$snapshot' || sessionRate > 0) &&
-      ((!POSTHOG_CLICK_EVENTS.has(name) && name !== POSTHOG_HEATMAP_EVENT) ||
-        autocaptureEnabled),
+      POSTHOG_ERROR_EVENTS.has(name)
+        ? errorCaptureEnabled
+        : captureEnabled &&
+          name !== POSTHOG_COPY_EVENT &&
+          (name !== '$snapshot' || sessionRate > 0) &&
+          ((!POSTHOG_CLICK_EVENTS.has(name) &&
+            name !== POSTHOG_HEATMAP_EVENT) ||
+            autocaptureEnabled),
     dispose: (): void => {
       if (disposed) return;
       disposed = true;

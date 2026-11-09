@@ -27,7 +27,7 @@ import {
   normalizeRepositoryCloneUrl,
   repositoryNameFromCloneUrl,
 } from '@canopy/protocol/portal';
-import { normalizeWorkspaceOwner } from '@canopy/desktop-shared/lib/workspace-owner';
+import { normalizeWorkspaceOwner } from '@canopy/execution-engine/lib/workspace-owner';
 import type { MultiRepoSetupRepository } from './org-project-setup-journal';
 import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
 import type { WorkspaceOwnerBinding } from '@canopy/desktop-shared/types';
@@ -113,6 +113,17 @@ interface ImportedWorkspaceArtifacts {
 
 const splitDestinationWorkspaceLocks = new Map<string, Promise<void>>();
 let splitDestinationWorkspaceCreationLock: Promise<void> | undefined;
+
+/** Ends the project clones that have no clone job, which the app's quit would otherwise orphan. */
+const untrackedClonesStop = new AbortController();
+
+/**
+ * Stops those clones' `git` at quit, as `shutdownCloneJobs` stops clone jobs.
+ * Their checkout and creation record stay for launch recovery.
+ */
+export function stopUntrackedWorkspaceClones(): void {
+  untrackedClonesStop.abort();
+}
 
 async function withSplitDestinationWorkspaceLock<T>(
   identityKey: string,
@@ -235,6 +246,63 @@ async function readExistingSidebarItems(options?: {
     : items.filter(isVisibleWorkspaceItem);
 }
 
+/**
+ * Workspace IDs held for creations that register their workspace only after
+ * long work, such as a cloud project setup that clones first (CAN-5192).
+ * Every ID this module allocates skips them. A live hold covers an ID from
+ * its allocation until its holder records it durably; a registered holder
+ * lists the IDs it has recorded, so they stay held across launches.
+ */
+const heldWorkspaceIds = new Set<string>();
+const workspaceIdentityHolders = new Set<() => Promise<readonly string[]>>();
+
+/** Adds a durable holder of workspace IDs; the returned function removes it. */
+export function registerWorkspaceIdentityHolder(
+  holder: () => Promise<readonly string[]>,
+): () => void {
+  workspaceIdentityHolders.add(holder);
+  return (): void => {
+    workspaceIdentityHolders.delete(holder);
+  };
+}
+
+export interface WorkspaceIdentityHold {
+  readonly workspaceId: string;
+  /** Ends the live hold; the ID stays held while a holder still lists it. */
+  release(this: void): void;
+}
+
+/**
+ * Allocates an ID for a workspace a caller registers later and holds it, in
+ * the workspace mutation queue every allocation here serializes through. The
+ * caller registers it with that explicit ID, and releases the hold once its
+ * own durable record holds the ID or it gives the creation up.
+ */
+export function holdAvailableWorkspaceId(
+  workspaceName: string,
+): Promise<WorkspaceIdentityHold> {
+  return serializeWorkspaceMutation(async () => {
+    const items = await readExistingSidebarItems({
+      includeEmptyTemporary: true,
+    });
+    const workspaceId = await buildAvailableWorkspaceId(workspaceName, items);
+    heldWorkspaceIds.add(workspaceId);
+    return {
+      workspaceId,
+      release: (): void => {
+        heldWorkspaceIds.delete(workspaceId);
+      },
+    };
+  });
+}
+
+async function heldWorkspaceIdentities(): Promise<string[]> {
+  const listed = await settleAll(
+    [...workspaceIdentityHolders].map((holder) => holder()),
+  );
+  return [...heldWorkspaceIds, ...listed.flat()];
+}
+
 async function buildAvailableWorkspaceId(
   workspaceName: string,
   existingItems: ReadonlyArray<Pick<SidebarItem, 'id'>>,
@@ -242,6 +310,7 @@ async function buildAvailableWorkspaceId(
   const reservedItems = [
     ...existingItems,
     ...(await pendingWorkspaceCreationIds()).map((id) => ({ id })),
+    ...(await heldWorkspaceIdentities()).map((id) => ({ id })),
   ];
   while (true) {
     const candidate = buildWorkspaceId(workspaceName, reservedItems);
@@ -781,7 +850,9 @@ async function importMultiRepoWorkspaceFromRepo<T>(
         return { repository, cloned: true };
       });
       if (step.cloned) {
-        await cloneRepo(manifestRepo.url, step.repository.repoPath);
+        await cloneRepo(manifestRepo.url, step.repository.repoPath, {
+          signal: untrackedClonesStop.signal,
+        });
         await serializeWorkspaceMutation(() =>
           recordWorkspaceCreationRepository({
             id: manifestRepo.id,
@@ -1189,7 +1260,9 @@ async function addAdmittedWorkspaceFromRemote(
       if (progress.signal.aborted) throw new CloneCancelledError();
       progress.onCloned();
     } else {
-      await cloneRepo(normalizedRemoteUrl, destinationPath);
+      await cloneRepo(normalizedRemoteUrl, destinationPath, {
+        signal: untrackedClonesStop.signal,
+      });
     }
     await serializeWorkspaceMutation(() =>
       recordWorkspaceCreationRepository({
@@ -1871,6 +1944,98 @@ export async function registerBoundMultiRepoWorkspace(input: {
           }),
         {
           expectedWorkspaceRecords,
+          effects: async () => {
+            await mkdir(getWorkspaceDir(input.localWorkspaceId), {
+              recursive: true,
+            });
+            await scaffoldWorkspaceInstructions(
+              {
+                content: getDefaultWorkspaceClaudeMd(input.name),
+                agentsMdAlias: false,
+              },
+              {
+                writeClaudeMd: (content) =>
+                  writeFile(
+                    getWorkspaceClaudeMdPath(input.localWorkspaceId),
+                    content,
+                    'utf8',
+                  ),
+                ensureAgentsMdAlias: () =>
+                  ensureAgentsMdSymlink(
+                    getWorkspaceDir(input.localWorkspaceId),
+                  ),
+              },
+            );
+          },
+        },
+      );
+    }),
+  );
+}
+
+/**
+ * Index a Personal multi-repository cloud project a device set up
+ * (CAN-5192): its root at `path` and the repositories it cloned under it,
+ * with the ones the user declined recorded as suppressed. Idempotent for a
+ * resumed setup: the same id at the same root returns the workspace already
+ * indexed.
+ */
+export async function registerCloudProjectMultiRepoWorkspace(input: {
+  path: string;
+  localWorkspaceId: string;
+  name: string;
+  repositories: WorkspaceConfigFile['repos'];
+  suppressedRepoIds: string[];
+}): Promise<MultiRepoSidebarItem> {
+  if (
+    !isAbsolute(input.path) ||
+    input.repositories.some((repo) => !isAbsolute(repo.repoPath))
+  )
+    throw new Error('Invalid cloud project setup');
+  validateId(input.localWorkspaceId, 'workspace id');
+  for (const repo of input.repositories) validateId(repo.id, 'repository id');
+  return withStorageAdmission(PROJECT_W5_STORAGE, () =>
+    withSplitDestinationWorkspaceCreationLock(async () => {
+      const items = await readExistingSidebarItems({
+        includeEmptyTemporary: true,
+      });
+      const current = items.find((item) => item.id === input.localWorkspaceId);
+      if (current) {
+        if (
+          current.type !== 'multi-repo' ||
+          current.sourceRepoPath !== input.path ||
+          current.owner !== undefined
+        )
+          throw new WorkspaceIdentityInUseError();
+        return current;
+      }
+      if (await readWorkspaceIndexEntry(input.localWorkspaceId))
+        throw new WorkspaceIdentityInUseError();
+      if (await pathExists(getWorkspaceDir(input.localWorkspaceId))) {
+        const orphan = await readWorkspaceConfig(input.localWorkspaceId);
+        if (
+          !orphan ||
+          orphan.type !== 'multi-repo' ||
+          orphan.sourceRepoPath !== input.path ||
+          orphan.owner !== undefined
+        )
+          throw new WorkspaceIdentityInUseError();
+      }
+      return commitNewWorkspace(
+        (live): Promise<MultiRepoSidebarItem> =>
+          Promise.resolve({
+            ...buildMultiRepoSidebarItem(
+              input.localWorkspaceId,
+              input.name,
+              input.repositories,
+              live.length,
+              input.path,
+            ),
+            ...(input.suppressedRepoIds.length > 0
+              ? { suppressedRepoIds: input.suppressedRepoIds }
+              : {}),
+          }),
+        {
           effects: async () => {
             await mkdir(getWorkspaceDir(input.localWorkspaceId), {
               recursive: true,

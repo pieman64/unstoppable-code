@@ -10,7 +10,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { Fact, FactList, Heading } from '@canopy/ui-shared/components';
+import { Stack, Fact, FactList, Heading } from '@canopy/ui-shared/components';
 import type {
   LocalMemoryChatRef,
   LocalMemoryClient,
@@ -1050,7 +1050,6 @@ export function MemoryPanel({
         labelWidth="6rem"
         columnGap="3"
         rowGap="2"
-        placement="mb-4"
         dataTestId="memory-detail-facts"
       >
         {source && (
@@ -1253,33 +1252,35 @@ export function MemoryPanel({
                   </Skeleton>
                 </DelayedLoadingPlaceholder>
               )}
-              {renderFacts(entry)}
-              <div className="flex gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={
-                    !content || document?.document?.markdown === undefined
-                  }
-                  onClick={() => void startEditing(entry)}
-                  data-testid="memory-detail-edit"
-                >
-                  <PencilIcon size="sm" aria-hidden="true" />
-                  Edit
-                </Button>
-                {entry.file.kind !== 'index' && (
+              <Stack gap="group">
+                {renderFacts(entry)}
+                <div className="flex gap-2">
                   <Button
-                    variant="ghost-destructive"
+                    variant="secondary"
                     size="sm"
-                    disabled={!content}
-                    onClick={() => void deleteEntry(entry)}
-                    data-testid="memory-detail-delete"
+                    disabled={
+                      !content || document?.document?.markdown === undefined
+                    }
+                    onClick={() => void startEditing(entry)}
+                    data-testid="memory-detail-edit"
                   >
-                    <TrashIcon size="sm" aria-hidden="true" />
-                    Delete
+                    <PencilIcon size="sm" aria-hidden="true" />
+                    Edit
                   </Button>
-                )}
-              </div>
+                  {entry.file.kind !== 'index' && (
+                    <Button
+                      variant="ghost-destructive"
+                      size="sm"
+                      disabled={!content}
+                      onClick={() => void deleteEntry(entry)}
+                      data-testid="memory-detail-delete"
+                    >
+                      <TrashIcon size="sm" aria-hidden="true" />
+                      Delete
+                    </Button>
+                  )}
+                </div>
+              </Stack>
             </>
           )}
         </div>

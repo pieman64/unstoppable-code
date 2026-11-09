@@ -246,11 +246,14 @@ export function createCoreExecutionHandlers<TMetadata extends { type: string }>(
         };
         const send = (
           snapshot: ExecutionAccountingSnapshot<TMetadata>,
+          live = false,
         ): void => {
           const status = coreExecutionStatus(
             view(snapshot),
-            snapshot.families,
-            snapshot.memoryGuardBlocked,
+            live ? accounting.familyStatus() : snapshot.families,
+            live
+              ? accounting.isMemoryGuardBlocked()
+              : snapshot.memoryGuardBlocked,
           );
           // The sink refuses items once the stream has ended, including when
           // a slow client overflows its buffer.
@@ -258,8 +261,9 @@ export function createCoreExecutionHandlers<TMetadata extends { type: string }>(
         };
         unsubscribeSamples = accounting.subscribe(send);
         if (options.view)
+          // A view change has no new sample; the guard may read the view too.
           unsubscribeView = options.view.subscribe((): void =>
-            send(accounting.getSnapshot()),
+            send(accounting.getSnapshot(), true),
           );
         return Promise.resolve(unsubscribe);
       },

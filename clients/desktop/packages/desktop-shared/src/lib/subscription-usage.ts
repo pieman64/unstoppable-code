@@ -1,4 +1,4 @@
-import type { ProviderRateLimitSnapshot } from '../types/observability';
+import type { ProviderRateLimitSnapshot } from '@canopy/execution-engine/types/observability';
 
 interface SubscriptionUsageContext {
   provider: string;

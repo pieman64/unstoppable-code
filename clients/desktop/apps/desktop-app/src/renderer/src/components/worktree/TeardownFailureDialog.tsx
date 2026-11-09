@@ -1,4 +1,4 @@
-import { Button, Surface } from '@canopy/ui-shared/components';
+import { Stack, Button, Surface } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DialogModal } from '../shared';
@@ -27,7 +27,7 @@ export function TeardownFailureDialog({
       titleId="teardown-failure-title"
       maxWidth="lg"
     >
-      <div className="space-y-4">
+      <Stack gap="group">
         {error.repoName && (
           <p className="text-s fg-primary">
             Teardown script failed for repo{' '}
@@ -75,7 +75,7 @@ export function TeardownFailureDialog({
             {isRetrying ? 'Trying again…' : 'Try again'}
           </Button>
         </div>
-      </div>
+      </Stack>
     </DialogModal>
   );
 }

@@ -2,10 +2,10 @@ import { useMemo, useState, type JSX } from 'react';
 import type {
   ExecutionState,
   PipelineAdvisorSnapshot,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { shouldPromoteAdvisor } from '@/lib/pipelineDetailsView';
 import { AgentAssistantIcon, ChevronIcon } from '@canopy/ui-shared/icons';
-import { Badge, Surface } from '@canopy/ui-shared/components';
+import { Stack, Badge, Surface } from '@canopy/ui-shared/components';
 import {
   PipelineFlowDiagram,
   type PipelineFlowSource,
@@ -146,7 +146,7 @@ export function PipelineSummaryView({
     ) : undefined;
 
   return (
-    <div className="space-y-4" data-testid="pipeline-summary-view">
+    <Stack gap="group" data-testid="pipeline-summary-view">
       <PipelineSummaryBar state={state} completedSlot={completedSlot} />
       {costPreviewSlot}
       {!hideAdvisor && (
@@ -171,6 +171,6 @@ export function PipelineSummaryView({
         </div>
       </Surface>
       {reportSlot}
-    </div>
+    </Stack>
   );
 }

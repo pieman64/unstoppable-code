@@ -1,6 +1,7 @@
 import {
   isProviderProcessOwner,
   type ProviderProcessOwner,
+  type ProviderProcessStdin,
 } from '@canopy/desktop-shared/node/provider-process/spawn';
 
 export const PROVIDER_PROCESS_HOST_ENTRY = 'provider-process-host-worker.js';
@@ -17,6 +18,7 @@ export type ProviderProcessHostRequest =
       cwd: string;
       env: Record<string, string | undefined>;
       owner: ProviderProcessOwner;
+      stdin?: ProviderProcessStdin;
     }
   | { type: 'stdin'; requestId: string; dataBase64: string }
   | { type: 'stdin-end'; requestId: string }
@@ -29,6 +31,12 @@ export type ProviderProcessHostResponse =
   | { type: 'stdout'; requestId: string; dataBase64: string }
   | { type: 'stderr'; requestId: string; dataBase64: string }
   | { type: 'error'; requestId: string; message: string; code?: string }
+  | {
+      type: 'exit';
+      requestId: string;
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    }
   | {
       type: 'close';
       requestId: string;
@@ -65,6 +73,10 @@ function isEnvironment(
   );
 }
 
+function isStdin(value: unknown): value is ProviderProcessStdin | undefined {
+  return value === undefined || value === 'pipe' || value === 'ignore';
+}
+
 function isSignal(value: unknown): value is NodeJS.Signals | null {
   return value === null || (typeof value === 'string' && value.length > 0);
 }
@@ -89,7 +101,8 @@ export function isProviderProcessHostRequest(
         isStringArray(field(value, 'args')) &&
         typeof field(value, 'cwd') === 'string' &&
         isEnvironment(field(value, 'env')) &&
-        isProviderProcessOwner(field(value, 'owner'))
+        isProviderProcessOwner(field(value, 'owner')) &&
+        isStdin(field(value, 'stdin'))
       );
     case 'stdin':
       return typeof field(value, 'dataBase64') === 'string';
@@ -126,6 +139,7 @@ export function isProviderProcessHostResponse(
         (code === undefined || typeof code === 'string')
       );
     }
+    case 'exit':
     case 'close':
       return (
         isExitCode(field(value, 'code')) && isSignal(field(value, 'signal'))

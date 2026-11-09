@@ -8,7 +8,7 @@ import {
   type UsageLimitedChatTarget,
   type UsageLimitedChatItem,
 } from '@canopy/desktop-shared/types';
-import { describeUsageLimitResumePromptKind } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { describeUsageLimitResumePromptKind } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import { latestRootUserMessageId } from './latest-root-user-message';
 import { getEffectiveClaudeChatInterfaceMode } from '@/lib/claude-tui-chats';
 import { chatStoreApi } from './store-ref';

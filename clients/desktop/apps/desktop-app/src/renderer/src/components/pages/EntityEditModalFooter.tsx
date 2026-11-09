@@ -43,8 +43,10 @@ export function EntityEditModalContent({
     <>
       <div className={bodyClassName}>
         {loading && (
-          <DelayedLoadingPlaceholder>
-            <CenteredLoadingSpinner className="my-12" />
+          <DelayedLoadingPlaceholder className="">
+            <div className="box-content flex min-h-full flex-1 py-12">
+              <CenteredLoadingSpinner className="" />
+            </div>
           </DelayedLoadingPlaceholder>
         )}
 

@@ -35,7 +35,7 @@ import {
   type AppAdvisorWatcherSummary,
   type AttachmentMeta,
 } from '@canopy/desktop-shared/types';
-import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { useComposerMenu } from '@/hooks/useComposerMenu';
 import { ChoiceField, Heading } from '@canopy/ui-shared/components';
 import { applyTheme } from '@/lib/theme';

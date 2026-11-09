@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type JSX } from 'react';
 import { Check, Mail, Plus, Users, X } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  Stack,
   Badge,
   Button,
   DelayedLoadingPlaceholder,
@@ -225,15 +226,19 @@ export function TeamPanel({
       />
 
       {status === 'ready' && invitations.length > 0 && (
-        <div data-testid="team-invitations">
-          <Heading level={2} variant="title">
-            Pending invitations
-          </Heading>
-          <p className="mt-1 text-xs fg-secondary">
-            You&apos;ve been invited to these organizations. Accept to join, or
-            decline to remove the invitation.
-          </p>
-          <ul className="mt-3 flex flex-col gap-3">
+        <div className="flex flex-col gap-3" data-testid="team-invitations">
+          <Stack gap="tight">
+            <Heading level={2} variant="title">
+              Pending invitations
+            </Heading>
+
+            <p className="text-xs fg-secondary">
+              You&apos;ve been invited to these organizations. Accept to join,
+              or decline to remove the invitation.
+            </p>
+          </Stack>
+
+          <ul className="flex flex-col gap-3">
             {invitations.map((invite) => {
               const busy = respondingId === invite.id;
               return (
@@ -249,11 +254,11 @@ export function TeamPanel({
                       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-secondary fg-secondary">
                         <Mail size={14} />
                       </span>
-                      <div className="min-w-0">
+                      <Stack gap="tight" className="min-w-0">
                         <p className="truncate text-s font-medium fg-primary">
                           {invite.organizationName}
                         </p>
-                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <StatusBadge variant="warning" label="Invited" />
                           <TeamRoleBadge role={invite.role} />
                           {invite.organizationTeamName && (
@@ -268,7 +273,7 @@ export function TeamPanel({
                             from {invite.invitedByName}
                           </span>
                         </div>
-                      </div>
+                      </Stack>
                     </div>
                     <div className="flex items-center gap-2">
                       <Button
@@ -390,18 +395,18 @@ function OrganizationRow({
     >
       <div className="flex min-w-0 items-center gap-3">
         <OrganizationLogo name={org.name} logoUrl={org.logoUrl} size="xl" />
-        <div className="min-w-0">
+        <Stack gap="tight" className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="truncate text-s font-medium fg-primary">
               {org.name}
             </span>
             <TeamRoleBadge role={org.role} />
           </div>
-          <p className="mt-1 text-xs fg-secondary">
+          <p className="text-xs fg-secondary">
             {org.memberCount} {org.memberCount === 1 ? 'member' : 'members'} ·{' '}
             {org.subTeamCount} {org.subTeamCount === 1 ? 'team' : 'teams'}
           </p>
-        </div>
+        </Stack>
       </div>
       <span className="text-s font-medium fg-accent">Open</span>
     </button>

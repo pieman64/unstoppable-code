@@ -1,3 +1,4 @@
+import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import type { PortalCommandEnvelope } from '@canopy/desktop-shared/types';
 import type { PortalAdapterContext } from './types';
 
@@ -49,6 +50,11 @@ export function failServiceError(
   context: PortalAdapterContext,
   error: unknown,
 ): void {
+  const missing = readCoworkFolderMissing(error);
+  if (missing) {
+    context.fail(command, missing.code, missing.message, false, missing);
+    return;
+  }
   if (error instanceof Error) {
     const code: unknown = 'code' in error ? error.code : undefined;
     if (typeof code === 'string') {

@@ -1,4 +1,5 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
+import { resolveCoworkFolderMissing } from '@/lib/ipc-cowork-folder';
 import { create } from 'zustand';
 import type { SidebarItemGroupCreationOptions } from '@canopy/protocol/sidebar';
 import { useSidebarItemGroupsStore } from './sidebarItemGroupsStore';
@@ -2153,6 +2154,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         chatId,
       };
 
+      const firstUserMessageId = initialMessageId ?? crypto.randomUUID();
       recovery?.onCreated(target);
       try {
         // Join canonical creation before settings target the optimistic tab id.
@@ -2200,6 +2202,10 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
           await useChatStore
             .getState()
             .sendMessage(message, config?.fileReferences, target, undefined, {
+              // Home must hear an authoritative refusal after its preflight;
+              // otherwise it consumes the draft as if this send succeeded.
+              throwOnDispatchFailure: true,
+              userMessageId: recovery?.userMessageId ?? firstUserMessageId,
               ...(initialMessageId || recovery
                 ? {
                     userMessageId: initialMessageId ?? recovery?.userMessageId,
@@ -2234,6 +2240,41 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         }
       } catch (error: unknown) {
         if (initialMessageId || recovery) throw error;
+        const missingFolder = resolveCoworkFolderMissing(
+          error,
+          resolvedChatProjectId,
+        );
+        if (missingFolder) {
+          try {
+            await window.api.chatProject.rollbackUnstartedSend({
+              workspaceId: resolvedChatProjectId,
+              worktreeId: entryId,
+              chatId,
+              userMessageId: firstUserMessageId,
+              ...(!createResponse.reusedExistingEmpty
+                ? { entryCreatedAt: createResponse.entry.createdAt }
+                : {}),
+            });
+            // The canonical removal delta updates the tab projection. Refresh
+            // entry membership without invoking deletion (which archives every
+            // sibling and can create a replacement empty entry).
+            await get().refreshWorkEntries(resolvedChatProjectId);
+          } catch (cleanupError) {
+            const failure = Object.assign(
+              new Error(
+                `${missingFolder.message} Couldn't remove the empty chat.`,
+              ),
+              {
+                code: missingFolder.code,
+                workspaceId: missingFolder.workspaceId,
+                folderName: missingFolder.folderName,
+              },
+            );
+            Object.defineProperty(failure, 'cause', { value: cleanupError });
+            throw failure;
+          }
+          throw error;
+        }
         // Roll back the created chat tab (and the entry, when it was freshly
         // created for this send) so a failed send does not leave a stale
         // empty work area behind.

@@ -22,17 +22,17 @@ import {
   DEFAULT_CODEX_SPEED,
   readCodexSpeedRecord,
   type CodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   classifyCodexSpeedRejection,
   describeCodexSpeedAvailability,
   type CodexSpeedRouteFacts,
   type CodexSpeedRouteProfile,
-} from '@canopy/desktop-shared/lib/codex-speed-availability';
+} from '@canopy/execution-engine/lib/codex-speed-availability';
 import {
   codexServiceTierForModelConfig,
   type CodexServiceTier,
-} from '@canopy/desktop-shared/lib/codex-model-config';
+} from '@canopy/execution-engine/lib/codex-model-config';
 import {
   getModelSource,
   resolveModelAlias,

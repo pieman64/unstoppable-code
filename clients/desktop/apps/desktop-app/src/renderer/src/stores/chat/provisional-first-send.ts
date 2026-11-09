@@ -206,19 +206,26 @@ export function failProvisionalFirstSendOnTab(
   userMessageId: string,
   attemptId: string,
   failure: ProvisionalFirstSendFailure,
+  /** The send was refused before dispatch: its claim never took effect. */
+  refusedBeforeDispatch = false,
 ): ChatTab {
   const record = tab.provisionalFirstSend;
   if (
     record?.userMessageId !== userMessageId ||
     record.phase !== 'preparing' ||
-    record.dispatchClaimed === true ||
+    (record.dispatchClaimed === true && !refusedBeforeDispatch) ||
     provisionalFirstSendAttemptId(record) !== attemptId ||
     !tab.pendingUserMessages?.some((message) => message.id === userMessageId)
   )
     return tab;
   const next: ChatTab = {
     ...tab,
-    provisionalFirstSend: { ...record, phase: 'failed', failure },
+    provisionalFirstSend: {
+      ...record,
+      phase: 'failed',
+      failure,
+      ...(refusedBeforeDispatch ? { dispatchClaimed: false } : {}),
+    },
   };
   if (
     tab.pendingTurn?.userMessageId === userMessageId &&

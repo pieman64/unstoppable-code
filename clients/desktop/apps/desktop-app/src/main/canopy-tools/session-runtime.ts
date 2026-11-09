@@ -9,14 +9,11 @@ import {
   type AgentProviderType,
   type ChatModel,
   type CodeReviewUpdatedEvent,
-  type LocalMemoryScopeRequest,
   type McpAskUserEvent,
   type McpQuestion,
   type McpQuestionAnswer,
-  type PreferencesData,
   type ReviewCommentAnchor,
   type ReviewCommentThread,
-  type SearchHit,
 } from '@canopy/desktop-shared/types';
 import {
   sendToAllWindows,
@@ -76,81 +73,66 @@ import type {
   SaveLocalMemoryInput,
   SearchLocalMemoryInput,
 } from './core';
-import { readPreferencesFile } from '../lib/preferences-store';
-import { broadcastLocalMemoryChanged } from '../memory/local/change-events';
-import { localMemoryStore } from '../memory/local/memory-store';
-import { resolveLocalMemoryPolicy } from '../memory/local/policy';
-import { LocalMemoryScopeReadOnlyError } from '../memory/local/scope-manifest';
-import { checkGitHubCliStatus } from '../lib/github-auth';
-import { resolveCommitMessageInstructions } from '@canopy/desktop-shared/lib/commit-message-generator';
-import { resolvePrContentInstructions } from '@canopy/desktop-shared/lib/github-pr-generator';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import {
+  CONFIG_GIT_NAMESPACE,
+  CONFIG_GRANTS,
+  ConfigGitValueSchema,
+  MEMORY_GRANTS,
+  type CanopyCallerDescriptor,
+  type MemorySearchResult,
+} from '@canopy/protocol/canopy-core';
+import { activeAgentCoreOperations } from './active-agent-core-operations';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { getChatStateService } from '../services/chat-state-service';
 
-function sanitizeBranchPrefix(raw: string): string {
-  return raw
-    .trim()
-    .replace(/\/+$/g, '')
-    .replace(/[^A-Za-z0-9._-]/g, '');
-}
-
-async function resolveBranchPrefixPreference(
-  preferences: PreferencesData,
-): Promise<string | null> {
-  if (preferences.branchNamePrefixMode === 'github') {
-    const ghStatus = await checkGitHubCliStatus();
-    const safeUsername = ghStatus.username
-      ? sanitizeBranchPrefix(ghStatus.username)
-      : '';
-    return safeUsername.length > 0 ? `${safeUsername}/` : null;
-  }
-
-  if (preferences.branchNamePrefixMode === 'custom') {
-    const safePrefix = sanitizeBranchPrefix(preferences.branchNameCustomPrefix);
-    return safePrefix.length > 0 ? `${safePrefix}/` : null;
-  }
-
-  return null;
-}
+/** GetGitPreferences reads as its own principal, with only the config read grant (CAN-5992). */
+const AGENT_GIT_PREFERENCES_CALLER: CanopyCallerDescriptor = {
+  principalId: 'desktop-agent-git-preferences',
+  clientInstanceId: 'desktop-main',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'mcp',
+  grants: [CONFIG_GRANTS.read],
+};
 
 export async function loadGitPreferences(
   request: GetGitPreferencesInput,
 ): Promise<string> {
-  const preferences = await readPreferencesFile();
+  const { value } = await activeAgentCoreOperations('gitPreferences').query(
+    'core.config.get',
+    { namespace: CONFIG_GIT_NAMESPACE },
+    { caller: AGENT_GIT_PREFERENCES_CALLER },
+  );
+  const preferences = ConfigGitValueSchema.parse(value);
 
   if (request.type === 'branch-name') {
+    const { instructions, prefixMode, prefix } = preferences.branchName;
     const lines = ['Git preferences for branch-name:'];
-    const instructions = preferences.branchNamingInstructions.trim();
     if (instructions.length > 0) {
       lines.push(`Branch naming instructions:\n${instructions}`);
     } else {
       lines.push('No branch naming instructions are set.');
     }
 
-    if (preferences.branchNamePrefixMode === 'none') {
+    if (prefixMode === 'none') {
       lines.push('Do not prefix the branch name.');
+    } else if (prefix) {
+      lines.push(`Prefix the branch with ${prefix}`);
+    } else if (prefixMode === 'github') {
+      lines.push(
+        'GitHub username branch prefix is enabled, but no GitHub username is available. Do not invent a prefix.',
+      );
     } else {
-      const prefix = await resolveBranchPrefixPreference(preferences);
-      if (prefix) {
-        lines.push(`Prefix the branch with ${prefix}`);
-      } else if (preferences.branchNamePrefixMode === 'github') {
-        lines.push(
-          'GitHub username branch prefix is enabled, but no GitHub username is available. Do not invent a prefix.',
-        );
-      } else {
-        lines.push(
-          'Custom branch prefix is enabled, but no custom prefix is set. Do not invent a prefix.',
-        );
-      }
+      lines.push(
+        'Custom branch prefix is enabled, but no custom prefix is set. Do not invent a prefix.',
+      );
     }
 
     return lines.join('\n\n');
   }
 
   if (request.type === 'pr-generation') {
-    const effectiveInstructions = resolvePrContentInstructions({
-      instructions: preferences.prInstructions.trim(),
-      instructionMode: preferences.prInstructionMode,
-    });
+    const effectiveInstructions = preferences.pullRequest.instructions;
     return [
       'Git preferences for pr-generation:',
       effectiveInstructions.length > 0
@@ -159,10 +141,7 @@ export async function loadGitPreferences(
     ].join('\n\n');
   }
 
-  const effectiveInstructions = resolveCommitMessageInstructions({
-    instructions: preferences.commitInstructions.trim(),
-    instructionMode: preferences.commitInstructionMode,
-  });
+  const effectiveInstructions = preferences.commitMessage.instructions;
   return [
     'Git preferences for commit-message:',
     effectiveInstructions.length > 0
@@ -171,11 +150,25 @@ export async function loadGitPreferences(
   ].join('\n\n');
 }
 
-const LOCAL_MEMORY_DISABLED_MESSAGE = 'Local memory is disabled';
-const WORKSPACE_MEMORY_UNAVAILABLE_MESSAGE =
-  'Project memory is not available in this session because no project is selected; save with scope "user" instead.';
-const WORKSPACE_MEMORY_READ_UNAVAILABLE_MESSAGE =
-  'Project memory is not available in this session because no project is selected.';
+/** The memory tools act as their own principal, each call with only its operation's grant (CAN-5993). */
+const AGENT_MEMORY_CALLER: CanopyCallerDescriptor = {
+  principalId: 'desktop-agent-memory',
+  clientInstanceId: 'desktop-main',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'mcp',
+  grants: [MEMORY_GRANTS.read, MEMORY_GRANTS.write],
+};
+
+/** The text of a core refusal the tools showed before (CAN-5993); else rethrows. */
+function memoryRefusalText(error: unknown): string {
+  if (
+    error instanceof CanopyOperationError &&
+    error.payload.code?.startsWith('core.memory.') === true &&
+    error.payload.kind !== 'internal'
+  )
+    return error.payload.message;
+  throw error;
+}
 
 export async function saveLocalMemory(
   options: SaveLocalMemoryInput & {
@@ -186,116 +179,61 @@ export async function saveLocalMemory(
     sessionId?: string;
   },
 ): Promise<string> {
-  const preferences = await readPreferencesFile();
-  if (!preferences.localMemoryEnabled) {
-    return LOCAL_MEMORY_DISABLED_MESSAGE;
-  }
-  const policy = await resolveLocalMemoryPolicy(options);
-  if (policy.kind === 'blocked')
-    return 'Project memory is unavailable because its configuration could not be read.';
-  if (
-    policy.kind === 'scoped' &&
-    policy.privateMemory &&
-    options.scope === 'user'
-  ) {
-    return 'User memory is unavailable in a private-memory project. Use workspace scope.';
-  }
-
-  let scopeRequest: LocalMemoryScopeRequest;
-  if (options.scope === 'user') {
-    scopeRequest = { scope: 'user' };
-  } else {
-    if (policy.kind !== 'scoped') {
-      return WORKSPACE_MEMORY_UNAVAILABLE_MESSAGE;
-    }
-    scopeRequest = { scope: 'workspace', workspaceId: policy.workspaceId };
-  }
-  let fileKey: string;
+  const idempotencyKey = `agent-memory-save:${options.chatId}:${options.invocationId ?? randomUUID()}`;
   try {
-    fileKey = await localMemoryStore.saveNote(scopeRequest, {
-      text: options.text,
-      source: {
-        provider: options.provider,
-        chatId: options.chatId,
-        ...(options.sessionId !== undefined
-          ? { sessionId: options.sessionId }
-          : {}),
+    const { fileKey } = await activeAgentCoreOperations('memory').instruction(
+      'core.memory.entry.append',
+      {
+        scope: {
+          workspaceId: options.projectId,
+          worktreeId: options.worktreeId,
+        },
+        memory: options.scope,
+        content: options.text,
+        source: {
+          provider: options.provider,
+          chatId: options.chatId,
+          ...(options.sessionId !== undefined
+            ? { sessionId: options.sessionId }
+            : {}),
+        },
+        _meta: { idempotencyKey },
       },
-      // Where the note was saved (design §10.4): a synced replica records
-      // it, so an organization that keeps its work off the cloud can.
-      ...(policy.kind === 'scoped' && policy.owner !== undefined
-        ? {
-            origin: {
-              organizationId: policy.owner.organizationId.toLowerCase(),
-              projectId: policy.owner.projectId.toLowerCase(),
-            },
-          }
-        : {}),
-    });
+      { caller: AGENT_MEMORY_CALLER, metadata: { idempotencyKey } },
+    );
+    return `Saved ${options.scope} memory to ${fileKey}`;
   } catch (error) {
-    if (error instanceof LocalMemoryScopeReadOnlyError) return error.message;
-    throw error;
+    return memoryRefusalText(error);
   }
-  if (!fileKey) {
-    throw new Error('The memory note could not be written.');
-  }
-  broadcastLocalMemoryChanged(scopeRequest);
-  await localMemoryStore.seedUsage(scopeRequest, fileKey);
-  return `Saved ${options.scope} memory to ${fileKey}`;
 }
 
-function formatMemorySearchHit(hit: SearchHit, index: number): string {
+function formatMemorySearchHit(
+  hit: MemorySearchResult['hits'][number],
+  index: number,
+): string {
   const context = hit.heading ? ` > ${hit.heading}` : '';
-  return `${index + 1}. [${hit.scope}] ${hit.fileKey}${context}\n${hit.snippet}`;
+  return `${index + 1}. [${hit.memory}] ${hit.fileKey}${context}\n${hit.snippet}`;
 }
 
 export async function searchLocalMemory(
   options: SearchLocalMemoryInput & { projectId: string; worktreeId: string },
 ): Promise<string> {
-  const preferences = await readPreferencesFile();
-  if (!preferences.localMemoryEnabled) {
-    return LOCAL_MEMORY_DISABLED_MESSAGE;
+  let hits: MemorySearchResult['hits'];
+  try {
+    ({ hits } = await activeAgentCoreOperations('memory').query(
+      'core.memory.search',
+      {
+        scope: {
+          workspaceId: options.projectId,
+          worktreeId: options.worktreeId,
+        },
+        query: options.query,
+      },
+      { caller: AGENT_MEMORY_CALLER },
+    ));
+  } catch (error) {
+    return memoryRefusalText(error);
   }
-  const policy = await resolveLocalMemoryPolicy(options);
-  if (policy.kind === 'blocked')
-    return 'Project memory is unavailable because its configuration could not be read.';
-
-  const userScope: LocalMemoryScopeRequest = { scope: 'user' };
-  const scopes: LocalMemoryScopeRequest[] =
-    policy.kind === 'scoped' && policy.privateMemory ? [] : [userScope];
-  const workspaceScope: LocalMemoryScopeRequest | null =
-    policy.kind === 'scoped'
-      ? { scope: 'workspace', workspaceId: policy.workspaceId }
-      : null;
-  if (workspaceScope !== null) {
-    scopes.push(workspaceScope);
-  }
-  const hits = await localMemoryStore.search(scopes, options.query);
-  const userFileKeys = Array.from(
-    new Set(
-      hits.filter((hit) => hit.scope === 'user').map((hit) => hit.fileKey),
-    ),
-  );
-  const workspaceFileKeys = Array.from(
-    new Set(
-      hits.filter((hit) => hit.scope === 'workspace').map((hit) => hit.fileKey),
-    ),
-  );
-  // The two scopes use separate directories and thus separate per-scope
-  // mutation chains, and each recordUsage swallows its own persistence
-  // failures, so the writes can proceed concurrently off each other's
-  // latency instead of serializing the SearchMemory response.
-  const usageWrites: Promise<void>[] = [];
-  if (userFileKeys.length > 0) {
-    usageWrites.push(localMemoryStore.recordUsage(userScope, userFileKeys));
-  }
-  if (workspaceScope !== null && workspaceFileKeys.length > 0) {
-    usageWrites.push(
-      localMemoryStore.recordUsage(workspaceScope, workspaceFileKeys),
-    );
-  }
-  await Promise.all(usageWrites);
-
   if (hits.length === 0) {
     return `No local memory found for "${options.query}".`;
   }
@@ -309,37 +247,23 @@ export async function searchLocalMemory(
 export async function readLocalMemory(
   options: ReadLocalMemoryInput & { projectId: string; worktreeId: string },
 ): Promise<string> {
-  const preferences = await readPreferencesFile();
-  if (!preferences.localMemoryEnabled) {
-    return LOCAL_MEMORY_DISABLED_MESSAGE;
+  try {
+    const { content } = await activeAgentCoreOperations('memory').query(
+      'core.memory.entry.get',
+      {
+        scope: {
+          workspaceId: options.projectId,
+          worktreeId: options.worktreeId,
+        },
+        memory: options.scope,
+        fileKey: options.file,
+      },
+      { caller: AGENT_MEMORY_CALLER },
+    );
+    return content;
+  } catch (error) {
+    return memoryRefusalText(error);
   }
-  const policy = await resolveLocalMemoryPolicy(options);
-  if (policy.kind === 'blocked')
-    return 'Project memory is unavailable because its configuration could not be read.';
-  if (
-    policy.kind === 'scoped' &&
-    policy.privateMemory &&
-    options.scope === 'user'
-  ) {
-    return 'User memory is unavailable in a private-memory project. Use workspace scope.';
-  }
-
-  let scope: LocalMemoryScopeRequest;
-  if (options.scope === 'user') {
-    scope = { scope: 'user' };
-  } else {
-    if (policy.kind !== 'scoped') {
-      return WORKSPACE_MEMORY_READ_UNAVAILABLE_MESSAGE;
-    }
-    scope = { scope: 'workspace', workspaceId: policy.workspaceId };
-  }
-
-  const content = await localMemoryStore.readFile(scope, options.file);
-  if (content === undefined) {
-    return `Local memory file not found: [${options.scope}] ${options.file}.`;
-  }
-  await localMemoryStore.recordUsage(scope, [options.file]);
-  return content;
 }
 
 export async function requestAnswersFromRenderer(options: {

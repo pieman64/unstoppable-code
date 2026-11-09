@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import type { JSX, ReactNode } from 'react';
 import type {
   PortalProviderUsageAccount,
@@ -231,7 +232,7 @@ export function ProviderAccountUsageDetails({
     </>
   );
   return (
-    <div className="mt-2 space-y-1">
+    <Stack gap="tight" className="mt-2">
       {collapsible ? (
         <Disclosure label="Usage" dataTestId="provider-account-usage">
           <div>{usage}</div>
@@ -240,7 +241,7 @@ export function ProviderAccountUsageDetails({
         usage
       )}
       <AccountUsageError account={account} nowMs={nowMs} />
-    </div>
+    </Stack>
   );
 }
 
@@ -262,7 +263,10 @@ export function ProviderAccountUsage({
   children?: ReactNode;
 }): JSX.Element {
   return (
-    <section data-testid="provider-account-usage" className="min-w-0">
+    <section
+      data-testid="provider-account-usage"
+      className="min-w-0 flex flex-col gap-1.5"
+    >
       <UsageRowList>
         {accountWindowRows(account, nowMs)}
         {usageUnavailable(account, nowMs) ? (
@@ -276,7 +280,7 @@ export function ProviderAccountUsage({
         </ProviderUsageAccountRow>
       </UsageRowList>
       {errorText(account, nowMs) || freshnessText(account, nowMs) ? (
-        <div className="mt-1.5 space-y-0.5 px-0.5">
+        <div className="flex flex-col gap-0.5 px-0.5">
           <AccountUsageError account={account} nowMs={nowMs} />
           <AccountUsageFreshness account={account} nowMs={nowMs} />
         </div>

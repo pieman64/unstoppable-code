@@ -1,5 +1,6 @@
 'use client';
 
+import { Dot } from '@canopy/ui-shared/components/Badge';
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
 import type { IncomingTeamInvitation } from '@canopy/protocol/settings/organization';
 import type {
@@ -27,7 +28,6 @@ import {
   PersonIcon,
   SettingsIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import { creditsBillingTargetPath } from '@canopy/protocol/billing';
 import {
   SidebarCreateOrganizationMenuItem,
@@ -307,11 +307,7 @@ function contextTriggerLabel(
 function UpdatesDot({ testId }: { readonly testId: string }): JSX.Element {
   return (
     <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-      <span
-        aria-hidden="true"
-        data-testid={testId}
-        className={`h-1.5 w-1.5 rounded-full ${OPERATIONAL_STATUS_COLORS.unread.background}`}
-      />
+      <Dot tone="unread" data-testid={testId} />
     </span>
   );
 }
@@ -730,7 +726,11 @@ function ContextInvitationItems({
       ) : null}
       {items.map((invite) => {
         const label = labels.get(invite.id) ?? invite.organizationName;
-        const needsReview = (invite.enforcedSettings?.length ?? 0) > 0;
+        // Usage-data prohibitions only turn the member's own telemetry off,
+        // so they alone need no review before joining.
+        const needsReview = (invite.enforcedSettings ?? []).some((org) =>
+          org.policies.some((policy) => policy.kind !== 'usage-data'),
+        );
         const joining =
           pending?.inviteId === invite.id && pending.action === 'accept';
         return (

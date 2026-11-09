@@ -27,9 +27,7 @@ export function SettingsBackButton({
       <SidebarNavRow
         onClick={onClick}
         data-testid={dataTestId}
-        // Web gives every button a hand cursor; Back keeps the arrow like
-        // the rail's Back.
-        className="cursor-default text-left"
+        className="text-left"
         tone="secondary"
         icon={<BackIcon size={16} />}
       >

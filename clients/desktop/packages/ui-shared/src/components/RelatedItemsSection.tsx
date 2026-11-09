@@ -4,6 +4,8 @@ import { CUSTOMIZE_ROW_GRID_CLASS } from '../lib/customize-grid';
 import { McpServerLogo } from './McpServerLogo';
 import { MarketplaceTypeLabel } from './MarketplaceTypeLabel';
 import { Heading } from './Heading';
+import { Badge } from './Badge';
+import { PipelineSourceLabel } from './EntrySourceLabel';
 
 /** One row in a related-items section (CAN-2382). */
 export interface RelatedItemRow {
@@ -12,9 +14,10 @@ export interface RelatedItemRow {
   icon?: string;
   title: string;
   subtitle?: string;
-  /** Small type/source badge, e.g. "Bundled", "Skill", "Plugin". */
+  /** A resource kind or role, e.g. "Skill", "Plugin". */
   badge?: string;
-  badgeClass?: string;
+  /** Routine workflow provenance, e.g. "Bundled", shown as plain metadata. */
+  sourceLabel?: string;
   /** The item's kind: a list badge takes the Customize type tint. */
   kind?: UnifiedEntryKind;
   /** Why this item is related, when it is not obvious. */
@@ -74,7 +77,7 @@ export function RelatedItemsSection({
         // in the same two-column grid as Installed and Browse.
         <div
           data-testid={`${testId}-rows`}
-          className={list ? CUSTOMIZE_ROW_GRID_CLASS : 'space-y-2'}
+          className={list ? CUSTOMIZE_ROW_GRID_CLASS : 'flex flex-col gap-2'}
         >
           {items.map((item) => (
             <button
@@ -121,16 +124,19 @@ export function RelatedItemsSection({
                   {item.badge && item.kind && (
                     <MarketplaceTypeLabel kind={item.kind} label={item.badge} />
                   )}
-                  {item.badge && !item.kind && (
-                    <span
-                      className={
-                        list
-                          ? 'shrink-0 text-xs fg-secondary'
-                          : `shrink-0 px-1.5 py-0.5 text-3xs font-medium rounded ${item.badgeClass ?? 'bg-secondary fg-secondary'}`
-                      }
-                    >
-                      {item.badge}
-                    </span>
+                  {item.badge &&
+                    !item.kind &&
+                    (list ? (
+                      <span className="shrink-0 text-xs fg-secondary">
+                        {item.badge}
+                      </span>
+                    ) : (
+                      <Badge>{item.badge}</Badge>
+                    ))}
+                  {item.sourceLabel && (
+                    <PipelineSourceLabel>
+                      {item.sourceLabel}
+                    </PipelineSourceLabel>
                   )}
                 </div>
                 {item.subtitle && (

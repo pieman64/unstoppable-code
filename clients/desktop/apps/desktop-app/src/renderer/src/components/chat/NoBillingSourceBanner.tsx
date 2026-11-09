@@ -20,7 +20,6 @@ import {
   connectProviderLabel,
   creditsOnlyDeadEndCopy,
   failedTurnCopy,
-  noticeButtonClassName,
   notSignedInCopy,
   type CreditsRecoveryCopy,
 } from '@canopy/ui-shared/components';
@@ -67,11 +66,8 @@ import type { BillingLane } from '@canopy/desktop-shared/lib/default-model-lane'
  * `primary` for the single recommended action and `secondary` for the
  * alternative. CAN-4766: "Connect {provider}" leads where it shows and
  * "Buy AI Credits" follows; the purchase is primary only when it stands alone
- * or a hand-off is waiting on it. The shared CTA takes a class string rather
- * than rendering `Button` itself, so it is handed the same recipe.
+ * or a hand-off is waiting on it.
  */
-const PRIMARY_BUTTON_CLASS = noticeButtonClassName('primary');
-const SECONDARY_BUTTON_CLASS = noticeButtonClassName('secondary');
 
 /** The purchases this banner confirms. The usage-limit banner owns its own. */
 const ARRIVAL_ORIGINS: readonly AiCreditsArrivalOrigin[] = [
@@ -701,11 +697,10 @@ export function NoBillingSourceBanner({
             handoffOnInconclusiveRead={showFallbackCredits}
             // Secondary beside Connect; primary alone or once a hand-off
             // puts Check again on this button.
-            buttonClassName={
-              showSignIn && visibleHandoff === null
-                ? SECONDARY_BUTTON_CLASS
-                : PRIMARY_BUTTON_CLASS
+            buttonVariant={
+              showSignIn && visibleHandoff === null ? 'secondary' : 'primary'
             }
+            buttonSize="sm"
             disabled={creditsDisabled}
             // This action bar is a horizontal, right-aligned row; the
             // default stacked hand-off block would re-flow it.

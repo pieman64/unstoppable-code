@@ -13,7 +13,7 @@ import type {
   AgentModelDefinition,
   SharedAgentDetail,
   SharedAgentDocument,
-} from '@canopy/desktop-shared/types/agent-models';
+} from '@canopy/execution-engine/types/agent-models';
 import {
   ShareConflictError,
   deriveExistingShare,

@@ -11,6 +11,8 @@ import type {
   PluginMcpServerInfo,
   PluginLspServerInfo,
 } from '@canopy/desktop-shared/types/plugins';
+import type { PluginModInfo } from '@canopy/protocol/plugins';
+import { parseClaudeJsonFile } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
 import { safeReadJson, safeReadText } from '../lib/fs-utils';
 import { parseFrontmatter } from '../lib/frontmatter';
 import { canonicalPathInside } from './plugin-members';
@@ -256,6 +258,7 @@ function flattenHooksConfig(config: Record<string, unknown>): PluginHookInfo[] {
   const hooks = isRecord(config.hooks) ? config.hooks : config;
 
   for (const [event, entries] of Object.entries(hooks)) {
+    if (event === 'modules') continue;
     if (!Array.isArray(entries)) continue;
     for (const entry of entries) {
       if (!isRecord(entry)) continue;
@@ -273,6 +276,64 @@ function flattenHooksConfig(config: Record<string, unknown>): PluginHookInfo[] {
           command: typeof h.command === 'string' ? h.command : undefined,
         });
       }
+    }
+  }
+
+  return results;
+}
+
+// Claude Code reads a Mod's `modules` from hooks/hooks.json and also from
+// every hooks file path the manifest names; an inline hooks object adds none.
+function hooksFileReferences(manifest: PluginManifest | null): string[] {
+  return [
+    'hooks/hooks.json',
+    ...[manifest?.hooks ?? []]
+      .flat()
+      .filter((entry): entry is string => typeof entry === 'string'),
+  ];
+}
+
+/** A hooks file read as Claude reads it, so a leading BOM still lists its Mods. */
+function readClaudeHooksFile(filePath: string): unknown {
+  try {
+    return parseClaudeJsonFile(fs.readFileSync(filePath));
+  } catch {
+    return null;
+  }
+}
+
+/** Scans only the plugin's hooks config files for declared Mod modules. */
+export function scanPluginMods(
+  pluginDir: string,
+  manifest: PluginManifest | null,
+): PluginModInfo[] {
+  const results: PluginModInfo[] = [];
+  const realPluginDir = canonicalPluginDir(pluginDir);
+  const seen = new Set<string>();
+
+  for (const hooksFileReference of hooksFileReferences(manifest)) {
+    const hooksFilePath = canonicalPathInside(
+      pluginDir,
+      path.resolve(pluginDir, hooksFileReference),
+    );
+    if (!hooksFilePath || seen.has(hooksFilePath)) continue;
+    seen.add(hooksFilePath);
+
+    const config = readClaudeHooksFile(hooksFilePath);
+    if (!isRecord(config) || !Array.isArray(config.modules)) continue;
+    const modules = config.modules;
+    if (
+      !modules.every((module): module is string => typeof module === 'string')
+    ) {
+      continue;
+    }
+
+    const hooksFile = path
+      .relative(realPluginDir, hooksFilePath)
+      .split(path.sep)
+      .join('/');
+    for (const module of modules) {
+      results.push({ module, hooksFile });
     }
   }
 
@@ -498,6 +559,7 @@ export function scanPluginDetails(
     commands: [],
     apps: [],
     hooks: [],
+    mods: [],
     mcpServers: [],
     lspServers: [],
     hasReadme: false,
@@ -527,6 +589,11 @@ export function scanPluginDetails(
   }
   try {
     details.hooks = resolveHooks(pluginDir, manifest);
+  } catch {
+    /* skip */
+  }
+  try {
+    details.mods = scanPluginMods(pluginDir, manifest);
   } catch {
     /* skip */
   }

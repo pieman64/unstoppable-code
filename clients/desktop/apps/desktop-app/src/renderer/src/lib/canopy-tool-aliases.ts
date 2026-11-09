@@ -10,7 +10,7 @@ import {
   getCanonicalCanopyToolKey,
   type CanopyInjectedToolDisplayName,
   type CanopyInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { PIPELINE_EDITOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 
 /**

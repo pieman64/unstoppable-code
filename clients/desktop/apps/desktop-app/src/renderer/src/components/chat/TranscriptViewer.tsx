@@ -29,7 +29,7 @@ export function TranscriptViewer({
   closeOpenTurnAtEnd = false,
   emptyMessage,
   className = '',
-  contentClassName = 'space-y-2',
+  contentClassName = 'flex flex-col gap-2',
   dataTestId,
 }: TranscriptViewerProps): JSX.Element {
   const deferredLines = useDeferredValue(lines);

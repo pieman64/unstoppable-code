@@ -104,6 +104,19 @@ export interface UseSidebarWorktreeBulkInput {
     workspaceLocalId: string,
     worktreeLocalId: string,
   ) => void;
+  /** Whether the row's scripts are running, as its own menu reads it. */
+  readonly hasRunningScripts?: (
+    workspaceLocalId: string,
+    worktreeLocalId: string,
+  ) => boolean;
+  /**
+   * Stops the row's running scripts as its menu's Stop running scripts does;
+   * absent: rows offer no Stop.
+   */
+  readonly stopRunningScripts?: (
+    workspaceLocalId: string,
+    worktreeLocalId: string,
+  ) => void;
   /** The row's saved notification choice, read on render. */
   readonly getNotificationState?: (
     workspaceLocalId: string,
@@ -371,7 +384,7 @@ export function useSidebarWorktreeBulk(
       const entry = lookup().get(key);
       if (entry === undefined) return undefined;
       const { workspace, worktree } = entry;
-      // Pin and Hide are host commands: a workspace that can't take
+      // Pin, Hide and Stop are host commands: a workspace that can't take
       // commands offers neither, as on the single row.
       const commands =
         input.isWorkspaceCommandDisabled?.(workspace.localId) !== true;
@@ -390,6 +403,13 @@ export function useSidebarWorktreeBulk(
         capabilitiesOf(worktree.localId).worktreeMetadata === true &&
         worktree.hidden !== true
           ? { hideable: true }
+          : {}),
+        ...(commands &&
+        input.stopRunningScripts !== undefined &&
+        (worktree.scriptStatus === 'running' ||
+          input.hasRunningScripts?.(workspace.localId, worktree.localId) ===
+            true)
+          ? { scriptsRunning: true }
           : {}),
         // Not gated on commands: the choice is the viewer's own server
         // setting, as on the single row.
@@ -411,6 +431,9 @@ export function useSidebarWorktreeBulk(
           return;
         case 'hide':
           input.hideWorktree?.(workspaceLocalId, worktreeLocalId);
+          return;
+        case 'stop-scripts':
+          input.stopRunningScripts?.(workspaceLocalId, worktreeLocalId);
           return;
         case 'notifications':
           input.setNotificationChoice?.(

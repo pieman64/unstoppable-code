@@ -3,8 +3,8 @@ import { spawn } from 'node:child_process';
 import { finished } from 'node:stream/promises';
 import { readFile } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
-import { killChildProcessGroup } from '../../lib/process-kill';
-import { wrapWindowsCommandShim } from '../../lib/windows-process';
+import { killChildProcessGroup } from '@canopy/execution-engine/node/lib/process-kill';
+import { wrapWindowsCommandShim } from '@canopy/execution-engine/node/lib/windows-process';
 import {
   SpillingRecordStore,
   trackLateStorageCleanup,
@@ -33,7 +33,7 @@ import {
   extendMatchToFurthestOverlap,
   redactJsonPreservingFormat,
   withJsonEscapedVariants,
-} from '../../../lib/redaction';
+} from '@canopy/execution-engine/lib/redaction';
 import { parseOutputFile } from './execution-context';
 import type {
   ExecutionResourceMonitor,

@@ -58,6 +58,7 @@ export interface CanopyDaemonHostLaunchOptions {
   /** Absolute canonical data root. */
   readonly dataRoot: string;
   readonly runtimeMode: 'prod' | 'rc' | 'dev';
+  readonly secureStorageLayout?: string;
   /** Absolute, already-resolved daemon executable; the only one spawned. */
   readonly executable: string;
   readonly platform: 'darwin' | 'win32' | 'linux';
@@ -71,7 +72,7 @@ export interface CanopyDaemonHostLaunchOptions {
   readonly w5Host?: boolean;
   /** Shared by every attach-or-start on this launch, so each spawn runs it. */
   readonly beforeSpawn?: CanopyDaemonBeforeSpawn;
-  /** Filtered through `supervision.childEnvironment`'s allowlist. */
+  /** Child allowlist plus explicit storage overrides, resolved against the host cwd. */
   readonly environmentSource: Environment;
   readonly claim?: CanopyStartupClaimPort;
   /** Creates and verifies the private runtime directory before each descriptor read. */
@@ -271,7 +272,7 @@ export function createCanopyDaemonHostLaunch(
           : claimHandle && JSON.stringify(claimHandle);
       if (handoff && Buffer.byteLength(handoff) > MAX_HANDOFF_BYTES)
         throw failure('Core startup claim handoff is too large.');
-      const env = {
+      const env: Record<string, string> = {
         ...supervision.childEnvironment({ source: options.environmentSource }),
         ...(handoff
           ? {
@@ -283,6 +284,20 @@ export function createCanopyDaemonHostLaunch(
             }
           : {}),
       };
+      for (const name of ['CANOPY_DATA_DIR', 'CANOPY_SECURE_DATA_DIR']) {
+        const values = Object.entries(options.environmentSource)
+          .filter(
+            ([key, value]) =>
+              (platform === 'win32' ? key.toUpperCase() : key) === name &&
+              value !== undefined,
+          )
+          .map(([, value]) => value);
+        if (new Set(values).size > 1)
+          throw failure('Conflicting storage override environment values.');
+        const value = values[0]?.trim();
+        // Owned children need not inherit the launcher's working directory.
+        if (value) env[name] = paths.resolve(value);
+      }
       const children = options.ownedChildren;
       if (!children)
         throw canopyConnectError(
@@ -360,6 +375,7 @@ export function createCanopyDaemonHostLaunch(
     dataRoot,
     dataRootHash: createHash('sha256').update(dataRoot).digest('hex'),
     runtimeMode: options.runtimeMode,
+    secureStorageLayout: options.secureStorageLayout,
     daemon: {
       executable,
       ...(options.migration && { migrationChannel: true }),

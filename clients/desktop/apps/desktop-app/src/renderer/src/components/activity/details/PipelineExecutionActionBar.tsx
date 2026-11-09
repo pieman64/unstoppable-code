@@ -4,7 +4,7 @@ import type { AppAdvisorWatcherSummary } from '@canopy/desktop-shared/types';
 import type {
   ExecutionState,
   ExecutionSummary,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   ChatIcon,
   PipelineIcon,
@@ -22,7 +22,7 @@ import { WatcherManagementButton } from '@/components/watchers/WatcherManagement
 import { isPipelineExecutionActiveStatus } from '../utils';
 import type { PipelineExecutionActions } from '../usePipelineExecutionActions';
 import type { PipelineDetailDestination } from './pipelineDetailTypes';
-import { Button } from '@canopy/ui-shared/components';
+import { Surface, Button } from '@canopy/ui-shared/components';
 
 /**
  * Live run actions above the detail body: watchers, retry, start over,
@@ -233,9 +233,11 @@ export function PipelineExecutionActionBar({
 
   if (leading === undefined) {
     return (
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-b px-5 py-2">
-        {content}
-      </div>
+      <Surface variant="section" boundary="bottom" className="shrink-0">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 px-5 py-2">
+          {content}
+        </div>
+      </Surface>
     );
   }
   // The row's bottom rule is drawn by each cell rather than the row, so the
@@ -246,9 +248,15 @@ export function PipelineExecutionActionBar({
       data-testid="pipeline-detail-toolbar"
     >
       {leading}
-      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2 border-b py-2 pl-2 pr-3">
-        {content}
-      </div>
+      <Surface
+        variant="section"
+        boundary="bottom"
+        className="min-w-0 flex min-h-0 flex-1 flex-col"
+      >
+        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2 py-2 pl-2 pr-3">
+          {content}
+        </div>
+      </Surface>
     </div>
   );
 }

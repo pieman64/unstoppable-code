@@ -33,7 +33,7 @@ import type {
   PipelinePackageAnalysisSummary,
   PipelinePackageInvocationDismissal,
   PipelinePackageReadiness,
-} from './pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 /** File envelope for `collections/index.json`. */
 export interface CollectionIndexFile {

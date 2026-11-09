@@ -65,8 +65,8 @@ export function PipelineReportModal({
     >
       <div className="overflow-y-auto">
         {loading ? (
-          <div className="flex items-center text-s fg-secondary">
-            <LoadingSpinner tone="active" className="mr-2" />
+          <div className="flex items-center gap-2 text-s fg-secondary">
+            <LoadingSpinner tone="active" />
             Loading report…
           </div>
         ) : error ? (

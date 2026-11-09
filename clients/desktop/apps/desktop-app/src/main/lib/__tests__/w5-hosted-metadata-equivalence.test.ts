@@ -129,6 +129,7 @@ let desktopCommits: string[];
 let desktopReceiptCallers: string[];
 let hostedReceiptCallers: string[];
 let harness: W5HostedMetadataHarness;
+let selections: Map<string, string>;
 let client: W5HostedMetadataClient;
 let originalDataDir: string | undefined;
 
@@ -291,15 +292,16 @@ beforeEach(async () => {
   });
   __setDesktopW5FileStoreForTests(createW5CommitLogFileStore(() => hostA));
 
+  selections = new Map([
+    ['pick-other', other],
+    ['pick-web', repo],
+    ['pick-plain', plain],
+  ]);
   harness = await startW5HostedMetadataHarness({
     dbPath: join(dir, 'b', 'w5', 'commit-log.sqlite'),
     root: rootB,
     workerEntry: WORKER,
-    repositorySelections: new Map([
-      ['pick-other', other],
-      ['pick-web', repo],
-      ['pick-plain', plain],
-    ]),
+    repositorySelections: selections,
     isRepository,
   });
   hostedReceiptCallers = [];
@@ -1023,6 +1025,69 @@ describe('temp-root equivalence of the hosted metadata commands', () => {
         },
         project: projectUpdate,
       });
+  });
+
+  it("replays a keyed duplicate whose reserve follows the first call's commit, resolving its one-time selection once", async () => {
+    const resolve = selections.get.bind(selections);
+    const resolved: string[] = [];
+    jest.spyOn(selections, 'get').mockImplementation((selectionId) => {
+      const repoPath = resolve(selectionId);
+      resolved.push(selectionId);
+      selections.delete(selectionId);
+      return repoPath;
+    });
+    const params: W5HostedMetadataRequest = {
+      operation: 'core.workspace.repository.add',
+      workspaceId: 'a',
+      repository: { selection: pickerSelection('pick-other') },
+      idempotencyKey: 'add-duplicate',
+    };
+    let duplicateLookedUp = (): void => {};
+    const duplicateLookup = new Promise<void>((resolveLookup) => {
+      duplicateLookedUp = resolveLookup;
+    });
+    let firstCommitted = (): void => {};
+    const committed = new Promise<void>((resolveCommit) => {
+      firstCommitted = resolveCommit;
+    });
+    harness.hooks.commit.after = (): Promise<void> => {
+      firstCommitted();
+      return Promise.resolve();
+    };
+    // The duplicate finds no receipt before the first call reserves, and
+    // reserves only after the first call committed.
+    let lookups = 0;
+    let duplicate: Promise<unknown> | undefined;
+    harness.hooks.afterLookup = async (): Promise<void> => {
+      lookups += 1;
+      if (lookups === 1) {
+        duplicate = callHostedMetadata(client, params);
+        await duplicateLookup;
+      } else if (lookups === 2) {
+        duplicateLookedUp();
+        await committed;
+      }
+    };
+    harness.setDaemonOwned(W5_NAMESPACES);
+    const commits = harness.commits.length;
+    const added = { repository: { id: 'other', name: 'other' } };
+    await expect(callHostedMetadata(client, params)).resolves.toEqual(added);
+    await expect(duplicate).resolves.toEqual(added);
+    // The duplicate's reserve was refused, and its next lookup replayed.
+    expect(lookups).toBe(3);
+    expect(resolved).toEqual(['pick-other']);
+    expect(harness.commits.slice(commits)).toEqual([
+      'core.workspace.repository.add',
+    ]);
+    harness.hooks.afterLookup = undefined;
+    harness.hooks.commit.after = undefined;
+    const files = snapshot(rootB);
+    await expect(callHostedMetadata(client, params)).resolves.toEqual(added);
+    expect(resolved).toEqual(['pick-other']);
+    expect(harness.commits.slice(commits)).toEqual([
+      'core.workspace.repository.add',
+    ]);
+    expect(snapshot(rootB)).toEqual(files);
   });
 
   it('declared: keyed receipts name the principal, not the desktop host', async () => {

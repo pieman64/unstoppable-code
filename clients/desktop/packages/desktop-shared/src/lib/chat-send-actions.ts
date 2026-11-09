@@ -295,6 +295,7 @@ export type AgentSendRefusalCode =
   | 'advisor_access_disabled'
   | 'owner_context_unavailable'
   | 'validation_failed'
+  | 'cowork_folder_missing'
   | 'target_not_ready'
   | 'unsupported_action'
   /** The queued input cannot be steered now; it stays queued. */

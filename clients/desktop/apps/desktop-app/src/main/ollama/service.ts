@@ -30,6 +30,7 @@ import {
   type OllamaModelDetails,
   type OllamaConfigurationUpdate,
   type OllamaConnectionTestResult,
+  type OllamaConnectionTestOptions,
   type OllamaInstallationStatus,
   type OllamaModelEntry,
   type OllamaPullProgress,
@@ -102,7 +103,10 @@ export interface OllamaService {
   install(
     onProgress?: Parameters<typeof installOllama>[0],
   ): Promise<OllamaState>;
-  testConnection(port?: number): Promise<OllamaConnectionTestResult>;
+  testConnection(
+    port?: number,
+    options?: OllamaConnectionTestOptions,
+  ): Promise<OllamaConnectionTestResult>;
   handleUserEnvironmentChanged(): Promise<void>;
   ensureServerRunning(
     reason:
@@ -1065,13 +1069,19 @@ class OllamaServiceImpl implements OllamaService {
     return this.getState();
   }
 
-  async testConnection(port?: number): Promise<OllamaConnectionTestResult> {
+  async testConnection(
+    port?: number,
+    options?: OllamaConnectionTestOptions,
+  ): Promise<OllamaConnectionTestResult> {
     await this.waitForConfigurationChange();
+    if (options?.background === true)
+      return this.testConnectionImpl(port, true);
     return this.withConnectionAttempt(() => this.testConnectionImpl(port));
   }
 
   private async testConnectionImpl(
     port?: number,
+    background = false,
   ): Promise<OllamaConnectionTestResult> {
     assertOllamaEnabled();
     const generation = this.connectionConfigurationGeneration;
@@ -1081,6 +1091,7 @@ class OllamaServiceImpl implements OllamaService {
     const latencyMs = Math.max(0, Date.now() - startedAt);
     const connected = result.reachable && result.version !== undefined;
     const matchesConfiguration =
+      !background &&
       targetPort === (await this.resolveConnectionTestPort()) &&
       generation === this.connectionConfigurationGeneration &&
       !this.configurationMutationActive;
@@ -1091,6 +1102,7 @@ class OllamaServiceImpl implements OllamaService {
       if (matchesConfiguration)
         this.observeConfirmedConnection(targetPort, 'in_app');
     } else if (
+      !background &&
       generation === this.connectionConfigurationGeneration &&
       !this.configurationMutationActive
     )

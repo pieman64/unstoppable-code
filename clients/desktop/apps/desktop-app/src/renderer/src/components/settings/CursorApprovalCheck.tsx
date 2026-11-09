@@ -18,7 +18,14 @@ import {
   type ApprovalRequestEvent,
   type CursorApprovalCheckResult,
 } from '@canopy/desktop-shared/types';
-import { Button, Notice } from '@canopy/ui-shared/components';
+import { Button } from '@canopy/ui-shared/components';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { ToolApprovalCard } from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
@@ -44,7 +51,7 @@ export function CursorApprovalCheck({
   const [running, setRunning] = useState(false);
   const [pending, setPending] = useState<ApprovalRequestEvent | null>(null);
   const [result, setResult] = useState<CursorApprovalCheckResult | null>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<InlineFailure | null>(null);
   const active = useRef(false);
   const mounted = useRef(true);
 
@@ -58,7 +65,9 @@ export function CursorApprovalCheck({
           setSavedPath(preferences.cursorAgentPath);
         }
       })
-      .catch(() => {});
+      .catch((caught: unknown) => {
+        reportClientAppError(caught);
+      });
     // Connect and Disconnect clear the saved path from the sibling panel; keep
     // both path states in step so a cleared path cannot be run from here.
     const offPreferences = subscribePreferencesUpdated((preferences) => {
@@ -74,7 +83,9 @@ export function CursorApprovalCheck({
       .then((status) => {
         if (mounted.current) setRequiredVersion(status.version);
       })
-      .catch(() => {});
+      .catch((caught: unknown) => {
+        reportClientAppError(caught);
+      });
     const api = window.api.cursorApprovalCheck;
     if (!api)
       return (): void => {
@@ -86,7 +97,9 @@ export function CursorApprovalCheck({
       .then((value) => {
         if (mounted.current) setAvailable(value);
       })
-      .catch(() => {});
+      .catch((caught: unknown) => {
+        reportClientAppError(caught);
+      });
     const offRequest = window.api.approvals.onRequest((event) => {
       if (
         active.current &&
@@ -106,7 +119,10 @@ export function CursorApprovalCheck({
       offPreferences();
       offRequest();
       offCancelled();
-      if (active.current) void api?.cancel().catch(() => {});
+      if (active.current)
+        void api?.cancel().catch((caught: unknown) => {
+          reportClientAppError(caught);
+        });
     };
   }, []);
 
@@ -116,15 +132,19 @@ export function CursorApprovalCheck({
     active.current = true;
     setRunning(true);
     setResult(null);
-    setError('');
+    setError(null);
     setPending(null);
     try {
       const next = await api.run(binaryPath.trim());
       if (mounted.current) setResult(next);
-    } catch {
-      if (mounted.current)
+    } catch (caught) {
+      const appError = toAppError(resolveClientAppError(caught));
+      if (appError && mounted.current)
         setError(
-          'Could not start the Cursor check. Check the executable path and try again.',
+          inlineFailure(
+            appError,
+            "Couldn't start the Cursor check. Check the executable path.",
+          ),
         );
     } finally {
       active.current = false;
@@ -148,14 +168,37 @@ export function CursorApprovalCheck({
           worktreeId: pending.worktreeId,
           chatId: pending.chatId,
           decision,
+          ...(pending.policyRevision !== undefined
+            ? { policyRevision: pending.policyRevision }
+            : {}),
         });
-        if (!accepted) setError('This approval is no longer pending.');
+        if (!accepted) {
+          // A refused allow may be stale: keep the card while it is pending.
+          const live = (await window.api.approvals.pendingRequests()).find(
+            (event) => event.requestId === requestId,
+          );
+          if (live) {
+            setPending((current) =>
+              current?.requestId === requestId &&
+              (current.policyRevision ?? -1) <= (live.policyRevision ?? -1)
+                ? live
+                : current,
+            );
+            return;
+          }
+          setError({ error: 'This approval is no longer pending.' });
+        }
         setPending(null);
         if (decision.stopTurn) await window.api.cursorApprovalCheck?.cancel();
-      } catch {
-        setError(
-          'Could not send the approval decision. Try again or press Stop.',
-        );
+      } catch (caught) {
+        const appError = toAppError(resolveClientAppError(caught));
+        if (appError)
+          setError(
+            inlineFailure(
+              appError,
+              "Couldn't send the approval decision. Try again or press Stop.",
+            ),
+          );
       }
     },
     [pending],
@@ -164,22 +207,31 @@ export function CursorApprovalCheck({
   const stop = useCallback(async (): Promise<void> => {
     try {
       await window.api.cursorApprovalCheck?.cancel();
-    } catch {
-      setError('Could not stop the check. Close this window to end it.');
+    } catch (caught) {
+      const appError = toAppError(resolveClientAppError(caught));
+      if (appError)
+        setError(
+          inlineFailure(
+            appError,
+            "Couldn't stop the check. Close this window to end it.",
+          ),
+        );
     }
   }, []);
 
   const saveDiagnosticPath = async (): Promise<void> => {
     setSaving(true);
-    setError('');
+    setError(null);
     try {
       const preferences = await window.api.savePreferences({
         cursorAgentPath: binaryPath.trim(),
       });
       emitPreferencesUpdated(preferences);
       if (mounted.current) setSavedPath(preferences.cursorAgentPath ?? '');
-    } catch {
-      if (mounted.current) setError('Could not save the diagnostic path.');
+    } catch (caught) {
+      const appError = toAppError(resolveClientAppError(caught));
+      if (appError && mounted.current)
+        setError(inlineFailure(appError, "Couldn't save the diagnostic path."));
     } finally {
       if (mounted.current) setSaving(false);
     }
@@ -191,7 +243,7 @@ export function CursorApprovalCheck({
     running,
     awaitingApproval: pending !== null,
     outcome: result?.outcome ?? null,
-    errorVisible: Boolean(error),
+    errorVisible: error !== null,
   });
   const actionHandler = useRef<(operation: string) => boolean>(() => false);
   actionHandler.current = (operation): boolean => {
@@ -238,9 +290,15 @@ export function CursorApprovalCheck({
 
   const description =
     'A local development check that asks Cursor to create one file in a temporary folder. It can use your Cursor account credits.';
-  const errorNotice = error ? (
-    <Notice intent="destructive">{error}</Notice>
-  ) : null;
+  const errorNotice = (
+    <DesktopErrorBanner
+      className=""
+      error={error?.error}
+      {...(error?.details === undefined ? {} : { details: error.details })}
+      onDismiss={(): void => setError(null)}
+      testId="cursor-approval-check-error"
+    />
+  );
   // The check's rows. Experiments shows them in the section's group;
   // Accounts keeps them behind the group's Show row.
   const checkRows = (

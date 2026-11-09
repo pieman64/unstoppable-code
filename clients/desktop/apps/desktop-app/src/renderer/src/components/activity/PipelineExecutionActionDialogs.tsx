@@ -1,5 +1,5 @@
 import { lazy, Suspense, type JSX } from 'react';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import type { PlanReadyPipelineModalOnRun } from '@/components/chat/PlanReadyPipelineModal';
 import { PipelineReportModal } from './PipelineReportModal';
 

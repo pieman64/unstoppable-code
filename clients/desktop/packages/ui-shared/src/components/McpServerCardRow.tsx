@@ -51,6 +51,8 @@ export interface McpServerCardRowProps {
   readonly metadata?: ReactNode;
   readonly status?: ReactNode;
   readonly children?: ReactNode;
+  /** Margin-free host prompts below the row; the MCP control owns the 6px gap. */
+  readonly footer?: ReactNode;
   readonly actions?: ReactNode;
 }
 
@@ -63,12 +65,47 @@ export function McpServerCardRow({
   metadata,
   status,
   children,
+  footer,
   actions,
 }: McpServerCardRowProps): JSX.Element {
   const nameClass = compact
     ? 'min-w-0 break-words fg-primary'
     : 'min-w-0 break-words text-s font-medium fg-primary';
   const controlClass = `focus-ring rounded text-left hover:underline ${nameClass}`;
+  const mainContent = (
+    <>
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        {destination === undefined ? (
+          <span className={nameClass} data-testid="mcp-servers-card-name">
+            {name}
+          </span>
+        ) : destination.kind === 'button' ? (
+          <button
+            type="button"
+            className={controlClass}
+            onClick={destination.onActivate}
+            data-testid="mcp-servers-card-name"
+          >
+            {name}
+          </button>
+        ) : (
+          <a
+            className={controlClass}
+            href={destination.href}
+            target="_blank"
+            rel="noopener"
+            aria-label={`${name} (opens in a new tab)`}
+            data-testid="mcp-servers-card-name"
+          >
+            {name}
+          </a>
+        )}
+        {metadata}
+        {status}
+      </div>
+      {children}
+    </>
+  );
   return (
     <li
       className={
@@ -82,36 +119,14 @@ export function McpServerCardRow({
       data-enabled={enabled ? 'true' : 'false'}
     >
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          {destination === undefined ? (
-            <span className={nameClass} data-testid="mcp-servers-card-name">
-              {name}
-            </span>
-          ) : destination.kind === 'button' ? (
-            <button
-              type="button"
-              className={controlClass}
-              onClick={destination.onActivate}
-              data-testid="mcp-servers-card-name"
-            >
-              {name}
-            </button>
-          ) : (
-            <a
-              className={controlClass}
-              href={destination.href}
-              target="_blank"
-              rel="noopener"
-              aria-label={`${name} (opens in a new tab)`}
-              data-testid="mcp-servers-card-name"
-            >
-              {name}
-            </a>
-          )}
-          {metadata}
-          {status}
-        </div>
-        {children}
+        {footer === undefined ? (
+          mainContent
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <div>{mainContent}</div>
+            <div className="flex flex-col gap-1.5 empty:hidden">{footer}</div>
+          </div>
+        )}
       </div>
       <div className="flex max-w-full shrink-0 flex-wrap items-center gap-1.5">
         {actions}

@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import {
+  link,
   lstat,
   mkdir,
+  mkdtemp,
   open,
   realpath,
+  rm,
   stat,
   type FileHandle,
 } from 'node:fs/promises';
@@ -46,6 +49,8 @@ export interface FilesystemFileWriteIo {
    * replace re-checks its version after it.
    */
   beforeEffect?: () => Promise<void>;
+  /** Windows create: exclusive publication of the staged file. */
+  publishLinkEntry?: (source: string, destination: string) => Promise<void>;
 }
 
 export interface FilesystemFileWriteContext {
@@ -522,6 +527,20 @@ async function createFile(
       "The file's folder changed while it was being created. Nothing was written.",
     );
   throwIfAborted(signal);
+  if (host.os === 'win32') {
+    try {
+      return await createWindowsFile(target, parentReal, bytes, signal, io);
+    } catch (error) {
+      if (errorCode(error) === 'EEXIST')
+        throw writeError(
+          'already_exists',
+          undefined,
+          `A file or folder already exists at ${target.relativePath}.`,
+          error,
+        );
+      throw error;
+    }
+  }
   let handle: FileHandle;
   try {
     handle = await open(
@@ -547,6 +566,80 @@ async function createFile(
     return writeResult(target.relativePath, bytes, await handle.stat());
   } finally {
     await handle.close();
+  }
+}
+
+/** Prefer link publication: Windows exclusive open can follow dangling links. */
+async function createWindowsFile(
+  target: ResolvedTarget,
+  parentReal: string,
+  bytes: Buffer,
+  signal: AbortSignal | undefined,
+  io: FilesystemFileWriteIo | undefined,
+): Promise<WorkerFilesystemFileWriteResult> {
+  const stagingDirectory = await mkdtemp(join(parentReal, '.canopy-create-'));
+  const stagedPath = join(stagingDirectory, 'file');
+  const destination = join(parentReal, basename(target.targetPath));
+  try {
+    const handle = await open(stagedPath, 'wx', 0o666);
+    try {
+      await writeAll(handle, bytes);
+      throwIfAborted(signal);
+      if ((await realpath(parentReal)) !== parentReal)
+        throw revisionConflict(
+          "The file's folder changed while it was being created. Nothing was written.",
+        );
+      try {
+        await (io?.publishLinkEntry ?? link)(stagedPath, destination);
+      } catch (error) {
+        try {
+          await lstat(destination);
+        } catch (lookupError) {
+          if (errorCode(lookupError) !== 'ENOENT') throw lookupError;
+          const code = errorCode(error);
+          // libuv maps FAT/exFAT's ERROR_INVALID_FUNCTION from CreateHardLinkW to EISDIR.
+          if (
+            code !== 'EPERM' &&
+            code !== 'ENOTSUP' &&
+            code !== 'EOPNOTSUPP' &&
+            code !== 'ENOSYS' &&
+            code !== 'EISDIR'
+          )
+            throw error;
+          // Without hard links, lstat narrows but cannot close the link-swap-to-open window.
+          throwIfAborted(signal);
+          const published = await open(
+            destination,
+            constants.O_CREAT |
+              constants.O_EXCL |
+              constants.O_WRONLY |
+              noFollowFlag(),
+            0o666,
+          );
+          try {
+            await writeAll(published, bytes);
+            return writeResult(
+              target.relativePath,
+              bytes,
+              await published.stat(),
+            );
+          } finally {
+            await published.close();
+          }
+        }
+        throw writeError(
+          'already_exists',
+          undefined,
+          `A file or folder already exists at ${target.relativePath}.`,
+          error,
+        );
+      }
+      return writeResult(target.relativePath, bytes, await handle.stat());
+    } finally {
+      await handle.close();
+    }
+  } finally {
+    await rm(stagingDirectory, { recursive: true, force: true });
   }
 }
 

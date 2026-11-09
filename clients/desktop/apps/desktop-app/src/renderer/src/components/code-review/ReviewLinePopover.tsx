@@ -69,7 +69,7 @@ export function ReviewLinePopover({
         <div className="sticky top-0 z-10 border-b bg-quaternary px-3 py-1.5 text-2xs font-medium fg-secondary">
           {header}
         </div>
-        <div className="space-y-2 p-2">
+        <div className="flex flex-col p-2 gap-2">
           {annotations.map((annotation) => (
             <div key={annotation.id} className="shrink-0">
               <ReviewAnnotationCard

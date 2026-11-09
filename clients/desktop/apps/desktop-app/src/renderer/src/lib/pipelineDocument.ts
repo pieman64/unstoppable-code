@@ -26,7 +26,7 @@ import type {
   PipelineData,
   PipelineInfo,
   SharedPipelineDetail,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   COWORK_HOME_WORKTREE_ID,
   WORKSPACE_ROOT_REPO_ID,
@@ -124,8 +124,17 @@ const DEFAULT_LOAD_ERROR = 'Failed to load workflow';
 export function sharedDetailToPipelineData(
   detail: SharedPipelineDetail,
 ): PipelineData {
-  const content = parsePipelineText(detail.rawPipeline);
-  const info: PipelineInfo = {
+  return {
+    info: sharedDetailToPipelineInfo(detail),
+    content: parsePipelineText(detail.rawPipeline),
+  };
+}
+
+/** The row of {@link sharedDetailToPipelineData}, without parsing the document. */
+export function sharedDetailToPipelineInfo(
+  detail: Omit<SharedPipelineDetail, 'rawPipeline'>,
+): PipelineInfo {
+  return {
     id: `shared:${CANOPY_CLOUD_SERVER_ID}:${detail.id}`,
     name: detail.name,
     filename: '',
@@ -148,7 +157,6 @@ export function sharedDetailToPipelineData(
     ...(detail.owner ? { owner: detail.owner } : {}),
     publicShare: detail.publicShare ?? null,
   };
-  return { info, content };
 }
 
 /**

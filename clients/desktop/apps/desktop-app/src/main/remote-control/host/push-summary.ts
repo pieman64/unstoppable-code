@@ -2,7 +2,7 @@ import {
   IPC_CHANNELS,
   type ChatInterestDeclaration,
 } from '@canopy/desktop-shared/types';
-import type { RemotePushSummary } from '@canopy/desktop-shared/types/observability';
+import type { RemotePushSummary } from '@canopy/execution-engine/types/observability';
 
 const WINDOW_MS = 30_000;
 

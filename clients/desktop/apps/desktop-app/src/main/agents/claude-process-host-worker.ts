@@ -4,7 +4,7 @@ import {
   type ConnectedExecutionHostChannel,
   type ExecutionHostChannel,
 } from '@canopy/desktop-shared/node/execution-host/channel';
-import { killProcessGroupByPid } from '@canopy/desktop-shared/node/lib/process-kill';
+import { killProcessGroupByPid } from '@canopy/execution-engine/node/lib/process-kill';
 import { killChildProcessGroup } from '../lib/process-kill';
 import type {
   ClaudeProcessHostRequest,

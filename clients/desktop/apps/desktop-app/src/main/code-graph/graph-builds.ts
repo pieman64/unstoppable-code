@@ -39,6 +39,11 @@ export type CodeGraphBuildDispatcher = Pick<
   'instruction'
 >;
 
+/** Wraps the build dispatcher for one call; agent tools pass their granted table (CAN-5825). */
+export type CodeGraphBuildVia = (
+  dispatcher: CodeGraphBuildDispatcher,
+) => CodeGraphBuildDispatcher;
+
 let dispatcherForTests: CodeGraphBuildDispatcher | null = null;
 
 /** Test seam: route builds through a dispatcher built over the real adapter. */
@@ -58,13 +63,17 @@ export type WorktreeCodeGraphBuild = Extract<
  * verifying content whose fingerprint matched, and resolves when the build
  * settles. Each call is one keyed request.
  */
-export async function buildWorktreeCodeGraphForAgent(scope: {
-  projectId: string;
-  worktreeId: string;
-}): Promise<WorktreeCodeGraphBuild> {
-  const dispatcher = dispatcherForTests ?? getActiveDesktopRuntimeIfAccepting();
+export async function buildWorktreeCodeGraphForAgent(
+  scope: {
+    projectId: string;
+    worktreeId: string;
+  },
+  options: { via?: CodeGraphBuildVia } = {},
+): Promise<WorktreeCodeGraphBuild> {
+  const active = dispatcherForTests ?? getActiveDesktopRuntimeIfAccepting();
   // No runtime means the app is starting or quitting: the build is canceled.
-  if (dispatcher === null) throw codeGraphBuildCanceledError();
+  if (active === null) throw codeGraphBuildCanceledError();
+  const dispatcher = options.via === undefined ? active : options.via(active);
   const { value: result } = await withDaemonCodeGraphRoute(
     selectDaemonCodeGraphForMain(scope.projectId),
     () =>

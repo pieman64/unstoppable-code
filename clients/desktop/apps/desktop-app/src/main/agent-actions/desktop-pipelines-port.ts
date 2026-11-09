@@ -31,7 +31,7 @@ import {
   type PipelineAgentChatAddress,
   type PipelineData,
   type PipelineExecutionInitiator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { BrowserWindow } from 'electron';
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
 import {

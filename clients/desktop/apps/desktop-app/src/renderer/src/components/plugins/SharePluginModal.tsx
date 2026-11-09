@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { type JSX, useCallback, useMemo, useRef, useState } from 'react';
 import { getShareablePluginRefKey } from '@canopy/protocol/plugins';
 import { useResourceContext } from '@canopy/ui-app/capability';
@@ -421,7 +422,7 @@ export function SharePluginModal({
 
   const notes = useMemo(
     () => (
-      <div className="space-y-3">
+      <Stack gap="item">
         {description ? (
           <p className="text-s fg-secondary">{description}</p>
         ) : null}
@@ -435,7 +436,7 @@ export function SharePluginModal({
           Only a reference to this plugin is shared. Credentials, private
           configuration, and local files are never included.
         </p>
-      </div>
+      </Stack>
     ),
     [description, pluginRef],
   );

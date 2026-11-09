@@ -10,7 +10,7 @@ import {
   type ModelHarness,
   type ModelHarnessSource,
 } from '@canopy/desktop-shared/types';
-import type { CodexConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import { resolveClaudeCompatibleInvocation } from './claude-compatible';
 import {

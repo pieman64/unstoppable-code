@@ -1,4 +1,4 @@
-import { brandEnvName, getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { brandEnvName, getBrandEnv } from '@canopy/execution-engine/brand/env';
 import { setOutput, writeOutputFile } from '../_lib/output';
 import { runWithActionEnvironment } from '../_lib/action-env';
 import { createLinearClient } from '../_lib/linear-client';

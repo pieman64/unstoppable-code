@@ -1,4 +1,4 @@
-import { isMcpOAuthBrowserScope } from '@canopy/desktop-shared/types/browser';
+import { isMcpOAuthBrowserScope } from '@canopy/execution-engine/types/browser';
 import { BrowserProfilePicker } from './BrowserProfilePicker';
 import { useId, type JSX, type ReactNode } from 'react';
 import type { BrowserSessionSnapshot } from '@canopy/desktop-shared/types';
@@ -19,7 +19,12 @@ import {
   SunIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { BrowserDownloadsButton } from './BrowserDownloadsButton';
-import { Button, Surface, TextInput } from '@canopy/ui-shared/components';
+import {
+  Button,
+  TextInput,
+  FieldError,
+  Surface,
+} from '@canopy/ui-shared/components';
 
 interface BrowserBarProps {
   browserId: string;
@@ -229,8 +234,8 @@ export function BrowserBar({
         </div>
       </div>
       {urlError !== null && (
-        <div id={errorId} className="px-2 pb-1 text-2xs fg-destructive">
-          {urlError}
+        <div className="px-2 pb-1">
+          <FieldError id={errorId}>{urlError}</FieldError>
         </div>
       )}
     </div>

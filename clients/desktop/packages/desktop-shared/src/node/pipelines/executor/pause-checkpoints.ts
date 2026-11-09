@@ -3,7 +3,7 @@ import type {
   PipelinePauseCheckpoint,
   PipelinePauseResponse,
   PipelineScalar,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { validatePauseInputAnswers } from '@canopy/desktop-shared/pipelines/pause-input-validation';
 
 function withDefaults(

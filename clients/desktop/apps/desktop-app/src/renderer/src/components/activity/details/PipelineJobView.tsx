@@ -1,5 +1,6 @@
 import { memo, useState, type JSX } from 'react';
 import {
+  Stack,
   EmptyState,
   ErrorBanner,
   Heading,
@@ -8,7 +9,7 @@ import {
 import type {
   ExecutionState,
   ExecutionSummary,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { PipelineRunStepCost } from '@canopy/protocol/cost-view';
 import { formatCostTotal } from '@canopy/ui-shared/components/cost';
 import {
@@ -127,93 +128,104 @@ function PipelineJobViewComponent({
       !archived &&
       canRetryFailedMatrixVariants(state.status, group, state.jobs);
     return (
-      <div className="space-y-4" data-testid={`pipeline-matrix-view-${jobId}`}>
-        <Surface variant="inset" padding="default">
-          <div className="flex items-center gap-2">
-            <Heading level={2} variant="section">
-              {logicalJob.name}
-            </Heading>
-            <Badge>matrix</Badge>
-          </div>
-          <div className="mt-2 text-s fg-secondary">
-            {group.variant_job_ids.length} variants
-          </div>
-          <div className="mt-1 text-xs fg-secondary">
-            Max parallel: {group.resolved_max_parallel ?? '—'} · Fail fast:{' '}
-            {group.fail_fast ? 'On' : 'Off'}
-          </div>
-          {group.outcome === 'failure' && group.conclusion === 'success' ? (
-            <p className="mt-1 text-xs fg-warning">Continued after failures</p>
-          ) : null}
+      <Stack gap="group" data-testid={`pipeline-matrix-view-${jobId}`}>
+        <Surface variant="inset" gap="item" padding="default">
+          <Stack gap="inline">
+            <div className="flex items-center gap-2">
+              <Heading level={2} variant="section">
+                {logicalJob.name}
+              </Heading>
+              <Badge>matrix</Badge>
+            </div>
+            <Stack gap="tight">
+              <div className="text-s fg-secondary">
+                {group.variant_job_ids.length} variants
+              </div>
+              <div className="text-xs fg-secondary">
+                Max parallel: {group.resolved_max_parallel ?? '—'} · Fail fast:{' '}
+                {group.fail_fast ? 'On' : 'Off'}
+              </div>
+              {group.outcome === 'failure' && group.conclusion === 'success' ? (
+                <p className="text-xs fg-warning">Continued after failures</p>
+              ) : null}
+            </Stack>
+          </Stack>
           {group.expansion === 'pending' ? (
-            <p className="mt-3 text-s fg-secondary">Preparing variants…</p>
+            <p className="text-s fg-secondary">Preparing variants…</p>
           ) : group.expansion === 'failure' ? (
-            <div className="mt-3">
+            <div>
               <Heading level={3} variant="title" tone="destructive">
                 Expansion failed
               </Heading>
               <p className="text-xs fg-secondary">{group.error}</p>
             </div>
           ) : group.variant_job_ids.length === 0 ? (
-            <p className="mt-3 text-s fg-secondary">
+            <p className="text-s fg-secondary">
               No variants were generated for this job.
             </p>
           ) : null}
-          {canRetryExpansion || canRetryAll || canRetryFailed ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {canRetryExpansion || canRetryAll ? (
-                <Button
-                  size="compact"
-                  disabled={matrixBusy}
-                  onClick={() => {
-                    setMatrixBusy(true);
-                    void retryMatrixJob({
-                      executionId,
-                      jobId,
-                      mode: canRetryExpansion ? 'expansion' : 'all',
-                    }).then((result) => {
-                      setMatrixBusy(false);
-                      setMatrixError(result.error ?? null);
-                    });
-                  }}
-                >
-                  {matrixBusy
-                    ? 'Trying again…'
-                    : canRetryExpansion
-                      ? 'Try expansion again'
-                      : 'Try all variants again'}
-                </Button>
+          {(canRetryExpansion ||
+            canRetryAll ||
+            canRetryFailed ||
+            matrixError) && (
+            <Stack gap="inline">
+              {canRetryExpansion || canRetryAll || canRetryFailed ? (
+                <div className="flex flex-wrap gap-2">
+                  {canRetryExpansion || canRetryAll ? (
+                    <Button
+                      size="compact"
+                      disabled={matrixBusy}
+                      onClick={() => {
+                        setMatrixBusy(true);
+                        void retryMatrixJob({
+                          executionId,
+                          jobId,
+                          mode: canRetryExpansion ? 'expansion' : 'all',
+                        }).then((result) => {
+                          setMatrixBusy(false);
+                          setMatrixError(result.error ?? null);
+                        });
+                      }}
+                    >
+                      {matrixBusy
+                        ? 'Trying again…'
+                        : canRetryExpansion
+                          ? 'Try expansion again'
+                          : 'Try all variants again'}
+                    </Button>
+                  ) : null}
+                  {canRetryFailed ? (
+                    <Button
+                      size="compact"
+                      disabled={matrixBusy}
+                      onClick={() => {
+                        setMatrixBusy(true);
+                        void retryMatrixJob({
+                          executionId,
+                          jobId,
+                          mode: 'failed',
+                        }).then((result) => {
+                          setMatrixBusy(false);
+                          setMatrixError(result.error ?? null);
+                        });
+                      }}
+                    >
+                      Try failed variants again
+                    </Button>
+                  ) : null}
+                </div>
               ) : null}
-              {canRetryFailed ? (
-                <Button
-                  size="compact"
-                  disabled={matrixBusy}
-                  onClick={() => {
-                    setMatrixBusy(true);
-                    void retryMatrixJob({
-                      executionId,
-                      jobId,
-                      mode: 'failed',
-                    }).then((result) => {
-                      setMatrixBusy(false);
-                      setMatrixError(result.error ?? null);
-                    });
-                  }}
-                >
-                  Try failed variants again
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
-          <ErrorBanner error={matrixError} className="mt-2" />
+              <ErrorBanner className="" error={matrixError} />
+            </Stack>
+          )}
         </Surface>
         <Surface variant="inset" className="overflow-hidden">
-          <div className="max-h-96 space-y-1 overflow-y-auto p-2">
+          <div className="flex flex-col max-h-96 overflow-y-auto p-2 gap-1 [&>*]:shrink-0">
             {group.variant_job_ids.map((variantJobId) => {
               const definition = state.job_definitions[variantJobId];
               const result = state.jobs[variantJobId];
               return (
-                <div key={variantJobId} className="flex items-center">
+                <div key={variantJobId} className="flex items-center gap-2">
                   <ListRow
                     className="min-w-0 flex-1"
                     onClick={() => onSelectMatrixVariant?.(variantJobId)}
@@ -230,7 +242,6 @@ function PipelineJobViewComponent({
                     <Button
                       variant="ghost-destructive"
                       size="compact"
-                      className="ml-2"
                       disabled={matrixBusy}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -255,7 +266,6 @@ function PipelineJobViewComponent({
                     <Button
                       variant="ghost"
                       size="compact"
-                      className="ml-2"
                       disabled={matrixBusy}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -279,7 +289,7 @@ function PipelineJobViewComponent({
             })}
           </div>
         </Surface>
-      </div>
+      </Stack>
     );
   }
 
@@ -301,13 +311,10 @@ function PipelineJobViewComponent({
     (jobDef?.max_iterations ?? 0) > 0;
 
   return (
-    <div
-      className="space-y-4"
-      data-testid={`pipeline-job-view-${displayJobId}`}
-    >
-      <Surface variant="inset" padding="default">
+    <Stack gap="group" data-testid={`pipeline-job-view-${displayJobId}`}>
+      <Surface variant="inset" gap="item" padding="default">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+          <Stack gap="tight" className="min-w-0">
             <div className="flex items-center gap-2">
               <StatusGlyph
                 state={pipelineStatusGlyphState(jobStatus)}
@@ -317,15 +324,15 @@ function PipelineJobViewComponent({
                 {jobName}
               </Heading>
             </div>
-            <div className="mt-1 font-mono text-2xs fg-secondary">
+            <div className="font-mono text-2xs fg-secondary">
               {displayJobId}
             </div>
-          </div>
+          </Stack>
           <Badge {...pipelineStatusBadge(jobStatus)}>{jobStatus}</Badge>
         </div>
 
         {(jobDef?.max_retries ?? 0) > 0 || (jobDef?.max_iterations ?? 0) > 0 ? (
-          <div className="mt-3 flex flex-wrap gap-2 text-2xs fg-secondary">
+          <div className="flex flex-wrap gap-2 text-2xs fg-secondary">
             {(jobDef?.max_retries ?? 0) > 0 && (
               <span>
                 Retries {jobResult?.retry_count ?? 0}/{jobDef?.max_retries}
@@ -340,7 +347,7 @@ function PipelineJobViewComponent({
           </div>
         ) : null}
 
-        <Surface variant="group" size="small" className="mt-3">
+        <Surface variant="group" size="small" className="">
           <div className="p-2.5">
             <TimingSummaryGrid
               identity={`job:${executionId}:${displayJobId}:current`}
@@ -357,11 +364,11 @@ function PipelineJobViewComponent({
       {!hasStartedSteps ? (
         <EmptyState title="No steps have started for this job yet." />
       ) : (
-        <div className="space-y-4">
+        <Stack gap="group">
           {attemptViews.map((attemptView, attemptViewIndex) => (
-            <div
+            <Stack
               key={`${displayJobId}-${attemptView.source}-${attemptView.attempt}-${attemptView.iteration ?? 1}`}
-              className="space-y-2"
+              gap="inline"
             >
               {showAttemptGroups && (
                 <div className="flex items-center justify-between gap-3 text-2xs fg-secondary">
@@ -416,7 +423,7 @@ function PipelineJobViewComponent({
                       )
                     : undefined;
                 return (
-                  <div key={stepInstanceKey}>
+                  <div key={stepInstanceKey} className="flex flex-col gap-1">
                     <PipelineStepRow
                       stepDef={stepDef}
                       stepResult={stepResult}
@@ -449,11 +456,11 @@ function PipelineJobViewComponent({
                   </div>
                 );
               })}
-            </div>
+            </Stack>
           ))}
-        </div>
+        </Stack>
       )}
-    </div>
+    </Stack>
   );
 }
 

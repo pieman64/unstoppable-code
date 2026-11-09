@@ -6,21 +6,19 @@ import {
 } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { createCopilotCapabilitySnapshot } from '@canopy/copilot-recipient/capability-snapshot';
 import type {
-  McpServerConfigData,
-  McpServerDefinitionData,
-  McpServerFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
-import { classifyMcpAuthFailure } from '@canopy/desktop-shared/agent-failures';
+  McpConnectionCredentials,
+  McpCredentialRef,
+  McpUpstreamAuthorization,
+} from '@canopy/core-runtime/node/mcp-auth';
+import { createCopilotCapabilitySnapshot } from '@canopy/copilot-recipient/capability-snapshot';
+import { classifyMcpAuthFailure } from '@canopy/execution-engine/agent-failures';
 import {
   CanopyCloudClientError,
   resolveCanopyCloudCredentialContext,
 } from '../canopy-cloud/client';
 import { clearAuthFailureToolNameCache } from '../lib/auth-failure-event';
 import { logMainProcessError } from '../lib/main-process-logging';
-import { getMcpServerFilePath } from '../lib/paths';
 import {
   registerAccountMcpRouteStatus,
   removeAccountMcpRouteStatus,
@@ -34,14 +32,13 @@ import {
   RequestBodyTooLargeError,
   writeJson,
 } from './integration-http';
-import { getValidMcpAccessToken } from './oauth-client';
-import { invalidateMcpOAuthAccessToken } from './oauth-token-store';
 import {
   clearPendingAuthFailures,
   recordPendingMcpAuthFailure,
 } from './pending-auth-failures';
 
-export interface McpProxyRoute {
+/** A route as the connection service stores it (CAN-4126): a credential reference, never an OAuth definition or token. */
+export interface AgentMcpRoute {
   routeId: string;
   sessionId: string | null;
   serverId: string;
@@ -53,20 +50,19 @@ export interface McpProxyRoute {
   authSupplier?: 'oauth' | 'canopy-cloud';
   reauthRequired?: boolean;
   oauthRequired?: boolean;
-  oauthDefinition?: McpServerDefinitionData;
-  oauthConfig?: McpServerConfigData;
+  /** Owner-minted reference; present exactly when the route authenticates with MCP OAuth. */
+  credential?: McpCredentialRef;
   /** Delegated routes must never forward without their live parent gate. */
   requireToolCallGate?: boolean;
 }
-
-export interface McpProxyRouteRegistration extends Omit<
-  McpProxyRoute,
+export interface AgentMcpRouteRegistration extends Omit<
+  AgentMcpRoute,
   'routeId' | 'reauthRequired'
 > {
   routeKey?: string;
 }
 
-interface InternalMcpProxyRoute extends McpProxyRoute {
+interface InternalMcpProxyRoute extends AgentMcpRoute {
   routeKey?: string;
   parsedUpstream: URL;
 }
@@ -88,6 +84,7 @@ export interface AgentMcpConnectionsOptions {
   readonly proxyUrl: (routeId: string) => string;
   /** True while the transport listens. */
   readonly listening: () => boolean;
+  readonly credentials: McpConnectionCredentials;
 }
 
 const SAFE_FORWARD_HEADERS = new Set([
@@ -108,62 +105,13 @@ const SAFE_RESPONSE_HEADERS = new Set([
   'www-authenticate',
 ]);
 
-function isMcpServerFile(value: unknown): value is McpServerFile {
-  return (
-    isRecord(value) &&
-    value.version === 1 &&
-    isRecord(value.server) &&
-    isRecord(value.server.definition) &&
-    Array.isArray(value.server.configs)
-  );
-}
-
 function createProxyRouteId(): string {
   return randomBytes(16).toString('base64url');
-}
-
-async function loadMcpDefinitionAndConfig(route: McpProxyRoute): Promise<{
-  definition: McpServerDefinitionData;
-  config: McpServerConfigData;
-} | null> {
-  if (route.oauthDefinition && route.oauthConfig) {
-    return {
-      definition: route.oauthDefinition,
-      config: route.oauthConfig,
-    };
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(
-      await readFile(getMcpServerFilePath(route.serverId), 'utf8'),
-    );
-    if (!isMcpServerFile(parsed)) {
-      return null;
-    }
-
-    const config = parsed.server.configs.find(
-      (entry) =>
-        isRecord(entry) &&
-        typeof entry.id === 'string' &&
-        entry.id === route.configId,
-    );
-    if (!config) {
-      return null;
-    }
-
-    return {
-      definition: parsed.server.definition,
-      config,
-    };
-  } catch {
-    return null;
-  }
 }
 
 async function buildForwardHeaders(
   req: IncomingMessage,
   route: InternalMcpProxyRoute,
-  authorizationToken: string | null,
 ): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     host: route.parsedUpstream.host,
@@ -201,8 +149,6 @@ async function buildForwardHeaders(
     for (const name of Object.keys(headers))
       if (name.toLowerCase() === 'authorization') delete headers[name];
     headers.Authorization = `Bearer ${credentials.apiKey}`;
-  } else if (authorizationToken) {
-    headers.Authorization = `Bearer ${authorizationToken}`;
   }
 
   return headers;
@@ -239,7 +185,7 @@ export class AgentMcpConnections {
     this.options = options;
   }
 
-  register(route: McpProxyRouteRegistration): Promise<string> {
+  register(route: AgentMcpRouteRegistration): Promise<string> {
     if (route.requireToolCallGate && route.sessionId === null) {
       return Promise.reject(new Error('A gated MCP route requires a session.'));
     }
@@ -257,6 +203,8 @@ export class AgentMcpConnections {
     const previousRoute = this.routes.get(routeId);
     if (previousRoute) {
       this.removeRouteFromSessionIndex(routeId, previousRoute.sessionId);
+      if (previousRoute.credential)
+        this.options.credentials.release(previousRoute.credential);
     }
     const fullRoute: InternalMcpProxyRoute = {
       routeId,
@@ -271,8 +219,7 @@ export class AgentMcpConnections {
       authSupplier: route.authSupplier ?? 'oauth',
       reauthRequired: false,
       oauthRequired: route.oauthRequired,
-      oauthDefinition: route.oauthDefinition,
-      oauthConfig: route.oauthConfig,
+      ...(route.credential ? { credential: route.credential } : {}),
       ...(route.requireToolCallGate ? { requireToolCallGate: true } : {}),
       ...(route.routeKey ? { routeKey: route.routeKey } : {}),
       parsedUpstream,
@@ -328,6 +275,7 @@ export class AgentMcpConnections {
     }
 
     this.routes.delete(routeId);
+    if (route.credential) this.options.credentials.release(route.credential);
     removeAccountMcpRouteStatus(routeId);
     this.removeRouteFromSessionIndex(routeId, route.sessionId);
   }
@@ -491,8 +439,10 @@ export class AgentMcpConnections {
 
   /** Shutdown: removes every account route status and clears routes and the session index (gates stay). */
   clear(): void {
-    for (const routeId of Array.from(this.routes.keys()))
+    for (const [routeId, route] of Array.from(this.routes.entries())) {
+      if (route.credential) this.options.credentials.release(route.credential);
       removeAccountMcpRouteStatus(routeId);
+    }
     this.routes.clear();
     this.routesBySession.clear();
   }
@@ -561,6 +511,29 @@ export class AgentMcpConnections {
     return 'answered';
   }
 
+  /** CAN-4126: one authorization attempt for an OAuth route. */
+  private async authorizeUpstream(
+    route: InternalMcpProxyRoute,
+  ): Promise<
+    | { kind: 'authorized'; authorization: McpUpstreamAuthorization }
+    | { kind: 'none' }
+    | { kind: 'unavailable' }
+  > {
+    if (!route.credential) return { kind: 'none' };
+    try {
+      const outcome = await this.options.credentials.authorize({
+        credential: route.credential,
+        purpose: 'mcp.upstream.forward',
+        upstreamUrl: route.upstreamUrl,
+      });
+      return outcome.status === 'authorized'
+        ? { kind: 'authorized', authorization: outcome.authorization }
+        : { kind: 'none' };
+    } catch {
+      return { kind: 'unavailable' };
+    }
+  }
+
   private async forwardRequest(
     req: IncomingMessage,
     res: ServerResponse,
@@ -580,49 +553,44 @@ export class AgentMcpConnections {
         error: { code: -32000, message: 'Selected MCP route is unavailable.' },
       });
     };
+    const answerAuthorizationRequired = (): void => {
+      writeJson(res, 401, {
+        jsonrpc: '2.0',
+        error: {
+          code: -32001,
+          message: 'MCP server authorization required',
+        },
+        id: null,
+      });
+    };
+    const answerAuthorizationUnavailable = (): void => {
+      res.setHeader('Retry-After', '30');
+      writeJson(res, 503, {
+        jsonrpc: '2.0',
+        error: {
+          code: -32002,
+          message:
+            'MCP authorization is temporarily unavailable. Try again shortly.',
+        },
+        id: null,
+      });
+    };
     if (!selectedRouteActive()) {
       selectedRouteUnavailable();
       return;
     }
-    let authorizationToken: string | null = null;
-    let loadedOAuth: {
-      definition: McpServerDefinitionData;
-      config: McpServerConfigData;
-    } | null = null;
+    let authorization: McpUpstreamAuthorization | null = null;
     if (route.authSupplier !== 'canopy-cloud' && route.oauthEnabled) {
-      loadedOAuth = await loadMcpDefinitionAndConfig(route);
-      if (loadedOAuth) {
-        try {
-          authorizationToken = await getValidMcpAccessToken(
-            loadedOAuth.definition,
-            loadedOAuth.config,
-          );
-        } catch {
-          res.setHeader('Retry-After', '30');
-          writeJson(res, 503, {
-            jsonrpc: '2.0',
-            error: {
-              code: -32002,
-              message:
-                'MCP authorization is temporarily unavailable. Try again shortly.',
-            },
-            id: null,
-          });
-          return;
-        }
-      }
-
-      if (!authorizationToken && route.oauthRequired !== false) {
-        writeJson(res, 401, {
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'MCP server authorization required',
-          },
-          id: null,
-        });
+      const first = await this.authorizeUpstream(route);
+      if (first.kind === 'unavailable') {
+        answerAuthorizationUnavailable();
         return;
       }
+      if (first.kind === 'none' && route.oauthRequired !== false) {
+        answerAuthorizationRequired();
+        return;
+      }
+      if (first.kind === 'authorized') authorization = first.authorization;
     }
 
     // A session that owns this route may gate tool calls at execution time;
@@ -661,11 +629,7 @@ export class AgentMcpConnections {
 
     let forwardHeaders: Record<string, string>;
     try {
-      forwardHeaders = await buildForwardHeaders(
-        req,
-        route,
-        authorizationToken,
-      );
+      forwardHeaders = await buildForwardHeaders(req, route);
     } catch (error: unknown) {
       const signedOut =
         error instanceof CanopyCloudClientError &&
@@ -682,6 +646,36 @@ export class AgentMcpConnections {
     if (!selectedRouteActive(gate)) {
       selectedRouteUnavailable();
       return;
+    }
+    let appliedAuthorization = false;
+    if (authorization) {
+      if (authorization.apply(forwardHeaders) === 'applied')
+        appliedAuthorization = true;
+      else {
+        const again = await this.authorizeUpstream(route);
+        if (!selectedRouteActive(gate)) {
+          selectedRouteUnavailable();
+          return;
+        }
+        if (again.kind === 'unavailable') {
+          answerAuthorizationUnavailable();
+          return;
+        }
+        if (again.kind === 'none') {
+          if (route.oauthRequired !== false) {
+            answerAuthorizationRequired();
+            return;
+          }
+          authorization = null;
+        } else {
+          if (again.authorization.apply(forwardHeaders) !== 'applied') {
+            answerAuthorizationUnavailable();
+            return;
+          }
+          authorization = again.authorization;
+          appliedAuthorization = true;
+        }
+      }
     }
 
     const upstreamPath = `${route.parsedUpstream.pathname}${route.parsedUpstream.search}`;
@@ -732,22 +726,15 @@ export class AgentMcpConnections {
       }
       let invalidation: Promise<void> | undefined;
       if (
-        authorizationToken &&
-        loadedOAuth &&
+        appliedAuthorization &&
+        authorization &&
         (upstreamStatusCode === 401 || upstreamStatusCode === 403)
       ) {
         const diagnostic = `OAuth token was rejected by the upstream MCP server (HTTP ${String(
           upstreamStatusCode,
         )}).`;
         if (upstreamStatusCode === 401) {
-          invalidation = invalidateMcpOAuthAccessToken(
-            loadedOAuth.definition.id,
-            loadedOAuth.config.id,
-            authorizationToken,
-            route.upstreamUrl,
-          ).catch((error: unknown) =>
-            logMainProcessError('MCP token invalidation failed', error),
-          );
+          invalidation = authorization.rejected();
         }
         // Publish for transcript attachment. A route with no owning session
         // (for example a settings-surface health check) has no turn to
@@ -755,8 +742,8 @@ export class AgentMcpConnections {
         // recording the error above.
         if (route.sessionId) {
           const failure = classifyMcpAuthFailure({
-            serverId: loadedOAuth.definition.id,
-            configId: loadedOAuth.config.id,
+            serverId: route.serverId,
+            configId: route.configId,
             displayName: route.displayName,
             statusCode: upstreamStatusCode,
             diagnostic,

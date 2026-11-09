@@ -1,9 +1,11 @@
+import { Badge, Count } from './Badge';
 import type { JSX, ReactNode } from 'react';
 import type {
   PortalMcpConnectionMetadata,
   PortalPluginCatalogMemberInventory,
 } from '@canopy/protocol/portal';
 import { Heading } from './Heading';
+import { PluginModNotice, pluginModRows } from './PluginModMembers';
 
 export interface PluginMemberDetailsProps {
   inventory: PortalPluginCatalogMemberInventory;
@@ -17,16 +19,21 @@ interface MemberRow {
   key: string;
   name: string;
   description?: string;
+  /** Shows the name and description as code, for paths. */
+  code?: boolean;
 }
 
 function MemberSection({
   title,
   rows,
   status,
+  note,
 }: {
   title: string;
   rows: MemberRow[];
   status?: ReactNode;
+  /** A line between the heading and the list. */
+  note?: ReactNode;
 }): JSX.Element {
   return (
     <section className="flex flex-col gap-2" aria-label={title}>
@@ -34,11 +41,10 @@ function MemberSection({
         <Heading level={3} variant="label">
           {title}
         </Heading>
-        <span className="rounded bg-fg-primary/10 px-1.5 py-0.5 text-3xs fg-secondary">
-          {rows.length}
-        </span>
+        <Count value={rows.length} />
         {status}
       </div>
+      {note}
       {rows.length === 0 ? (
         <p className="rounded-lg border px-3 py-2 text-xs fg-secondary">
           No members
@@ -47,9 +53,25 @@ function MemberSection({
         <ul className="divide-y rounded-lg border">
           {rows.map((row) => (
             <li key={row.key} className="px-3 py-2">
-              <p className="text-s font-medium fg-primary">{row.name}</p>
+              <p
+                className={
+                  row.code
+                    ? 'font-mono text-xs font-medium fg-primary'
+                    : 'text-s font-medium fg-primary'
+                }
+              >
+                {row.name}
+              </p>
               {row.description && (
-                <p className="text-xs fg-secondary">{row.description}</p>
+                <p
+                  className={
+                    row.code
+                      ? 'font-mono text-xs fg-secondary'
+                      : 'text-xs fg-secondary'
+                  }
+                >
+                  {row.description}
+                </p>
               )}
             </li>
           ))}
@@ -60,11 +82,7 @@ function MemberSection({
 }
 
 function InertStatus({ children }: { children: ReactNode }): JSX.Element {
-  return (
-    <span className="rounded bg-warning-subtle px-1.5 py-0.5 text-3xs fg-warning">
-      {children}
-    </span>
-  );
+  return <Badge tone="warning">{children}</Badge>;
 }
 
 /** Pure member-inventory display shared by cloud now and desktop later. */
@@ -75,6 +93,7 @@ export function PluginMemberDetails({
   connectionState,
   toolsEditor,
 }: PluginMemberDetailsProps): JSX.Element {
+  const modRows = pluginModRows(inventory.mods);
   return (
     <div className="flex flex-col gap-5" data-testid="plugin-member-details">
       <MemberSection
@@ -122,6 +141,18 @@ export function PluginMemberDetails({
           ) : undefined
         }
       />
+      {modRows.length > 0 && (
+        <MemberSection
+          title="Mods"
+          note={<PluginModNotice />}
+          rows={modRows.map((mod) => ({
+            key: mod.key,
+            name: mod.module,
+            description: mod.hooksFile,
+            code: true,
+          }))}
+        />
+      )}
       <MemberSection
         title="MCP servers"
         rows={inventory.mcpServers.map((member) => ({

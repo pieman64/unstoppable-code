@@ -28,6 +28,12 @@ export interface InterfaceLeaseDescriptor {
   readonly leaseId: string;
   readonly surface: InterfaceSurface;
   readonly interfaceKind: CanopyInterfaceKind;
+  /**
+   * Whose windows the lease serves (CAN-5823): absent for this computer's
+   * own, or the device id of a computer driving it by remote control. A call
+   * is served only by a lease of its own audience.
+   */
+  readonly audience?: string;
 }
 export interface InterfaceToolScope {
   readonly workspaceId: string;
@@ -67,13 +73,15 @@ export type InterfaceToolReplyDisposition =
 export interface InterfaceToolAvailability {
   /** Increments whenever toolNames changes. */
   readonly revision: number;
-  /** Catalog tools with at least one live serving lease, sorted. */
+  /** Catalog tools with at least one live serving lease of this computer's own windows, sorted. */
   readonly toolNames: readonly InterfaceToolName[];
 }
 export interface InterfaceToolInvokeRequest {
   readonly toolName: InterfaceToolName;
   readonly input: InterfaceToolPayload;
   readonly scope: InterfaceToolScope;
+  /** The audience whose leases may serve the call; absent for this computer's own windows. */
+  readonly audience?: string;
   readonly signal?: AbortSignal;
 }
 export interface InterfaceToolDeliveredEvent {
@@ -83,6 +91,26 @@ export interface InterfaceToolDeliveredEvent {
   surface: InterfaceSurface;
   scope: InterfaceToolScope;
 }
+/**
+ * Which lease answered a delivered call (CAN-5828). Identifiers and kinds
+ * only: never the call's input, its reply or an error message.
+ */
+export interface InterfaceToolSettledEvent {
+  readonly toolName: InterfaceToolName;
+  readonly callId: string;
+  readonly leaseId: string;
+  readonly surface: InterfaceSurface;
+  readonly interfaceKind: CanopyInterfaceKind;
+  /** Absent for this computer's own windows. */
+  readonly audience?: string;
+  readonly scope: InterfaceToolScope;
+  /** `answered`, or the kind of the failure that settled the call. */
+  readonly outcome: 'answered' | CanopyErrorPayload['kind'];
+  /** Epoch milliseconds. */
+  readonly deliveredAt: number;
+  /** Epoch milliseconds. */
+  readonly settledAt: number;
+}
 export interface InterfaceToolRegistryOptions {
   now?: () => number;
   setTimer?: (callback: () => void, delayMs: number) => { cancel(): void };
@@ -90,6 +118,8 @@ export interface InterfaceToolRegistryOptions {
   onError?: (error: unknown, context: string) => void;
   /** One line per delivered call; never receives inputs or replies. */
   onDelivered?: (event: InterfaceToolDeliveredEvent) => void;
+  /** Once per delivered call when it settles; never receives inputs or replies. */
+  onSettled?: (event: InterfaceToolSettledEvent) => void;
 }
 export const INTERFACE_TOOL_MAX_LEASES = 64;
 export const INTERFACE_TOOL_MAX_KEYS_PER_LEASE = 32;
@@ -171,6 +201,9 @@ export class InterfaceToolRegistry {
   private readonly onDelivered:
     | ((event: InterfaceToolDeliveredEvent) => void)
     | undefined;
+  private readonly onSettled:
+    | ((event: InterfaceToolSettledEvent) => void)
+    | undefined;
   private readonly leases = new Map<string, Lease>();
   private readonly calls = new Map<string, string>();
   private readonly listeners = new Set<
@@ -195,6 +228,7 @@ export class InterfaceToolRegistry {
     this.newCallId = options.newCallId ?? randomUUID;
     this.onError = options.onError ?? ((): undefined => undefined);
     this.onDelivered = options.onDelivered;
+    this.onSettled = options.onSettled;
   }
 
   /** Host only. Throws Error('Interface lease already open.') for a live id; CanopyOperationError resource_exhausted past 64 leases. */
@@ -237,9 +271,11 @@ export class InterfaceToolRegistry {
     return this.leases.has(leaseId);
   }
 
-  /** For CAN-4127: whether any lease is open, registered or not. */
+  /** For CAN-4127: whether any lease of this computer's own windows is open, registered or not. */
   hasLiveLease(): boolean {
-    return this.leases.size > 0;
+    for (const lease of this.leases.values())
+      if (lease.descriptor.audience === undefined) return true;
+    return false;
   }
 
   register(
@@ -319,8 +355,15 @@ export class InterfaceToolRegistry {
     };
   }
 
+  /** This computer's own windows; {@link availableFor} covers a remote audience. */
   available(): InterfaceToolAvailability {
     return this.availability;
+  }
+
+  /** Catalog tools a live lease of `audience` serves, sorted (CAN-5823). */
+  availableFor(audience: string | undefined): readonly InterfaceToolName[] {
+    if (audience === undefined) return this.availability.toolNames;
+    return this.toolNamesOf(audience);
   }
 
   /** Fires once per availability change, after the change. A throwing listener is reported to onError and skipped. */
@@ -335,7 +378,7 @@ export class InterfaceToolRegistry {
 
   /** Never rejects. */
   invoke(request: InterfaceToolInvokeRequest): Promise<InterfaceToolOutcome> {
-    const { toolName, input, scope, signal } = request;
+    const { toolName, input, scope, signal, audience } = request;
     if (signal?.aborted) return Promise.resolve(cancelled());
     if (!jsonObjectWithin(input, inputSchema))
       return Promise.resolve(
@@ -347,6 +390,7 @@ export class InterfaceToolRegistry {
     let lease: Lease | undefined;
     let best = -1;
     for (const candidate of this.leases.values()) {
+      if (candidate.descriptor.audience !== audience) continue;
       const sequence = candidate.tools.get(toolName)?.sequence;
       if (sequence !== undefined && sequence > best) {
         best = sequence;
@@ -379,6 +423,7 @@ export class InterfaceToolRegistry {
     };
     return new Promise<InterfaceToolOutcome>((resolve) => {
       let settled = false;
+      const delivery: { at?: number } = {};
       const onAbort = (): void => {
         if (settle(cancelled())) this.cancelAtInterface(serving, callId);
       };
@@ -400,6 +445,8 @@ export class InterfaceToolRegistry {
         signal?.removeEventListener('abort', onAbort);
         serving.pending.delete(callId);
         this.calls.delete(callId);
+        if (delivery.at !== undefined)
+          this.reportSettled(serving, call, outcome, delivery.at);
         resolve(outcome);
         return true;
       };
@@ -421,6 +468,7 @@ export class InterfaceToolRegistry {
         );
         return;
       }
+      delivery.at = this.now();
       try {
         this.onDelivered?.({
           toolName,
@@ -433,6 +481,31 @@ export class InterfaceToolRegistry {
         this.onError(error, 'interface tool delivery log');
       }
     });
+  }
+
+  private reportSettled(
+    lease: Lease,
+    call: InterfaceToolCall,
+    outcome: InterfaceToolOutcome,
+    deliveredAt: number,
+  ): void {
+    const { leaseId, surface, interfaceKind, audience } = lease.descriptor;
+    try {
+      this.onSettled?.({
+        toolName: call.toolName,
+        callId: call.callId,
+        leaseId,
+        surface,
+        interfaceKind,
+        ...(audience === undefined ? {} : { audience }),
+        scope: call.scope,
+        outcome: outcome.ok ? 'answered' : outcome.error.kind,
+        deliveredAt,
+        settledAt: this.now(),
+      });
+    } catch (error) {
+      this.onError(error, 'interface tool settlement log');
+    }
   }
 
   /** Host only: a reply arrived from the interface holding `leaseId`. */
@@ -497,11 +570,16 @@ export class InterfaceToolRegistry {
     }
   }
 
-  private refreshAvailability(): void {
+  private toolNamesOf(audience: string | undefined): InterfaceToolName[] {
     const names = new Set<InterfaceToolName>();
     for (const lease of this.leases.values())
-      for (const name of lease.tools.keys()) names.add(name);
-    const toolNames = [...names].sort();
+      if (lease.descriptor.audience === audience)
+        for (const name of lease.tools.keys()) names.add(name);
+    return [...names].sort();
+  }
+
+  private refreshAvailability(): void {
+    const toolNames = this.toolNamesOf(undefined);
     if (sameNames(toolNames, this.availability.toolNames)) return;
     this.availability = {
       revision: this.availability.revision + 1,

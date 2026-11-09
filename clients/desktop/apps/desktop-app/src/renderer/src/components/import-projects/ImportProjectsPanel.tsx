@@ -17,12 +17,14 @@ import type {
   ExternalProjectProvider,
 } from '@canopy/desktop-shared/types';
 import {
+  Stack,
   Button,
   Checkbox,
   ChoiceField,
   ErrorBanner,
   ProgressBar,
   StatusPill,
+  SourceBranchCommitHint,
   Surface,
 } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -580,7 +582,7 @@ export function ImportProjectsPanel({
 
   const nothingToImport = phase === 'choose' && eligible.length === 0;
   const detectedPlugins = scan?.detectedPlugins ?? [];
-  const wrapperClass = embedded ? 'space-y-3' : 'space-y-4';
+  const wrapperClass = embedded ? 'flex flex-col gap-3' : 'flex flex-col gap-4';
 
   if (phase === 'scanning') {
     return (
@@ -673,7 +675,10 @@ export function ImportProjectsPanel({
           error={error}
           testId="import-projects-follow-through-error"
         />
-        <ul className="max-h-72 space-y-1 overflow-y-auto" role="list">
+        <ul
+          className="flex flex-col max-h-72 overflow-y-auto gap-1 [&>*]:shrink-0"
+          role="list"
+        >
           {results.map((result) => {
             const detail = resultDetail(result);
             return (
@@ -723,10 +728,11 @@ export function ImportProjectsPanel({
         {detectedPlugins.length > 0 && (
           <Surface
             variant="outline"
+            gap="inline"
             size="small"
             data-testid="import-projects-plugins"
           >
-            <div className="px-3 py-2">
+            <div className="flex flex-col gap-2 px-3 py-2">
               <p className="text-s fg-primary">
                 {detectedPlugins.length === 1
                   ? `1 plugin from ${detectedPlugins[0]?.providers.map(providerName).join(' and ')} is not on your plugin list yet.`
@@ -736,7 +742,7 @@ export function ImportProjectsPanel({
                 Adding them keeps your preferred plugins in one place. Plugins
                 that need sign-in ask for it in {CUSTOMIZE_LABEL}.
               </p>
-              <div className="mt-2 flex items-center gap-2">
+              <div className="flex items-center gap-2">
                 <Button
                   size="sm"
                   variant="secondary"
@@ -761,7 +767,7 @@ export function ImportProjectsPanel({
                 </Button>
               </div>
               <ErrorBanner
-                className="mt-2"
+                className=""
                 error={pluginsError}
                 testId="import-projects-plugins-error"
               />
@@ -808,7 +814,7 @@ export function ImportProjectsPanel({
         </Surface>
       )}
       {nothingToImport ? (
-        <div className="space-y-2" data-testid="import-projects-empty">
+        <Stack gap="inline" data-testid="import-projects-empty">
           <p className="text-s fg-primary">
             {candidates.length === 0
               ? scan &&
@@ -822,7 +828,7 @@ export function ImportProjectsPanel({
             Choose a folder to add it as a project, or come back after using
             Claude or Codex.
           </p>
-        </div>
+        </Stack>
       ) : (
         <p
           className="text-s fg-secondary"
@@ -881,7 +887,7 @@ export function ImportProjectsPanel({
 
       {candidates.length > 0 && (
         <ul
-          className={`${embedded ? 'max-h-64' : 'max-h-80'} space-y-1 overflow-y-auto`}
+          className={`${embedded ? 'max-h-64' : 'max-h-80'} flex flex-col gap-1 overflow-y-auto [&>*]:shrink-0`}
           role="list"
           data-testid="import-projects-list"
           data-row-count={candidates.length}
@@ -929,47 +935,49 @@ export function ImportProjectsPanel({
                       aria-label={`Import ${candidate.displayName}`}
                       data-testid={`import-projects-row-checkbox-${candidate.id}`}
                     />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="truncate text-s font-medium fg-primary"
-                          data-testid={`import-projects-row-name-${candidate.id}`}
-                        >
-                          {candidate.displayName}
-                        </span>
-                        {candidate.providers.map((provider) => (
-                          <StatusPill
-                            key={provider}
-                            tone="secondary"
-                            data-testid={`import-projects-provider-${provider}`}
+                    <div className="flex min-w-0 flex-1 flex-col gap-1">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="truncate text-s font-medium fg-primary"
+                            data-testid={`import-projects-row-name-${candidate.id}`}
                           >
-                            {providerName(provider)}
-                          </StatusPill>
-                        ))}
-                        {candidate.providers.length === 0 && (
-                          <StatusPill tone="secondary">Folder</StatusPill>
-                        )}
-                        <span className="ml-auto shrink-0">
-                          {statusPill(candidate)}
-                        </span>
-                      </div>
-                      <p
-                        className="truncate text-xs fg-tertiary"
-                        title={candidate.rootPath}
-                      >
-                        {candidate.rootPath}
-                      </p>
-                      {chatTitles && (
-                        // Session titles fall back to the first prompt's text.
+                            {candidate.displayName}
+                          </span>
+                          {candidate.providers.map((provider) => (
+                            <StatusPill
+                              key={provider}
+                              tone="secondary"
+                              data-testid={`import-projects-provider-${provider}`}
+                            >
+                              {providerName(provider)}
+                            </StatusPill>
+                          ))}
+                          {candidate.providers.length === 0 && (
+                            <StatusPill tone="secondary">Folder</StatusPill>
+                          )}
+                          <span className="ml-auto shrink-0">
+                            {statusPill(candidate)}
+                          </span>
+                        </div>
                         <p
-                          className={`truncate text-xs fg-secondary ${POSTHOG_REPLAY_BLOCK_CLASS}`}
-                          title={chatTitles}
-                          data-testid={`import-projects-row-chat-titles-${candidate.id}`}
+                          className="truncate text-xs fg-tertiary"
+                          title={candidate.rootPath}
                         >
-                          {chatTitles}
+                          {candidate.rootPath}
                         </p>
-                      )}
-                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs fg-secondary">
+                        {chatTitles && (
+                          // Session titles fall back to the first prompt's text.
+                          <p
+                            className={`truncate text-xs fg-secondary ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+                            title={chatTitles}
+                            data-testid={`import-projects-row-chat-titles-${candidate.id}`}
+                          >
+                            {chatTitles}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs fg-secondary">
                         <span>{kindLabel}</span>
                         {pickedFolder && <span>{PLAIN_FOLDER_DETAIL}</span>}
                         {pickedFolder && contained && (
@@ -983,6 +991,12 @@ export function ImportProjectsPanel({
                           <span>{chatCountLabel(candidate.sessionCount)}</span>
                         )}
                         {relative && <span>Last used {relative}</span>}
+                        {candidate.kind === 'git' && (
+                          <SourceBranchCommitHint
+                            headUnborn={candidate.headUnborn}
+                            testId={`import-projects-row-no-commits-${candidate.id}`}
+                          />
+                        )}
                         {candidate.linkedWorktreePaths.length > 0 && (
                           <span>
                             {candidate.linkedWorktreePaths.length === 1
@@ -1024,7 +1038,7 @@ export function ImportProjectsPanel({
 
       {scan && scan.diagnostics.length > 0 && (
         <ul
-          className="space-y-0.5 text-xs fg-tertiary"
+          className="flex flex-col text-xs fg-tertiary gap-0.5"
           data-testid="import-projects-diagnostics"
         >
           {scan.diagnostics.map((diagnostic, index) => (

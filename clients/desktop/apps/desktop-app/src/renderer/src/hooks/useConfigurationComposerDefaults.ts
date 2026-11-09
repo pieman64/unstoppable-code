@@ -17,7 +17,7 @@ import { APP_ADVISOR_SETTINGS_SAVED_EVENT } from '@/lib/appAdvisorSettingsEvents
 import {
   codexSpeedFastMode,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   resolveHomeEffectiveDefaults,
   resolveHomeEffectiveModelSettings,

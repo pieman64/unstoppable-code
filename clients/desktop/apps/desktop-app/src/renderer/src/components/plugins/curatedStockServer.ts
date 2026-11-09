@@ -1,5 +1,5 @@
 import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
-import type { McpServerDataView } from '@canopy/desktop-shared/types/mcp-servers';
+import type { McpServerDataView } from '@canopy/execution-engine/types/mcp-servers';
 import {
   curatedInitialUrl,
   curatedMetadataFromEntry,

@@ -11,7 +11,7 @@ import {
   MODEL_FAMILY_IDENTIFIERS,
   type ModelFamilyMetadata,
 } from './model-families';
-import { THINKING_LEVELS } from './thinking';
+import { THINKING_LEVELS } from '@canopy/execution-engine/thinking';
 import { type ClaudeModelEntry, type CodexModelEntry } from './types';
 
 export { MODEL_FAMILY_IDENTIFIERS };

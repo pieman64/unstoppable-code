@@ -42,6 +42,7 @@ import type { ChatInterfaceModeControl } from './chatInterfaceModes';
 import { ClaudeTerminalForkButton } from './ClaudeTerminalForkButton';
 import { ChatWatcherButton } from '@/components/watchers/ChatWatcherButton';
 import { ClaudeCodeTerminalExperience } from './ClaudeCodeTerminalExperience';
+import { ClaudeTerminalApprovalDock } from './ClaudeTerminalApprovalDock';
 import { ChatContent } from './ChatContent';
 import { ChatInput } from './ChatInput';
 import { TryItSetupPaneHost } from './TryItSetupPaneHost';
@@ -340,61 +341,72 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
             ref={cancelShortcutTargetRootRef}
             className="relative flex min-h-0 min-w-0 flex-1 flex-col"
           >
-            {/* Floating mode toggle stays pinned to the lower-right corner of
-              the terminal surface (the Canopy display surface instead docks it
-              into the composer next to the send button). */}
-            <div className="pointer-events-none absolute right-3 bottom-2 z-20 flex items-center gap-2">
-              {claudeTerminalRuntime?.sdkSessionId ? (
-                <div className="pointer-events-auto flex items-center gap-1 rounded-lg bg-card/95 p-1 shadow-sm backdrop-blur">
-                  {claudeTerminalActiveTurn && (
-                    <ChatWatcherButton
+            {/* The terminal's own box, so the floating toggle stays over the
+                terminal rather than the approval card below it. */}
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+              {/* Floating mode toggle stays pinned to the lower-right corner of
+                the terminal surface (the Canopy display surface instead docks it
+                into the composer next to the send button). */}
+              <div className="pointer-events-none absolute right-3 bottom-2 z-20 flex items-center gap-2">
+                {claudeTerminalRuntime?.sdkSessionId ? (
+                  <div className="pointer-events-auto flex items-center gap-1 rounded-lg bg-card/95 p-1 shadow-sm backdrop-blur pointer-coarse:gap-4">
+                    {claudeTerminalActiveTurn && (
+                      <ChatWatcherButton
+                        projectId={selectedWorktree.projectId}
+                        worktreeId={selectedWorktree.worktreeId}
+                        chatId={interfaceContext.chatId}
+                      />
+                    )}
+                    <ClaudeTerminalForkButton
                       projectId={selectedWorktree.projectId}
                       worktreeId={selectedWorktree.worktreeId}
                       chatId={interfaceContext.chatId}
+                      sdkSessionId={claudeTerminalRuntime.sdkSessionId}
                     />
-                  )}
-                  <ClaudeTerminalForkButton
-                    projectId={selectedWorktree.projectId}
-                    worktreeId={selectedWorktree.worktreeId}
-                    chatId={interfaceContext.chatId}
-                    sdkSessionId={claudeTerminalRuntime.sdkSessionId}
+                  </div>
+                ) : null}
+                <div className="pointer-events-auto">
+                  <ChatInterfaceModeToggle
+                    mode={interfaceContext.interfaceMode}
+                    onChange={(next): void => {
+                      void setChatInterfaceMode(interfaceContext.chatId, next, {
+                        projectId: selectedWorktree.projectId,
+                        worktreeId: selectedWorktree.worktreeId,
+                      });
+                    }}
+                    providerIsClaude={interfaceContext.providerIsClaude}
+                    canopyNativeBusy={composerTab?.status === 'streaming'}
+                    claudeTerminalTurnState={claudeTerminalTurnState}
+                    claudeTerminalBusy={terminalBusy}
+                    floating
                   />
                 </div>
-              ) : null}
-              <div className="pointer-events-auto">
-                <ChatInterfaceModeToggle
-                  mode={interfaceContext.interfaceMode}
-                  onChange={(next): void => {
-                    void setChatInterfaceMode(interfaceContext.chatId, next, {
-                      projectId: selectedWorktree.projectId,
-                      worktreeId: selectedWorktree.worktreeId,
-                    });
-                  }}
-                  providerIsClaude={interfaceContext.providerIsClaude}
-                  canopyNativeBusy={composerTab?.status === 'streaming'}
-                  claudeTerminalTurnState={claudeTerminalTurnState}
-                  claudeTerminalBusy={terminalBusy}
-                  floating
-                />
               </div>
+              {visible ? (
+                <ClaudeCodeTerminalExperience
+                  projectId={selectedWorktree.projectId}
+                  worktreeId={selectedWorktree.worktreeId}
+                  chatId={interfaceContext.chatId}
+                  isActivePanel={isActivePanel}
+                  cancelShortcutOwnerDocument={cancelShortcutOwnerDocument}
+                  cancelShortcutTargetRootRef={cancelShortcutTargetRootRef}
+                  // App Advisor entry chats keep App Advisor assistant mode in
+                  // the managed-terminal runtime, matching the native send path.
+                  assistantMode={
+                    selectedWorktree.projectId === APP_ADVISOR_PROJECT_ID
+                      ? 'app-advisor'
+                      : undefined
+                  }
+                />
+              ) : null}
             </div>
-            {visible ? (
-              <ClaudeCodeTerminalExperience
-                projectId={selectedWorktree.projectId}
-                worktreeId={selectedWorktree.worktreeId}
-                chatId={interfaceContext.chatId}
-                isActivePanel={isActivePanel}
-                cancelShortcutOwnerDocument={cancelShortcutOwnerDocument}
-                cancelShortcutTargetRootRef={cancelShortcutTargetRootRef}
-                // App Advisor entry chats keep App Advisor assistant mode in
-                // the managed-terminal runtime, matching the native send path.
-                assistantMode={
-                  selectedWorktree.projectId === APP_ADVISOR_PROJECT_ID
-                    ? 'app-advisor'
-                    : undefined
-                }
-              />
-            ) : null}
+            <ClaudeTerminalApprovalDock
+              projectId={selectedWorktree.projectId}
+              worktreeId={selectedWorktree.worktreeId}
+              chatId={interfaceContext.chatId}
+              terminalId={claudeTerminalRuntime?.terminalId}
+              ownerDocument={cancelShortcutOwnerDocument}
+            />
           </div>
         ) : (
           <div

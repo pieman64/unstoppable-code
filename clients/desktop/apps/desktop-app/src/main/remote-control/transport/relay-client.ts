@@ -16,6 +16,11 @@ import type { RelayTransport } from './session-manager';
 export interface RemoteRelay extends RelayTransport {
   readonly connectionStatus: RelayConnectionStatus;
   readonly peers: ReadonlyArray<DeviceRelayDeviceInfo>;
+  /**
+   * Features the relay advertised in its last `ready`, empty while not
+   * connected. `device-kind` means presence kinds are token-authenticated.
+   */
+  readonly features: ReadonlyArray<string>;
   start(): void;
   stop(): void;
   announce(): void;
@@ -161,6 +166,7 @@ export class RelayClient implements RelayTransport {
   private socket: RelaySocket | null = null;
   private status: RelayConnectionStatus = 'stopped';
   private readonly peerMap = new Map<string, DeviceRelayDeviceInfo>();
+  private relayFeatures: ReadonlyArray<string> = [];
   private readonly frameListeners = new Set<
     (peerDeviceId: string, payload: Buffer) => void
   >();
@@ -192,6 +198,10 @@ export class RelayClient implements RelayTransport {
 
   get peers(): ReadonlyArray<DeviceRelayDeviceInfo> {
     return Array.from(this.peerMap.values());
+  }
+
+  get features(): ReadonlyArray<string> {
+    return this.relayFeatures;
   }
 
   getPeer(deviceId: string): DeviceRelayDeviceInfo | null {
@@ -381,6 +391,7 @@ export class RelayClient implements RelayTransport {
         this.authenticated = true;
         this.attempt = 0;
         this.contested = false;
+        this.relayFeatures = message.features ?? [];
         this.peerMap.clear();
         for (const peer of message.peers) this.peerMap.set(peer.deviceId, peer);
         this.startPing();
@@ -444,6 +455,7 @@ export class RelayClient implements RelayTransport {
     this.clearOutbound();
     this.socket = null;
     this.authenticated = false;
+    this.relayFeatures = [];
     if (this.pingTimer) {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
@@ -537,6 +549,7 @@ export class RelayClient implements RelayTransport {
     // Queued frames belong to sessions that end with this socket.
     this.clearOutbound();
     this.authenticated = false;
+    this.relayFeatures = [];
     if (!socket) return;
     try {
       socket.close();

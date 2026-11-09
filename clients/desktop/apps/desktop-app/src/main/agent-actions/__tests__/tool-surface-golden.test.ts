@@ -36,7 +36,7 @@ import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   type CanopyInjectedToolKey,
   type CanopyInjectedToolSurface,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { buildCanopyDynamicToolSpecs } from '../../codex/canopy-dynamic-tools';
 import {
   createDelegateCanopyTools,

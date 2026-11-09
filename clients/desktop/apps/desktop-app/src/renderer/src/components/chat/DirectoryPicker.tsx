@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { useCallback, useId, useRef, useState, type JSX } from 'react';
 import {
   COMPOSER_ROW_MENU_GAP,
@@ -82,19 +83,21 @@ export function DirectoryPicker({
   );
 
   const tooltipContent = (
-    <>
-      <p className="text-xs font-medium fg-primary">Working directory</p>
-      <p className="mt-1 text-xs fg-secondary">
-        The chat session runs in{' '}
-        <span className="fg-primary">{currentName}</span>. It can affect which
-        project-based agent commands and skills are discovered.
-      </p>
+    <Stack gap="inline">
+      <Stack gap="tight">
+        <p className="text-xs font-medium fg-primary">Working directory</p>
+        <p className="text-xs fg-secondary">
+          The chat session runs in{' '}
+          <span className="fg-primary">{currentName}</span>. It can affect which
+          project-based agent commands and skills are discovered.
+        </p>
+      </Stack>
       {sessionLocked && (
-        <p className="mt-2 text-xs fg-secondary">
+        <p className="text-xs fg-secondary">
           Locked while this session is active — start a new chat to change it.
         </p>
       )}
-    </>
+    </Stack>
   );
 
   const legacyTriggerClass = disabled

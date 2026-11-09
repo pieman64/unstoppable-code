@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
-import { Notice, Surface } from '@canopy/ui-shared/components';
+import { Stack, Notice, Surface } from '@canopy/ui-shared/components';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
 import type {
   NormalizedStep,
   StepResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   getDisplayablePipelineStepInputs,
   getDisplayablePipelineStepOutputs,
@@ -342,9 +342,9 @@ export function PipelineStepDetail({
   // Inputs carry prompts and resolved env values, and outputs carry agent
   // results, dynamic env, and error output, so each section body is blocked
   // while its heading stays recorded. The wrapper keeps the section's
-  // `space-y-2` rhythm between its tables.
+  // parent gap rhythm between its tables.
   const inputsContent = showStepConfig ? (
-    <div className={`${POSTHOG_REPLAY_BLOCK_CLASS} space-y-2`}>
+    <div className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex flex-col gap-2`}>
       <KeyValueTable
         values={getDisplayablePipelineStepInputs(stepDef.with, stepResult)}
       />
@@ -352,7 +352,7 @@ export function PipelineStepDetail({
     </div>
   ) : null;
   const outputsContent = hasOutputs ? (
-    <div className={`${POSTHOG_REPLAY_BLOCK_CLASS} space-y-2`}>
+    <div className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex flex-col gap-2`}>
       <KeyValueTable
         values={getDisplayablePipelineStepOutputs(
           stepResult?.outputs,
@@ -384,7 +384,7 @@ export function PipelineStepDetail({
 
   return (
     <div
-      className="space-y-4 px-3 py-3"
+      className="flex flex-col px-3 py-3 gap-4"
       data-testid={`pipeline-step-detail-${stepDef.id}`}
       onKeyDown={(e): void => {
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
@@ -442,8 +442,8 @@ export function PipelineStepDetail({
       <DetailSection title="Inputs" content={inputsContent} collapsible />
       <DetailSection title="Outputs" content={outputsContent} collapsible />
 
-      <div className="flex min-h-0 flex-col">
-        <div className="mb-2 flex shrink-0 items-center justify-between gap-3">
+      <Stack gap="inline" className="min-h-0">
+        <div className="flex shrink-0 items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-xs font-medium fg-secondary">
             <span>Log output</span>
             {isStepRunning && <LoadingSpinner tone="active" />}
@@ -480,7 +480,7 @@ export function PipelineStepDetail({
         </div>
 
         <SearchBar
-          className="mb-2"
+          className=""
           query={activeSearch.query}
           onQueryChange={activeSearch.setQuery}
           currentIndex={activeSearch.currentIndex}
@@ -535,7 +535,7 @@ export function PipelineStepDetail({
             />
           )}
         </div>
-      </div>
+      </Stack>
     </div>
   );
 }

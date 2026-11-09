@@ -16,7 +16,7 @@
 // (`q`) and `createdBy` filtered fetches are intentionally not cached so the
 // store cannot balloon with one entry per keystroke.
 // ---------------------------------------------------------------------------
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import type { SharedListFilters } from '@/hooks/useSharedPipelineList';
 
 const STORAGE_KEY = 'canopy.sharedPipelineCache.v1';

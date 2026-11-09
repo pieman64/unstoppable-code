@@ -21,6 +21,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
+  Stack,
   Badge,
   type BadgeTone,
   Button,
@@ -178,107 +179,127 @@ function SelectedNodeDetail({
 
   return (
     <PaneSheet placement="bottom" aria-label="Node detail">
-      <div className="mb-1 flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1.5">
-          {style && (
-            <Badge size="compact" tone={style.tone}>
-              {style.label}
-            </Badge>
-          )}
-          <Heading level={4} variant="title" truncate className="min-w-0">
-            {data.label}
-          </Heading>
-        </div>
-        <Button
-          variant="ghost"
-          size="compact"
-          iconOnly
-          onClick={onClose}
-          aria-label="Close node detail"
-        >
-          <AppCatalogCloseIcon size="sm" />
-        </Button>
-      </div>
-      {data.detail && (
-        <p className="mb-2 whitespace-pre-wrap text-xs fg-primary">
-          {data.detail}
-        </p>
-      )}
-      {data.changeNote && (
-        <p className="mb-2 text-xs italic fg-secondary">{data.changeNote}</p>
-      )}
-      {data.files && data.files.length > 0 && (
-        <div className="mb-2">
-          <p className="mb-1 text-3xs font-medium fg-secondary">Files</p>
-          <ul className="flex flex-col gap-0.5">
-            {data.files.map((file) => (
-              <li key={file} className="truncate font-mono text-2xs fg-primary">
-                {file}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {data.planNodeIds && data.planNodeIds.length > 0 && (
-        <div>
-          <p className="mb-1 text-3xs font-medium fg-secondary">Plan nodes</p>
-          <ul className="flex flex-wrap gap-1">
-            {data.planNodeIds.map((id) => (
-              <li key={id} className="font-mono text-3xs fg-secondary">
-                {id}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {onAddNodeComment && (
-        <div className="mt-3">
-          <Divider />
-          <div className="pt-2">
-            {composing ? (
-              <div className="flex flex-col gap-1.5">
-                <TextArea
-                  aria-label="Comment"
-                  value={body}
-                  onChange={(e): void => setBody(e.target.value)}
-                  placeholder="Comment on this node…"
-                  rows={3}
-                  autoFocus
-                  data-testid="plan-node-comment-input"
-                />
-                <div className="flex items-center justify-end gap-1.5">
-                  <Button
-                    size="compact"
-                    onClick={(): void => {
-                      setComposing(false);
-                      setBody('');
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="primary"
-                    size="compact"
-                    onClick={handleSave}
-                    disabled={body.trim().length === 0}
-                    data-testid="plan-node-comment-save"
-                  >
-                    Save comment
-                  </Button>
-                </div>
+      <Stack gap="item">
+        <Stack gap="tight">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-1.5">
+              {style && (
+                <Badge size="compact" tone={style.tone}>
+                  {style.label}
+                </Badge>
+              )}
+              <Heading level={4} variant="title" truncate className="min-w-0">
+                {data.label}
+              </Heading>
+            </div>
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
+              onClick={onClose}
+              aria-label="Close node detail"
+            >
+              <AppCatalogCloseIcon size="sm" />
+            </Button>
+          </div>
+          <div
+            className={
+              Boolean(
+                data.detail ||
+                data.changeNote ||
+                data.files?.length ||
+                data.planNodeIds?.length,
+              ) && !Boolean(data.planNodeIds?.length)
+                ? 'flex flex-col gap-2 pb-2'
+                : 'flex flex-col gap-2'
+            }
+          >
+            {data.detail && (
+              <p className="whitespace-pre-wrap text-xs fg-primary">
+                {data.detail}
+              </p>
+            )}
+            {data.changeNote && (
+              <p className="text-xs italic fg-secondary">{data.changeNote}</p>
+            )}
+            {data.files && data.files.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <p className="text-3xs font-medium fg-secondary">Files</p>
+                <ul className="flex flex-col gap-0.5">
+                  {data.files.map((file) => (
+                    <li
+                      key={file}
+                      className="truncate font-mono text-2xs fg-primary"
+                    >
+                      {file}
+                    </li>
+                  ))}
+                </ul>
               </div>
-            ) : (
-              <Button
-                size="compact"
-                onClick={(): void => setComposing(true)}
-                data-testid="plan-node-add-comment"
-              >
-                + Add comment
-              </Button>
+            )}
+            {data.planNodeIds && data.planNodeIds.length > 0 && (
+              <Stack gap="tight">
+                <p className="text-3xs font-medium fg-secondary">Plan nodes</p>
+                <ul className="flex flex-wrap gap-1">
+                  {data.planNodeIds.map((id) => (
+                    <li key={id} className="font-mono text-3xs fg-secondary">
+                      {id}
+                    </li>
+                  ))}
+                </ul>
+              </Stack>
             )}
           </div>
-        </div>
-      )}
+        </Stack>
+        {onAddNodeComment && (
+          <div className="">
+            <Divider />
+            <div className="pt-2">
+              {composing ? (
+                <div className="flex flex-col gap-1.5">
+                  <TextArea
+                    aria-label="Comment"
+                    value={body}
+                    onChange={(e): void => setBody(e.target.value)}
+                    placeholder="Comment on this node…"
+                    rows={3}
+                    autoFocus
+                    data-testid="plan-node-comment-input"
+                  />
+                  <div className="flex items-center justify-end gap-1.5">
+                    <Button
+                      size="compact"
+                      onClick={(): void => {
+                        setComposing(false);
+                        setBody('');
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="compact"
+                      onClick={handleSave}
+                      disabled={body.trim().length === 0}
+                      data-testid="plan-node-comment-save"
+                    >
+                      Save comment
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  size="compact"
+                  onClick={(): void => setComposing(true)}
+                  data-testid="plan-node-add-comment"
+                >
+                  + Add comment
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </Stack>
     </PaneSheet>
   );
 }
@@ -611,14 +632,14 @@ export const PlanLogicDiffDiagram = forwardRef<
           <ErrorState
             space="panel"
             message={
-              <>
+              <Stack as="span" gap="tight">
                 Couldn’t generate the diagram.
                 {artifact?.error && (
-                  <span className="mt-1 block max-w-sm text-xs fg-secondary">
+                  <span className="block max-w-sm text-xs fg-secondary">
                     {artifact.error}
                   </span>
                 )}
-              </>
+              </Stack>
             }
             onRetry={onGenerate}
             retrying={isGenerating}

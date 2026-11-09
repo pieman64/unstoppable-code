@@ -21,6 +21,7 @@ function advanceWorkspaceApprovalRulesSaveGeneration(
     workspaceId,
     getWorkspaceApprovalRulesSaveGeneration(workspaceId) + 1,
   );
+  advanceApprovalAuthorityRevision();
 }
 
 /**
@@ -121,6 +122,7 @@ export function markWorkspaceApprovalRulesChanged(workspaceId: string): void {
     getWorkspaceApprovalRulesRevision(workspaceId) + 1,
   );
   approvalSettingsRevision++;
+  advanceApprovalAuthorityRevision();
 }
 
 export function getGlobalApprovalRulesRevision(): number {
@@ -130,6 +132,7 @@ export function getGlobalApprovalRulesRevision(): number {
 export function markGlobalApprovalRulesChanged(): void {
   globalRuleRevision++;
   approvalSettingsRevision++;
+  advanceApprovalAuthorityRevision();
 }
 
 /**
@@ -188,10 +191,12 @@ export function trackPreferencesAuthoritySave<T>(
       preferencesAuthoritySaveNarrowsFileWrites = false;
     }
     globalRuleSaveGeneration++;
+    advanceApprovalAuthorityRevision();
   }
   preferencesAuthoritySave = settled;
   preferencesAuthoritySaveNarrowsFileWrites = options.narrowsFileWrites;
   globalRuleSaveGeneration++;
+  advanceApprovalAuthorityRevision();
   return save;
 }
 
@@ -247,6 +252,7 @@ export async function readPreferencesApprovalAuthority<T>(
 /** A surface's persisted default approval mode is changing or changed. */
 export function markApprovalDefaultsChanged(): void {
   approvalSettingsRevision++;
+  advanceApprovalAuthorityRevision();
 }
 
 /**
@@ -279,6 +285,7 @@ export function markChatApprovalStateChanged(chat: {
     key,
     (chatApprovalStateRevisions.get(key) ?? 0) + 1,
   );
+  advanceApprovalAuthorityRevision();
 }
 
 /**
@@ -291,4 +298,46 @@ export function getChatApprovalStateRevision(chat: {
   chatId: string;
 }): number {
   return chatApprovalStateRevisions.get(chatApprovalStateKey(chat)) ?? 0;
+}
+
+let approvalAuthorityRevision = 0;
+let approvalAuthorityNotifyQueued = false;
+const approvalAuthorityListeners = new Set<(revision: number) => void>();
+
+/**
+ * One monotonic revision for this authority's approval policy (ADR 22a rule
+ * 2, CAN-4129). Every marker that changes rules, defaults, saves in flight,
+ * a chat's approval state or a live approval mode advances it, so an approval
+ * shown under an older revision can be recognised and refused.
+ */
+export function getApprovalAuthorityRevision(): number {
+  return approvalAuthorityRevision;
+}
+
+/** Advances the revision; listeners run once in the next microtask with the newest value. */
+export function advanceApprovalAuthorityRevision(): void {
+  approvalAuthorityRevision++;
+  if (approvalAuthorityNotifyQueued) return;
+  approvalAuthorityNotifyQueued = true;
+  queueMicrotask(() => {
+    approvalAuthorityNotifyQueued = false;
+    const revision = approvalAuthorityRevision;
+    for (const listener of Array.from(approvalAuthorityListeners)) {
+      try {
+        listener(revision);
+      } catch {
+        // One listener must not stop the others; the broker reports its own errors.
+      }
+    }
+  });
+}
+
+/** Observes revision advances; returns an unsubscribe. */
+export function onApprovalAuthorityRevision(
+  listener: (revision: number) => void,
+): () => void {
+  approvalAuthorityListeners.add(listener);
+  return () => {
+    approvalAuthorityListeners.delete(listener);
+  };
 }

@@ -35,8 +35,8 @@ import {
   codexSpeedFastMode,
   codexSpeedFromFastMode,
   isCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
-import type { CodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
+import type { CodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
 import {
   CanopyOperationError,
   canopyInvalidArgumentError,

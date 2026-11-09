@@ -3,7 +3,7 @@ import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import type {
   ExecutionSummary,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { SharedAutomationSummary } from '@canopy/protocol/automations';
 import type { WorkflowLibraryRow } from '@canopy/ui-app/workflows';
 import { useSharedAutomationList } from '@/hooks/useSharedAutomationList';

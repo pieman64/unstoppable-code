@@ -93,6 +93,8 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   defaultWorktreeProvider: 'claude',
   defaultWorktreeModelByProvider: createDefaultModelDefaultsByProvider(),
   approvalDefaults: createDefaultApprovalDefaults(),
+  claudeModAdmissions: [],
+  claudeModsDisabled: false,
   globalApprovalRules: [],
   // Full Access is the product default, so a fresh profile is exactly the
   // population that has never been told agents act without asking. Default the
@@ -319,6 +321,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   fileLabels: [],
   changedFilesHiddenLabelIds: [],
   autoDownloadUpdates: true,
+  automaticUpdateChecks: true,
   showDiagnosticsPill: true,
   onboardingCompleted: [],
   releaseHighlightsLastSeenVersion: null,
@@ -328,6 +331,14 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   // A default on every brand, not a count: it is written with any
   // preference save, but brands without a source repository never count.
   githubStarPrompt: { version: 1, promptsSent: 0 },
+  usageData: {
+    productAnalytics: true,
+    sessionReplay: true,
+    errorReports: true,
+    activeUseSignal: true,
+    featureFlagIdentity: true,
+    skillSafetyCheck: true,
+  },
   telemetrySharing: {
     transcripts: 'off',
     plans: 'off',

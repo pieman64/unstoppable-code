@@ -46,7 +46,10 @@ import {
   type BindingMove,
   type BindingWorkspace,
 } from './cloud-project-binding';
-import { createCloudProjectClient } from './cloud-project-client';
+import {
+  createCloudProjectClient,
+  type CloudProjectClient,
+} from './cloud-project-client';
 import {
   cloudProjectFailure,
   cloudProjectTransport,
@@ -76,7 +79,7 @@ const SYSTEM_WORKSPACE_IDS = new Set([
   'pipeline-editor',
 ]);
 
-async function account(): Promise<BindingAccount> {
+export async function cloudProjectAccount(): Promise<BindingAccount> {
   let credentials: Awaited<ReturnType<typeof getCanopyCloudCredentials>>;
   try {
     credentials = await getCanopyCloudCredentials();
@@ -90,7 +93,7 @@ async function account(): Promise<BindingAccount> {
   return {
     ok: true,
     accountId,
-    sharing: await isSharing(),
+    sharing: await isCloudProjectSharing(),
     credentials: { baseUrl: credentials.baseUrl, apiKey: credentials.apiKey },
   };
 }
@@ -99,13 +102,16 @@ async function account(): Promise<BindingAccount> {
  * Project identity shares what the Personal project list shares, so it
  * follows the same choice in Privacy settings, read again before each write.
  */
-async function isSharing(): Promise<boolean> {
+export async function isCloudProjectSharing(): Promise<boolean> {
   return (
     (await readPreferencesFile()).personalWorkspaceCatalogSync === 'private'
   );
 }
 
-async function isActiveAccount(accountId: string): Promise<boolean> {
+/** Whether this account is still the signed-in one. */
+export async function isCloudProjectAccountActive(
+  accountId: string,
+): Promise<boolean> {
   try {
     return (await getCanopyCloudCredentials()).account?.id === accountId;
   } catch {
@@ -264,24 +270,35 @@ async function readWorkspace(
   };
 }
 
+let client: CloudProjectClient | null = null;
+
+/** The cloud project routes through the signed-in Cloud client. */
+export function getCloudProjectClient(): CloudProjectClient {
+  client ??= createCloudProjectClient(cloudProjectTransport);
+  return client;
+}
+
+/** This device and installation, as claims name them. */
+export async function cloudProjectDevice(): Promise<{
+  deviceId: string;
+  installationGeneration: number;
+}> {
+  const deviceId = (await readPortalStateStore()).clientDeviceId;
+  return {
+    deviceId,
+    installationGeneration: await readInstallationGeneration(deviceId),
+  };
+}
+
 let engine: CloudProjectBindingEngine | null = null;
 
 function getEngine(): CloudProjectBindingEngine {
   engine ??= new CloudProjectBindingEngine({
-    client: createCloudProjectClient(cloudProjectTransport),
-    account,
-    isActiveAccount,
-    isSharing,
-    device: async (): Promise<{
-      deviceId: string;
-      installationGeneration: number;
-    }> => {
-      const deviceId = (await readPortalStateStore()).clientDeviceId;
-      return {
-        deviceId,
-        installationGeneration: await readInstallationGeneration(deviceId),
-      };
-    },
+    client: getCloudProjectClient(),
+    account: cloudProjectAccount,
+    isActiveAccount: isCloudProjectAccountActive,
+    isSharing: isCloudProjectSharing,
+    device: cloudProjectDevice,
     workspaceIds: async (): Promise<string[]> =>
       (await readWorkspaceIndexEntries())
         .map((entry) => entry.id)

@@ -3,7 +3,7 @@ import type {
   CanopyAuthFailureEventData,
 } from '@canopy/protocol/auth-recovery';
 import { isValidAuthDependencyFailure } from '@canopy/protocol/auth-recovery';
-import type { UsageInitiationSource } from '../types/observability';
+import type { UsageInitiationSource } from '@canopy/execution-engine/types/observability';
 import { parseMcpToolName } from './turn-utils';
 
 /**

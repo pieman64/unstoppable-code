@@ -1,3 +1,8 @@
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { createWorktreeCreationActions } from './projectsStore.worktreeCreation';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
+import { formatWorktreePrepareFailure } from '@canopy/ui-shared';
 import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
 import { offerLifecycleJournalQuarantine } from '@canopy/app-state';
 import { create } from 'zustand';
@@ -67,6 +72,7 @@ import type {
   WorktreePrStatus,
 } from '@canopy/desktop-shared/types';
 import { useChatStore } from './chatStore';
+import { useOllamaConnectionBannerStore } from './ollamaConnectionBannerStore';
 import { markStartPageSuppressed } from '@/lib/panels/start-page-suppression';
 import {
   awaitPendingRemovalHoldForE2e,
@@ -74,6 +80,7 @@ import {
 } from './archivedContainersStore';
 import { requestLoadedChangedFilesRefresh } from './changedFilesRefreshRuntime';
 import { useFileListStore } from './fileListStore';
+import { shareUnchangedProjects } from './projects-structural-sharing';
 import { useGitHubStore } from './githubStore';
 import { useHooksStore } from './hooksStore';
 import { usePipelineRunsStore } from './pipelineRunsStore';
@@ -147,7 +154,6 @@ import {
 } from '@/lib/projectWorktreeHooks';
 import type { EditableScripts } from '@/lib/editableScripts';
 import type { EditableHooks } from '@/lib/editableHooks';
-import { extractIpcErrorMessage } from '@/lib/errors';
 
 interface PendingTaskBranchNaming {
   text: string;
@@ -406,7 +412,7 @@ export interface PendingWorktreeScroll {
   reason: PendingWorktreeScrollReason;
 }
 
-interface ProjectsState {
+export interface ProjectsState {
   projects: SidebarItem[];
   isLoading: boolean;
   hasHydratedProjects: boolean;
@@ -563,7 +569,7 @@ interface ProjectsState {
   dismissPendingRecommendedPluginPrompt: (options?: {
     remember?: boolean;
   }) => void;
-  worktreeError: string | null;
+  worktreeError: InlineFailure | null;
   clearWorktreeError: () => void;
   branchRenameRequest: { projectId: string; worktreeId: string } | null;
   requestBranchRename: (projectId: string, worktreeId: string) => void;
@@ -926,7 +932,11 @@ interface E2eProjectsLoadBarrier {
 
 interface E2eProjectsTestApi {
   holdNextLoadAfterRead: () => void;
-  loadProjects: () => void;
+  /**
+   * Resolves when the reload has applied. With `requireSuccess` a failed read
+   * rejects; without it (callers that do not await) it always resolves.
+   */
+  loadProjects: (options?: { requireSuccess?: boolean }) => Promise<void>;
   waitForHeldLoad: () => Promise<void>;
   releaseHeldLoad: () => Promise<void>;
 }
@@ -2011,7 +2021,7 @@ export interface CreateWorktreeOptions {
   onRegistered?: (worktree: WorktreeData) => void;
 }
 
-async function finalizeCreatedWorktree(
+export async function finalizeCreatedWorktree(
   projectId: string,
   created: CreatedWorktreeRegistration,
   get: () => ProjectsState,
@@ -2150,7 +2160,12 @@ async function finalizeCreatedWorktree(
   }
   options.onRegistered?.(worktree);
   if (bufferedFailedEvent) {
-    set({ worktreeError: bufferedFailedEvent.error });
+    set({
+      worktreeError: worktreeGitFailedNotice(
+        bufferedFailedEvent,
+        get().projects,
+      ),
+    });
   }
   await get().saveProjects(updatedProjects);
   if (worktree.setupPhase !== 'git-pending') {
@@ -2408,7 +2423,7 @@ function applyWorkspaceWorktreeUpdatedEvent(
       archiveSuppressedWorktreeKeys,
     );
     if (applied) {
-      set({ projects });
+      setSharedProjects(projects, get, set);
     }
     return applied;
   }
@@ -2438,9 +2453,46 @@ function applyWorkspaceWorktreeUpdatedEvent(
   });
 
   if (applied) {
-    set({ projects });
+    setSharedProjects(projects, get, set);
   }
   return applied;
+}
+
+/** Applies an event's projects, keeping unchanged objects (and no-op events) as they were. */
+function setSharedProjects(
+  next: SidebarItem[],
+  get: () => ProjectsState,
+  set: (state: Partial<ProjectsState>) => void,
+): void {
+  const previous = get().projects;
+  const projects = shareUnchangedProjects(previous, next);
+  if (projects !== previous) set({ projects });
+}
+
+/**
+ * The notice for a failed worktree setup. The source name follows the event's
+ * own project and child source, not the selected project, so a late or
+ * buffered event still names the source that failed.
+ */
+function worktreeGitFailedNotice(
+  event: WorktreeGitFailedEvent,
+  projects: SidebarItem[],
+): InlineFailure {
+  const details = event.error.trim();
+  const project = projects.find((item) => item.id === event.projectId);
+  const sourceName =
+    project?.type === 'multi-repo' && event.sourceRepoId
+      ? project.repos.find((repo) => repo.id === event.sourceRepoId)?.name
+      : project?.name;
+  const error = formatWorktreePrepareFailure({
+    // Storage keeps its own handling; only the source reason changes the copy.
+    ...(event.failureReason === 'source-no-commits'
+      ? { reason: event.failureReason }
+      : {}),
+    ...(sourceName ? { sourceName } : {}),
+    hasDetails: details !== '',
+  });
+  return details === '' ? { error } : { error, details: event.error };
 }
 
 function applyWorktreeGitFailedEvent(
@@ -2448,7 +2500,7 @@ function applyWorktreeGitFailedEvent(
   get: () => ProjectsState,
   set: (state: Partial<ProjectsState>) => void,
 ): boolean {
-  const { projectId, worktreeId, error } = event;
+  const { projectId, worktreeId } = event;
 
   // Main ends a turn it held for this setup as failed, in the chat itself, so
   // the chat state stays.
@@ -2456,7 +2508,7 @@ function applyWorktreeGitFailedEvent(
   get().clearPendingTaskBranchNaming(projectId, worktreeId);
 
   if (!hasWorktreeRow(get().projects, projectId, worktreeId)) {
-    set({ worktreeError: error });
+    set({ worktreeError: worktreeGitFailedNotice(event, get().projects) });
     return false;
   }
 
@@ -2474,7 +2526,7 @@ function applyWorktreeGitFailedEvent(
         ),
       };
     }),
-    worktreeError: error,
+    worktreeError: worktreeGitFailedNotice(event, get().projects),
   });
   return true;
 }
@@ -2696,7 +2748,7 @@ function getSingleRepoDisplayScripts(
   );
 }
 
-function drainPendingTaskBranchNaming(
+export function drainPendingTaskBranchNaming(
   projectId: string,
   worktreeId: string,
   get: () => ProjectsState,
@@ -3284,7 +3336,7 @@ function finalizeArchiveUiRemoval(
   );
 }
 
-function removeTemporaryWorkspaceFromUi(
+export function removeTemporaryWorkspaceFromUi(
   workspaceId: string | undefined,
   get: () => ProjectsState,
   set: (state: Partial<ProjectsState>) => void,
@@ -4743,7 +4795,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           }
 
           set({
-            projects: normalized,
+            projects: shareUnchangedProjects(get().projects, normalized),
             isLoading: false,
             hasHydratedProjects: true,
             projectInventoryStatus: 'ready',
@@ -5052,195 +5104,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     registerCreatedWorkspaceWorktree: async (projectId, created, options) =>
       finalizeCreatedWorktree(projectId, created, get, set, options),
 
-    createWorktree: async (projectId, options) => {
-      const item = get().projects.find((p) => p.id === projectId);
-      if (!item || item.type === 'cowork') return undefined;
-
-      // Immediately uncollapse and show loading placeholder
-      const expanding = get().projects.map((p) => {
-        if (p.id !== projectId) return p;
-        return { ...p, collapsed: false };
-      });
-      const nextCreating = new Set(get().creatingWorktreeForProject);
-      nextCreating.add(projectId);
-      set({
-        projects: expanding,
-        creatingWorktreeForProject: nextCreating,
-        worktreeError: null,
-      });
-
-      try {
-        if (item.type === 'multi-repo') {
-          const created = await window.api.createWorkspaceWorktree({
-            workspaceId: projectId,
-            existingWorktreeIds: item.worktrees.map((wt) => wt.id),
-            sidebarItemGroupId: options?.sidebarItemGroupId,
-            baseWorktreeId: options?.baseWorktreeId,
-            baseBranch: options?.baseBranch,
-            existingBranch: options?.existingBranch,
-            branchName: options?.branchName,
-            suggestedBranch: options?.suggestedBranch,
-          });
-          const doneCreating = new Set(get().creatingWorktreeForProject);
-          doneCreating.delete(projectId);
-
-          if (created.needsRepair) {
-            set({
-              creatingWorktreeForProject: doneCreating,
-              pendingWorkspaceRepair: {
-                workspaceId: projectId,
-                workspaceName: item.name,
-                id: created.id,
-                branchName: created.branchName,
-                repairIssues: created.repairIssues,
-                existingBranch: created.existingBranch,
-                trackedRepoBaseBranches: created.trackedRepoBaseBranches,
-              },
-            });
-            return undefined;
-          }
-
-          set({
-            creatingWorktreeForProject: doneCreating,
-          });
-          if (options?.sidebarItemGroupId) {
-            const { useSidebarItemGroupsStore } =
-              await import('./sidebarItemGroupsStore');
-            useSidebarItemGroupsStore
-              .getState()
-              .confirmCreatedItem(
-                { workspaceLocalId: projectId },
-                options.sidebarItemGroupId,
-                created.id,
-              );
-          }
-          const finalized = await finalizeCreatedWorktree(
-            projectId,
-            created,
-            get,
-            set,
-            {
-              select: options?.select,
-              onRegistered: options?.onRegistered,
-              suppressStartPage: options?.suppressStartPage,
-              eagerChat: !options?.existingBranch,
-            },
-          );
-          return finalized
-            ? {
-                id: finalized.id,
-                ...(finalized.setupPhase
-                  ? { setupPhase: finalized.setupPhase }
-                  : {}),
-              }
-            : undefined;
-        }
-
-        const created = await window.api.createWorktree({
-          projectId,
-          repoPath: item.repoPath,
-          existingWorktreeIds: item.worktrees.map((wt) => wt.id),
-          sidebarItemGroupId: options?.sidebarItemGroupId,
-          baseWorktreeId: options?.baseWorktreeId,
-          baseBranch: options?.baseBranch,
-          existingBranch: options?.existingBranch,
-          branchName: options?.branchName,
-          suggestedBranch: options?.suggestedBranch,
-        });
-        const doneCreating = new Set(get().creatingWorktreeForProject);
-        doneCreating.delete(projectId);
-        set({
-          creatingWorktreeForProject: doneCreating,
-        });
-        if (options?.sidebarItemGroupId) {
-          const { useSidebarItemGroupsStore } =
-            await import('./sidebarItemGroupsStore');
-          useSidebarItemGroupsStore
-            .getState()
-            .confirmCreatedItem(
-              { workspaceLocalId: projectId },
-              options.sidebarItemGroupId,
-              created.id,
-            );
-        }
-        const finalized = await finalizeCreatedWorktree(
-          projectId,
-          created,
-          get,
-          set,
-          {
-            select: options?.select,
-            onRegistered: options?.onRegistered,
-            suppressStartPage: options?.suppressStartPage,
-            eagerChat: !options?.existingBranch,
-          },
-        );
-        return finalized
-          ? {
-              id: finalized.id,
-              ...(finalized.setupPhase
-                ? { setupPhase: finalized.setupPhase }
-                : {}),
-            }
-          : undefined;
-      } catch (error) {
-        const doneCreating = new Set(get().creatingWorktreeForProject);
-        doneCreating.delete(projectId);
-        const message =
-          error instanceof Error
-            ? extractIpcErrorMessage(error)
-            : 'Failed to create worktree';
-        set({
-          creatingWorktreeForProject: doneCreating,
-          worktreeError: message,
-        });
-        return undefined;
-      }
-    },
-
-    repairPendingWorkspaceWorktree: async (restoreClaudeMd) => {
-      const pending = get().pendingWorkspaceRepair;
-      if (!pending) {
-        return;
-      }
-
-      set({
-        workspaceRepairPending: true,
-        worktreeError: null,
-      });
-
-      try {
-        const repaired = await window.api.repairWorkspaceWorktree({
-          workspaceId: pending.workspaceId,
-          worktreeId: pending.id,
-          branchName: pending.branchName,
-          ...(pending.existingBranch
-            ? { existingBranch: pending.existingBranch }
-            : {}),
-          restoreClaudeMd,
-          trackedRepoBaseBranches: pending.trackedRepoBaseBranches,
-        });
-        set({
-          pendingWorkspaceRepair: null,
-        });
-        await finalizeCreatedWorktree(pending.workspaceId, repaired, get, set);
-        // A deferred-creation needs-repair detour keeps the chat state for
-        // this worktree id alive through the repair; main releases a turn it
-        // held for the setup. Completing a retained creation also emits
-        // `worktree:git-ready`; a repair without one does not, so kick the
-        // pipeline flush here too. It is idempotent once drained.
-        drainPendingTaskBranchNaming(pending.workspaceId, pending.id, get);
-        void usePipelineRunsStore
-          .getState()
-          .flushPendingForWorktree(pending.workspaceId, pending.id);
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : 'Failed to repair project';
-        set({ worktreeError: message });
-      } finally {
-        set({ workspaceRepairPending: false });
-      }
-    },
+    ...createWorktreeCreationActions({
+      get,
+      set,
+      finalizeCreatedWorktree,
+      drainPendingTaskBranchNaming,
+      removeTemporaryWorkspaceFromUi,
+      refreshDiffStatsForWorktrees,
+    }),
 
     cancelPendingWorkspaceRepair: async () => {
       const pending = get().pendingWorkspaceRepair;
@@ -5277,9 +5148,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           set,
         );
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : 'Failed to cancel repair';
-        set({ worktreeError: message });
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError)
+          set({
+            worktreeError: inlineFailure(
+              appError,
+              "Couldn't cancel the repair.",
+            ),
+          });
       } finally {
         set({ workspaceRepairPending: false });
       }
@@ -6691,37 +6567,6 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       await get().refreshDiffStats();
     },
 
-    combineWorktreeWithWorkspace: async (request) => {
-      try {
-        const response = await window.api.combineWorktreeWithWorkspace(request);
-        // Refresh the sidebar so the renderer sees the destination workspace
-        // (and the source worktree's removal, when `removedSourceWorktree`).
-        await get().loadProjects({ silent: true });
-        removeTemporaryWorkspaceFromUi(
-          response.removedTemporaryWorkspaceId,
-          get,
-          set,
-        );
-        globalThis.setTimeout(() => {
-          void refreshDiffStatsForWorktrees([
-            {
-              projectId: response.destinationWorkspaceId,
-              worktreeId: response.destinationWorktreeId,
-            },
-          ]);
-        }, 0);
-        set({ worktreeError: null });
-        return response;
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : 'Failed to combine worktree with project';
-        set({ worktreeError: message });
-        return undefined;
-      }
-    },
-
     splitTemporaryWorkspaceWorktree: async (
       projectId,
       worktreeId,
@@ -6813,41 +6658,6 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         });
       }
     },
-
-    combineWorktreeWithExistingWorktree: async (request) => {
-      try {
-        const response =
-          await window.api.combineWorktreeWithExistingWorktree(request);
-        // Refresh the sidebar so the renderer sees the destination workspace
-        // and both consumed worktrees' removal.
-        await get().loadProjects({ silent: true });
-        removeTemporaryWorkspaceFromUi(
-          response.removedTemporaryWorkspaceId,
-          get,
-          set,
-        );
-        removeTemporaryWorkspaceFromUi(
-          response.joinedWorktree.removedTemporaryWorkspaceId,
-          get,
-          set,
-        );
-        globalThis.setTimeout(() => {
-          void refreshDiffStatsForWorktrees([
-            {
-              projectId: response.destinationWorkspaceId,
-              worktreeId: response.destinationWorktreeId,
-            },
-          ]);
-        }, 0);
-        set({ worktreeError: null });
-        return response;
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : 'Failed to join worktree';
-        set({ worktreeError: message });
-        return undefined;
-      }
-    },
   };
 });
 
@@ -6867,6 +6677,13 @@ useProjectsStore.subscribe((state, previousState) => {
       .filter((project) => project.type === 'cowork')
       .map((project) => project.id),
   );
+  // Deleting a project through the discard path skips per-worktree cleanup, and
+  // nothing can send from its chats again to clear their Ollama failures.
+  const retainedIds = new Set(state.projects.map((project) => project.id));
+  for (const project of previousState.projects) {
+    if (!retainedIds.has(project.id))
+      useOllamaConnectionBannerStore.getState().clearProject(project.id);
+  }
 });
 
 if (__CANOPY_E2E__) {
@@ -6897,8 +6714,11 @@ if (__CANOPY_E2E__) {
         resolveCompleted,
       };
     },
-    loadProjects: (): void => {
-      void useProjectsStore.getState().loadProjects({ silent: true });
+    loadProjects: async (options): Promise<void> => {
+      await useProjectsStore.getState().loadProjects({
+        silent: true,
+        requireSuccess: options?.requireSuccess === true,
+      });
     },
     waitForHeldLoad: async (): Promise<void> => {
       const barrier = e2eProjectsLoadBarrier;

@@ -1,7 +1,7 @@
 import type {
   BrowserActionErrorCode,
   BrowserActionReceipt,
-} from '../types/browser';
+} from '@canopy/execution-engine/types/browser';
 import type { BrowserAgentActionReceipt } from '@canopy/protocol/delegation/browser-agent';
 
 type ProjectedEffects = {

@@ -60,11 +60,11 @@ import {
 import type {
   AgentAuditEntry,
   AgentAuditEventType,
-} from '@canopy/desktop-shared/types/observability';
+} from '@canopy/execution-engine/types/observability';
 import {
   AGENT_AUDIT_EVENT_TYPES,
   parseAgentAuditEventType,
-} from '@canopy/desktop-shared/types/observability';
+} from '@canopy/execution-engine/types/observability';
 import {
   getAgentObservabilityAuditDir,
   getAgentObservabilityDiagnosticsDir,

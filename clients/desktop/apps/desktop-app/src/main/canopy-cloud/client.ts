@@ -1,3 +1,8 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
+import {
+  classifyFetchFailure,
+  retryAtFromDelay,
+} from '@canopy/desktop-shared/node/lib/app-error-classification';
 import {
   MODEL_LIBRARY_PROTOCOL_HEADER,
   MODEL_LIBRARY_PROTOCOL_VERSION,
@@ -115,6 +120,16 @@ export class CanopyCloudClientError extends Error {
   ) {
     super(status === undefined ? message : `HTTP ${status}: ${message}`);
     this.name = 'CanopyCloudClientError';
+    if (code === 'http-error') {
+      if (status === 401 && isValidatedServerError)
+        classifyError(this, 'external.sign_in_required');
+      if (status === 429)
+        classifyError(this, 'external.rate_limited', {
+          retryAt: retryAtFromDelay(retryAfterMs),
+        });
+      if (status !== undefined && status >= 500 && status <= 599)
+        classifyError(this, 'external.service_unavailable');
+    }
   }
 
   /**
@@ -362,7 +377,7 @@ function networkErrorFromFailure(
       error !== null &&
       internallyTimedOutFailures.has(error));
   const timedOut = internallyTimedOut || isAbortError(error);
-  return new CanopyCloudClientError(
+  const result = new CanopyCloudClientError(
     'network-error',
     timedOut
       ? `${CLOUD_DISPLAY_NAME} request timed out.`
@@ -376,6 +391,9 @@ function networkErrorFromFailure(
     undefined,
     internallyTimedOut || !timedOut,
   );
+  if (internallyTimedOut)
+    return classifyError(result, 'external.service_unavailable');
+  return classifyFetchFailure(error, result);
 }
 
 function createCanopyCloudFetchContext(init: CanopyCloudRequestInit): {

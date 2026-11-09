@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { utilityProcess, type UtilityProcess } from 'electron';
-import { killProcessGroupByPid } from '@canopy/desktop-shared/node/lib/process-kill';
+import { killProcessGroupByPid } from '@canopy/execution-engine/node/lib/process-kill';
 import {
   ARCHIVE_IO_GIT_RECOVERY_REQUIRED_CODE,
   ARCHIVE_IO_GIT_TIMEOUT_CODE,

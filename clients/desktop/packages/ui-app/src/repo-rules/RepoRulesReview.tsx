@@ -21,6 +21,7 @@ import type {
 import type { CanopyClient } from '@canopy/app-core';
 import { useCanopyClient } from '@canopy/app-state';
 import {
+  Stack,
   Button,
   DelayedLoadingPlaceholder,
   Disclosure,
@@ -210,7 +211,7 @@ function RepoRulesUnsupported({
   readonly onClose: () => void;
 }): JSX.Element {
   return (
-    <div className="space-y-4" data-testid="repo-rules-unsupported">
+    <Stack gap="group" data-testid="repo-rules-unsupported">
       <Notice intent="neutral" title="Cursor rules need the desktop app">
         Reviewing Cursor rules reads files in your local checkout. Open this
         project in the desktop app to turn them on.
@@ -218,7 +219,7 @@ function RepoRulesUnsupported({
       <div className="flex justify-end">
         <Button onClick={onClose}>Close</Button>
       </div>
-    </div>
+    </Stack>
   );
 }
 
@@ -596,7 +597,7 @@ function RepoRulesReviewFlow({
         </>
       );
       body = (
-        <section className="space-y-4" data-testid="repo-rules-scanning">
+        <Stack as="section" gap="group" data-testid="repo-rules-scanning">
           <Heading level={3} variant="title" ref={headingRef} tabIndex={-1}>
             Scanning Cursor rules…
           </Heading>
@@ -630,13 +631,13 @@ function RepoRulesReviewFlow({
               Cancel
             </Button>
           </div>
-        </section>
+        </Stack>
       );
       break;
     case 'scan-error':
       announcement = phase.message;
       body = (
-        <section className="space-y-4" data-testid="repo-rules-scan-error">
+        <Stack as="section" gap="group" data-testid="repo-rules-scan-error">
           <Heading level={3} variant="section" ref={headingRef} tabIndex={-1}>
             Couldn&apos;t scan Cursor rules
           </Heading>
@@ -651,7 +652,7 @@ function RepoRulesReviewFlow({
               Try again
             </Button>
           </div>
-        </section>
+        </Stack>
       );
       break;
     case 'review': {
@@ -732,13 +733,14 @@ function RepoRulesReviewFlow({
   }
 
   return (
-    <div className="space-y-4" data-testid="repo-rules-review">
+    <Stack gap="group" data-testid="repo-rules-review">
       <p className="sr-only" role="status" aria-live="polite">
         {announcement}
       </p>
       {body}
       {workspaceId && initialWorkspaceId === undefined ? (
         <Button
+          className="self-start"
           variant="ghost"
           disabled={applying}
           data-testid="repo-rules-change-project"
@@ -747,7 +749,7 @@ function RepoRulesReviewFlow({
           Choose another project
         </Button>
       ) : null}
-    </div>
+    </Stack>
   );
 }
 
@@ -776,7 +778,7 @@ function ChooseWorkspace({
     (entry) => offer?.decisions[entry.id] !== undefined,
   );
   return (
-    <section className="space-y-4" data-testid="repo-rules-choose">
+    <Stack as="section" gap="group" data-testid="repo-rules-choose">
       <Heading level={3} variant="section" ref={headingRef} tabIndex={-1}>
         Choose a project
       </Heading>
@@ -792,7 +794,7 @@ function ChooseWorkspace({
             Cursor rules are saved per project and apply to all of its
             worktrees.
           </p>
-          <ul className="space-y-1">
+          <Stack as="ul" gap="tight">
             {workspaces.map((entry) => {
               const decision = offer?.decisions[entry.id];
               const statusId = `${statusIdPrefix}-${entry.id}`;
@@ -838,7 +840,7 @@ function ChooseWorkspace({
                 </li>
               );
             })}
-          </ul>
+          </Stack>
         </>
       )}
       <div className="flex justify-end">
@@ -848,7 +850,7 @@ function ChooseWorkspace({
             : 'Cancel'}
         </Button>
       </div>
-    </section>
+    </Stack>
   );
 }
 
@@ -925,8 +927,8 @@ function ReviewStep({
   const diagnostic =
     scanDiagnostic === statusDiagnostic ? null : scanDiagnostic;
   return (
-    <section className="space-y-4" data-testid="repo-rules-review-step">
-      <div className="space-y-1">
+    <Stack as="section" gap="group" data-testid="repo-rules-review-step">
+      <Stack gap="tight">
         <Heading level={3} variant="section" ref={headingRef} tabIndex={-1}>
           {scan.proposals.length === 0 ? (
             'No Cursor rules found'
@@ -943,7 +945,7 @@ function ReviewStep({
           <span className={REPLAY_MASK_CLASS}>{workspaceName}</span>. Nothing in
           the repository changes.
         </p>
-      </div>
+      </Stack>
       {status}
       {diagnostic ? <Notice intent="attention">{diagnostic}</Notice> : null}
       {scan.proposals.length === 0 ? (
@@ -954,7 +956,7 @@ function ReviewStep({
         </p>
       ) : (
         repoIds.map((repoId) => (
-          <div key={repoId} className="space-y-2">
+          <Stack gap="inline" key={repoId}>
             {multiRepo ? (
               <Heading level={4} variant="label">
                 <span className={REPLAY_BLOCK_CLASS}>{repoId}</span>
@@ -977,18 +979,18 @@ function ReviewStep({
                   ))}
               </ul>
             </Surface>
-          </div>
+          </Stack>
         ))
       )}
       {scan.skipped.length > 0 ? (
-        <div className="space-y-2" data-testid="repo-rules-skipped">
+        <Stack gap="inline" data-testid="repo-rules-skipped">
           <Heading level={4} variant="title">
             Not included
           </Heading>
           <p className="text-xs fg-tertiary">
             These files were found but can&apos;t be used.
           </p>
-          <ul className="space-y-1">
+          <Stack as="ul" gap="tight">
             {scan.skipped.map((item) => (
               <li
                 key={`${item.repoId}:${item.path}`}
@@ -1004,11 +1006,11 @@ function ReviewStep({
                 </span>
               </li>
             ))}
-          </ul>
-        </div>
+          </Stack>
+        </Stack>
       ) : null}
       <Disclosure label="How rules work" dataTestId="repo-rules-how-rules-work">
-        <ul className="list-disc space-y-1 pl-5 text-xs fg-secondary">
+        <ul className="list-disc pl-5 text-xs fg-secondary flex flex-col gap-1">
           <li>
             Each new chat reads the current rules, so edits apply without
             another review. Rules in a new nested folder need another scan.
@@ -1028,7 +1030,7 @@ function ReviewStep({
         </ul>
       </Disclosure>
       {footer}
-    </section>
+    </Stack>
   );
 }
 
@@ -1106,13 +1108,13 @@ function RuleRow({
   const pathId = useId();
   return (
     <li
-      className="space-y-2 p-3"
+      className="p-3 flex flex-col gap-2"
       role="group"
       aria-labelledby={pathId}
       data-testid="repo-rules-rule"
     >
       <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1 space-y-1">
+        <Stack gap="tight" className="min-w-0 flex-1">
           <code
             id={pathId}
             className={`block truncate font-mono text-s fg-primary ${REPLAY_BLOCK_CLASS}`}
@@ -1165,7 +1167,7 @@ function RuleRow({
               ))}
             </ul>
           ) : null}
-        </div>
+        </Stack>
         <div className="flex shrink-0 items-center gap-2">
           <Button
             size="sm"

@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { isPipelineHostActionId } from '../../pipelines/host-actions';
 import { resolveActionRuntime } from './action-resolver';
 import type { ResolvedActionRuntime } from './action-resolver';
 import type { ExecutionRuntime } from './executor/types';
@@ -11,7 +12,7 @@ import type {
   Pipeline,
   ShellType,
   Step,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 export const DAEMON_PIPELINE_REFUSAL_REASONS = [
   'model_step',
@@ -28,6 +29,11 @@ export const DAEMON_PIPELINE_REFUSAL_REASONS = [
   'dynamic_model',
   'model_alias',
   'plugin_collections',
+  // CAN-5771: a send-agent-message step with host-path inputs.
+  'host_paths',
+  // CAN-5771: a send-agent-message step whose named model or plugin
+  // collection only the app's executor resolves.
+  'host_inputs',
 ] as const;
 export type DaemonPipelineRefusalReason =
   (typeof DAEMON_PIPELINE_REFUSAL_REASONS)[number];
@@ -71,12 +77,24 @@ export const DAEMON_PORTABLE_MODEL_ACTIONS: ReadonlyMap<
   ['condenser', ['claude']],
 ]);
 
+/**
+ * Portable model actions that take an Ollama model (CAN-5831 D1): only the
+ * model-aware agent actions resolve an Ollama route, in process as in the
+ * daemon.
+ */
+export const DAEMON_OLLAMA_MODEL_ACTIONS: ReadonlySet<string> = new Set([
+  'agent-prompt',
+  'agent-resume',
+]);
+
 /** How deep composite actions may nest before a pipeline is refused. */
 export const DAEMON_PIPELINE_MAX_COMPOSITE_DEPTH = 8;
 
 export interface DaemonPipelineClassifierOptions {
   /** `'refuse'` (default): any model step is `model_step`. */
   readonly modelSteps?: 'refuse' | 'claude_codex';
+  /** `'refuse'` (default): any host step is `host_step`. `'owner'`: bundled host actions are portable (CAN-5771). */
+  readonly hostSteps?: 'refuse' | 'owner';
 }
 
 export type DaemonPipelineClassification =
@@ -86,6 +104,8 @@ export type DaemonPipelineClassification =
       readonly modelSteps: number;
       /** The harnesses those steps run on, sorted, without repeats. */
       readonly modelHarnesses: readonly DaemonModelHarness[];
+      /** Admitted host steps, composite steps included; only under `hostSteps: 'owner'` (CAN-5771). */
+      readonly hostSteps?: number;
     }
   | {
       readonly eligible: false;
@@ -109,6 +129,28 @@ export interface DaemonPipelineClassifierContext {
 
 const BUILTIN_ACTION_PREFIX = 'builtin/';
 
+/** Host steps a pipeline may hold, and how many were found (CAN-5771). */
+interface HostStepTally {
+  readonly admit: boolean;
+  count: number;
+}
+
+/** `send-agent-message` inputs that hold host paths; they never cross (D14). */
+const SEND_HOST_PATH_INPUTS = [
+  'attachments',
+  'attachment_paths',
+  'attachment_prompt_contexts',
+  'file_references',
+] as const;
+
+/**
+ * `send-agent-message` inputs the executor resolves before the host step,
+ * against what only the app's runtime holds: a named model is checked against
+ * the org model policy, and a plugin collection is resolved to its plugins.
+ * The daemon's runtime has neither (CAN-5095), so such a send stays in process.
+ */
+const SEND_APP_RESOLVED_INPUTS = ['model', 'plugin_collection_id'] as const;
+
 function resolveOrNull(
   uses: string,
   context: DaemonPipelineClassifierContext,
@@ -121,6 +163,31 @@ function resolveOrNull(
 }
 
 /** The bundled action a `builtin/` reference resolves to, normalized as the resolver does. */
+/** A `runs.using: host` step: portable only under `'owner'`, as a bundled host action. */
+function classifyHostStep(
+  step: Step,
+  uses: string,
+  resolved: ResolvedActionRuntime,
+  context: DaemonPipelineClassifierContext,
+  hosts: HostStepTally,
+): DaemonPipelineRefusalReason | null {
+  if (!hosts.admit) return 'host_step';
+  const name = builtinActionName(uses, resolved, context);
+  if (name === null || !isPipelineHostActionId(name)) return 'host_step';
+  if (
+    name === 'send-agent-message' &&
+    SEND_HOST_PATH_INPUTS.some((input) => step.with?.[input] !== undefined)
+  )
+    return 'host_paths';
+  if (
+    name === 'send-agent-message' &&
+    SEND_APP_RESOLVED_INPUTS.some((input) => step.with?.[input] !== undefined)
+  )
+    return 'host_inputs';
+  hosts.count += 1;
+  return null;
+}
+
 function builtinActionName(
   uses: string,
   resolved: ResolvedActionRuntime,
@@ -143,6 +210,7 @@ function classifyStep(
   context: DaemonPipelineClassifierContext,
   depth: number,
   inheritedShell: ShellType | undefined,
+  hosts: HostStepTally,
 ): DaemonPipelineRefusalReason | null {
   if (step.log_format_hint === 'agent') return 'model_step';
   const shell = step.shell ?? inheritedShell;
@@ -165,7 +233,7 @@ function classifyStep(
   }
   switch (definition.runs.using) {
     case 'host':
-      return 'host_step';
+      return classifyHostStep(step, uses, resolved, context, hosts);
     case 'pipeline':
       return 'child_pipeline';
     case 'tsx':
@@ -174,7 +242,13 @@ function classifyStep(
     case 'python':
       return null;
     case 'composite':
-      return classifySteps(definition.runs.steps, context, depth + 1, shell);
+      return classifySteps(
+        definition.runs.steps,
+        context,
+        depth + 1,
+        shell,
+        hosts,
+      );
     default:
       return 'unknown_runtime';
   }
@@ -185,10 +259,11 @@ function classifySteps(
   context: DaemonPipelineClassifierContext,
   depth: number,
   inheritedShell: ShellType | undefined,
+  hosts: HostStepTally,
 ): DaemonPipelineRefusalReason | null {
   if (depth > DAEMON_PIPELINE_MAX_COMPOSITE_DEPTH) return 'too_deep';
   for (const step of steps) {
-    const reason = classifyStep(step, context, depth, inheritedShell);
+    const reason = classifyStep(step, context, depth, inheritedShell, hosts);
     if (reason) return reason;
   }
   return null;
@@ -207,7 +282,7 @@ function stepModelValue(step: Step, definition: ActionDefinition): string {
   return typeof fallback === 'string' ? fallback : '';
 }
 
-/** The model checks for a step of portable model action `name` (CAN-5095 D5a). */
+/** The model checks for a step of portable model action `name` (CAN-5095 D5a, CAN-5831). */
 function classifyModelStep(
   pipeline: Pipeline,
   step: Step,
@@ -229,7 +304,11 @@ function classifyModelStep(
   if (model.length === 0) {
     harness = 'claude';
   } else {
-    if (getModelSource(model) === 'ollama') return 'model_provider';
+    if (
+      getModelSource(model) === 'ollama' &&
+      !DAEMON_OLLAMA_MODEL_ACTIONS.has(name)
+    )
+      return 'model_provider';
     const resolved = getExecutionHarnessForModel(model);
     const allowed = DAEMON_PORTABLE_MODEL_ACTIONS.get(name) ?? [];
     const admitted = allowed.find((candidate) => candidate === resolved);
@@ -248,6 +327,7 @@ function classifyStepAdmittingModels(
   depth: number,
   inheritedShell: ShellType | undefined,
   tally: ModelStepTally,
+  hosts: HostStepTally,
 ): DaemonPipelineRefusalReason | null {
   const shell = step.shell ?? inheritedShell;
   const uses = step.uses;
@@ -268,9 +348,10 @@ function classifyStepAdmittingModels(
         depth + 1,
         shell,
         tally,
+        hosts,
       );
     case 'host':
-      return 'host_step';
+      return classifyHostStep(step, uses, resolved, context, hosts);
     case 'pipeline':
       return 'child_pipeline';
     case 'tsx':
@@ -303,6 +384,7 @@ function classifyStepsAdmittingModels(
   depth: number,
   inheritedShell: ShellType | undefined,
   tally: ModelStepTally,
+  hosts: HostStepTally,
 ): DaemonPipelineRefusalReason | null {
   if (depth > DAEMON_PIPELINE_MAX_COMPOSITE_DEPTH) return 'too_deep';
   for (const step of steps) {
@@ -313,6 +395,7 @@ function classifyStepsAdmittingModels(
       depth,
       inheritedShell,
       tally,
+      hosts,
     );
     if (reason) return reason;
   }
@@ -322,8 +405,9 @@ function classifyStepsAdmittingModels(
 /**
  * Whether every step of `pipeline` can run in the daemon (CAN-5086). By
  * default a step that calls a model refuses the run; with
- * `modelSteps: 'claude_codex'` the Claude and Codex steps CAN-5095 D2 admits
- * are counted instead. Fails closed on anything unknown.
+ * `modelSteps: 'claude_codex'` the steps on the Claude and Codex harnesses
+ * that CAN-5095 D2 and CAN-5831 admit are counted instead, Ollama models on
+ * the agent actions included. Fails closed on anything unknown.
  */
 export function classifyDaemonPipeline(
   pipeline: Pipeline,
@@ -332,6 +416,10 @@ export function classifyDaemonPipeline(
 ): DaemonPipelineClassification {
   const admitModels = options?.modelSteps === 'claude_codex';
   const tally: ModelStepTally = { count: 0, harnesses: new Set() };
+  const hosts: HostStepTally = {
+    admit: options?.hostSteps === 'owner',
+    count: 0,
+  };
   for (const [jobId, job] of Object.entries(pipeline.jobs)) {
     const jobShell = job.defaults?.run?.shell ?? pipeline.defaults?.run?.shell;
     for (const [stepIndex, step] of job.steps.entries()) {
@@ -343,8 +431,9 @@ export function classifyDaemonPipeline(
             0,
             jobShell,
             tally,
+            hosts,
           )
-        : classifyStep(step, context, 0, jobShell);
+        : classifyStep(step, context, 0, jobShell, hosts);
       if (reason) {
         return {
           eligible: false,
@@ -360,5 +449,6 @@ export function classifyDaemonPipeline(
     eligible: true,
     modelSteps: tally.count,
     modelHarnesses: [...tally.harnesses].sort(),
+    ...(hosts.admit && { hostSteps: hosts.count }),
   };
 }

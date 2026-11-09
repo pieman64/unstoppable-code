@@ -1,3 +1,5 @@
+import { Badge as SharedBadge } from '@canopy/ui-shared/components/Badge';
+import { PipelineSourceLabel } from '@canopy/ui-shared/components/EntrySourceLabel';
 import { memo, type JSX, type ReactNode } from 'react';
 import type {
   AutomationArtifactReceiptV1,
@@ -44,22 +46,11 @@ import { TRIGGER_META } from '@/components/pipeline/pipeline-trigger-meta';
 
 const SKILL_SOURCE_META: Record<
   SkillArtifactReceiptV1['source'],
-  { label: string; badgeClass: string }
+  { label: string }
 > = {
-  installed: { label: 'Installed', badgeClass: 'bg-success-subtle fg-success' },
-  shared: { label: 'Shared', badgeClass: 'bg-accent-subtle fg-accent' },
+  installed: { label: 'Installed' },
+  shared: { label: 'Shared' },
 };
-
-interface BadgeProps {
-  className?: string;
-  icon?: ReactNode;
-  children: ReactNode;
-}
-
-interface StatusDotBadgeProps {
-  tone: 'success' | 'info' | 'muted';
-  children: ReactNode;
-}
 
 interface HeaderProps {
   icon: ReactNode;
@@ -105,47 +96,6 @@ interface AgentArtifactTooltipProps {
   receipt: CapabilityTileReceipt;
   /** The card's live-resolved model, so the card and its tile agree. */
   model?: CapabilityTileModel;
-}
-
-function Badge({
-  className = 'bg-fg-primary/[0.08] fg-secondary',
-  icon,
-  children,
-}: BadgeProps): JSX.Element {
-  return (
-    <span
-      className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-3xs font-medium ${className}`}
-    >
-      {icon ? <span aria-hidden="true">{icon}</span> : null}
-      {children}
-    </span>
-  );
-}
-
-function StatusDotBadge({ tone, children }: StatusDotBadgeProps): JSX.Element {
-  const chrome =
-    tone === 'info'
-      ? {
-          badge: 'border-fg-info/40 bg-info-subtle fg-primary',
-          dot: 'bg-info',
-        }
-      : tone === 'success'
-        ? {
-            badge: 'border-line-positive/40 bg-success-subtle fg-primary',
-            dot: 'bg-success',
-          }
-        : {
-            badge: 'bg-fg-primary/[0.04] fg-secondary',
-            dot: 'bg-fg-secondary/70',
-          };
-  return (
-    <span
-      className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-3xs font-medium ${chrome.badge}`}
-    >
-      <span className={`h-1.5 w-1.5 rounded-full ${chrome.dot}`} />
-      {children}
-    </span>
-  );
 }
 
 function Header({ icon, name, description }: HeaderProps): JSX.Element {
@@ -204,8 +154,8 @@ function PipelineTooltip({ receipt }: PipelineTooltipProps): JSX.Element {
         {...(receipt.description ? { description: receipt.description } : {})}
       />
       <Badges>
-        <Badge className={sourceMeta.badgeClass}>{sourceMeta.label}</Badge>
-        {receipt.enabled ? null : <Badge>Disabled</Badge>}
+        <PipelineSourceLabel>{sourceMeta.label}</PipelineSourceLabel>
+        {receipt.enabled ? null : <SharedBadge>Disabled</SharedBadge>}
       </Badges>
       <Facts>
         <Fact label="Scope">
@@ -268,9 +218,9 @@ function SkillTooltip({ receipt }: SkillTooltipProps): JSX.Element {
         {...(receipt.description ? { description: receipt.description } : {})}
       />
       <Badges>
-        <Badge className={sourceMeta.badgeClass}>{sourceMeta.label}</Badge>
-        <Badge className={scopeMeta.badgeClass}>{scopeMeta.label}</Badge>
-        {receipt.canUpdate ? null : <Badge>Read only</Badge>}
+        <span className="text-2xs fg-tertiary">{sourceMeta.label}</span>
+        <SharedBadge>{scopeMeta.label}</SharedBadge>
+        {receipt.canUpdate ? null : <SharedBadge>Read only</SharedBadge>}
       </Badges>
       {owner ? (
         <Facts>
@@ -302,14 +252,19 @@ function AutomationTooltip({ receipt }: AutomationTooltipProps): JSX.Element {
       <Header icon={<AutomationsIcon size="sm" />} name={receipt.name} />
       <Badges>
         {receipt.running ? (
-          <StatusDotBadge tone="info">Running</StatusDotBadge>
+          <SharedBadge tone="info">Running</SharedBadge>
         ) : (
-          <StatusDotBadge tone={receipt.enabled ? 'success' : 'muted'}>
+          <SharedBadge tone={receipt.enabled ? 'success' : 'neutral'}>
             {receipt.enabled ? 'Enabled' : 'Disabled'}
-          </StatusDotBadge>
+          </SharedBadge>
         )}
         {receipt.ifCommandConfigured ? (
-          <Badge icon={<CommandIcon size="sm" />}>If command</Badge>
+          <span className="inline-flex items-center gap-1 text-2xs fg-tertiary">
+            <span aria-hidden="true">
+              <CommandIcon size="sm" />
+            </span>
+            If command
+          </span>
         ) : null}
       </Badges>
       <Facts>
@@ -364,11 +319,13 @@ function CapabilityTooltip({
         {...(description ? { description } : {})}
       />
       <Badges>
-        <Badge>{model.kindLabel}</Badge>
+        <SharedBadge>{model.kindLabel}</SharedBadge>
         {model.state ? (
-          <Badge>{capabilityTileStatusText(model.state)}</Badge>
+          <SharedBadge>{capabilityTileStatusText(model.state)}</SharedBadge>
         ) : null}
-        {model.external ? <Badge>External</Badge> : null}
+        {model.external ? (
+          <span className="text-2xs fg-tertiary">External</span>
+        ) : null}
       </Badges>
       <Facts>
         {receipt.kind === 'automation_run' ? (
@@ -403,7 +360,7 @@ export const AgentArtifactTooltip = memo(function AgentArtifactTooltip({
   model,
 }: AgentArtifactTooltipProps): JSX.Element {
   return (
-    <div className="space-y-2 text-xs">
+    <div className="flex flex-col text-xs gap-2">
       {receipt.kind === 'pipeline' ? (
         <PipelineTooltip receipt={receipt} />
       ) : receipt.kind === 'skill' ? (

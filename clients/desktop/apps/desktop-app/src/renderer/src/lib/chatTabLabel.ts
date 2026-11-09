@@ -6,28 +6,7 @@ type ChatTabLabelSource = Pick<
   'title' | 'description' | 'customTitle'
 >;
 
-/**
- * The label a user already associates with a chat.
- *
- * `title` holds the literal name the chat was created with, which stays
- * 'New Chat' for the entire life of most chats; the Haiku-generated summary
- * lands on `description` and is what `ChatTabBar` actually renders
- * (`description ?? title`). A user-chosen `customTitle` wins over both. Any
- * surface that lists chats has to use the same precedence, or every named
- * chat reads as 'New Chat' to the user.
- *
- * The trim guards are the one deliberate difference from `ChatTabBar`'s inline
- * expression: a whitespace-only field falls through here instead of rendering
- * as blank.
- */
-export function getChatTabLabel(
-  tab: Pick<PersistedChatTab, 'id' | 'title' | 'description' | 'customTitle'>,
-): string {
-  if (tab.customTitle?.trim()) return tab.customTitle.trim();
-  if (tab.description?.trim()) return tab.description;
-  if (tab.title?.trim()) return tab.title;
-  return tab.id;
-}
+export { getChatTabLabel } from '@canopy/desktop-shared/lib/app-advisor-chat-reads';
 
 /** The generated name a chat tab shows when it has no custom title. */
 export function generatedChatTabLabel(tab: ChatTabLabelSource): string {

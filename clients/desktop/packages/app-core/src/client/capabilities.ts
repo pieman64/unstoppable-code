@@ -80,6 +80,16 @@ export interface CanopyCapabilities {
    * suggestions calls.
    */
   readonly suggestions?: boolean;
+  /**
+   * `claudeMods.*` reads and changes the host's Claude Mod admission (the
+   * allowed Mods and the "turn off every Mod" switch). Optional and
+   * default-deny: unset is the confirmed default for unconfigured and
+   * configured-but-unavailable hosts, and shared UI then shows no Mod
+   * controls. Desktop serves it; the Portal reports it when the paired
+   * desktop announces `claude_mod_admission_v1`; cloud chats leave it unset.
+   * Whether admission is on is the separate `ClaudeModsState.enabled`.
+   */
+  readonly claudeModAdmission?: boolean;
   /** Chat operations wired by this target's adapter. Missing members deny. */
   readonly chatWorkflows?: {
     readonly planMode?: boolean;
@@ -146,6 +156,22 @@ export interface CanopyCapabilities {
   readonly panelLayoutControls?: boolean;
   /** Cloud chat composer can upload per-turn attachments. Default-deny. */
   readonly chatAttachments?: boolean;
+  /**
+   * The client serves the paired computer's Orchestrator itself
+   * (`appAdvisor.chats`, `appAdvisor.changed` and the `appAdvisor.*` shell
+   * commands over its own transport). Optional and default-deny. A Portal
+   * session announces the Orchestrator through its session capability
+   * instead; a directly controlled computer reports it here (CAN-5985).
+   */
+  readonly appAdvisorChats?: boolean;
+  /**
+   * The client serves the paired computer's plan, script, hook, pipeline and
+   * summary rows itself (`worktree.activity` and `worktree.activityChanged`
+   * over its own transport). Optional and default-deny. A Portal session
+   * carries those rows in its shell state instead; a directly controlled
+   * computer reports it here (CAN-5985).
+   */
+  readonly worktreeActivityRows?: boolean;
   /**
    * Host can create a standalone (Cowork) chat before its first send, so a
    * standalone chat can carry attachments and file references. Optional and

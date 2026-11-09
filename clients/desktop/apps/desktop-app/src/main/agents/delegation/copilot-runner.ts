@@ -51,10 +51,8 @@ import type {
   CopilotPreToolInput,
   CopilotToolDecision,
 } from '@canopy/copilot-recipient/session-policy';
-import {
-  openManagedCopilotRuntime,
-  assertCopilotConnectionGeneration,
-} from '../../copilot/connection';
+import { assertCopilotConnectionGeneration } from '../../copilot/connection';
+import { getCopilotWorkerRuntime } from '../../agent-runs/copilot-worker-runtime';
 import { buildCopilotMcpServers } from '../../copilot/mcp-servers';
 import { buildCursorCapabilityProjection } from '../../plugins/plugin-resolver';
 import type { DelegationNativePolicy } from './native-policy';
@@ -151,12 +149,15 @@ export function createCopilotDelegationRunner(options: {
           delegation.detach();
           return Promise.resolve();
         });
-      const runtime = await openManagedCopilotRuntime({
-        signal,
-        cwd: prepared.tools.cwd,
-        workspaceId: request.parent.projectId,
-        restrictedEnvironment: true,
-      });
+      const runtime = await getCopilotWorkerRuntime().openSessionRuntime(
+        'CopilotDelegationRunner.execute',
+        {
+          signal,
+          cwd: prepared.tools.cwd,
+          workspaceId: request.parent.projectId,
+          restrictedEnvironment: true,
+        },
+      );
       context.retain(() => runtime.close());
       context.setInterrupt(() => runtime.close());
       const account = runtime.account;

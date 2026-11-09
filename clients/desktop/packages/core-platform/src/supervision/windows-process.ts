@@ -11,11 +11,241 @@ import {
 } from '../local-authority';
 import { observeWindowsClosure } from './windows-closure';
 
+type WindowsContinuityObservation = {
+  readonly pid: number;
+  readonly image: string;
+  readonly creationIdentity: string;
+  readonly scope: string;
+};
+type WindowsContinuityChange = {
+  readonly before: WindowsContinuityObservation;
+  readonly after: WindowsContinuityObservation;
+};
+/** Incomplete inspection remains a refusal, including corroborated PID reuse. */
+export class WindowsColdInspectionError extends Error {
+  readonly code = 'inspection-incomplete';
+  readonly reason: 'retry-exhausted' | 'pid-reuse';
+  readonly pid: number;
+  readonly image: string;
+  readonly startIdentity: string;
+  readonly stage:
+    | 'image-name'
+    | 'mapping-query'
+    | 'mapping-name'
+    | 'process-continuity';
+  readonly attempts?: number;
+  readonly elapsedMs?: number;
+  readonly before?: WindowsContinuityObservation;
+  readonly after?: WindowsContinuityObservation;
+  constructor(
+    ...args:
+      | [
+          pid: number,
+          image: string,
+          stage: 'image-name' | 'mapping-query' | 'mapping-name',
+          attempts: number,
+          elapsedMs: number,
+          ticks: string,
+        ]
+      | [change: WindowsContinuityChange]
+  ) {
+    const first = args[0];
+    const change = typeof first === 'number' ? undefined : first;
+    const pid = typeof first === 'number' ? first : first.before.pid;
+    const image = typeof first === 'number' ? args[1] : first.before.image;
+    super(
+      change
+        ? `process identity changed (pid ${pid}): ${change.before.image} -> ${change.after.image}; retry cold inspection`
+        : `close ${image} (pid ${pid}) and retry`,
+    );
+    this.name = 'WindowsColdInspectionError';
+    this.pid = pid;
+    this.image = image ?? '';
+    if (typeof first === 'number') {
+      this.reason = 'retry-exhausted';
+      this.stage = args[2] ?? 'image-name';
+      this.attempts = args[3];
+      this.elapsedMs = args[4];
+      this.startIdentity = `win32:v1:${pid}:${args[5]}`;
+    } else {
+      this.reason = 'pid-reuse';
+      this.stage = 'process-continuity';
+      this.before = first.before;
+      this.after = first.after;
+      this.startIdentity = `win32:v1:${pid}:${first.before.creationIdentity}`;
+    }
+  }
+}
+function coldPidReuse(stderr: string): WindowsColdInspectionError | undefined {
+  const lines = stderr.replace(/\r\n/g, '\n').split('\n');
+  const receipts = lines.filter((line) =>
+    line.startsWith('canopy-cold-pid-reuse-'),
+  );
+  if (receipts.length !== 1 || !stderr.endsWith('\n')) return undefined;
+  const receipt =
+    /^canopy-cold-pid-reuse-v1 ([1-9]\d*) ([a-z-]+) (\d{20}) ((?:[0-9a-f]{4}){1,32768}) ([a-z-]+) (\d{20}) ((?:[0-9a-f]{4}){1,32768})$/.exec(
+      receipts[0] ?? '',
+    );
+  if (!receipt) return undefined;
+  const [
+    ,
+    pidText,
+    beforeScope,
+    beforeTicks,
+    beforeImage,
+    afterScope,
+    afterTicks,
+    afterImage,
+  ] = receipt;
+  const pid = Number(pidText);
+  const observation = (
+    scope?: string,
+    ticks?: string,
+    encoded?: string,
+  ): WindowsContinuityObservation | undefined => {
+    if (
+      !scope ||
+      !ticks ||
+      !encoded ||
+      ![
+        'same-owner',
+        'same-token',
+        'foreign-owner',
+        'foreign-token',
+        'owner-rights-denied',
+        'kernel-idle',
+        'post-t',
+        'exited',
+      ].includes(scope) ||
+      BigInt(ticks) > 2650467743999999999n ||
+      (BigInt(ticks) > 0n && BigInt(ticks) <= 9n)
+    )
+      return undefined;
+    const image = (encoded.match(/.{4}/g) ?? [])
+      .map((code) => String.fromCharCode(parseInt(code, 16)))
+      .join('');
+    if (image.includes('\0')) return undefined;
+    return { pid, image, scope, creationIdentity: ticks };
+  };
+  if (pid < 2 || pid > 2147483647) return undefined;
+  const before = observation(beforeScope, beforeTicks, beforeImage);
+  const after = observation(afterScope, afterTicks, afterImage);
+  if (
+    !before ||
+    !after ||
+    (before.image === after.image &&
+      (before.creationIdentity === after.creationIdentity ||
+        BigInt(before.creationIdentity) === 0n ||
+        BigInt(after.creationIdentity) === 0n))
+  )
+    return undefined;
+  return new WindowsColdInspectionError({ before, after });
+}
+function coldRetryExhaustion(
+  stderr: string,
+): WindowsColdInspectionError | undefined {
+  const receipts = stderr
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter((line) => line.startsWith('canopy-cold-retry-exhausted-'));
+  if (receipts.length !== 1 || !stderr.endsWith('\n')) return undefined;
+  const receipt =
+    /^canopy-cold-retry-exhausted-v1 ([1-9]\d*) (\d{20}) (image-name|mapping-query|mapping-name) ([1-7]) ([1-9]\d*) ((?:[0-9a-f]{4}){1,32768})$/.exec(
+      receipts[0] ?? '',
+    );
+  if (!receipt) return undefined;
+  const [, pidText, ticks, stage, attemptsText, elapsedText, encoded] = receipt;
+  if (
+    !ticks ||
+    !encoded ||
+    (stage !== 'image-name' &&
+      stage !== 'mapping-query' &&
+      stage !== 'mapping-name')
+  )
+    return undefined;
+  const pid = Number(pidText),
+    elapsed = Number(elapsedText);
+  if (
+    pid < 2 ||
+    pid > 2147483647 ||
+    BigInt(ticks) <= 9n ||
+    BigInt(ticks) > 2650467743999999999n ||
+    !Number.isSafeInteger(elapsed) ||
+    elapsed < 1000
+  )
+    return undefined;
+  const image = (encoded.match(/.{4}/g) ?? [])
+    .map((code) => String.fromCharCode(parseInt(code, 16)))
+    .join('');
+  if (image.includes('\0')) return undefined;
+  return new WindowsColdInspectionError(
+    pid,
+    image,
+    stage,
+    Number(attemptsText),
+    elapsed,
+    ticks,
+  );
+}
+
+function coldTypedRefusal(
+  stderr: string,
+): WindowsColdInspectionError | undefined {
+  if (
+    stderr
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .filter((line) => line.startsWith('canopy-cold-')).length !== 1
+  )
+    return undefined;
+  return coldPidReuse(stderr) ?? coldRetryExhaustion(stderr);
+}
+
 export const WINDOWS_PROCESS_FILE = 'canopy-process-identity.exe';
-/** The helper's two fixed modes: one validated PID, or its own TokenUser. */
-type WindowsHelperRequest = number | 'token-user';
+/** Legacy identity requests plus inactive, bounded cold-observation modes. */
+type WindowsHelperRequest =
+  | number
+  | 'token-user'
+  | { readonly mode: 'cold-snapshot' | 'cold-process'; readonly pid: number };
 const failure = (): Error =>
   new Error('Windows process observation unavailable');
+function coldFailure(cause: unknown, stderr = ''): Error {
+  // Only fixed native stage/number fields enter the message, never paths or payloads.
+  const snapshot =
+    /^cold snapshot incomplete stage=([A-Za-z0-9 (),:/_-]{1,160}) pid=(\d{1,10}) win32=(\d{1,10})\r?$/m.exec(
+      stderr,
+    );
+  const enumeration =
+    /^cold enumeration incomplete stage=([A-Za-z0-9 (),:/_-]{1,160}) pid=(\d{1,10}) image=[^\r\n]* win32=(\d{1,10})\r?$/m.exec(
+      stderr,
+    );
+  const row =
+    /^refused pid=(\d{1,10}) stage=([A-Za-z0-9 ():/_-]{1,160}) access=0x[0-9a-f]{8} win32=(\d{1,10}) ntstatus=0x([0-9a-f]{8}) /m.exec(
+      stderr,
+    );
+  const code =
+    typeof cause === 'object' && cause !== null && 'code' in cause
+      ? String(cause.code)
+      : '';
+  const details = [
+    /^(?:[A-Z_]{1,48}|\d{1,10})$/.test(code) ? `helper code=${code}` : '',
+    row
+      ? `pid=${row[1]} stage=${row[2]} win32=${row[3]} ntstatus=0x${row[4]}`
+      : '',
+    snapshot
+      ? `stage=${snapshot[1]} pid=${snapshot[2]} win32=${snapshot[3]}`
+      : '',
+    enumeration
+      ? `stage=${enumeration[1]} pid=${enumeration[2]} win32=${enumeration[3]}`
+      : '',
+  ].filter(Boolean);
+  return Object.assign(
+    new Error(
+      `Windows process observation unavailable${details.length ? ` (${details.join('; ')})` : ''}`,
+    ),
+    { cause },
+  );
+}
 type Execute = (
   file: string,
   args: string[],
@@ -33,7 +263,7 @@ const refused = (): Error => {
 
 /**
  * Admission belongs to the OS child until close, not to its cancelled waiter.
- * Both fixed modes share the four-child admission, deadline and output limits.
+ * Every mode shares four-child admission; cold observations have larger bounds.
  */
 export function runWindowsProcess(
   file: string,
@@ -46,6 +276,8 @@ export function runWindowsProcess(
   if (outstanding >= 4) return Promise.reject(refused());
   outstanding++;
   const closure = observeWindowsClosure('identity');
+  const cold = typeof request === 'object';
+  const limit = cold ? 64 * 1024 * 1024 : 64 * 1024;
   return new Promise((resolve, reject) => {
     let child: ChildProcess | undefined;
     let settled = false;
@@ -82,49 +314,97 @@ export function runWindowsProcess(
       }
     };
     const abort = (): void => stop(signal?.reason);
-    const timer = setTimeout(() => stop(failure()), 4000);
+    const timer = setTimeout(
+      () =>
+        stop(
+          cold
+            ? coldFailure(
+                Object.assign(new Error('Windows helper deadline exceeded'), {
+                  code: 'ETIMEDOUT',
+                }),
+              )
+            : failure(),
+        ),
+      cold ? 30_000 : 4000,
+    );
     signal?.addEventListener('abort', abort, { once: true });
     const startChild = (): void => {
       try {
         child = (execute ?? execFile)(
           file,
-          [request === 'token-user' ? '--token-user' : String(request)],
+          typeof request === 'object'
+            ? [`--${request.mode}`, String(request.pid)]
+            : [request === 'token-user' ? '--token-user' : String(request)],
           {
             encoding: 'utf8',
             windowsHide: true,
-            maxBuffer: 64 * 1024,
+            maxBuffer: limit,
             cwd: path.win32.dirname(file),
             env: {},
           },
           (error, stdout, stderr) => {
-            if (error || stderr !== '' || Buffer.byteLength(stdout) > 64 * 1024)
-              stop(failure());
-            else {
+            if (error || stderr !== '' || Buffer.byteLength(stdout) > limit) {
+              const denial =
+                cold &&
+                error &&
+                'code' in error &&
+                error.code === 1 &&
+                Buffer.byteLength(stdout) <= limit &&
+                Buffer.byteLength(stderr) <= limit
+                  ? coldTypedRefusal(stderr)
+                  : undefined;
+              stop(denial ?? (cold ? coldFailure(error, stderr) : failure()));
+            } else {
               callbackResult = stdout;
               if (closed) settle(undefined, stdout);
             }
           },
         );
-        child.on('error', () => stop(failure()));
+        child.on('error', (error) =>
+          stop(cold ? coldFailure(error) : failure()),
+        );
         child.once('close', (code, exitSignal) => {
           release();
           closed = true;
           if (code !== 0 || exitSignal !== null) {
             closure?.unsafe();
-            settle(failure());
+            settle(
+              cold
+                ? coldFailure(
+                    Object.assign(new Error('Windows helper closed'), {
+                      code: code ?? 'SIGNALLED',
+                      signal: exitSignal,
+                    }),
+                  )
+                : failure(),
+            );
           } else if (callbackResult !== undefined)
             settle(undefined, callbackResult);
           else {
             closure?.unsafe();
-            settle(failure());
+            settle(
+              cold
+                ? coldFailure(
+                    Object.assign(new Error('Windows helper receipt missing'), {
+                      code: 'INCOMPLETE_RECEIPT',
+                    }),
+                  )
+                : failure(),
+            );
           }
         });
         if (signal?.aborted) abort();
-      } catch {
+      } catch (error) {
         // execFile threw without returning a child; there can be no close event.
         closure?.unsafe();
         release();
-        settle(signal?.aborted ? signal.reason : failure());
+        settle(
+          signal?.aborted
+            ? signal.reason
+            : cold
+              ? coldFailure(error)
+              : failure(),
+        );
       }
     };
     if (prepare) {
@@ -136,10 +416,16 @@ export function runWindowsProcess(
             if (settled) release();
             else startChild();
           },
-          () => {
+          (error: unknown) => {
             closure?.unsafe();
             release();
-            settle(signal?.aborted ? signal.reason : failure());
+            settle(
+              signal?.aborted
+                ? signal.reason
+                : cold
+                  ? coldFailure(error)
+                  : failure(),
+            );
           },
         );
     } else startChild();
@@ -148,7 +434,7 @@ export function runWindowsProcess(
 
 /**
  * Host-supplied absolute location only; no PATH, environment or CWD search.
- * Both observers apply the same path and per-launch PE checks to one file.
+ * Every observer applies the same path and per-launch PE checks to one file.
  */
 function trustedWindowsHelper(
   file: string,
@@ -187,6 +473,17 @@ function trustedWindowsHelper(
       }
     });
   };
+}
+
+/** Inactive migration foundation; uses the same host-selected PE helper and closure bounds. */
+export function windowsColdObservation(
+  file: string,
+  mode: 'cold-snapshot' | 'cold-process',
+  pid: number,
+): Promise<string> {
+  if (!Number.isSafeInteger(pid) || pid < 2 || pid > 2147483647)
+    return Promise.reject(refused());
+  return trustedWindowsHelper(file)({ mode, pid });
 }
 
 export function windowsProcessObserver(

@@ -8,7 +8,7 @@ import {
   type CanopyCallerDescriptor,
   type CanopyJsonValue,
 } from '@canopy/protocol/canopy-core';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type {
   FetchAvailableSkillsResponse,
   SaveCustomSkillRequest,
@@ -250,16 +250,26 @@ export async function checkSkillUpdatesThroughCore(
   try {
     result = await toIpcResult(async () => {
       const meta = keyed();
-      const { updates } = await getDesktopCanopyRuntime().instruction(
+      const runtime = getDesktopCanopyRuntime();
+      await runtime.instruction(
         'core.catalog.skill.updates.check',
         { _meta: meta },
         { caller: SKILL_CATALOG_DESKTOP_CALLER, metadata: meta },
       );
+      // CAN-5898: the check's result is compact, so every installed skill's
+      // state (false clears an old positive) comes from the list it updated.
+      const { skills } = await runtime.query(
+        'core.catalog.skill.list',
+        {},
+        { caller: SKILL_CATALOG_DESKTOP_CALLER },
+      );
       return Object.fromEntries(
-        updates.map((update) => [
-          getLockKey(update.sourceId, update.skillName),
-          update.updateAvailable,
-        ]),
+        skills
+          .filter((skill) => skill.origin === 'installed')
+          .map((skill) => [
+            getLockKey(skill.sourceId, skill.skillName),
+            skill.updateAvailable,
+          ]),
       );
     });
   } catch (error) {

@@ -19,6 +19,17 @@ import type {
 import type { SidebarItem } from '@canopy/desktop-shared/types';
 import { useProjectsStore } from '@/stores/projectsStore';
 import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import {
+  inlineFailure,
+  inlineFailureText,
+  type InlineFailure,
+} from '@/lib/inline-app-error';
+import {
   SettingsGroup,
   SettingsLoading,
   SettingsRow,
@@ -104,7 +115,11 @@ export function BrowserProfilesSettings(): JSX.Element {
   const [rename, setRename] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  // A failed load offers Try again; any other failed action keeps the list
+  // refresh beside it, since a stale profile is the usual cause.
+  const [error, setError] = useState<
+    (InlineFailure & { readonly failedLoad: boolean }) | null
+  >(null);
   const [notice, setNotice] = useState('');
   const [preview, setPreview] = useState<
     BrowserProfileDeletePreview & {
@@ -153,7 +168,9 @@ export function BrowserProfilesSettings(): JSX.Element {
     await refreshCleanup();
   }, [selectedId, refreshCleanup]);
   useEffect(() => {
-    void refreshCleanup().catch(() => undefined);
+    void refreshCleanup().catch((cause: unknown) => {
+      reportClientAppError(cause);
+    });
   }, [refreshCleanup]);
 
   const load = useCallback(async (offset = 0): Promise<void> => {
@@ -174,21 +191,40 @@ export function BrowserProfilesSettings(): JSX.Element {
       setLoading(false);
     }
   }, []);
-  useEffect(() => {
-    void load().catch((cause) => setError(String(cause)));
+  const loadFirstPage = useCallback((): void => {
+    setError(null);
+    void load().catch((cause: unknown) => {
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError)
+        setError({
+          ...inlineFailure(appError, "Couldn't load browser profiles."),
+          failedLoad: true,
+        });
+    });
   }, [load]);
+  useEffect(() => {
+    loadFirstPage();
+  }, [loadFirstPage]);
   useEffect(() => {
     setRename(selected?.displayName ?? '');
     setPreview(undefined);
   }, [selected?.profileId, selected?.displayName]);
-  const run = async (operation: () => Promise<void>): Promise<void> => {
+  const run = async (
+    operation: () => Promise<void>,
+    failureSentence: string,
+  ): Promise<void> => {
     setBusy(true);
-    setError('');
+    setError(null);
     setNotice('');
     try {
       await operation();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError)
+        setError({
+          ...inlineFailure(appError, failureSentence),
+          failedLoad: false,
+        });
     } finally {
       setBusy(false);
     }
@@ -207,7 +243,7 @@ export function BrowserProfilesSettings(): JSX.Element {
           profile.profileId === updated.profileId ? updated : profile,
         ),
       );
-    });
+    }, "Couldn't update this profile.");
   };
   // The list, the selected profile's settings, and its browser data are
   // sections of the page; the page's spacing separates them.
@@ -219,22 +255,21 @@ export function BrowserProfilesSettings(): JSX.Element {
         ariaLabel="Browser profiles"
         dataTestId="browser-profiles-settings"
       >
-        {error && (
-          <Notice
-            intent="destructive"
-            actions={
-              <NoticeButton
-                onClick={() =>
-                  void load().catch((cause) => setError(String(cause)))
-                }
-              >
-                Refresh profiles
-              </NoticeButton>
-            }
-          >
-            {error}
-          </Notice>
-        )}
+        <DesktopErrorBanner
+          className=""
+          error={error?.error}
+          {...(error?.details === undefined ? {} : { details: error.details })}
+          {...(error?.failedLoad
+            ? { onRetry: loadFirstPage }
+            : {
+                secondaryAction: (
+                  <NoticeButton onClick={loadFirstPage}>
+                    Refresh profiles
+                  </NoticeButton>
+                ),
+              })}
+          testId="browser-profiles-error"
+        />
         {notice && <Notice intent="neutral">{notice}</Notice>}
         {cleanup.length > 0 && (
           <Notice
@@ -249,7 +284,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                   void run(async () => {
                     await window.api.browser.profiles.retryCleanup();
                     await refreshCleanup();
-                  })
+                  }, "Couldn't clean up the retired browser data.")
                 }
               >
                 Try again
@@ -271,7 +306,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                 setProfiles((current) => [...current, profile]);
                 select(profile.profileId);
                 setName('');
-              });
+              }, "Couldn't create the profile.");
             }}
           >
             <SettingsRow
@@ -326,7 +361,7 @@ export function BrowserProfilesSettings(): JSX.Element {
           {loading && profiles.length === 0 && (
             <SettingsLoading rows={2} dataTestId="browser-profiles-loading" />
           )}
-          {!loading && !error && profiles.length === 0 && (
+          {!loading && error === null && profiles.length === 0 && (
             <EmptyStateRow title="No profiles yet. Opening a browser creates its Task profile." />
           )}
           {nextOffset !== undefined && (
@@ -335,7 +370,12 @@ export function BrowserProfilesSettings(): JSX.Element {
                 size="compact"
                 variant="secondary"
                 disabled={loading}
-                onClick={() => void run(() => load(nextOffset))}
+                onClick={() =>
+                  void run(
+                    () => load(nextOffset),
+                    "Couldn't load more profiles.",
+                  )
+                }
               >
                 Load more profiles
               </Button>
@@ -443,7 +483,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                               selectionEpoch: epoch,
                               displayName: selected.displayName,
                             });
-                        })
+                        }, "Couldn't check what deleting this profile removes.")
                       }
                     >
                       Delete profile
@@ -469,7 +509,10 @@ export function BrowserProfilesSettings(): JSX.Element {
                   confirmLabel="Delete profile"
                   destructive
                   busy={busy}
-                  errorMessage={error || null}
+                  errorMessage={inlineFailureText(error)}
+                  {...(error?.details === undefined
+                    ? {}
+                    : { errorDetails: error.details })}
                   restoreFocusRef={deleteTrigger}
                   onCancel={dismissDeletePrompt}
                   onConfirm={() =>
@@ -493,7 +536,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                           ? 'Profile deleted. Storage cleanup is still running.'
                           : 'Profile deleted.',
                       );
-                    })
+                    }, "Couldn't delete the profile.")
                   }
                 />
               )}

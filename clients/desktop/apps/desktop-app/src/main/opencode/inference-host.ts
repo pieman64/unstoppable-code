@@ -7,8 +7,8 @@ import {
 import {
   resolveGatewayModelEntry,
   resolveOwnerScopedModelId,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
-import { getRawOpenCodeModelId } from '@canopy/desktop-shared/lib/opencode-models';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
+import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import { isOpenCodeGatewayRouteSupported } from '@canopy/desktop-shared/lib/opencode-gateway-models';
 import {
   prepareOpenCodeInferenceRoute,

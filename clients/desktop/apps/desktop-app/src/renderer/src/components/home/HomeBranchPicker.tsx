@@ -29,6 +29,7 @@ import {
   PickerTrigger,
   PickerTriggerChevron,
   PullRequestPickerOption,
+  SOURCE_NO_COMMITS_HINT,
   Tooltip,
   WordBoundaryTruncatedText,
 } from '@canopy/ui-shared';
@@ -61,6 +62,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { useProjectsStore } from '@/stores/projectsStore';
 import {
+  homeSendUsesSourceHead,
   useHomeComposerStore,
   type HomeBranchTarget,
 } from '@/stores/homeComposerStore';
@@ -346,6 +348,7 @@ function BranchTargetPicker({
       workspaceId: s.workspaceId,
       branchTarget: s.branchTarget,
       branchTargets: s.branchTargets,
+      newWorktreeBaseTarget: s.newWorktreeBaseTarget,
       setBranchTarget: s.setBranchTarget,
       pendingCreateFromReference: s.pendingCreateFromReference,
       setPendingCreateFromReference: s.setPendingCreateFromReference,
@@ -1410,6 +1413,27 @@ function BranchTargetPicker({
           ? 'worktree'
           : 'branch';
   const triggerLabel = selectedLabel();
+  // CAN-6016: a verified unborn source branch cannot start a new worktree
+  // from HEAD. Absent state is unknown and shows nothing; the label stays.
+  const sourceHeadUnborn = !worktreeHost && branchTargets?.headUnborn === true;
+  const newWorktreeNeedsCommit =
+    sourceHeadUnborn &&
+    homeSendUsesSourceHead({
+      projectType: project?.type,
+      branchTarget: { kind: 'new-worktree' },
+      newWorktreeBaseTarget: homeDraft.newWorktreeBaseTarget,
+      branches: branchTargets?.branches ?? [],
+      defaultBranch: branchTargets?.defaultBranch,
+    });
+  const selectionNeedsCommit =
+    sourceHeadUnborn &&
+    homeSendUsesSourceHead({
+      projectType: project?.type,
+      branchTarget,
+      newWorktreeBaseTarget: homeDraft.newWorktreeBaseTarget,
+      branches: branchTargets?.branches ?? [],
+      defaultBranch: branchTargets?.defaultBranch,
+    });
 
   function renderPullRequestOption(pr: PullRequestSummary): JSX.Element {
     const key = `pr:${pr.number}`;
@@ -1523,6 +1547,11 @@ function BranchTargetPicker({
             </PickerMenuOptionLeading>
             <PickerMenuOptionContent>
               <PickerMenuOptionLabel>New worktree</PickerMenuOptionLabel>
+              {newWorktreeNeedsCommit && (
+                <PickerMenuOptionDescription data-testid="home-branch-picker-new-worktree-no-commits">
+                  {SOURCE_NO_COMMITS_HINT}
+                </PickerMenuOptionDescription>
+              )}
             </PickerMenuOptionContent>
             <PickerMenuOptionCheck
               selected={branchTarget.kind === 'new-worktree'}
@@ -1934,7 +1963,12 @@ function BranchTargetPicker({
         ref={buttonRef}
         onClick={() => setIsOpen(!isOpen)}
         data-testid="home-branch-picker-button"
-        aria-label={triggerLabel}
+        aria-label={
+          selectionNeedsCommit
+            ? `${triggerLabel}. ${SOURCE_NO_COMMITS_HINT}`
+            : triggerLabel
+        }
+        data-source-no-commits={selectionNeedsCommit || undefined}
         aria-haspopup="dialog"
         aria-expanded={isOpen}
         aria-controls={isOpen ? 'home-branch-picker-menu' : undefined}

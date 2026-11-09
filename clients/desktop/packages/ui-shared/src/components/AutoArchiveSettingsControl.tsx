@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import { useId, type JSX, type ReactNode } from 'react';
 import { TextInput } from './Field';
 import { SettingsRowsRow, SettingsRowsSubRow } from './settings/SettingsRows';
@@ -59,7 +60,7 @@ export function AutoArchiveSettingsControl({
         }
       >
         {enabled ? (
-          <div className="space-y-3">
+          <Stack gap="item">
             <SettingsRowsSubRow
               label="After"
               htmlFor={daysId}
@@ -93,7 +94,7 @@ export function AutoArchiveSettingsControl({
               }
             />
             {children}
-          </div>
+          </Stack>
         ) : null}
       </SettingsRowsRow>
     </div>

@@ -43,7 +43,7 @@ export function SplitInterruptedModal({
       maxWidth="lg"
       dataTestId="split-interrupted-modal"
     >
-      <div className="space-y-3 px-6 py-4">
+      <div className="flex flex-col px-6 py-4 gap-3">
         <p className="text-s fg-primary/90">
           A Split PR run for this worktree was interrupted before it finished
           {childTotal > 0

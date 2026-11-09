@@ -3,6 +3,7 @@
 import { useRef, useState, type FormEvent, type JSX } from 'react';
 import type { ExplorerRetrievalPreview } from '@canopy/protocol/settings/organization-memory';
 import {
+  Stack,
   Button,
   ErrorBanner,
   Notice,
@@ -110,7 +111,7 @@ export function GraphRetrievalPanel({
       />
 
       {preview !== null && (
-        <div className="mt-3 space-y-3">
+        <Stack gap="item" className="mt-3">
           <Notice
             intent={preview.gatePassed ? 'positive' : 'attention'}
             title={preview.gatePassed ? 'Gate passed' : 'Gate blocked'}
@@ -142,7 +143,7 @@ export function GraphRetrievalPanel({
               ))}
             </div>
           )}
-        </div>
+        </Stack>
       )}
     </Surface>
   );

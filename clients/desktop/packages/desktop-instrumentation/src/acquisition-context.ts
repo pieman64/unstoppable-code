@@ -9,6 +9,11 @@ const OPERATIONS = new Set([
   'canopy.organization_create',
   'canopy.remote_pairing_start',
   'canopy.remote_pairing',
+  'canopy.remote_control_device_add',
+  'canopy.remote_control_pairing_fail',
+  'canopy.remote_control_session_start',
+  'canopy.remote_control_session_end',
+  'canopy.remote_control_device_remove',
 ]);
 const ENUMS: Readonly<Record<string, readonly string[]>> = {
   claude_connection: ['connected', 'not_connected', 'unknown'],
@@ -27,6 +32,17 @@ const ENUMS: Readonly<Record<string, readonly string[]>> = {
   pairing_kind: ['phone_code', 'computer_outgoing', 'computer_incoming'],
   pairing_entry: ['portal_modal', 'pair_computer_dialog', 'incoming_prompt'],
   peer_platform: ['darwin', 'win32', 'linux', 'unknown'],
+  device_kind: ['desktop', 'mobile', 'browser', 'hosted'],
+  pair_method: ['link', 'code'],
+  failure_reason: [
+    'denied',
+    'expired',
+    'proof_invalid',
+    'proof_consumed',
+    'persist_failed',
+    'cancelled',
+  ],
+  end_reason: ['disconnected', 'revoked', 'expired', 'disabled', 'removed'],
 };
 const BOOLEANS = new Set([
   'claude_data_detected',
@@ -36,6 +52,7 @@ const BOOLEANS = new Set([
   'invite_included',
   'is_first_accept_on_install',
   'is_additional_device',
+  'is_delegated',
 ]);
 
 /** Additional bounded-value validation for CAN-4635's exact key allowlists. */

@@ -70,12 +70,12 @@ import type {
   StartMcpOAuthPluginTarget,
   McpHttpAuthHandler,
   ProviderConnectorProvider,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   AccountMcpConnectionError,
   normalizeCuratedMetadata,
   normalizeHttpAuthHandler,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { sanitizeEnvVars } from '@canopy/desktop-shared/lib/mcp-security';
 import {
   projectMcpServerData,
@@ -91,11 +91,8 @@ import {
 } from '../lib/preferences-store';
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
 import { resumeChatsAfterMcpOAuthSuccess } from '../lib/auth-failure-resume';
-import {
-  setMcpOAuthSettledListener,
-  startMcpOAuthFlow,
-  cancelMcpOAuthFlow,
-} from '../mcp/oauth-client';
+import { setMcpOAuthSettledListener } from '../mcp/oauth-client';
+import { getMcpOAuthCoordinator } from '../mcp/oauth-coordinator';
 import {
   clearMcpOAuthToken,
   getMcpOAuthAuthStatusForDefinition,
@@ -640,6 +637,11 @@ async function readIndexWithUrlBackfill(): Promise<McpServersIndexFile> {
   }
   if (backfilled.changed) await notifyConfigIndexChanged();
   return backfilled.index;
+}
+
+/** The MCP index the window's list shows, account connections included. */
+export async function readMcpServersIndexForPresentation(): Promise<McpServersIndexFile> {
+  return withAccountMcpInventory(await readIndexWithUrlBackfill());
 }
 
 export function toIndexEntry(
@@ -2502,13 +2504,13 @@ export function registerMcpServerHandlers(
       if (typeof flowId !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(flowId)) {
         throw new Error('Invalid sign-in identifier.');
       }
-      await cancelMcpOAuthFlow(flowId);
+      await getMcpOAuthCoordinator().cancel(flowId);
     },
   );
 
   registerIpcHandler(
     MCP_SERVER_CHANNELS.START_OAUTH_LOGIN,
-    async (_event, request: StartMcpOAuthLoginRequest) => {
+    async (event, request: StartMcpOAuthLoginRequest) => {
       if (request.plugin) {
         const pluginServer = await resolvePluginOAuthTarget(request.plugin);
         const probeInputs = pluginMcpOAuthProbeInputs(
@@ -2526,12 +2528,13 @@ export function registerMcpServerHandlers(
           return { status: 'completed' };
         }
         const proxyPort = await ensureMcpProxyStartedForOAuth();
-        const result = await startMcpOAuthFlow({
+        const result = await getMcpOAuthCoordinator().start({
           definition: pluginServer.definition,
           config: pluginServer.config,
           proxyPort,
           force: request.force,
           browser: request.browser,
+          presenterWebContentsId: event.sender.id,
         });
         if (result.status === 'completed') {
           await refreshCodexSessionsAfterMcpOAuth({
@@ -2581,12 +2584,13 @@ export function registerMcpServerHandlers(
             ...definition,
             oauth: { usePkce: true },
           };
-      const result = await startMcpOAuthFlow({
+      const result = await getMcpOAuthCoordinator().start({
         definition: definitionForOAuth,
         config,
         proxyPort,
         force: request.force,
         browser: request.browser,
+        presenterWebContentsId: event.sender.id,
       });
       if (result.status === 'completed') {
         await refreshCodexSessionsAfterMcpOAuth({

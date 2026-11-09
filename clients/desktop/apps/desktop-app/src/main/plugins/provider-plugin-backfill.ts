@@ -7,14 +7,14 @@ import type {
   PluginProvider,
   PluginsCache,
 } from '@canopy/desktop-shared/types/plugins';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { AgentProviderAuthStatus } from '@canopy/desktop-shared/types';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
 import {
   damagedCopyPath,
   pruneDamagedCopiesSync,
-} from '@canopy/desktop-shared/node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import { isE2eBuild } from '../lib/e2e-gate';
 import {
   logMainProcessInfo,

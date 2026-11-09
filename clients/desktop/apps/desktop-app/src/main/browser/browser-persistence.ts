@@ -25,7 +25,7 @@ import {
 import { withArchivedWorkspaceOperationLock } from '../lib/archived-containers';
 import { touchWorkspaceTargetWithoutOperationLock } from '../lib/workspace-activity';
 import { withWorkspaceTargetRuntimeStartReservation } from '../lib/workspace-target-exclusion';
-import { isMcpOAuthBrowserScope } from '@canopy/desktop-shared/types/browser';
+import { isMcpOAuthBrowserScope } from '@canopy/execution-engine/types/browser';
 
 const CURRENT_BROWSER_STATE_VERSION = 2;
 const SAFE_BROWSER_STATE_ID = /^[a-z0-9][a-z0-9-]*$/;

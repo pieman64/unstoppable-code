@@ -1,3 +1,5 @@
+import { type StatusGlyphState } from '../lib/status-glyph';
+import { StatusGlyph } from './StatusGlyph';
 import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react';
 import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
 import { RichHoverCard } from './RichHoverTooltip';
@@ -40,6 +42,17 @@ function pipelineStatusDisplayLabel(status: WorktreePipelineStatus): string {
       return 'Paused';
   }
 }
+
+const PIPELINE_ENTRY_GLYPH: Readonly<
+  Record<PipelineStatusPopoverEntry['status'], StatusGlyphState>
+> = {
+  pending: 'queued',
+  running: 'running',
+  paused: 'paused',
+  success: 'done',
+  failure: 'failed',
+  cancelled: 'cancelled',
+};
 
 function pipelineEntryStatusLabel(
   status: PipelineStatusPopoverEntry['status'],
@@ -239,7 +252,7 @@ export function PipelineStatusPopover({
           data-scrollable={isScrollable ? 'true' : 'false'}
           aria-label={isScrollable ? 'Workflow runs' : undefined}
           tabIndex={isScrollable ? 0 : undefined}
-          className={`space-y-1.5${
+          className={`grid grid-cols-1 content-start gap-1.5${
             isScrollable ? ' pointer-events-auto overflow-y-auto pr-1' : ''
           }`}
           style={isScrollable ? { maxHeight: listMaxHeight } : undefined}
@@ -286,17 +299,9 @@ export function PipelineStatusPopover({
             return (
               <div key={entry.id}>
                 <div className="flex items-center gap-1.5 text-xs">
-                  <span
-                    className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
-                      entry.status === 'failure'
-                        ? OPERATIONAL_STATUS_COLORS.failed.background
-                        : entry.status === 'success'
-                          ? OPERATIONAL_STATUS_COLORS.success.background
-                          : entry.status === 'running' ||
-                              entry.status === 'pending'
-                            ? OPERATIONAL_STATUS_COLORS.active.background
-                            : OPERATIONAL_STATUS_COLORS.paused.background
-                    }`}
+                  <StatusGlyph
+                    state={PIPELINE_ENTRY_GLYPH[entry.status]}
+                    size={12}
                   />
                   <span className="truncate fg-primary">{entry.name}</span>
                   <span
@@ -308,7 +313,7 @@ export function PipelineStatusPopover({
                 {(runtime ||
                   (entry.runningJobs && entry.runningJobs.length > 0) ||
                   (entry.failedJobs && entry.failedJobs.length > 0)) && (
-                  <div className="ml-3 mt-0.5 space-y-px">
+                  <div className="ml-3 mt-0.5 flex flex-col gap-px">
                     {runtime && (
                       <div className="text-3xs fg-secondary">{runtime}</div>
                     )}

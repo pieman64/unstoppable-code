@@ -4,7 +4,7 @@ import {
   curatedMcpProviderOnly,
   type CuratedMcpServerEntry,
 } from '@canopy/protocol/mcp-catalog';
-import type { AccountMcpConnection } from '@canopy/desktop-shared/types/mcp-servers';
+import type { AccountMcpConnection } from '@canopy/execution-engine/types/mcp-servers';
 import {
   mcpClientSetupCollectsClient,
   mcpClientSetupExplanation,

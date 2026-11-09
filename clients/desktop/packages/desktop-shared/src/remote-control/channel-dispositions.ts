@@ -155,6 +155,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     preferencesSetPipelineDisabled: 'tunnel',
     preferencesUpdateSuggestions: 'tunnel',
     preferencesUpdateOnboardingTips: 'tunnel',
+    // The controlled computer's Mod admission preferences.
+    claudeModsGet: 'tunnel',
+    claudeModsUpdate: 'tunnel',
     preferencesSetApprovalDefault: 'tunnel',
     // creates B install data dir and adoption marker; install-level
     preferencesCreatePrimaryDataDir: 'blocked',
@@ -302,6 +305,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     repoBrowseDir: 'tunnel',
     worktreeCreate: 'tunnel',
     worktreeArchive: 'tunnel',
+    // A worktree's plan, script, hook, pipeline and summary rows: the
+    // entities Portal's worktree snapshot carries (CAN-5985).
+    worktreeActivityEntities: 'tunnel',
     worktreeCheckRemovalAdmission: 'tunnel',
     worktreeDiscardDescribe: 'tunnel',
     worktreeDiscard: 'tunnel',
@@ -440,6 +446,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     scriptStop: 'tunnel',
     scriptCancelWorktreeSetup: 'tunnel',
     scriptLoadWorktreeRuns: 'tunnel',
+    // One run's log tail for browser controllers, the read Portal's log
+    // request runs (CAN-5985).
+    scriptReadRunLog: 'tunnel',
     scriptOutput: 'tunnel',
     scriptComplete: 'tunnel',
     scriptSourceInfo: 'tunnel',
@@ -450,6 +459,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     hookStarted: 'tunnel',
     hookStop: 'tunnel',
     hookLoadWorktreeRuns: 'tunnel',
+    // Pause or resume hooks on the latest worktree row, as Portal's
+    // hook pause applies it (CAN-5985).
+    hookChangePause: 'tunnel',
     hookOutput: 'tunnel',
     hookComplete: 'tunnel',
     hookSourceInfo: 'tunnel',
@@ -587,6 +599,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     chatProjectTemplateShareRevoke: 'tunnel',
     chatProjectUpdate: 'tunnel',
     chatProjectDelete: 'tunnel',
+    chatProjectCheckFolder: 'tunnel',
+    chatProjectRollbackUnstartedSend: 'tunnel',
+    chatProjectRevealFolderLocation: 'blocked',
     chatProjectLoadClaudeMd: 'tunnel',
     chatProjectSaveClaudeMd: 'tunnel',
     chatSearchCatalog: 'tunnel',
@@ -639,6 +654,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     modelGatewayValidateCredential: 'tunnel',
     modelGatewayCredentialChanged: 'tunnel',
     settingsLoadCanopyCloudAccount: 'tunnel',
+    // Local invalidation cannot accompany an account read tunneled to another host.
+    settingsCanopyCloudSessionStatusChanged: 'blocked',
     settingsGetCanopyCloudBaseUrl: 'tunnel',
     // opens authenticated URL in system browser on A
     settingsOpenAuthenticatedPortalPage: 'local',
@@ -744,6 +761,10 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     observabilityReportPostHogSessionRotation: 'local',
     // renderer PostHog/diagnostics identity of this window
     observabilityPostHogSessionUpdate: 'local',
+    // this computer's effective usage-data policy for its own telemetry
+    observabilityGetUsageDataPolicy: 'local',
+    // this computer's effective usage-data policy for its own telemetry
+    observabilityUsageDataPolicyChanged: 'local',
     observabilityEvent: 'tunnel',
     githubCreatePr: 'tunnel',
     githubRequestRefresh: 'tunnel',
@@ -783,6 +804,7 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     githubSplitLockEvent: 'tunnel',
     githubSplitLockState: 'tunnel',
     githubGetMergeQueue: 'tunnel',
+    githubGetPrState: 'tunnel',
     // lists B's apps for open-in, which is blocked
     worktreeDetectApps: 'blocked',
     // lists B's apps for open-in, which is blocked
@@ -1107,6 +1129,16 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // computer whose checkout it is, until a controlled link is designed.
     cloudProjectsFindLink: 'blocked',
     cloudProjectsLink: 'blocked',
+    // Setting a cloud project up clones onto this computer with its own Git
+    // credentials (CAN-5192); a remote controller cannot start it.
+    cloudProjectsSetupCatalog: 'blocked',
+    cloudProjectsSetupOptions: 'blocked',
+    cloudProjectsStartSetup: 'blocked',
+    cloudProjectsSetupProgress: 'blocked',
+    // A cloud session remint is the local person's action (CAN-4185).
+    cloudChatsReconnect: 'blocked',
+    // Bytes from the local person's own file pick (CAN-5972).
+    cloudChatsUploadAttachment: 'blocked',
     orgProjectsMoveBackToPersonal: 'tunnel',
     orgProjectsOwnershipChanged: 'tunnel',
     orgProjectsList: 'tunnel',
@@ -1124,6 +1156,10 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     appAdvisorStateChanged: 'tunnel',
     appAdvisorSettingsLoad: 'tunnel',
     appAdvisorSettingsSave: 'tunnel',
+    // The Orchestrator settings Portal's settings get and save serve
+    // (CAN-5985).
+    appAdvisorSettingsView: 'tunnel',
+    appAdvisorSettingsPatch: 'tunnel',
     appAdvisorSettingsChanged: 'tunnel',
     appAdvisorLoadClaudeMd: 'tunnel',
     appAdvisorSaveClaudeMd: 'tunnel',
@@ -1189,6 +1225,12 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     repoRulesStatus: 'blocked',
     repoRulesPreview: 'blocked',
     editorSetupPresence: 'blocked',
+    // Read-only menus and the picker catalog Portal's executor serves; the
+    // invocable resolve writes nothing (CAN-5985).
+    editorListSlashCommands: 'tunnel',
+    editorListInvocables: 'tunnel',
+    editorResolveInvocable: 'tunnel',
+    pluginCatalogList: 'tunnel',
     externalProjectsImport: 'tunnel',
     externalProjectsPickFolder: 'tunnel',
     externalProjectsReadInvite: 'tunnel',
@@ -1250,6 +1292,13 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     remoteControlPathPickerRequest: 'local',
     remoteControlPathPickerResolve: 'local',
     remoteControlListDirectory: 'tunnel',
+    // The pairing window is this computer's own opt-in surface.
+    remoteControlOpenPairingWindow: 'local',
+    remoteControlClosePairingWindow: 'local',
+    remoteControlPairingEvent: 'local',
+    // The controlled computer's stable install identifier; controllers
+    // (hosted MCP pairing) read it after authorization.
+    remoteControlInstallId: 'tunnel',
   };
 
 export const PIPELINE_REMOTE_DISPOSITIONS: RemoteDispositions<
@@ -1276,6 +1325,10 @@ export const PIPELINE_REMOTE_DISPOSITIONS: RemoteDispositions<
   CANCEL_MATRIX_VARIANT: 'tunnel',
   GET_EXECUTION: 'tunnel',
   LIST_EXECUTIONS: 'tunnel',
+  LIST_FOR_WORKTREE: 'tunnel',
+  LIST_WORKTREE_EXECUTIONS: 'tunnel',
+  GET_WORKTREE_EXECUTION: 'tunnel',
+  GET_FOR_WORKTREE: 'tunnel',
   SET_EXECUTION_HIDDEN: 'tunnel',
   EXECUTION_EVENT: 'tunnel',
   STEP_OUTPUT_EVENT: 'tunnel',

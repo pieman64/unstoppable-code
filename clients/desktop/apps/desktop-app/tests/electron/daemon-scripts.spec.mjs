@@ -1,19 +1,17 @@
-// CAN-5087 — scripts Electron acceptance for the `daemon-scripts` Labs
-// experiment ("Background scripts"), the lean gate's acceptance spec.
+// CAN-5087 — scripts Electron acceptance for the daemon script route, which
+// is on by default with no Labs switch (CAN-5960).
 //
-// SCOPE. With the experiment on, a non-interactive project script the main
-// window runs executes in the core daemon: its shell's parent is the daemon,
-// its run log names the daemon as writer, and its output reaches the
-// renderer. A stop cancels it. With the experiment off, the next run of the
-// same script executes in the app again and nothing in its run log is
-// repaired or set aside.
+// SCOPE. A non-interactive project script the main window runs executes in
+// the core daemon: its shell's parent is the daemon, its run log names the
+// daemon as writer, and its output reaches the renderer. A stop cancels it.
+// An interactive script, which the route excludes in code, runs in the app
+// after a daemon run, and nothing in the run logs is repaired or set aside.
 //
 // PLATFORM. macOS only: it needs the verified daemon artifact the launcher
 // starts and the owned-child host. Linux and Windows skip.
 //
 // FLOW. Seed a demo workspace and add `daemon-echo` and `daemon-sleep` to the
-// worktree's canopy.json, launch the app, switch the experiment through the
-// Labs choice the Settings → Labs page sends, and run the scripts through the
+// worktree's canopy.json, launch the app, and run the scripts through the
 // preload calls the Scripts panel makes. The daemon's PID comes from
 // `<dataRoot>/runtime/core.json`.
 
@@ -45,6 +43,8 @@ test.skip(
 const SCRIPTS = {
   'daemon-echo': "printf 'one\\ntwo\\n'",
   'daemon-sleep': 'sleep 60',
+  // Interactive runs use a terminal, which the daemon route never takes.
+  'daemon-ask': { command: "printf 'asked\\n'", interactive: true },
 };
 
 function daemonPid(userDataDir) {
@@ -105,17 +105,6 @@ function seededWorktreeId(userDataDir, workspace) {
   return id;
 }
 
-async function setBackgroundScripts(window, enabled) {
-  await window.evaluate(
-    (choice) =>
-      window.api.experiments.setChoice({
-        experimentId: 'daemon-scripts',
-        enabled: choice,
-      }),
-    enabled,
-  );
-}
-
 test.describe('daemon scripts (CAN-5087)', () => {
   let launched;
   let seeded;
@@ -146,8 +135,6 @@ test.describe('daemon scripts (CAN-5087)', () => {
         2,
       ),
     );
-    // The launcher offers `canopy-desktop-labs-daemon-scripts`; each test
-    // switches it on or off as the Labs page does.
     launched = await launchCanopyApp({ userDataDir });
   });
 
@@ -171,7 +158,6 @@ test.describe('daemon scripts (CAN-5087)', () => {
 
   test('runs a project script in the daemon with live output', async () => {
     const { window, userDataDir } = launched;
-    await setBackgroundScripts(window, true);
     const outputs = window.evaluate(
       () =>
         new Promise((resolve) => {
@@ -203,7 +189,6 @@ test.describe('daemon scripts (CAN-5087)', () => {
 
   test('stops a daemon script', async () => {
     const { window, userDataDir } = launched;
-    await setBackgroundScripts(window, true);
     const running = window.evaluate(
       (body) => window.api.runScript(body),
       request('daemon-sleep'),
@@ -239,9 +224,8 @@ test.describe('daemon scripts (CAN-5087)', () => {
       .toBe(false);
   });
 
-  test('runs the next script in the app when the experiment is off, with nothing repaired', async () => {
+  test('runs an interactive script in the app after a daemon run, with nothing repaired', async () => {
     const { window, userDataDir } = launched;
-    await setBackgroundScripts(window, true);
     expect(
       (
         await window.evaluate(
@@ -250,12 +234,16 @@ test.describe('daemon scripts (CAN-5087)', () => {
         )
       ).success,
     ).toBe(true);
-    await setBackgroundScripts(window, false);
+    const daemon = daemonPid(userDataDir);
+    expect(
+      runLogMeta(userDataDir, workspace.id, worktreeId, 'daemon-echo')?.writer
+        ?.pid,
+    ).toBe(daemon);
     expect(
       (
         await window.evaluate(
           (body) => window.api.runScript(body),
-          request('daemon-echo'),
+          request('daemon-ask'),
         )
       ).success,
     ).toBe(true);
@@ -263,9 +251,10 @@ test.describe('daemon scripts (CAN-5087)', () => {
       userDataDir,
       workspace.id,
       worktreeId,
-      'daemon-echo',
+      'daemon-ask',
     );
-    expect(meta?.writer?.pid).not.toBe(daemonPid(userDataDir));
+    expect(meta?.status).toBe('success');
+    expect(meta?.writer?.pid).not.toBe(daemon);
     expect(
       readdirSync(scriptRunDir(userDataDir, workspace.id, worktreeId)).some(
         (name) => name.includes('.unreadable-'),

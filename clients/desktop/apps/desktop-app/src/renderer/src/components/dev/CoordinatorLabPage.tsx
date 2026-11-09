@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  Stack,
   Button,
   DialogModal,
   Disclosure,
@@ -19,6 +20,7 @@ import {
   RunSpinner,
   SegmentedControl,
   Tooltip,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import {
   BellIcon,
@@ -417,16 +419,16 @@ export function CoordinatorLabPage(): JSX.Element {
         className="h-full"
         viewportClassName="overflow-x-hidden"
       >
-        <div className="mx-auto w-full max-w-260 px-10 pb-20 pt-12">
-          <header className="mb-10 flex flex-wrap items-end justify-between gap-6">
-            <div className="min-w-0 space-y-1">
+        <div className="flex flex-col mx-auto w-full max-w-260 px-10 pb-20 pt-12 gap-10">
+          <header className="flex flex-wrap items-end justify-between gap-6">
+            <Stack gap="tight" className="min-w-0">
               <Heading level={1} variant="page">
                 Chats
               </Heading>
               <p className="text-s fg-secondary">
                 Worktree {state?.worktreeId ?? 'tuatara'} · updates live
               </p>
-            </div>
+            </Stack>
             <div className="flex items-center gap-3">
               <SegmentedControl<Mode>
                 label="Appearance"
@@ -484,123 +486,125 @@ export function CoordinatorLabPage(): JSX.Element {
             </div>
           </header>
 
-          {offline ? (
-            <div className="mb-8">
-              <Notice
-                intent="destructive"
-                title="Can't reach the coordinator server."
-              >
-                Showing the last update. Trying again every 2 seconds.
-              </Notice>
-            </div>
-          ) : null}
+          <Stack gap="page">
+            {offline ? (
+              <div>
+                <Notice
+                  intent="destructive"
+                  title="Can't reach the coordinator server."
+                >
+                  Showing the last update. Trying again every 2 seconds.
+                </Notice>
+              </div>
+            ) : null}
 
-          <div className="grid grid-cols-1 gap-x-14 gap-y-12 lg:grid-cols-[minmax(0,1fr)_18rem]">
-            <main className="flex min-w-0 flex-col gap-10">
-              {state === null && !offline ? (
-                <p className="text-s fg-secondary">Loading chats…</p>
-              ) : null}
-              {state
-                ? shown.map((g) =>
-                    groups[g].length > 0 ? (
-                      <SettingsSection key={g} title={SECTION_TITLE[g]}>
-                        <ul
-                          className="flex flex-col gap-3"
-                          aria-label={SECTION_TITLE[g]}
-                        >
-                          {groups[g].map((c) => (
-                            <ChatCard
-                              key={c.id}
-                              chat={c}
-                              group={g}
-                              now={now}
-                              expanded={Boolean(open[c.id])}
-                              onToggle={() => toggle(c.id)}
-                              reviewOpen={
-                                open[`review-${c.id}`] ??
-                                (g === 'needs' || g === 'running')
-                              }
-                              onToggleReview={() =>
-                                setOpen((o) => ({
-                                  ...o,
-                                  [`review-${c.id}`]: !(
-                                    o[`review-${c.id}`] ??
-                                    (g === 'needs' || g === 'running')
-                                  ),
-                                }))
-                              }
-                              onShot={openIn(cardMedia(c))}
-                            />
-                          ))}
-                        </ul>
-                      </SettingsSection>
-                    ) : filter === g ? (
-                      <SettingsSection key={g} title={SECTION_TITLE[g]}>
-                        <p className="text-s fg-secondary">{EMPTY_COPY[g]}</p>
-                      </SettingsSection>
-                    ) : null,
-                  )
-                : null}
-            </main>
-
-            <aside className="flex min-w-0 flex-col gap-10">
-              <SettingsSection title="Coordinator log">
-                {state && state.log.length > 0 ? (
-                  <ol className="flex flex-col gap-3">
-                    {[...state.log]
-                      .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
-                      .slice(0, open['log-all'] ? undefined : 12)
-                      .map((l, i) => (
-                        <li
-                          key={i}
-                          className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3 text-xs"
-                        >
-                          <time
-                            dateTime={l.at}
-                            className="font-mono tabular-nums fg-tertiary"
+            <div className="grid grid-cols-1 gap-x-14 gap-y-12 lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <main className="flex min-w-0 flex-col gap-10">
+                {state === null && !offline ? (
+                  <p className="text-s fg-secondary">Loading chats…</p>
+                ) : null}
+                {state
+                  ? shown.map((g) =>
+                      groups[g].length > 0 ? (
+                        <SettingsSection key={g} title={SECTION_TITLE[g]}>
+                          <ul
+                            className="flex flex-col gap-3"
+                            aria-label={SECTION_TITLE[g]}
                           >
-                            {clock(l.at)}
-                          </time>
-                          <span className="text-pretty fg-secondary">
-                            {l.text}
+                            {groups[g].map((c) => (
+                              <ChatCard
+                                key={c.id}
+                                chat={c}
+                                group={g}
+                                now={now}
+                                expanded={Boolean(open[c.id])}
+                                onToggle={() => toggle(c.id)}
+                                reviewOpen={
+                                  open[`review-${c.id}`] ??
+                                  (g === 'needs' || g === 'running')
+                                }
+                                onToggleReview={() =>
+                                  setOpen((o) => ({
+                                    ...o,
+                                    [`review-${c.id}`]: !(
+                                      o[`review-${c.id}`] ??
+                                      (g === 'needs' || g === 'running')
+                                    ),
+                                  }))
+                                }
+                                onShot={openIn(cardMedia(c))}
+                              />
+                            ))}
+                          </ul>
+                        </SettingsSection>
+                      ) : filter === g ? (
+                        <SettingsSection key={g} title={SECTION_TITLE[g]}>
+                          <p className="text-s fg-secondary">{EMPTY_COPY[g]}</p>
+                        </SettingsSection>
+                      ) : null,
+                    )
+                  : null}
+              </main>
+
+              <aside className="flex min-w-0 flex-col gap-10">
+                <SettingsSection title="Coordinator log">
+                  {state && state.log.length > 0 ? (
+                    <ol className="flex flex-col gap-3">
+                      {[...state.log]
+                        .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+                        .slice(0, open['log-all'] ? undefined : 12)
+                        .map((l, i) => (
+                          <li
+                            key={i}
+                            className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3 text-xs"
+                          >
+                            <time
+                              dateTime={l.at}
+                              className="font-mono tabular-nums fg-tertiary"
+                            >
+                              {clock(l.at)}
+                            </time>
+                            <span className="text-pretty fg-secondary">
+                              {l.text}
+                            </span>
+                          </li>
+                        ))}
+                      {state.log.length > 12 ? (
+                        <li>
+                          <span className="text-xs">
+                            <Button
+                              variant="link"
+                              onClick={() => toggle('log-all')}
+                            >
+                              {open['log-all']
+                                ? 'Show fewer'
+                                : `Show all ${state.log.length}`}
+                            </Button>
                           </span>
                         </li>
-                      ))}
-                    {state.log.length > 12 ? (
-                      <li>
-                        <span className="text-xs">
-                          <Button
-                            variant="link"
-                            onClick={() => toggle('log-all')}
-                          >
-                            {open['log-all']
-                              ? 'Show fewer'
-                              : `Show all ${state.log.length}`}
-                          </Button>
-                        </span>
-                      </li>
-                    ) : null}
-                  </ol>
-                ) : (
-                  <p className="text-xs fg-secondary">No entries yet.</p>
-                )}
-              </SettingsSection>
-              <SettingsSection title="Your screenshots">
-                {state && state.attachments.length > 0 ? (
-                  <Thumbs
-                    shots={state.attachments}
-                    now={now}
-                    onShot={openIn(state.attachments)}
-                    caption="time"
-                  />
-                ) : (
-                  <p className="text-xs fg-secondary">
-                    Screenshots you attach in this worktree show up here.
-                  </p>
-                )}
-              </SettingsSection>
-            </aside>
-          </div>
+                      ) : null}
+                    </ol>
+                  ) : (
+                    <EmptyStateRow title="No entries yet." />
+                  )}
+                </SettingsSection>
+                <SettingsSection title="Your screenshots">
+                  {state && state.attachments.length > 0 ? (
+                    <Thumbs
+                      shots={state.attachments}
+                      now={now}
+                      onShot={openIn(state.attachments)}
+                      caption="time"
+                    />
+                  ) : (
+                    <p className="text-xs fg-secondary">
+                      Screenshots you attach in this worktree show up here.
+                    </p>
+                  )}
+                </SettingsSection>
+              </aside>
+            </div>
+          </Stack>
         </div>
 
         {lightbox ? (
@@ -1012,7 +1016,7 @@ function ChatCard({
         <span className="flex h-5 w-4 shrink-0 items-center justify-center">
           <StatusGlyph chat={c} group={group} />
         </span>
-        <div className="min-w-0 flex-1 space-y-1">
+        <Stack gap="tight" className="min-w-0 flex-1">
           <Heading level={3} variant="title" truncate>
             {c.title}
           </Heading>
@@ -1027,7 +1031,7 @@ function ChatCard({
           >
             {line}
           </p>
-        </div>
+        </Stack>
         <span className="flex h-5 shrink-0 items-center text-xs tabular-nums fg-tertiary">
           {trailing}
         </span>
@@ -1067,7 +1071,7 @@ function ChatCard({
           onOpenChange={onToggle}
           dataTestId={`coordinator-lab-chat-${c.id}-details`}
         >
-          <div className="flex flex-col gap-4">
+          <Stack gap="group">
             {c.note ? (
               <p className="text-xs text-pretty fg-secondary">{c.note}</p>
             ) : null}
@@ -1082,15 +1086,15 @@ function ChatCard({
               <Steps activity={c.activity.slice(0, 8)} now={now} />
             ) : null}
             {reply ? (
-              <div className="flex flex-col gap-2">
+              <Stack gap="inline">
                 <p className="text-xs fg-tertiary">
                   Last reply ·{' '}
                   <span className="tabular-nums">{ago(c.lastTextAt, now)}</span>
                 </p>
                 <Rich text={reply} />
-              </div>
+              </Stack>
             ) : null}
-          </div>
+          </Stack>
         </Disclosure>
       </div>
     </li>
@@ -1295,7 +1299,7 @@ function ReviewPanel({
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <Stack gap="item">
       <div className="flex flex-wrap items-center justify-between gap-3">
         {surfaces.length > 1 ? (
           <SegmentedControl<Surface>
@@ -1400,7 +1404,7 @@ function ReviewPanel({
           onShot={onShot}
         />
       ) : null}
-    </div>
+    </Stack>
   );
 }
 
@@ -1655,7 +1659,7 @@ function PictureViewer({
   const rest = all.length - shots.length;
 
   return (
-    <div className="flex flex-col gap-3">
+    <Stack gap="item">
       <div className="flex min-h-7 flex-wrap items-center justify-between gap-2">
         <span className="min-w-0 truncate text-s font-medium fg-primary">
           {humanName(bases[page] ?? '')}
@@ -1821,7 +1825,7 @@ function PictureViewer({
           ) : null}
         </div>
       </div>
-    </div>
+    </Stack>
   );
 }
 

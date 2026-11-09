@@ -22,6 +22,7 @@ import {
   Kbd,
   ToggleSwitch,
   ErrorBanner,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { brandText } from '@/lib/brand';
@@ -362,12 +363,12 @@ export function GlobalFocusShortcutSection(): JSX.Element {
                 </Button>
               </div>
               {recorder.problem !== null ? (
-                <p
-                  className="text-xs fg-destructive"
+                <FieldError
+                  id="global-focus-shortcut-validation"
                   data-testid="global-focus-shortcut-validation"
                 >
                   {recorder.problem}
-                </p>
+                </FieldError>
               ) : (
                 <p className="text-xs fg-secondary">
                   Hold the modifier keys and press a key. Esc cancels.

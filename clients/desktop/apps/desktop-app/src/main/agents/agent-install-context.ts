@@ -1,8 +1,8 @@
-import type { ResourceContextInput } from '@canopy/desktop-shared/lib/resource-context-policy';
+import type { ResourceContextInput } from '@canopy/execution-engine/lib/resource-context-policy';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import { createHash } from 'node:crypto';
-import type { SharedAgentDetail } from '@canopy/desktop-shared/types/agent-models';
-import { classifyResourceOwner } from '@canopy/desktop-shared/lib/resource-context';
+import type { SharedAgentDetail } from '@canopy/execution-engine/types/agent-models';
+import { classifyResourceOwner } from '@canopy/execution-engine/lib/resource-context';
 import { createResourceInstallReceiptsStore } from '../lib/resource-install-receipts';
 import { readCanopyCloudAccountWithStatus } from '../lib/canopy-cloud-account-store';
 import {

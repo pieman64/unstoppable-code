@@ -3,9 +3,9 @@
 import { useRef, type ChangeEvent, type JSX } from 'react';
 import {
   Button,
-  CopyDetailsButton,
   DISPLAY_AVATAR_SIZE_PX,
   type DisplayAvatarSize,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { Camera, ImagePlus } from '@canopy/ui-shared/icons/AppIcons';
 import { ALLOWED_AVATAR_MIME_TYPES } from '@canopy/protocol/settings/account';
@@ -121,17 +121,13 @@ export function OrganizationLogoEditor({
         </Button>
       )}
       {error && (
-        <>
-          <p
-            className="max-w-48 text-center text-xs fg-destructive"
-            role="alert"
-          >
-            {error.copy}
-          </p>
-          {error.details !== undefined ? (
-            <CopyDetailsButton details={error.details} />
-          ) : null}
-        </>
+        <div className="w-full max-w-48">
+          <ErrorBanner
+            className=""
+            error={error.copy}
+            {...(error.details !== undefined ? { details: error.details } : {})}
+          />
+        </div>
       )}
     </div>
   );

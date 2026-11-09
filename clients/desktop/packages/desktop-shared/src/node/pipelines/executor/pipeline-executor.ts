@@ -6,12 +6,15 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
-import type { Pipeline } from '@canopy/desktop-shared/types/pipeline';
+import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import {
   normalizeAgentModelConfig,
   type UsageInitiationSource,
 } from '../../../types';
-import { brandEnvCandidates, setBrandEnv } from '../../../brand/env';
+import {
+  brandEnvCandidates,
+  setBrandEnv,
+} from '@canopy/execution-engine/brand/env';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import {
   buildExpressionAssets,
@@ -109,7 +112,7 @@ import type {
   RetryMatrixJobRequest,
   ResolvedPipelineExecutionTarget,
   ResolvedPipelinePluginCollectionSnapshot,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 export class MatrixExecutorInactiveError extends Error {
   constructor(executionId: string) {
@@ -869,7 +872,7 @@ async function resolvePlanPersistence(
     return runtime.planPersistence;
   }
 
-  return import('../../lib/plan-persistence');
+  return import('@canopy/execution-engine/node/lib/plan-persistence');
 }
 
 async function upsertTrackedPlanFromExecution(

@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import {
   damagedCopiesOf,
   pruneDamagedCopies,
-} from '@canopy/desktop-shared/node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import {
   normalizeSidebarItemGroups,
   parseSidebarItemGroupsFile,

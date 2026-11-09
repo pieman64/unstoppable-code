@@ -1,10 +1,15 @@
 import { useCallback, useState, type JSX } from 'react';
 import {
   Button,
+  FieldError,
   Notice,
   SettingsSelect,
   type SettingsSelectItem,
 } from '@canopy/ui-shared/components';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { TrashIcon } from '@canopy/ui-shared/icons/AppIcons';
 import type {
   BrowserSearchEngine,
@@ -74,7 +79,7 @@ export function BrowserSearchEngineSettings(): JSX.Element {
     (state) => state.applySearchPreferences,
   );
   const [saving, setSaving] = useState(false);
-  const [saveFailed, setSaveFailed] = useState(false);
+  const [saveError, setSaveError] = useState<InlineFailure | null>(null);
   const [name, setName] = useState('');
   const [urlTemplate, setUrlTemplate] = useState('');
   const [addError, setAddError] = useState<string | null>(null);
@@ -87,15 +92,22 @@ export function BrowserSearchEngineSettings(): JSX.Element {
       };
       applySearchPreferences(next);
       setSaving(true);
-      setSaveFailed(false);
+      setSaveError(null);
       void window.api
         .savePreferences(next)
         .then((preferences) => {
           applySearchPreferences(preferences);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           applySearchPreferences(previous);
-          setSaveFailed(true);
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(
+                appError,
+                "Couldn't save your search engine changes.",
+              ),
+            );
         })
         .finally(() => {
           setSaving(false);
@@ -170,11 +182,15 @@ export function BrowserSearchEngineSettings(): JSX.Element {
         title="Search engine"
         dataTestId="settings-browser-search-engine"
       >
-        {saveFailed && (
-          <Notice intent="destructive">
-            Your search engine changes couldn’t be saved. Try again.
-          </Notice>
-        )}
+        <DesktopErrorBanner
+          className=""
+          error={saveError?.error}
+          {...(saveError?.details === undefined
+            ? {}
+            : { details: saveError.details })}
+          onDismiss={(): void => setSaveError(null)}
+          testId="settings-browser-search-engine-save-error"
+        />
         <SettingsGroup>
           <SettingsRow
             label="Search engine used in the address bar"
@@ -255,6 +271,11 @@ export function BrowserSearchEngineSettings(): JSX.Element {
                   value={urlTemplate}
                   placeholder="https://example.com/search?q=%s"
                   aria-invalid={addError !== null}
+                  aria-describedby={
+                    addError === null
+                      ? undefined
+                      : 'settings-browser-search-engine-error'
+                  }
                   data-testid="settings-browser-search-engine-url"
                   onChange={(event): void => {
                     setUrlTemplate(event.target.value);
@@ -280,12 +301,13 @@ export function BrowserSearchEngineSettings(): JSX.Element {
             }
           >
             {addError !== null && (
-              <Notice
-                intent="destructive"
+              <FieldError
+                id="settings-browser-search-engine-error"
+                announce
                 data-testid="settings-browser-search-engine-error"
               >
                 {addError}
-              </Notice>
+              </FieldError>
             )}
             {atLimit && (
               <Notice intent="neutral">

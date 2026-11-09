@@ -1,3 +1,7 @@
+import { claudeMarketplaceNames } from '@canopy/desktop-shared/lib/claude-marketplace-names';
+
+export { claudeMarketplaceNames };
+
 /**
  * Claude Code plugins a Cursor chat inherits: installed in Claude Code and
  * not disabled there, minus what the chat already selects or has turned off.
@@ -47,33 +51,6 @@ export interface InheritedPluginMarketplace {
 
 function refKey(ref: PluginRefKey): string {
   return `${ref.marketplaceId}\u0000${ref.pluginName.toLowerCase()}`;
-}
-
-/**
- * The spellings Claude Code may key a marketplace's installs under, in
- * `plugin@<spelling>`, most authoritative first: the name Claude Code
- * registered it under, then Canopy's id, then its display name, each once.
- * A blank spelling names nothing.
- *
- * The registered name is the marketplace's Claude manifest `name`, which the
- * cache records in its Claude provider status (`plugin-service.ts`,
- * `curated-plugin-marketplace.ts`): Claude Code registers a marketplace under
- * its manifest name, and keys every install in `installed_plugins.json` by
- * it. Within one entry it is tried first, so the entry's own display name
- * cannot shadow its registered name. Across entries, cache order decides
- * which entry resolves a shared spelling first (see `inheritedClaudePluginRefs`).
- */
-export function claudeMarketplaceNames(
-  marketplace: InheritedPluginMarketplace,
-): string[] {
-  const names = [
-    marketplace.providerStatus?.claude?.marketplaceName,
-    marketplace.id,
-    marketplace.name,
-  ];
-  return Array.from(
-    new Set(names.filter((name): name is string => Boolean(name))),
-  );
 }
 
 /** Claude Code's install of `pluginName` under one of the spellings, with its key. */

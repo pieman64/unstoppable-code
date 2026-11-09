@@ -1,3 +1,4 @@
+import { Dot } from '@canopy/ui-shared/components/Badge';
 import {
   AccountMenuComputersSection,
   SidebarMachinePicker,
@@ -17,12 +18,12 @@ import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import type { NavigationPage } from '@/stores/navigationStore';
 import { useObservabilityStore } from '@/stores/observabilityStore';
+import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   computeAiCreditsAlertLevel,
   computeUsageAlertLevel,
   maxUsageAlertLevel,
-  usageAlertBackgroundClass,
 } from '@canopy/desktop-shared/lib/usage-alert';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { accountBillingPath } from '@canopy/protocol/billing';
@@ -93,8 +94,8 @@ export interface SidebarAccountMenuProps {
   onSettingsClick: () => void;
   settingsOpen: boolean;
   /**
-   * The `canopy-portal-enabled` flag. Gates the Remote Control menu item and
-   * the row's Remote Control status line.
+   * The `canopy-portal-enabled` flag. Gates the row's Portal status line; the
+   * Remote Control menu item follows device Remote Control instead.
    */
   canopyPortalEnabled: boolean;
   /** Opens the Remote Control dialog (the host's `canopy_portal.open` dispatch). */
@@ -219,22 +220,19 @@ export function SidebarAccountMenu({
   // Early access leaves the name in its own ink: the avatar's dot and the
   // Usage row's dot carry the usage status.
   const accountIdentityTone: SidebarAccountIdentityTone = 'inherit';
-  const accountAttentionDotClassName =
-    usageAlertLevel === 'normal'
-      ? null
-      : usageAlertBackgroundClass(usageAlertLevel);
+
   // The avatar dot is for usage only; other-context updates ride on the
   // context switcher at the top of the sidebar.
   const accountAttention: SidebarAccountAttention | null =
-    accountAttentionDotClassName
-      ? {
-          dotClassName: accountAttentionDotClassName,
+    usageAlertLevel === 'normal'
+      ? null
+      : {
+          dotTone: usageAlertLevel === 'critical' ? 'danger' : 'attention',
           label:
             usageAlertLevel === 'critical'
               ? 'usage requires attention'
               : 'usage is nearing its limit',
-        }
-      : null;
+        };
   // The row's second line (CAN-3659). The status follows the worker state for
   // any signed-in account, guests included, since it is the truth about the
   // connection. Signed out, the trigger is named "Sign in", so a status there
@@ -244,7 +242,30 @@ export function SidebarAccountMenu({
   const portalAccountStatus = useCanopyPortalStore((state) =>
     resolveCanopyPortalAccountStatus(state.state, canopyPortalEnabled),
   );
-  const remoteControlStatus = accountInfo != null ? portalAccountStatus : null;
+  // A direct controller (browser, phone, computer, or an agents session) that
+  // is connected to this computer right now reads as active too (CAN-5985).
+  // Reconnecting and disconnected stay Portal's: direct devices come and go
+  // on their own, so a dropped one is not a state to report here.
+  const directControlActive = useRemoteControlStore(
+    (store) =>
+      store.context.mode === 'local' &&
+      store.state.controllers.some(
+        (controller) =>
+          controller.connected || controller.hostedSessions.length > 0,
+      ),
+  );
+  const remoteControlStatus =
+    accountInfo != null
+      ? directControlActive
+        ? 'active'
+        : portalAccountStatus
+      : null;
+  // The Remote Control item follows device Remote Control, not Portal
+  // (CAN-5985). Signed-out and guest accounts see it too: the dialog shows
+  // its sign-in, guest and upgrade states.
+  const remoteControlAvailable = useRemoteControlStore(
+    (store) => store.state.available,
+  );
   const trialDaysLeft = subscription.status?.trialEndsAt
     ? Math.max(
         0,
@@ -555,16 +576,16 @@ export function SidebarAccountMenu({
                     data-testid="sidebar-account-usage-alert-frame"
                     className="pointer-events-none ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center"
                   >
-                    <span
+                    <Dot
+                      tone={
+                        usageAlertLevel === 'critical' ? 'danger' : 'attention'
+                      }
                       data-testid="sidebar-account-usage-alert-dot"
-                      className={`h-1.5 w-1.5 rounded-full ${usageAlertBackgroundClass(
-                        usageAlertLevel,
-                      )}`}
                     />
                   </span>
                 )}
               </DropdownMenuItem>
-              {canopyPortalEnabled && (
+              {remoteControlAvailable && (
                 <DropdownMenuItem
                   onClick={() => handleItemClick(onCanopyPortalClick)}
                   data-testid="sidebar-account-menu-item-remote-control"

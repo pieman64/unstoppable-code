@@ -24,7 +24,7 @@ import type {
   PipelineData,
   PipelinePluginCollectionPreference,
   PipelinePreferenceLocator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   deletePipelinePluginCollectionPreferences,
   loadPipelinePluginCollectionPreferences,
@@ -163,6 +163,12 @@ export interface OwnedPipelineReplacement {
 export interface OwnedPipelineInPlace {
   pipelineId: string;
   previous: PipelineData;
+  /**
+   * CAN-5782: a person's revision of a schedule an agent wrote, which keeps
+   * the agent author: no grant is minted, so a person's revision never
+   * carries an agent's grant.
+   */
+  withholdGrant?: boolean;
 }
 
 /**
@@ -411,7 +417,7 @@ export async function saveOwnedChatPipeline(
     // automation records it too, as the authority an agent's later update
     // must keep; an agent's can't run as its native action did without it.
     let grant: PipelineNativeGrant | null = null;
-    if (authority !== undefined) {
+    if (authority !== undefined && inPlace?.withholdGrant !== true) {
       const written = storedRevisionContent(pipelineId, savedRevision);
       if (written === undefined && activity.agentAuthor !== undefined)
         throw new Error('The workflow’s settings could not be recorded.');

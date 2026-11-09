@@ -1,3 +1,10 @@
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   DEFAULT_CLAUDE_MAX_TURNS,
@@ -35,8 +42,8 @@ import {
   ChoiceList,
   ChoiceListRow,
   ErrorState,
-  Notice,
   ToggleSwitch,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
@@ -48,6 +55,7 @@ import {
   SettingsTextField,
 } from './SettingsLayout';
 import { IdleTimeoutMinutesRow } from './IdleTimeoutMinutesRow';
+import { ClaudeModsKillSwitch } from '@canopy/ui-app/capability';
 
 interface InterfaceModeOption {
   value: ChatInterfaceMode;
@@ -132,7 +140,7 @@ export function ClaudeTab({
 }: ClaudeTabProps): JSX.Element {
   const [prefs, setPrefs] = useState<PreferencesData | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<InlineFailure | null>(null);
   const [turnLimitInput, setTurnLimitInput] = useState(
     String(DEFAULT_CLAUDE_MAX_TURNS),
   );
@@ -173,7 +181,8 @@ export function ClaudeTab({
         setPrefs(p);
         setLoadError(null);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        reportClientAppError(error);
         setPrefs(null);
         setLoadError("Couldn't load Claude settings.");
       });
@@ -188,7 +197,7 @@ export function ClaudeTab({
     (key: InterfaceModePreferenceKey, next: ChatInterfaceMode): void => {
       if (!prefs || prefs[key] === next) return;
       if (next !== 'canopy' && !claudeAuthenticated) {
-        setSaveError(terminalAuthRequiredMessage);
+        setSaveError({ error: terminalAuthRequiredMessage });
         return;
       }
       const previous = prefs;
@@ -200,11 +209,17 @@ export function ClaudeTab({
           setPrefs(normalized);
           emitPreferencesUpdated(normalized);
           useAppAdvisorStore.getState().applyPreferences(normalized);
-          void loadModelDefaults().catch(() => undefined);
+          void loadModelDefaults().catch((error: unknown) => {
+            reportClientAppError(error);
+          });
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           setPrefs(previous);
-          setSaveError('Could not save Claude settings.');
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(appError, 'Could not save Claude settings.'),
+            );
         });
     },
     [
@@ -219,7 +234,7 @@ export function ClaudeTab({
     (key: WorkerModePreferenceKey, next: WorkerExecutionMode): void => {
       if (!prefs || prefs[key] === next) return;
       if (next === 'terminal' && !claudeAuthenticated) {
-        setSaveError(terminalAuthRequiredMessage);
+        setSaveError({ error: terminalAuthRequiredMessage });
         return;
       }
       const previous = prefs;
@@ -232,9 +247,13 @@ export function ClaudeTab({
           emitPreferencesUpdated(normalized);
           useAppAdvisorStore.getState().applyPreferences(normalized);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           setPrefs(previous);
-          setSaveError('Could not save Claude settings.');
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(appError, 'Could not save Claude settings.'),
+            );
         });
     },
     [claudeAuthenticated, prefs, terminalAuthRequiredMessage],
@@ -254,9 +273,13 @@ export function ClaudeTab({
             emitPreferencesUpdated(normalized);
             useAppAdvisorStore.getState().applyPreferences(normalized);
           })
-          .catch(() => {
+          .catch((error: unknown) => {
             setPrefs(previous);
-            setSaveError('Could not save Claude settings.');
+            const appError = toAppError(resolveClientAppError(error));
+            if (appError)
+              setSaveError(
+                inlineFailure(appError, 'Could not save Claude settings.'),
+              );
           });
       },
     [prefs],
@@ -282,9 +305,13 @@ export function ClaudeTab({
           emitPreferencesUpdated(normalized);
           useAppAdvisorStore.getState().applyPreferences(normalized);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           setPrefs(previous);
-          setSaveError('Could not save Claude settings.');
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(appError, 'Could not save Claude settings.'),
+            );
         });
     },
     [prefs],
@@ -303,9 +330,13 @@ export function ClaudeTab({
           emitPreferencesUpdated(normalized);
           useAppAdvisorStore.getState().applyPreferences(normalized);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           setPrefs(previous);
-          setSaveError('Could not save Claude settings.');
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(appError, 'Could not save Claude settings.'),
+            );
         });
     },
     [prefs],
@@ -335,8 +366,12 @@ export function ClaudeTab({
           emitPreferencesUpdated(normalized);
           useAppAdvisorStore.getState().applyPreferences(normalized);
         })
-        .catch((): void => {
-          setSaveError('Could not save Claude settings.');
+        .catch((error: unknown): void => {
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(appError, 'Could not save Claude settings.'),
+            );
         })
         .finally((): void => {
           pendingTurnLimitSaves.current -= 1;
@@ -386,11 +421,14 @@ export function ClaudeTab({
 
   return (
     <SettingsPage title="Claude" dataTestId="settings-tab-claude">
-      {saveError && (
-        <Notice intent="destructive" data-testid="settings-claude-save-error">
-          {saveError}
-        </Notice>
-      )}
+      <DesktopErrorBanner
+        className=""
+        error={saveError?.error}
+        {...(saveError?.details === undefined
+          ? {}
+          : { details: saveError.details })}
+        testId="settings-claude-save-error"
+      />
 
       <SettingsSection
         title="Chat turns"
@@ -451,14 +489,13 @@ export function ClaudeTab({
                 }
               >
                 {turnLimitError && (
-                  <p
+                  <FieldError
                     id="settings-claude-max-turns-error"
-                    role="alert"
-                    className="text-xs fg-destructive"
+                    announce
                     data-testid="settings-claude-max-turns-error"
                   >
                     {turnLimitError}
-                  </p>
+                  </FieldError>
                 )}
               </SettingsSubRow>
             )}
@@ -637,6 +674,7 @@ export function ClaudeTab({
           </SettingsGroup>
         </SettingsSection>
       )}
+      <ClaudeModsKillSwitch />
     </SettingsPage>
   );
 }

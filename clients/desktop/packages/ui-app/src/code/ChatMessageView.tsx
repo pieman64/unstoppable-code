@@ -1,5 +1,6 @@
 'use client';
 
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   AgentSentTitle,
   useAgentSentReceivingContext,
@@ -591,7 +592,7 @@ function ChatMessageViewImpl({
               }
             : {})}
         >
-          <div className={PROSE_CLASSES}>
+          <div className={`${REPLAY_BLOCK_CLASS} ${PROSE_CLASSES}`}>
             <Prose text={body} options={USER_MARKDOWN_OPTIONS} />
           </div>
           {message.status === 'cancelled' && (
@@ -642,17 +643,19 @@ function ChatMessageViewImpl({
         // The row has no existing message-level tab stop.
         {...contextMenuTarget}
       >
-        {/* A visual takes the message width, as on desktop's ChatMessageItem. */}
+        {/* A visual or notice takes the message width, as on desktop's
+            ChatMessageItem. Keep a space before the interpolation: Tailwind
+            does not extract a class that touches `${`. */}
         <div
-          className={`min-w-0 max-w-full space-y-1 text-s fg-primary has-[[data-testid=chat-visual-block]]:w-full has-[[data-chat-notice]]:w-full${
-            hasAgentPart ? ' w-full' : ''
+          className={`min-w-0 max-w-full flex flex-col gap-1 text-s fg-primary has-[[data-testid=chat-visual-block]]:w-full has-[[data-chat-notice]]:w-full ${
+            hasAgentPart ? 'w-full' : ''
           }`}
         >
           {hasParts && (
             // Clean steps sit 4px apart and 12px from text, as on desktop.
             <div
               data-testid="chat-message-parts"
-              className={clean ? 'space-y-1' : undefined}
+              className={clean ? 'flex flex-col gap-1' : undefined}
             >
               {normalizedParts.map((part, i) => (
                 // Stable occurrence keys survive same-message result folding.
@@ -728,7 +731,7 @@ function ChatMessageViewImpl({
               return (
                 <div
                   data-testid="chat-message-content"
-                  className={PROSE_CLASSES}
+                  className={`${REPLAY_BLOCK_CLASS} ${PROSE_CLASSES}`}
                 >
                   {smoothStreaming ? (
                     <SmoothStreamingProse

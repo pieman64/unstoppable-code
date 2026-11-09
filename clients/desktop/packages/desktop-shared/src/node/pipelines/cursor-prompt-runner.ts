@@ -3,20 +3,20 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { CursorReportedUsage } from '@canopy/agent-transcript/lib/cursor-usage';
-import { classifyAgentFailure } from '../../agent-failures';
-import { getBrandEnv } from '../../brand/env';
+import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import {
   appendCodexSchemaInstruction,
   buildCodexStructuredOutputRetryPrompt,
   CODEX_STRUCTURED_OUTPUT_RETRY_ATTEMPTS,
 } from '../../builtin-actions/agent-prompt/logic';
 import { validateAgainstSchema } from '../../lib/ajv-schema-validator';
-import { describeJsonParseFailure } from '../../lib/redaction';
+import { describeJsonParseFailure } from '@canopy/execution-engine/lib/redaction';
 import { stepTimedOutMessage } from './step-timeout';
-import { getRawCursorModelId } from '../../lib/cursor-models';
+import { getRawCursorModelId } from '@canopy/execution-engine/lib/cursor-models';
 import type { CursorRuntimeTarget } from '../../lib/cursor-runtime-targets';
-import { buildPipelineGlobalInstructionsBlock } from '../../lib/global-instructions';
-import type { HelperUsage } from '../../lib/helper-usage';
+import { buildPipelineGlobalInstructionsBlock } from '@canopy/execution-engine/lib/global-instructions';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import {
   getBundledRtkBinaryPath,
   getCursorRuntimeStateDir,

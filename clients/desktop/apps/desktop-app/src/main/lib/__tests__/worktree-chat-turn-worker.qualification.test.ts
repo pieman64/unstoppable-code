@@ -5,6 +5,7 @@ import type { inlineTurnRunsModule } from '../../__tests__/helpers/inline-agent-
 import { cancelChatTurnPreparations } from '../chat-turn-preparation';
 import { deferredToolsReloadCoordinator } from '../../deferred-tools/reload-coordinator';
 import { dispatchWorktreeChatTurn } from '../worktree-chat-turn';
+import { registerWorkspaceTypes } from '../workspace-registry';
 
 type ProviderHandler = (data: unknown) => void | Promise<void>;
 interface FakeProvider {
@@ -238,6 +239,7 @@ it('a session removed before the send takes the disposed-at-send path', async ()
 });
 
 it('a removed Cowork session settles its accepted run', async () => {
+  registerWorkspaceTypes(new Map([['wt', 'cowork']]));
   await dispatchWorktreeChatTurn({
     projectId: STANDALONE_CHAT_PROJECT_ID,
     worktreeId: 'wt',
@@ -258,6 +260,7 @@ it('a removed Cowork session settles its accepted run', async () => {
 });
 
 it('a removed Cowork session during a tool reload settles its run completed', async () => {
+  registerWorkspaceTypes(new Map([['wt', 'cowork']]));
   await dispatchWorktreeChatTurn({
     projectId: STANDALONE_CHAT_PROJECT_ID,
     worktreeId: 'wt',

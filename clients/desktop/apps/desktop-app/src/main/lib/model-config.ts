@@ -1,5 +1,5 @@
-import { isOpenCodeModel } from '@canopy/desktop-shared/lib/opencode-models';
-import { isCopilotModel } from '@canopy/desktop-shared/lib/copilot-models';
+import { isOpenCodeModel } from '@canopy/execution-engine/lib/opencode-models';
+import { isCopilotModel } from '@canopy/execution-engine/lib/copilot-models';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { app } from 'electron';
@@ -25,9 +25,9 @@ import {
   type ConfiguredModelEntry,
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
-import { initOrgGatewayModelAliases } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { initOrgGatewayModelAliases } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { isCursorModel } from '@canopy/desktop-shared/lib/cursor-models';
+import { isCursorModel } from '@canopy/execution-engine/lib/cursor-models';
 
 type ParsedModelConfig = ReturnType<typeof parseModelPackageConfig>;
 

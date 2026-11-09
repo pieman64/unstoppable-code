@@ -1,18 +1,18 @@
+import { observeStoragePathSync } from '@canopy/core-runtime/node/storage-path-observation';
+import type * as buildStorageStartup from '@canopy/core-platform/build-storage-startup';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { types } from 'node:util';
 import {
-  brandSecureDataDir,
   resolveSecureDataDir,
   resolveBuildStoragePaths,
   type BuildStoragePaths,
-  secureStorageMode,
 } from '@canopy/core-runtime/node/secure-data-dir';
 import { BRAND } from '@canopy/brand/current';
 import {
   compiledBuildIdentity,
-  testDataDirectoryOverride,
+  dataDirectoryOverride,
 } from '@canopy/core-runtime/node/build-identity';
 import type {
   BrandBuildIdentity,
@@ -24,91 +24,62 @@ import type {
 import {
   registerCanopyDataRootResolver,
   registerCanopySecureRootResolver,
-} from './node/lib/canopy-data-root-registration';
+} from '@canopy/execution-engine/node/lib/canopy-data-root-registration';
 
 const buildIdentity = compiledBuildIdentity(BRAND.id);
+
+type BuildStorageStartup = Pick<
+  typeof buildStorageStartup,
+  'assertHostBuildStorageStartup' | 'assertOwnedStorageDirectory'
+>;
+
+function isBuildStorageStartup(value: unknown): value is BuildStorageStartup {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'assertHostBuildStorageStartup' in value &&
+    typeof value.assertHostBuildStorageStartup === 'function' &&
+    'assertOwnedStorageDirectory' in value &&
+    typeof value.assertOwnedStorageDirectory === 'function'
+  );
+}
+
+function loadBuildStorageStartup(): BuildStorageStartup {
+  // Importing paths during Playwright discovery must not preload the platform
+  // graph through tsx-CJS while specs load that same graph as native ESM.
+  // Electron's workspace CommonJS transform and SEA's esbuild bundle this call.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- Admission must stay synchronous and lazy for source consumers.
+  const startup: unknown = require('@canopy/core-platform/build-storage-startup');
+  if (!isBuildStorageStartup(startup))
+    throw new Error('Build storage startup adapter is unavailable.');
+  return startup;
+}
+
+function canonicalStoragePath(value: string): string {
+  return observeStoragePathSync(value).canonicalPath;
+}
 
 export function getCanopyBuildIdentity(): BrandBuildIdentity {
   return buildIdentity;
 }
 
-/** Inactive final paths: ordinary startup deliberately uses the legacy resolvers below. */
+/** The build-owned root; explicit overrides are resolved separately. */
 export function getCanopyBuildStoragePaths(): BuildStoragePaths {
   return resolveBuildStoragePaths({
-    home: os.homedir(),
+    home: canonicalStoragePath(os.homedir()),
     brand: BRAND,
     identity: getCanopyBuildIdentity(),
   });
 }
 
-declare const __CANOPY_RELEASE_FLAVOR__: string | undefined;
-
-function isElectronRuntime(): boolean {
-  return (
-    process.defaultApp === true || typeof process.versions.electron === 'string'
-  );
-}
-
-function getElectronRuntimeMode(): CanopyRuntimeMode | null {
-  if (!isElectronRuntime()) {
-    return null;
-  }
-
-  const execPath = process.execPath.toLowerCase();
-  const isDefaultElectronBinary =
-    execPath.endsWith(`${path.sep}electron`) ||
-    execPath.endsWith(`${path.sep}electron.exe`);
-
-  if (process.defaultApp === true || isDefaultElectronBinary) {
-    return 'dev';
-  }
-
-  return 'prod';
-}
-
-function isTsxRuntime(): boolean {
-  return process.execArgv.some((arg) => /(?:^|[\\/])tsx(?:[\\/]|$)/.test(arg));
-}
-
 export function getCanopyRuntimeMode(): CanopyRuntimeMode {
-  const electronMode = getElectronRuntimeMode();
-  if (electronMode === 'dev' || (!electronMode && isTsxRuntime())) {
-    return 'dev';
-  }
-
-  if (
-    typeof __CANOPY_RELEASE_FLAVOR__ !== 'undefined' &&
-    __CANOPY_RELEASE_FLAVOR__ === 'rc'
-  ) {
-    return 'rc';
-  }
-
-  if (electronMode) {
-    return electronMode;
-  }
-
-  if (process.env.CANOPY_ENV === 'development') {
-    return 'dev';
-  }
-  if (process.env.CANOPY_ENV === 'production') {
-    return 'prod';
-  }
-  if (process.env.NODE_ENV === 'development') {
-    return 'dev';
-  }
-  if (process.env.NODE_ENV === 'production') {
-    return 'prod';
-  }
-  return 'prod';
+  const build = getCanopyBuildIdentity().build;
+  return build === 'stable' || build === 'internal' ? 'prod' : build;
 }
 
 export function getCanopySecureStorageMode(): CanopySecureStorageMode {
-  return secureStorageMode(
-    typeof __CANOPY_RELEASE_FLAVOR__ === 'undefined'
-      ? undefined
-      : __CANOPY_RELEASE_FLAVOR__,
-    getCanopyRuntimeMode(),
-  );
+  const build = getCanopyBuildIdentity().build;
+  return build === 'stable' ? 'prod' : build;
 }
 
 let resolvedDataDir: ResolvedCanopyDataDir | null = null;
@@ -116,33 +87,41 @@ let resolvedDataDirCacheKey: string | null = null;
 let resolvedSecureDataDir: ResolvedCanopySecureDataDir | null = null;
 let resolvedSecureDataDirCacheKey: string | null = null;
 
-const brandDataDirNames: Record<CanopyRuntimeMode, string[]> =
-  BRAND.storage.dataDirNames;
-const brandSecureDataDirNames: Record<CanopySecureStorageMode, string> =
-  BRAND.storage.secureDataDirNames;
+export function getBrandDataDirCandidates(): string[] {
+  return [getCanopyBuildStoragePaths().dataRoot];
+}
 
-export function getBrandDataDirCandidates(
-  mode: CanopyRuntimeMode = getCanopyRuntimeMode(),
-): string[] {
-  const modes: CanopyRuntimeMode[] = mode === 'rc' ? ['rc', 'prod'] : [mode];
-  const candidates = modes.flatMap((candidateMode) =>
-    brandDataDirNames[candidateMode].map((name) =>
-      path.join(os.homedir(), name),
-    ),
+/** Discovery exclusions, never routing candidates: retained roots stay app-owned. */
+export function getBrandOwnedDataDirRoots(): string[] {
+  const home = canonicalStoragePath(os.homedir());
+  const builds = ['stable', 'internal', 'rc', 'dev'] as const;
+  return Array.from(
+    new Set([
+      ...builds.map(
+        (build) =>
+          resolveBuildStoragePaths({
+            home,
+            brand: BRAND,
+            identity: { brandId: BRAND.id, build },
+          }).dataRoot,
+      ),
+      ...Object.values(BRAND.storage.dataDirNames)
+        .flat()
+        .map((name) => path.join(home, name)),
+      // Historical peers also gained an isolated internal root at this cutover.
+      ...BRAND.storage.dataDirNames.prod.map((name) =>
+        path.join(home, `${name}-internal`),
+      ),
+    ]),
   );
-  return Array.from(new Set(candidates));
 }
 
-export function getPrimaryBrandDataDir(
-  mode: CanopyRuntimeMode = getCanopyRuntimeMode(),
-): string {
-  return getBrandDataDirCandidates(mode)[0];
+export function getPrimaryBrandDataDir(): string {
+  return getCanopyBuildStoragePaths().dataRoot;
 }
 
-export function getBrandSecureDataDir(
-  mode: CanopySecureStorageMode = getCanopySecureStorageMode(),
-): string {
-  return brandSecureDataDir(os.homedir(), brandSecureDataDirNames, mode);
+export function getBrandSecureDataDir(): string {
+  return getCanopyBuildStoragePaths().secureDataRoot;
 }
 
 /**
@@ -306,14 +285,25 @@ function autoProvisionedWorkspaceHasContent(
 export function getResolvedCanopyDataDir(
   mode: CanopyRuntimeMode = getCanopyRuntimeMode(),
 ): ResolvedCanopyDataDir {
-  const override = testDataDirectoryOverride(process.env, 'CANOPY_DATA_DIR');
-  const cacheKey = `${mode}:${override ?? ''}`;
+  const override = dataDirectoryOverride(process.env, 'CANOPY_DATA_DIR');
+  const secureOverride = dataDirectoryOverride(
+    process.env,
+    'CANOPY_SECURE_DATA_DIR',
+  );
+  const cacheKey = `${mode}:${override ?? ''}:${secureOverride ?? ''}`;
   if (resolvedDataDir && resolvedDataDirCacheKey === cacheKey) {
     return resolvedDataDir;
   }
 
+  // Admission precedes the first root resolution, not each in-session lookup.
+  if (!override && !secureOverride)
+    loadBuildStorageStartup().assertHostBuildStorageStartup({
+      home: canonicalStoragePath(os.homedir()),
+      identity: getCanopyBuildIdentity(),
+    });
+
   if (override) {
-    const allCandidates = getBrandDataDirCandidates(mode);
+    const allCandidates = getBrandDataDirCandidates();
     resolvedDataDirCacheKey = cacheKey;
     resolvedDataDir = {
       path: path.resolve(override),
@@ -323,26 +313,17 @@ export function getResolvedCanopyDataDir(
     return resolvedDataDir;
   }
 
-  const allCandidates = getBrandDataDirCandidates(mode);
-  // Prefer a candidate holding real install data over one that merely exists:
-  // stray writes (e.g. a cache file, CAN-2271) can create a skeleton primary
-  // directory that must not hijack an install living in a fallback directory.
-  const existing =
-    allCandidates.find((candidate) => hasCanopyInstallData(candidate)) ??
-    allCandidates.find((candidate) => existsSync(candidate));
+  const allCandidates = getBrandDataDirCandidates();
   const primary = allCandidates[0];
+  const { assertOwnedStorageDirectory } = loadBuildStorageStartup();
+  const observation = assertOwnedStorageDirectory(primary);
+  assertOwnedStorageDirectory(path.join(primary, 'secure-storage'));
   resolvedDataDirCacheKey = cacheKey;
-  resolvedDataDir = existing
-    ? {
-        path: existing,
-        source: existing === primary ? 'primary' : 'fallback',
-        allCandidates,
-      }
-    : {
-        path: primary,
-        source: 'fresh',
-        allCandidates,
-      };
+  resolvedDataDir = {
+    path: primary,
+    source: observation.kind !== 'missing' ? 'primary' : 'fresh',
+    allCandidates,
+  };
   return resolvedDataDir;
 }
 
@@ -370,43 +351,27 @@ function getLegacyEnvironmentConfigDataDir(): string {
 export function getResolvedCanopySecureDataDir(
   mode: CanopySecureStorageMode = getCanopySecureStorageMode(),
 ): ResolvedCanopySecureDataDir {
-  const secureOverride = testDataDirectoryOverride(
+  const secureOverride = dataDirectoryOverride(
     process.env,
     'CANOPY_SECURE_DATA_DIR',
   );
-  const dataOverride = testDataDirectoryOverride(
-    process.env,
-    'CANOPY_DATA_DIR',
-  );
+  const dataOverride = dataDirectoryOverride(process.env, 'CANOPY_DATA_DIR');
   const cacheKey = `${mode}:${secureOverride ?? ''}:${dataOverride ?? ''}`;
   if (resolvedSecureDataDir && resolvedSecureDataDirCacheKey === cacheKey) {
     return resolvedSecureDataDir;
   }
 
-  resolvedSecureDataDirCacheKey = cacheKey;
   resolvedSecureDataDir = resolveSecureDataDir({
-    home: os.homedir(),
-    names: brandSecureDataDirNames,
-    mode,
+    dataRoot: getCanopyDataDir(),
     environment: process.env,
   });
+  resolvedSecureDataDirCacheKey = cacheKey;
   return resolvedSecureDataDir;
 }
 
-/**
- * Former production secure root consulted once by an internal build when its
- * isolated destination is absent. Explicit overrides intentionally disable
- * this implicit home-directory migration.
- */
+/** Foreign sibling stores are retained solely for explicit recovery (V-4). */
 export function getInternalLegacySharedSecureDataDir(): string | null {
-  if (
-    getCanopySecureStorageMode() !== 'internal' ||
-    testDataDirectoryOverride(process.env, 'CANOPY_SECURE_DATA_DIR') ||
-    testDataDirectoryOverride(process.env, 'CANOPY_DATA_DIR')
-  ) {
-    return null;
-  }
-  return getBrandSecureDataDir('prod');
+  return null;
 }
 
 export function getCanopySecureDataDir(): string {

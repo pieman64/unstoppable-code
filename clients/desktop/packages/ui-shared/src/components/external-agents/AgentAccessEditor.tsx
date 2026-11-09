@@ -1,5 +1,6 @@
 'use client';
 
+import { Stack } from '../Stack';
 import { useState, type JSX } from 'react';
 import { Notice } from '../Notice';
 import {
@@ -143,7 +144,7 @@ function AgentAccessGroup({
             unavailable ? 'pointer-events-none' : ''
           }`}
         >
-          <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="min-w-0 flex-1 flex flex-col gap-0.5">
             <div className="text-s font-medium fg-primary">{group.label}</div>
             <div className="text-xs text-pretty fg-secondary">
               {group.description}
@@ -266,7 +267,7 @@ function AgentAccessTool({
       data-testid={`agent-access-tool-${tool.name}`}
       className="flex items-center justify-between gap-6 py-2.5"
     >
-      <div className="min-w-0 flex-1 space-y-1">
+      <Stack gap="tight" className="min-w-0 flex-1">
         <div className="text-s fg-primary">{tool.title}</div>
         {tool.defaultOff || tool.markers.length > 0 ? (
           <div className="flex flex-wrap items-center gap-1.5">
@@ -280,7 +281,7 @@ function AgentAccessTool({
             )}
           </div>
         ) : null}
-      </div>
+      </Stack>
       <ToggleSwitch
         label={tool.title}
         checked={tool.enabled}

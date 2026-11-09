@@ -1,3 +1,4 @@
+import { portablePipelineTriggerTypes } from '@canopy/protocol/pipelines';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { AgentArtifactChangedField } from '@canopy/protocol/agent-artifacts';
 import { updateSharedPipelinePreservingPackage } from '../pipelines/pipeline-package-service';
@@ -48,7 +49,7 @@ import {
 import { validateAgentPipelineMutationPolicy } from '@canopy/desktop-shared/lib/agent-pipeline-policy';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
-import { getTriggerTypes } from '@canopy/desktop-shared/types/pipeline';
+import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import type {
   AppAdvisorActionError,
   AppAdvisorActionResponse,
@@ -63,7 +64,7 @@ import type {
   IPCResult,
   PipelineInfo,
   SharedPipelineDetail,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { DispatchActionArgs } from './definitions';
 import { getSharedPipelineSaveImpact } from '../pipelines/shared-pipeline-save-impact';
 import {
@@ -76,6 +77,7 @@ import {
   isOwnedPipelineHiddenFromAgent,
   ownsOrchestratorPromptPipeline,
 } from '../automations/owned-pipeline';
+import { targetsAgentHiddenPipeline } from '../automations/workflow-schedules';
 import { scopeAutomationsToSelectedContext } from '../services/background-execution-context';
 import {
   ADVISOR_ACCESS_DISABLED,
@@ -1108,7 +1110,8 @@ export async function pipelineReceipt(
     ...(content.description ? { description: content.description } : {}),
     enabled: !disabledPipelineIds.includes(pipeline.info.id),
     scopes: normalized.scope,
-    runModes: getTriggerTypes(content.on),
+    // `workflow` starts only from the Workflows page, never an agent run.
+    runModes: portablePipelineTriggerTypes(getTriggerTypes(content.on)),
     jobCount: Object.keys(content.jobs).length,
     stepCount: Object.values(content.jobs).reduce(
       (count, job) => count + job.steps.length,
@@ -1592,13 +1595,18 @@ function automationOwnerDecisionFailure(
 function agentPolicyAction(
   activity: ScheduledActivity,
 ): ScheduledActivity['action'] {
-  return projectOwnedChatAutomation(activity).action;
+  const projected = projectOwnedChatAutomation(activity);
+  // CAN-5782: an owner whose pipeline other schedules share still stands
+  // for its chat action, so the session-prompt checks still apply.
+  return projected.ownedPipeline?.chatAction ?? projected.action;
 }
 
 function isAppAdvisorAutomation(activity: ScheduledActivity): boolean {
   return (
     agentPolicyAction(activity).type === 'app_advisor_prompt' ||
-    ownsOrchestratorPromptPipeline(activity)
+    ownsOrchestratorPromptPipeline(activity) ||
+    // CAN-5782: a schedule on an Orchestrator pipeline whose owner is gone.
+    targetsAgentHiddenPipeline(activity)
   );
 }
 

@@ -82,7 +82,7 @@ export function OrgFolderOutcome({
     return (
       <p
         role="status"
-        className="mt-2 text-xs fg-secondary"
+        className="text-xs fg-secondary"
         data-testid="add-workspace-org-folder-kind"
         data-folder-kind="checking"
       >
@@ -95,7 +95,7 @@ export function OrgFolderOutcome({
   if (inspection.kind === 'refused')
     return (
       <Notice
-        className="mt-2"
+        className=""
         intent="attention"
         data-testid="add-workspace-org-folder-kind"
         data-folder-kind="refused"
@@ -112,7 +112,7 @@ export function OrgFolderOutcome({
   if (inspection.kind === 'multi-repo')
     return inspection.personalWorkspaceId === undefined ? null : (
       <Notice
-        className="mt-2"
+        className=""
         data-testid="add-workspace-org-folder-kind"
         data-folder-kind="personal"
       >
@@ -130,7 +130,7 @@ export function OrgFolderOutcome({
     const moves = `Your Personal project${personalProjectName === null ? '' : ` ${personalProjectName}`} moves to ${organizationName}. You can move it back.`;
     return (
       <Notice
-        className="mt-2"
+        className=""
         data-testid="add-workspace-org-folder-kind"
         data-folder-kind="personal"
       >
@@ -141,7 +141,7 @@ export function OrgFolderOutcome({
   if (linked !== null)
     return (
       <Notice
-        className="mt-2"
+        className=""
         data-testid="add-workspace-org-folder-kind"
         data-folder-kind="linked"
       >

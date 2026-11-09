@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { flattenMcpServerRows } from '@canopy/desktop-shared/lib/mcp-server-rows';
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -531,73 +532,73 @@ export function ChatPluginsSection({
         </HeaderActionButton>
       }
     >
-      {used.length > 0 && rows.length === 0 && !error ? null : (
-        <AddedPluginsList
-          items={rows}
-          renderIcon={(item) => (
-            <span
-              data-testid="activity-plugin-avatar"
-              data-inherited-default={inheritedLayerById.get(item.id)}
-              className="flex size-4 shrink-0 items-center justify-center"
-            >
-              <McpServerLogo
-                key={
-                  mcpMetadata[item.id]?.curatedKey ??
-                  mcpMetadata[item.id]?.logoUrl ??
-                  logoUrls[item.id] ??
-                  'placeholder'
-                }
-                curatedKey={mcpMetadata[item.id]?.curatedKey}
-                logoUrl={mcpMetadata[item.id]?.logoUrl ?? logoUrls[item.id]}
-                size={16}
-                shape="circle"
-                fit="cover"
-                fallback="monogram"
-                name={item.name}
-                imgTestId="activity-plugin-logo"
-                fallbackTestId="activity-plugin-icon"
-              />
-            </span>
-          )}
-          disabled={disabled}
-          error={error}
-          onDisable={(id) => {
-            const row = rows.find((item) => item.id === id);
-            if (!target || !row || row.locked || pending) return;
-            setPending(true);
-            setError(null);
-            void editChatPlugins(useChatStore.getState, target, (current) =>
-              subtractPluginSelections(current, row.selection),
-            )
-              .catch((reason: unknown) =>
-                setError(
-                  reason instanceof Error ? reason.message : String(reason),
-                ),
+      <Stack gap="item">
+        {used.length > 0 && rows.length === 0 && !error ? null : (
+          <AddedPluginsList
+            items={rows}
+            renderIcon={(item) => (
+              <span
+                data-testid="activity-plugin-avatar"
+                data-inherited-default={inheritedLayerById.get(item.id)}
+                className="flex size-4 shrink-0 items-center justify-center"
+              >
+                <McpServerLogo
+                  key={
+                    mcpMetadata[item.id]?.curatedKey ??
+                    mcpMetadata[item.id]?.logoUrl ??
+                    logoUrls[item.id] ??
+                    'placeholder'
+                  }
+                  curatedKey={mcpMetadata[item.id]?.curatedKey}
+                  logoUrl={mcpMetadata[item.id]?.logoUrl ?? logoUrls[item.id]}
+                  size={16}
+                  shape="circle"
+                  fit="cover"
+                  fallback="monogram"
+                  name={item.name}
+                  imgTestId="activity-plugin-logo"
+                  fallbackTestId="activity-plugin-icon"
+                />
+              </span>
+            )}
+            disabled={disabled}
+            error={error}
+            onDisable={(id) => {
+              const row = rows.find((item) => item.id === id);
+              if (!target || !row || row.locked || pending) return;
+              setPending(true);
+              setError(null);
+              void editChatPlugins(useChatStore.getState, target, (current) =>
+                subtractPluginSelections(current, row.selection),
               )
-              .finally(() => setPending(false));
-          }}
-        />
-      )}
-      {used.length > 0 ? (
-        <div
-          data-testid="chat-used-invocables"
-          className={
-            rows.length > 0 || error ? 'mt-3 space-y-1.5' : 'space-y-1.5'
-          }
-        >
-          <Heading level={4} variant="label">
-            Used in this chat
-          </Heading>
-          {used.map((target) => (
-            <UsedInvocableRow
-              key={target.entry.id}
-              target={target}
-              data={shareData}
-              hostAvailable={hostAvailable}
-            />
-          ))}
-        </div>
-      ) : null}
+                .catch((reason: unknown) =>
+                  setError(
+                    reason instanceof Error ? reason.message : String(reason),
+                  ),
+                )
+                .finally(() => setPending(false));
+            }}
+          />
+        )}
+        {used.length > 0 ? (
+          <div
+            data-testid="chat-used-invocables"
+            className="flex flex-col gap-1"
+          >
+            <Heading level={4} variant="label">
+              Used in this chat
+            </Heading>
+            {used.map((target) => (
+              <UsedInvocableRow
+                key={target.entry.id}
+                target={target}
+                data={shareData}
+                hostAvailable={hostAvailable}
+              />
+            ))}
+          </div>
+        ) : null}
+      </Stack>
     </PanelSection>
   );
 }

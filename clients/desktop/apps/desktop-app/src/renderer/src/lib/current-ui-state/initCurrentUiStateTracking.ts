@@ -12,6 +12,7 @@ import { usePanelLayoutStore } from '@/stores/panelLayoutStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useSidebarStore } from '@/stores/sidebarStore';
+import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useTerminalStore } from '@/stores/terminalStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { useWorkspaceLayoutModeStore } from '@/stores/workspaceLayoutModeStore';
@@ -116,6 +117,12 @@ export function initCurrentUiStateTracking(): () => void {
   const unsubTerminal = useTerminalStore.subscribe(recompute);
   const unsubFiles = desktopFileSessionController.subscribe(recompute);
   const unsubProjects = useProjectsStore.subscribe(recompute);
+  const unsubStandaloneChats = useStandaloneChatStore.subscribe(
+    (state, previous) => {
+      if (state.activeChatProjectId !== previous.activeChatProjectId)
+        recompute();
+    },
+  );
   const unsubPipelineRuns = usePipelineRunsStore.subscribe(
     (state, previousState) => {
       // The hidden UI snapshot deliberately excludes pipeline logs and
@@ -194,6 +201,7 @@ export function initCurrentUiStateTracking(): () => void {
     unsubTerminal();
     unsubFiles();
     unsubProjects();
+    unsubStandaloneChats();
     unsubPipelineRuns();
     unsubSidebar();
     throttledSidebarRecompute.cancel();

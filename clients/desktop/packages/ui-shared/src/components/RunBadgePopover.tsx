@@ -43,7 +43,7 @@ export function RunBadgePopover({
       {rows.length === 0 ? (
         <div className="text-xs fg-secondary">{emptyText}</div>
       ) : (
-        <div className="space-y-1.5">
+        <div className="flex flex-col gap-1.5">
           {rows.map((row) => (
             <div key={row.id} className="flex items-center gap-1.5 text-xs">
               <span

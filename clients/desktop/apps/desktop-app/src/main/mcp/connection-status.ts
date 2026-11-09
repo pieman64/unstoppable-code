@@ -17,8 +17,8 @@ import type {
   McpServerIndexEntry,
   McpServerStatusEntry,
   McpServersIndexFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
-import { normalizeMcpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
+import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import { getMcpOAuthAuthStatusForDefinition } from './oauth-token-store';
 import { getMcpServerFilePath, getMcpServersIndexFilePath } from '../lib/paths';
 import { readPreferencesFile } from '../lib/preferences-store';

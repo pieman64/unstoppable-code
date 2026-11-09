@@ -22,7 +22,7 @@ import type {
   ProviderCreditsSnapshot,
   ProviderRateLimitSnapshot,
   UsageFetchErrorKind,
-} from '../types/observability';
+} from '@canopy/execution-engine/types/observability';
 import { buildProviderUsageWindows } from './provider-usage-windows';
 import { usageFetchErrorHeadline } from './usage-fetch-error';
 

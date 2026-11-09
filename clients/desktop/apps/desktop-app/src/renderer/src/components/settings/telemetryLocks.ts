@@ -8,7 +8,7 @@ import {
   enforcedValueForScope,
   resolveTelemetryEnforcementByOrganization,
 } from '@canopy/desktop-shared/lib/telemetry-enforcement';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 
 /**
  * The value an enforced scope is pinned to. Org enforcement is two-way, so a
@@ -39,6 +39,8 @@ export interface TelemetryLockState {
   lockTooltip: string | undefined;
   /** Tooltip for a PROHIBITED scope, naming the selected org. Undefined when nothing is prohibited. */
   blockedTooltip: string | undefined;
+  /** The selected org that holds a lock, for the inline lock badge. Undefined when nothing is locked. */
+  organizationName: string | undefined;
 }
 
 /**
@@ -62,6 +64,7 @@ export function resolveTelemetryLocks(
       locked: { ...NO_LOCKS },
       lockTooltip: undefined,
       blockedTooltip: undefined,
+      organizationName: undefined,
     };
   }
   // The by-org map is keyed by the normalized (lower-case) external id, so the
@@ -75,6 +78,7 @@ export function resolveTelemetryLocks(
       locked: { ...NO_LOCKS },
       lockTooltip: undefined,
       blockedTooltip: undefined,
+      organizationName: undefined,
     };
   }
 
@@ -109,5 +113,6 @@ export function resolveTelemetryLocks(
     blockedTooltip: prohibits
       ? `Blocked by ${name}. Its work stays on your machine.`
       : undefined,
+    organizationName: requires || prohibits ? name : undefined,
   };
 }

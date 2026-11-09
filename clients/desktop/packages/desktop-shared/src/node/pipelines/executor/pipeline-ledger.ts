@@ -8,7 +8,7 @@ import type {
   AgentRecoveryCheckpoint,
   PipelineStatusReason,
   StepResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   parsePermissionPreset,
   type PermissionPreset,

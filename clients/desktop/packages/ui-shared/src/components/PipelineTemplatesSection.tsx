@@ -1,5 +1,6 @@
 'use client';
 
+import { Stack } from './Stack';
 import { useRef, useState, type JSX } from 'react';
 import type { CuratedPipelineSummary } from '@canopy/protocol/pipeline-catalog';
 import {
@@ -88,8 +89,10 @@ export function PipelineTemplatesSection({
   return (
     <>
       {unfilteredStatus && (
-        <section
-          className="mt-10 min-w-0 space-y-3"
+        <Stack
+          as="section"
+          gap="item"
+          className="mt-10 min-w-0"
           aria-label="Workflow templates"
           data-testid="pipeline-templates-section-status"
         >
@@ -97,11 +100,13 @@ export function PipelineTemplatesSection({
             Workflow templates
           </Heading>
           <CatalogStatus catalog={catalog} />
-        </section>
+        </Stack>
       )}
       {hasCards && (
-        <section
-          className="mt-10 min-w-0 space-y-3"
+        <Stack
+          as="section"
+          gap="item"
+          className="mt-10 min-w-0"
           aria-label="Workflow templates"
           data-testid="pipeline-templates-section"
         >
@@ -134,17 +139,17 @@ export function PipelineTemplatesSection({
                 className="flex min-w-0 flex-col gap-3 rounded-lg ring-1 ring-inset ring-line-base p-3"
                 data-testid={`pipeline-template-${row.key}`}
               >
-                <div className="min-w-0">
+                <Stack gap="tight" className="min-w-0">
                   <Heading level={3} variant="title" truncate title={row.name}>
                     {row.name}
                   </Heading>
                   <p
-                    className="mt-1 truncate text-xs fg-secondary"
+                    className="truncate text-xs fg-secondary"
                     title={row.shortDescription}
                   >
                     {row.shortDescription}
                   </p>
-                </div>
+                </Stack>
                 <Button
                   size="compact"
                   className="self-start"
@@ -157,7 +162,7 @@ export function PipelineTemplatesSection({
               </li>
             ))}
           </ul>
-        </section>
+        </Stack>
       )}
       {dialogOpen && (
         <DialogModal

@@ -17,11 +17,11 @@ import { dispatchAppAction } from '@/lib/app-actions/dispatcher';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { showFilesInRenderer } from '@/lib/show-files';
+import { contributeInterfaceTools } from '@/client/interface-tools-client';
 import {
-  registerInterfaceTools,
-  unregisterAllInterfaceTools,
-} from '@/client/interface-tools-client';
-import { APP_ADVISOR_PRESENTATION_ACTION_TYPES } from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
+  APP_ADVISOR_GUARDED_PRESENTATION_ACTION_TYPES,
+  APP_ADVISOR_PRESENTATION_ACTION_TYPES,
+} from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
 import {
   onTurnFileViewerClosed,
   revealTurnFileTarget,
@@ -108,16 +108,15 @@ function RuntimeBridge({
           useAppAdvisorStore.getState().dismissQuestion(requestId);
         },
       ) ?? ((): undefined => undefined);
-    void registerInterfaceTools(
+    const withdrawTools = contributeInterfaceTools(
       surface === 'main'
         ? ['ui.app_advisor.present', 'ui.get_current_ui_state', 'ui.show_files']
         : ['ui.app_advisor.show_files'],
-      `interface-tools:${surface}:${crypto.randomUUID()}`,
     );
     return (): void => {
       disposeRequest();
       disposeCancellation();
-      void unregisterAllInterfaceTools();
+      withdrawTools();
       closeDisposers.forEach((dispose) => dispose());
       closeDisposers.clear();
     };
@@ -219,6 +218,10 @@ function RuntimeBridge({
       if (
         request.interfaceToolCall === true &&
         !APP_ADVISOR_PRESENTATION_ACTION_TYPES.has(request.action.type) &&
+        // CAN-5999 D3: main hands these over only when their core guard fails.
+        !APP_ADVISOR_GUARDED_PRESENTATION_ACTION_TYPES.has(
+          request.action.type,
+        ) &&
         !(
           request.action.type === 'worktree-chat.open_tab' &&
           request.action.chatId

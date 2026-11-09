@@ -166,7 +166,7 @@ export function ExistingWorktreePicker({
   }, [groups, searchQuery, getDisplayName, mappingsVersion]);
 
   return (
-    <div className="space-y-1.5">
+    <div className="flex flex-col gap-1.5">
       <SearchField
         value={searchQuery}
         onValueChange={onSearchQueryChange}
@@ -189,7 +189,7 @@ export function ExistingWorktreePicker({
       ) : (
         <Surface variant="inset" className="overflow-hidden">
           <ul
-            className="max-h-[32vh] space-y-1 overflow-y-auto p-1"
+            className="flex flex-col max-h-[32vh] overflow-y-auto p-1 gap-1 [&>*]:shrink-0"
             data-testid="existing-worktree-picker-list"
           >
             {filteredGroups.map((group) => {
@@ -228,7 +228,7 @@ export function ExistingWorktreePicker({
                     {group.workspaceName}
                   </ListRow>
                   {!isCollapsed && (
-                    <ul className="space-y-0.5 pl-3">
+                    <ul className="flex flex-col pl-3 gap-0.5">
                       {group.candidates.map((candidate) => {
                         const disabledReason =
                           getCandidateDisabledReason(candidate);

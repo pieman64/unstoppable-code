@@ -27,6 +27,7 @@ import {
   type RelocationGitPlan,
 } from '@canopy/core-runtime/node/relocation';
 import { createInternalRootMigrationWorker } from '..';
+import { createInternalRootRepairs } from '@canopy/core-runtime/node/internal-root-repairs';
 import {
   buildInternalRoot,
   internalRootIdentity,
@@ -81,6 +82,7 @@ afterAll(() => {
   if (nativeBuild) rmSync(nativeBuild, { recursive: true, force: true });
 });
 let home: string;
+let environment: { HOME: string | undefined; USERPROFILE: string | undefined };
 let identity: InternalRootIdentity;
 let host: InternalRootFilesystemHost;
 let worker: InternalRootMigrationWorker;
@@ -112,6 +114,11 @@ beforeEach(async () => {
   home = await fs.realpath(
     await fs.mkdtemp(join(await fs.realpath(tmpdir()), 'migration-')),
   );
+  environment = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+  };
+  process.env.HOME = process.env.USERPROFILE = home;
   host = internalRootFilesystemHost(ownedChildPath);
   identity = internalRootIdentity(home, canopy);
   await createPrivateMigrationDirectory(identity.source, host);
@@ -130,6 +137,10 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   jest.restoreAllMocks();
+  for (const [key, value] of Object.entries(environment)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   await fs.rm(home, { recursive: true, force: true });
 });
 const run = (
@@ -178,7 +189,15 @@ test.each([canopy, unstoppableCode])(
     const to = await fs.lstat(join(identity.destination, 'opaque data α'));
     expect(to.ino).not.toBe(from.ino);
     expect(to.nlink).toBe(1);
-    expect((await journal()).secureRelocation).toBe('pending');
+    expect(await journal()).toMatchObject({
+      version: 7,
+      phase: 'complete',
+      secureRelocation: 'complete',
+      publicationIdentity: await migrationNodeIdentity(
+        identity.destination,
+        await fs.lstat(identity.destination),
+      ),
+    });
     await expect(fs.lstat(internalRootStaging(identity))).rejects.toMatchObject(
       { code: 'ENOENT' },
     );
@@ -313,13 +332,70 @@ copyTest(
   },
 );
 
-test.each([4, 5, 7, 999])(
+test.each([4, 5, 8, 999])(
   'refuses journal version %s without touching either root',
   async (version) => {
     await run();
-    await worker.saveJournal({ ...(await journal()), version: 6 });
     const path = join(identity.coordination, 'journal.json');
     await fs.writeFile(path, JSON.stringify({ ...(await journal()), version }));
+    await expect(worker.readJournal(identity)).rejects.toMatchObject({
+      reason: 'journal-unsupported',
+    });
+    await assertSource();
+    expect(await fs.readFile(join(identity.destination, 'empty'), 'utf8')).toBe(
+      '',
+    );
+  },
+);
+
+test('reads v6 secure-pending completion and upgrades it to v7 without republishing', async () => {
+  await run();
+  const completed = await journal();
+  await worker.saveJournal({
+    ...completed,
+    version: 6,
+    secureRelocation: 'pending',
+  });
+  expect(await journal()).toMatchObject({
+    version: 6,
+    phase: 'complete',
+    secureRelocation: 'pending',
+    publicationIdentity: completed.publicationIdentity,
+  });
+  const publish = jest.fn((...args: Parameters<typeof worker.publish>) =>
+    worker.publish(...args),
+  );
+  expect(await run({ ...worker, publish })).toMatchObject({
+    kind: 'complete',
+    journal: {
+      version: 7,
+      phase: 'complete',
+      secureRelocation: 'complete',
+      publicationIdentity: completed.publicationIdentity,
+    },
+  });
+  expect(publish).not.toHaveBeenCalled();
+  expect(await journal()).toMatchObject({
+    version: 7,
+    secureRelocation: 'complete',
+    publicationIdentity: completed.publicationIdentity,
+  });
+  await assertSource();
+});
+
+test.each([
+  { version: 6, phase: 'complete' },
+  { version: 6, phase: 'building' },
+  { version: 7, phase: 'building' },
+])(
+  'refuses secure completion in journal v$version phase $phase without touching either root',
+  async ({ version, phase }) => {
+    await run();
+    const completed = await journal();
+    await fs.writeFile(
+      join(identity.coordination, 'journal.json'),
+      JSON.stringify({ ...completed, version, phase }),
+    );
     await expect(worker.readJournal(identity)).rejects.toMatchObject({
       reason: 'journal-unsupported',
     });
@@ -371,6 +447,7 @@ test('persists lossless high-sequence identities and refuses a rounded-alias sta
   const recorded: InternalRootJournal = {
     ...(await journal()),
     phase: 'building',
+    secureRelocation: 'pending',
     stagingIdentity: `${exact.dev}:${first}`,
   };
   await worker.saveJournal(recorded);
@@ -480,15 +557,25 @@ windowsTest(
 );
 
 windowsTest.each(['empty', join('nested', '.git')])(
-  'refuses read-only and locked %s without clearing attributes or changing bytes',
+  'preserves readonly %s on both roots and refuses active write holders without source changes',
   async (relative) => {
     const path = join(identity.source, relative);
     await fs.mkdir(dirname(path), { recursive: true });
     await fs.writeFile(path, '');
     await fs.chmod(path, 0o400);
     try {
-      expect(() => host.windows?.inspect(path)).toThrow('attributes-or-case');
-      await expect(worker.inventory(identity)).rejects.toBeDefined();
+      const native = host.windows;
+      if (!native) throw new Error('Missing Windows filesystem');
+      const original = native.inspect(path);
+      expect(original.attributes & 1).toBe(1);
+      await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+      expect(native.inspect(path)).toEqual(original);
+      expect(
+        native.inspect(join(identity.destination, relative)).attributes,
+      ).toBe(original.attributes);
+      expect(await fs.readFile(path)).toEqual(
+        await fs.readFile(join(identity.destination, relative)),
+      );
     } finally {
       await fs.chmod(path, 0o600);
     }
@@ -499,6 +586,128 @@ windowsTest.each(['empty', join('nested', '.git')])(
       await held.close();
     }
     await assertSource();
+  },
+);
+
+windowsTest.each(['mtime', 'size', 'security', 'identity'])(
+  'readonly seal refuses a copy-flush receipt invalidated by %s',
+  async (change) => {
+    const file = join(identity.source, 'readonly');
+    await fs.writeFile(file, 'immutable fixture');
+    await fs.chmod(file, 0o400);
+    const port: InternalRootRepairs = {
+      ...repairs,
+      repair: async (context) => {
+        const target = join(context.workingRoot, 'readonly');
+        if (change === 'mtime') await fs.utimes(target, 0, 1);
+        if (change === 'size') {
+          await fs.chmod(target, 0o600);
+          await fs.writeFile(target, 'changed-size');
+          await fs.chmod(target, 0o400);
+        }
+        if (change === 'security')
+          await execute('icacls.exe', [target, '/grant', '*S-1-5-18:R']);
+        if (change === 'identity') {
+          await fs.rename(target, `${target}.retained`);
+          await fs.copyFile(file, target);
+          await fs.chmod(target, 0o400);
+        }
+        return { kind: 'ok' };
+      },
+    };
+    await expect(run(worker, port)).rejects.toMatchObject({
+      reason: 'recovery-required',
+    });
+    expect((await journal()).phase).toBe('building');
+    expect(await fs.readFile(file, 'utf8')).toBe('immutable fixture');
+    expect((host.windows?.inspect(file).attributes ?? 0) & 1).toBe(1);
+    // A retry discards only journaled staging, mints new receipts and seals.
+    await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+  },
+);
+
+windowsTest(
+  'fresh process refuses readonly sealing without receipts, retries by rebuilding, and resumes an already durable publication seal',
+  async () => {
+    const file = join(identity.source, 'readonly');
+    await fs.writeFile(file, 'retained source');
+    await fs.chmod(file, 0o400);
+    const seal = worker.seal.bind(worker);
+    worker.seal = (): ReturnType<InternalRootMigrationWorker['seal']> =>
+      Promise.reject(new Error('before seal interruption'));
+    await expect(run()).rejects.toThrow('before seal interruption');
+    const current = await journal();
+    const script = `
+    const fs = require('node:fs');
+    const { createWindowsMigrationFilesystem } = require(${JSON.stringify(resolve('packages/core-platform/src/internal-migration-filesystem.ts'))});
+    const { sealInternalRoot } = require(${JSON.stringify(resolve('packages/desktop-shared/src/node/internal-root-migration/filesystem.ts'))});
+    const journal = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+    sealInternalRoot(journal, journal.stagingIdentity, { windows: createWindowsMigrationFilesystem(process.argv[2]) }).then(
+      () => { console.error('unexpected readonly seal'); process.exitCode = 3; },
+      error => { if (error.reason !== 'recovery-required' || !error.message.includes('copy-flush receipt')) { console.error(error); process.exitCode = 4; } else console.log(error.reason); }
+    );
+  `;
+    const result = await execute(process.execPath, [
+      '--require',
+      'tsx/cjs',
+      '-e',
+      script,
+      join(identity.coordination, 'journal.json'),
+      ownedChildPath ?? '',
+    ]);
+    expect(result.stdout.trim()).toBe('recovery-required');
+    expect((await journal()).stagingIdentity).toBe(current.stagingIdentity);
+    worker.seal = seal;
+    const publish = worker.publish.bind(worker);
+    worker.publish = async (value): Promise<void> => {
+      await publish(value);
+      throw new Error('after durable seal interruption');
+    };
+    await expect(run()).rejects.toThrow('after durable seal interruption');
+    expect((await journal()).phase).toBe('publishing');
+    const restarted = createInternalRootMigrationWorker({
+      ownedChildPath,
+      recoverW5: () => Promise.resolve(),
+      proveCold: () => Promise.resolve(),
+    });
+    restarted.seal = (): ReturnType<InternalRootMigrationWorker['seal']> =>
+      Promise.reject(new Error('must reuse durable seal'));
+    await expect(run(restarted)).resolves.toMatchObject({ kind: 'complete' });
+    expect((host.windows?.inspect(file).attributes ?? 0) & 1).toBe(1);
+    expect(await fs.readFile(file, 'utf8')).toBe('retained source');
+  },
+);
+
+windowsTest.each(['replaced-root', 'junction'])(
+  'recorded readonly cleanup refuses %s without clearing source or external attributes',
+  async (change) => {
+    const native = host.windows;
+    if (!native) throw new Error('Missing Windows filesystem');
+    const staging = join(home, 'recorded-construction');
+    await createPrivateMigrationDirectory(staging, host);
+    const recorded = await migrationNodeIdentity(
+      staging,
+      await fs.lstat(staging),
+    );
+    const source = join(identity.source, 'readonly');
+    await fs.writeFile(source, 'source');
+    await fs.chmod(source, 0o400);
+    if (change === 'replaced-root') {
+      await fs.rename(staging, `${staging}.retained`);
+      await createPrivateMigrationDirectory(staging, host);
+      native.copy(source, join(staging, 'readonly'));
+    } else {
+      await fs.symlink(identity.source, join(staging, 'junction'), 'junction');
+    }
+    expect(() => native.removeRecordedTree(staging, recorded)).toThrow(
+      change === 'replaced-root'
+        ? 'remove-recorded-identity'
+        : 'attributes-or-case',
+    );
+    expect(native.inspect(source).attributes & 1).toBe(1);
+    expect(await fs.readFile(source, 'utf8')).toBe('source');
+    if (change === 'replaced-root')
+      expect(native.inspect(join(staging, 'readonly')).attributes & 1).toBe(1);
   },
 );
 
@@ -610,6 +819,40 @@ windowsTest(
 );
 
 windowsTest(
+  'publishes a private hidden/readonly backlink copy without changing the preimage attributes',
+  async () => {
+    const native = host.windows;
+    if (!native) throw new Error('Missing Windows filesystem host');
+    const path = join(identity.source, '.git-backlink');
+    const temp = join(identity.source, '.replacement');
+    await fs.writeFile(path, 'long preimage\n', { mode: 0o600 });
+    await execute('attrib.exe', ['+R', '+H', path]);
+    const before = native.inspect(path);
+    native.copy(path, temp);
+    await fs.chmod(temp, 0o600);
+    const file = await fs.open(temp, 'r+');
+    try {
+      await file.writeFile('new\n');
+      await file.truncate(4);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    native.finish(path, temp);
+    expect(native.inspect(path)).toEqual(before);
+    expect(native.hasReadonlyCopyFlush(temp)).toBe(true);
+    native.replace(temp, path);
+    const after = native.inspect(path);
+    expect(after.attributes).toBe(before.attributes);
+    expect(after.security).toBe(before.security);
+    expect(after.ino).not.toBe(before.ino);
+    expect(native.hasReadonlyCopyFlush(path)).toBe(true);
+    expect(native.read(path).toString('utf8')).toBe('new\n');
+    await expect(fs.lstat(temp)).rejects.toMatchObject({ code: 'ENOENT' });
+  },
+);
+
+windowsTest(
   'uses Git slash spelling and preserves cross-drive relative-target semantics',
   () => {
     const text = gitBacklinkText(
@@ -707,13 +950,32 @@ test('moves real linked Git checkouts using final identities and restores exact 
       })
     : [];
   const port: InternalRootRepairs = {
-    prepare: async () => {
+    prepare: async (context) => {
       frozen = await prepareRelocationGit(
         git,
         [common, managed, secondManaged],
         { portableFilesystem: process.platform !== 'darwin' },
       );
-      return { kind: 'ready', externalFiles };
+      const unexpected = (): Promise<never> =>
+        Promise.reject(new Error('Preparation must be read only'));
+      const prepared = await createInternalRootRepairs({
+        freeze: () =>
+          Promise.resolve({
+            transition: {
+              ...transition,
+              installationId: context.transactionId,
+            },
+            gitPlan: frozen,
+            ownedPaths: [],
+            workspaces: [],
+          }),
+        admit: unexpected,
+        recordAuthority: unexpected,
+        repairMetadata: unexpected,
+        verify: unexpected,
+      }).prepare(context);
+      expect(prepared).toMatchObject({ kind: 'ready', externalFiles });
+      return prepared;
     },
     repair: async (context) => {
       await repairRelocationGit(transition, frozen, context.workingRoot);

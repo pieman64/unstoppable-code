@@ -7,7 +7,7 @@ import {
   type ModelHarness,
   type PersistedChatTab,
 } from '../types';
-import { isOpenCodeModel } from './opencode-models';
+import { isOpenCodeModel } from '@canopy/execution-engine/lib/opencode-models';
 
 type SelectionTab = Pick<
   PersistedChatTab,

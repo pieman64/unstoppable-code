@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   McpServerIndexEntry,
   McpServerStatusEntry,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 
 interface UseMcpServerStatusesReturn {
   /** Per-server connection status, keyed by `serverId`. Empty when unknown. */

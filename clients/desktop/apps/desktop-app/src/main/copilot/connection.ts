@@ -15,7 +15,7 @@ import { initCopilotModels } from '@canopy/desktop-shared/types';
 import {
   isCopilotModel,
   copilotModelsFromSdk,
-} from '@canopy/desktop-shared/lib/copilot-models';
+} from '@canopy/execution-engine/lib/copilot-models';
 import {
   getCopilotRuntimeRootDir,
   getCopilotRuntimeReceiptsDir,
@@ -34,6 +34,8 @@ import { copilotReceiptStorage } from '@canopy/desktop-shared/node/copilot/recei
 import { reapCopilotProcessReceipts } from '@canopy/copilot-recipient/process-receipts';
 import { runCopilotTurn } from '@canopy/copilot-recipient/turn-driver';
 import type { CopilotRecipientHandle } from '@canopy/desktop-shared/node/copilot/recipient-handle';
+import type { ProviderProcessRequest } from '@canopy/desktop-shared/node/provider-process/spawn';
+import { spawnProviderProcess } from '../agent-runs/provider-process-host';
 import { probeCopilotRotationAttempt } from './rotation-attempt';
 import type { GitHubTokenProvider } from '@github/copilot-sdk';
 import {
@@ -386,7 +388,7 @@ export async function copilotConnectionStatus(): Promise<CopilotConnectionStatus
   }
 }
 
-interface ManagedCopilotRuntimeOptions {
+export interface ManagedCopilotRuntimeOptions {
   signal: AbortSignal;
   cwd?: string;
   workspaceId?: string;
@@ -395,6 +397,7 @@ interface ManagedCopilotRuntimeOptions {
   executionKind?: 'agent' | 'pipeline';
   restrictedEnvironment?: boolean;
   environment?: Record<string, string>;
+  owner: ProviderProcessRequest['owner'];
 }
 
 /**
@@ -513,6 +516,8 @@ async function openCopilotRuntime(
         ),
       },
       signal,
+      spawnProcess: spawnProviderProcess,
+      owner: options.owner,
     });
     // Parent exit is only the beginning of cleanup: tools can outlive it.
     // Keep the ownership record until the runtime reaps those descendants.
@@ -786,7 +791,12 @@ async function connectCopilotImpl(
       // Prove Copilot access before anything is saved; the user may have a
       // GitHub account without a Copilot plan.
       const probe = await openCopilotRuntime(
-        { signal, requireAccount: false, purpose: 'setup-probe' },
+        {
+          signal,
+          requireAccount: false,
+          purpose: 'setup-probe',
+          owner: { kind: 'discovery', id: 'copilot-setup-probe' },
+        },
         setup.token,
         {
           clientId: flow.clientId,
@@ -958,6 +968,7 @@ export async function listCopilotModels(
       const runtime = await openManagedCopilotRuntime({
         signal: timeout,
         purpose: 'models',
+        owner: { kind: 'discovery', id: 'copilot-models' },
       });
       try {
         let models;
@@ -1057,7 +1068,11 @@ export function getCopilotAccountGeneration(): number {
 export async function readCopilotAccountUsage(
   signal: AbortSignal,
 ): Promise<CopilotAccountUsage> {
-  const runtime = await openManagedCopilotRuntime({ signal, purpose: 'quota' });
+  const runtime = await openManagedCopilotRuntime({
+    signal,
+    purpose: 'quota',
+    owner: { kind: 'discovery', id: 'copilot-quota' },
+  });
   try {
     if (!runtime.account)
       throw new Error('Connect Copilot to see account usage.');

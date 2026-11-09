@@ -171,8 +171,10 @@ export function RunCommentsModal({
       dataTestId="run-comments-modal"
     >
       {loading && detail === null ? (
-        <DelayedLoadingPlaceholder slowNote={SLOW_LOADING_NOTE}>
-          <CenteredLoadingSpinner className="my-12" />
+        <DelayedLoadingPlaceholder className="" slowNote={SLOW_LOADING_NOTE}>
+          <div className="box-content flex min-h-full flex-1 py-12">
+            <CenteredLoadingSpinner className="" />
+          </div>
         </DelayedLoadingPlaceholder>
       ) : detail === null ? (
         <p className="text-s fg-secondary" data-testid="run-comments-empty">

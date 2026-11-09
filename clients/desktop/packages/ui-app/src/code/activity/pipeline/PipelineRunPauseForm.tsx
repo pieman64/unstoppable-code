@@ -2,10 +2,12 @@
 
 import { useMemo, useState, type JSX } from 'react';
 import {
+  Stack,
   Button,
   Checkbox,
   FormField,
   Select,
+  Surface,
   TextArea,
   TextInput,
 } from '@canopy/ui-shared/components';
@@ -230,89 +232,94 @@ export function PipelineRunPauseForm({
   );
 
   return (
-    <div
-      className="flex max-h-[40vh] min-h-0 flex-col rounded-md bg-warning-subtle p-3 ring-1 ring-line-attention/30"
-      data-testid="pipeline-run-pause-form"
-    >
-      <p className="text-xs font-semibold fg-warning">
-        {pipelinePauseInputHeading(checkpoints.length)}
-      </p>
-      <div
-        className="min-h-0 overflow-y-auto overscroll-contain pr-1"
-        data-testid="pipeline-run-pause-fields"
+    <div className="flex max-h-[40vh] min-h-0 flex-col">
+      <Surface
+        variant="group"
+        size="small"
+        padding="compact"
+        className="flex min-h-0 flex-col"
+        data-testid="pipeline-run-pause-form"
       >
-        {checkpoints.map((checkpoint) => (
-          <div key={checkpoint.id} className="mt-2 space-y-2">
-            {checkpoint.request?.title && (
-              <p className="text-xs font-medium fg-primary">
-                {checkpoint.request.title}
-              </p>
-            )}
-            {checkpoint.request?.message && (
-              <p className="text-xs fg-secondary">
-                {checkpoint.request.message}
-              </p>
-            )}
-            {checkpoint.request_unavailable_reason === 'too_large' && (
-              <p className="text-xs fg-secondary">
-                This input request is too large to answer from Remote Control.
-                Resume it in the desktop app.
-              </p>
-            )}
-            {checkpoint.kind === 'input' &&
-              checkpoint.request === undefined &&
-              checkpoint.request_unavailable_reason === undefined && (
-                <p className="text-xs fg-secondary">
-                  This input request is unavailable in Remote Control. Resume it
-                  in the desktop app.
+        <p className="text-xs font-semibold fg-warning">
+          {pipelinePauseInputHeading(checkpoints.length)}
+        </p>
+        <div
+          className="min-h-0 overflow-y-auto overscroll-contain pr-1"
+          data-testid="pipeline-run-pause-fields"
+        >
+          {checkpoints.map((checkpoint) => (
+            <Stack key={checkpoint.id} gap="inline" className="mt-2">
+              {checkpoint.request?.title && (
+                <p className="text-xs font-medium fg-primary">
+                  {checkpoint.request.title}
                 </p>
               )}
-            {(checkpoint.request?.fields ?? []).map((field) => (
-              <PipelineRunPauseField
-                key={field.key}
-                field={field}
-                value={effectiveAnswers[checkpoint.id]?.[field.key]}
-                error={answerErrors[checkpoint.id]?.[field.key]}
-                onChange={(value): void =>
-                  setAnswers((current) => ({
-                    ...current,
-                    [checkpoint.id]: {
-                      ...current[checkpoint.id],
-                      [field.key]: value,
-                    },
-                  }))
-                }
-              />
-            ))}
-          </div>
-        ))}
-      </div>
-      <Button
-        type="button"
-        variant="primary"
-        size="compact"
-        className="mt-3"
-        data-testid="portal-pipeline-pause-submit"
-        disabled={!canSubmit || submitting}
-        onClick={(): void =>
-          onSubmit(
-            checkpoints.map((checkpoint) => ({
-              checkpoint_id: checkpoint.id,
-              job_id: checkpoint.job_id,
-              step_id: checkpoint.step_id,
-              ...(checkpoint.request
-                ? { answers: effectiveAnswers[checkpoint.id] ?? {} }
-                : {}),
-            })),
-          )
-        }
-      >
-        {submitting
-          ? 'Resuming…'
-          : checkpoints.some((checkpoint) => checkpoint.request)
-            ? 'Submit responses'
-            : 'Resume'}
-      </Button>
+              {checkpoint.request?.message && (
+                <p className="text-xs fg-secondary">
+                  {checkpoint.request.message}
+                </p>
+              )}
+              {checkpoint.request_unavailable_reason === 'too_large' && (
+                <p className="text-xs fg-secondary">
+                  This input request is too large to answer from Remote Control.
+                  Resume it in the desktop app.
+                </p>
+              )}
+              {checkpoint.kind === 'input' &&
+                checkpoint.request === undefined &&
+                checkpoint.request_unavailable_reason === undefined && (
+                  <p className="text-xs fg-secondary">
+                    This input request is unavailable in Remote Control. Resume
+                    it in the desktop app.
+                  </p>
+                )}
+              {(checkpoint.request?.fields ?? []).map((field) => (
+                <PipelineRunPauseField
+                  key={field.key}
+                  field={field}
+                  value={effectiveAnswers[checkpoint.id]?.[field.key]}
+                  error={answerErrors[checkpoint.id]?.[field.key]}
+                  onChange={(value): void =>
+                    setAnswers((current) => ({
+                      ...current,
+                      [checkpoint.id]: {
+                        ...current[checkpoint.id],
+                        [field.key]: value,
+                      },
+                    }))
+                  }
+                />
+              ))}
+            </Stack>
+          ))}
+        </div>
+        <Button
+          type="button"
+          variant="primary"
+          size="compact"
+          className="mt-3"
+          data-testid="portal-pipeline-pause-submit"
+          disabled={!canSubmit || submitting}
+          onClick={(): void =>
+            onSubmit(
+              checkpoints.map((checkpoint) => ({
+                checkpoint_id: checkpoint.id,
+                job_id: checkpoint.job_id,
+                step_id: checkpoint.step_id,
+                ...(checkpoint.request
+                  ? { answers: effectiveAnswers[checkpoint.id] ?? {} }
+                  : {}),
+              })),
+            )
+          }
+        >
+          {submitting
+            ? 'Resuming…'
+            : checkpoints.some((checkpoint) => checkpoint.request)
+              ? 'Submit responses'
+              : 'Resume'}
+        </Button>
+      </Surface>
     </div>
   );
 }

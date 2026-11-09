@@ -1,4 +1,4 @@
-import type { PipelineInputValue } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInputValue } from '@canopy/execution-engine/types/pipeline';
 import {
   buildExpressionContext,
   type ExpressionContext,

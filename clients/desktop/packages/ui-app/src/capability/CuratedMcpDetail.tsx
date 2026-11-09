@@ -1,4 +1,5 @@
 'use client';
+import { DetailEntityType } from '@canopy/ui-shared/components';
 
 import type { JSX, ReactNode } from 'react';
 import {
@@ -8,6 +9,8 @@ import {
 } from '@canopy/protocol/mcp-catalog';
 import {
   Badge,
+  ComponentSection,
+  DataTable,
   ErrorBanner,
   Button,
   ExternalTextLink,
@@ -16,11 +19,9 @@ import {
   Notice,
   PluginConfigurationButton,
   PluginConnectionRouteSection,
-  EmptyStateRow,
   Heading,
   Skeleton,
 } from '@canopy/ui-shared/components';
-import { Divider } from '@canopy/ui-shared/components';
 import {
   MCP_PROVIDER_CONNECTOR_LABELS,
   mcpProviderOnlyGuidance,
@@ -106,11 +107,10 @@ export interface CuratedMcpDetailProps<
   routes?: CuratedMcpDetailRoutes;
   /** The installed item's Status, under the name and description. */
   statusContent?: ReactNode;
-  /**
-   * The installed server's management card, which takes the tools in as one of
-   * its rows. Omitted, the tools keep their own section.
-   */
-  renderManagement?: (tools: ReactNode) => ReactNode;
+  /** The installed server's Health and Placement facts, above Connection. */
+  renderManagement?: () => ReactNode;
+  /** On a page that sets its own width, so it lines up with the page actions. */
+  flush?: boolean;
 }
 
 export function CuratedMcpDetail<T extends McpDetailEntry>({
@@ -127,6 +127,7 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
   routes,
   statusContent,
   renderManagement,
+  flush = false,
 }: CuratedMcpDetailProps<T>): JSX.Element {
   const providerOnly = curatedMcpProviderOnly(entry);
   // With no provider route on screen (the MCP tab's Browse dialog), say how
@@ -148,26 +149,16 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
       toolsError={toolsError}
     />
   );
-  const tools = renderManagement ? (
-    renderManagement(<div data-testid="mcp-browse-tools">{toolsBody}</div>)
-  ) : (
-    <div>
-      {routes === undefined ? <Divider /> : null}
-      <div
-        className={routes === undefined ? 'pt-3' : undefined}
-        data-testid="mcp-browse-tools"
-      >
-        <Heading level={4} variant="label" className="mb-2">
-          Tools
-        </Heading>
-        {toolsBody}
-      </div>
+  const tools = (
+    <div data-testid="mcp-browse-tools">
+      <ComponentSection title="Tools">{toolsBody}</ComponentSection>
     </div>
   );
+  const management = renderManagement?.();
 
   return (
     <div
-      className="flex flex-1 min-h-0 flex-col gap-4 px-5 pb-5 overflow-y-auto"
+      className={`flex flex-1 min-h-0 flex-col gap-6 pb-5 overflow-y-auto${flush ? '' : ' px-5'}`}
       data-testid="mcp-browse-detail"
     >
       <div className="flex items-start gap-3">
@@ -184,7 +175,10 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
         )}
         <div className="min-w-0 flex-1">
           <Heading level={3} variant="section">
-            {entry.name}
+            <span className="inline-flex flex-wrap items-baseline gap-x-2">
+              {entry.name}
+              <DetailEntityType />
+            </span>
           </Heading>
           {entry.authorName && (
             <p className="mt-0.5 text-xs fg-secondary">
@@ -234,17 +228,20 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
         </div>
       )}
 
-      {statusContent}
       {showProviderGuidance && <McpProviderOnlyGuidance entry={entry} />}
       {routes ? (
         <>
+          {statusContent}
           {!providerOnly && routes.own && (
             <PluginConnectionRouteSection
               title={routes.own.title}
               description={routes.own.description}
               dataTestId="mcp-browse-detail-app-route"
             >
-              {connectionContent}
+              <div className="flex flex-col gap-1">
+                {management}
+                {connectionContent}
+              </div>
               {tools}
             </PluginConnectionRouteSection>
           )}
@@ -252,7 +249,12 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
         </>
       ) : (
         <>
-          {!providerOnly && connectionContent}
+          {/* Facts stay one list: Status, Health, Placement, Connection. */}
+          <div className="flex flex-col gap-1 empty:hidden">
+            {statusContent}
+            {!providerOnly && management}
+            {!providerOnly && connectionContent}
+          </div>
           {!providerOnly && tools}
         </>
       )}
@@ -260,7 +262,7 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
   );
 }
 
-/** The tool chips, one per tool the server reports. */
+/** The tool names the loading skeleton measures. */
 function ToolChips({
   toolNames,
 }: {
@@ -269,13 +271,9 @@ function ToolChips({
   return (
     <div className="flex flex-wrap gap-1">
       {toolNames.map((tool) => (
-        <span
-          key={tool}
-          data-testid="mcp-browse-tool-chip"
-          className="inline-block rounded bg-secondary px-1.5 py-0.5 text-3xs fg-primary"
-        >
+        <Badge key={tool} data-testid="mcp-browse-tool-chip">
           {tool}
-        </span>
+        </Badge>
       ))}
     </div>
   );
@@ -327,7 +325,27 @@ function McpToolsBody({
         testId="mcp-browse-tools-error"
       />
     );
-  if (toolNames === null || toolNames.length === 0)
-    return <EmptyStateRow title="No tools discovered yet" />;
-  return <ToolChips toolNames={toolNames} />;
+  return (
+    <DataTable
+      caption="Tools"
+      rows={toolNames ?? []}
+      rowKey={(tool: string): string => tool}
+      emptyLabel="No tools discovered yet"
+      columns={[
+        {
+          key: 'name',
+          header: 'Name',
+          overflow: 'wrap',
+          render: (tool: string): JSX.Element => (
+            <span
+              data-testid="mcp-browse-tool-chip"
+              className="font-mono text-xs"
+            >
+              {tool}
+            </span>
+          ),
+        },
+      ]}
+    />
+  );
 }

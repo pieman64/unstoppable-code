@@ -1,7 +1,7 @@
 import { type JSX, useEffect, useState } from 'react';
-import { Button, Surface } from '@canopy/ui-shared/components';
+import { Stack, Button, Surface } from '@canopy/ui-shared/components';
 import type { AutomationPipelineDependency } from '@canopy/desktop-shared/types';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import { SettingsSelect } from '@canopy/ui-shared/components';
 
 const HELPER =
@@ -57,10 +57,10 @@ export function AutomationPipelineDependenciesField({
     (pipelines === null ? entry.pipelineId : MISSING_LABEL);
 
   return (
-    <div className="space-y-2" data-testid="automations-form-pipelines">
+    <Stack gap="inline" data-testid="automations-form-pipelines">
       <p className="text-2xs fg-secondary">{HELPER}</p>
       {value.length > 0 && (
-        <ul className="space-y-1">
+        <ul className="flex flex-col gap-1">
           {value.map((entry) => (
             <Surface
               as="li"
@@ -110,6 +110,6 @@ export function AutomationPipelineDependenciesField({
           label: pipeline.name,
         }))}
       />
-    </div>
+    </Stack>
   );
 }

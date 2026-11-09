@@ -1,6 +1,6 @@
-import { classifyResourceOwner } from '@canopy/desktop-shared/lib/resource-context';
-import type { InstallReceipt } from '@canopy/desktop-shared/lib/resource-context-policy';
-import { decideResourceContext } from '@canopy/desktop-shared/lib/resource-context-policy';
+import { classifyResourceOwner } from '@canopy/execution-engine/lib/resource-context';
+import type { InstallReceipt } from '@canopy/execution-engine/lib/resource-context-policy';
+import { decideResourceContext } from '@canopy/execution-engine/lib/resource-context-policy';
 import {
   PERSONAL_WORKSPACE_CONTEXT,
   type WorkspaceContext,

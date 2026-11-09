@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import type {
   PipelineExecutionScope,
   ResolvedPipelineExecutionTarget,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   ExecutionOptions,
   ExecutionRuntime,

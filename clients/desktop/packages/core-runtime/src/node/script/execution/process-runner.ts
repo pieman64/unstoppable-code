@@ -36,6 +36,12 @@ export interface ScriptChildProcess {
   onClose(listener: (code: number | null) => void): void;
   /** Signal the process group off Windows, or the process tree on it. */
   killGroup(signal: NodeJS.Signals): void;
+  /**
+   * Settles once a forced end the host started (a SIGKILL) has finished, and
+   * rejects when the host could not confirm the process tree ended. Hosts
+   * that start processes asynchronously (the daemon) report it.
+   */
+  forced?(): Promise<void>;
 }
 
 export interface ScriptChildOutput {
@@ -384,6 +390,15 @@ export function runScriptProcess(
       drain: async () => {
         stoppedManually = true;
         const ownedPid = child.pid;
+        if (ownedPid === undefined && !settled) {
+          // The host has not reported the process yet (the daemon starts it
+          // asynchronously, CAN-5839): end it as soon as it starts and wait
+          // for it to exit. A start that fails settles the run too.
+          child.killGroup('SIGKILL');
+          await waitForExit;
+          await child.forced?.();
+          return;
+        }
         if (ownedPid !== undefined) {
           await host.drainOwnedProcess(
             ownedPid,

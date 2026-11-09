@@ -9,7 +9,7 @@ import {
   type AgentAuditToolCounts,
   type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
-import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import type { RunWithOptionalHelperPluginsOptions } from './helper-plugin-resolution';
 

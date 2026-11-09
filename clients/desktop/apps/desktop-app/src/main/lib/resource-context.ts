@@ -1,5 +1,5 @@
 import { ResourceContextUnavailableError } from './resource-context-error';
-import type { ResourceContextInput } from '@canopy/desktop-shared/lib/resource-context-policy';
+import type { ResourceContextInput } from '@canopy/execution-engine/lib/resource-context-policy';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';

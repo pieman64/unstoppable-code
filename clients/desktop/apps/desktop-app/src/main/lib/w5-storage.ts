@@ -2,7 +2,7 @@ import {
   bindW5Storage,
   type W5StorageAdmission,
 } from '@canopy/core-runtime/node/w5/storage-binding';
-import { withStorageAdmission } from '@canopy/desktop-shared/node/lib/storage-admission';
+import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import type { AtomicFileStorage } from './atomic-file';
 
 export { withStorageAdmission };

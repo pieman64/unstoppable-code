@@ -9,7 +9,7 @@ import {
 } from '@/stores/chatStore';
 import type { CollapsedIconColor } from '@/components/shared/panel-section';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
-import { ProgressBar } from '@canopy/ui-shared/components';
+import { ProgressBar, type SpaceRole } from '@canopy/ui-shared/components';
 import { ActivitySection } from './ActivitySection';
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -18,6 +18,7 @@ export function useTodoHeaderChrome(scope?: {
   worktreeId: string;
 }): {
   subtitle: ReactNode;
+  subtitleGap?: SpaceRole;
   collapsedIconColor: CollapsedIconColor;
 } {
   // useShallow: the selector builds a fresh {completed,total} object per call;
@@ -45,7 +46,7 @@ export function useTodoHeaderChrome(scope?: {
   const percentage = (counts.completed / counts.total) * 100;
   return {
     subtitle: (
-      <div className="mt-1 flex items-center gap-2">
+      <div className="flex items-center gap-2">
         <ProgressBar
           value={percentage}
           size="compact"
@@ -58,6 +59,7 @@ export function useTodoHeaderChrome(scope?: {
         </span>
       </div>
     ),
+    subtitleGap: 'inline',
     collapsedIconColor: 'amber',
   };
 }
@@ -98,6 +100,7 @@ export function TodoSection(): JSX.Element {
         icon={<TasksIcon />}
         title={title}
         subtitle={headerChrome.subtitle}
+        subtitleGap={headerChrome.subtitleGap}
         collapsedIconColor={headerChrome.collapsedIconColor}
       />
     );
@@ -108,6 +111,7 @@ export function TodoSection(): JSX.Element {
       icon={<TasksIcon />}
       title={title}
       subtitle={headerChrome.subtitle}
+      subtitleGap={headerChrome.subtitleGap}
       collapsedIconColor={headerChrome.collapsedIconColor}
     >
       <TodoSectionBody items={todos} resetKey={activeTabId} />

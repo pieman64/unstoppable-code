@@ -4,7 +4,7 @@ import type {
   PipelineAdvisorHealthStatus,
   PipelineAdvisorSnapshot,
   StepResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 export type JobStatus = JobResult['status'];
 

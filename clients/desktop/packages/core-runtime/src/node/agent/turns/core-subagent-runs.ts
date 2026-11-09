@@ -166,6 +166,14 @@ export class CoreSubagentRuns {
     return this.live.get(`${delegationId}\u0000${runGeneration}`) ?? null;
   }
 
+  /** Whether the ledger records this operation as a core.agent.subagent.run (CAN-6000). */
+  async isSubagentRun(operationId: string): Promise<boolean> {
+    const operation = await this.options.operations
+      .get(operationId)
+      .catch(() => null);
+    return operation?.kind === CORE_AGENT_SUBAGENT_RUN_KIND;
+  }
+
   private async cancelRun(operation: OperationRecord): Promise<'requested'> {
     const { stopNative } = this.options;
     const target = this.stopTargets.get(operation.operationId);

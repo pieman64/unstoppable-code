@@ -8,7 +8,7 @@ import type {
   WorktreeData,
 } from '../../types';
 import { writeFileAtomically } from './atomic-file';
-import { withStorageAdmission } from './storage-admission';
+import { withStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import { getWorkspaceItem } from './workspace-cli-reads';
 import {
   multiRepoGitEntries,

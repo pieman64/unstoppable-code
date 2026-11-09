@@ -1,6 +1,6 @@
 import type { CodexSpawnProfileRequest } from '@canopy/desktop-shared/node/codex-runtime';
 import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
-import { applyCodexMultiAgentConfig } from '@canopy/desktop-shared/lib/codex-multi-agent';
+import { applyCodexMultiAgentConfig } from '@canopy/execution-engine/lib/codex-multi-agent';
 import { getCodexRuntimeService } from '../codex/runtime-service';
 
 const CODEX_REPORT_ONLY_PERMISSION_PROFILE = 'canopy_report_only';

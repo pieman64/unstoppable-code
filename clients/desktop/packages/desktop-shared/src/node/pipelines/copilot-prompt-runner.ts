@@ -1,4 +1,4 @@
-import { resolveHostRepositoryPolicy } from '../lib/repository-policy';
+import { resolveHostRepositoryPolicy } from '@canopy/execution-engine/node/lib/repository-policy';
 import {
   clampThinkingLevelToDeclared,
   type ThinkingLevel,
@@ -9,27 +9,27 @@ import {
   getEnhancedEnv,
   getRtkManagedEnv,
 } from '../../pipelines/config-paths';
-import { classifyAgentFailure } from '../../agent-failures';
+import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import { hasAnySelections } from '../../types';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { getRawCopilotModelId } from '../../lib/copilot-models';
+import { getRawCopilotModelId } from '@canopy/execution-engine/lib/copilot-models';
 import {
   redactNormalizedPreservingFormat,
   redactSerializedJsonLine,
   redactStructuredValue,
-} from '../../lib/redaction';
+} from '@canopy/execution-engine/lib/redaction';
 import { validateAgainstSchema } from '../../lib/ajv-schema-validator';
 import {
   appendCodexSchemaInstruction,
   buildCodexStructuredOutputRetryPrompt,
   CODEX_STRUCTURED_OUTPUT_RETRY_ATTEMPTS,
 } from '../../builtin-actions/agent-prompt/logic';
-import { buildPipelineGlobalInstructionsBlock } from '../../lib/global-instructions';
-import { getBrandEnv } from '../../brand/env';
+import { buildPipelineGlobalInstructionsBlock } from '@canopy/execution-engine/lib/global-instructions';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import type { CopilotAccount } from '../../types/copilot-connection';
-import type { HelperUsage } from '../../lib/helper-usage';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import {
   createCopilotCapabilitySnapshot,
   isCopilotCapabilitySnapshot,
@@ -50,7 +50,7 @@ import type {
 } from '../copilot/session-policy';
 import { CopilotToolCorrelation } from '../copilot/tool-correlation';
 import { headlessCopilotDecision } from '../copilot/headless-policy';
-import { extractProposedPlan } from '../../codex-plan-mode';
+import { extractProposedPlan } from '@canopy/execution-engine/codex-plan-mode';
 import { getPipelineExecutionCopilotSessionsDir } from '../lib/paths';
 import {
   createSetupWithdrawal,

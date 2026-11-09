@@ -4,6 +4,8 @@ import { type JSX, useId } from 'react';
 import type { PersonalProject } from '@canopy/protocol/organizations';
 import type { PersonalProjectListState } from '@canopy/app-state/personal-organization-upgrade';
 import {
+  Fieldset,
+  Stack,
   FormField,
   Notice,
   NoticeButton,
@@ -97,14 +99,17 @@ export function CreateTeamStep({
     const failed = projects.status === 'error';
     const loading = projects.status === 'loading' || projects.status === 'idle';
     return (
-      <fieldset className="mx-0 min-w-0 space-y-2 border-0 p-0">
-        <legend className="mb-2 text-s font-medium fg-primary">
-          {COPY.projectsLegend}
-        </legend>
+      <Fieldset
+        gap="inline"
+        legend={
+          <span className="text-s font-medium fg-primary">
+            {COPY.projectsLegend}
+          </span>
+        }
+      >
         {failed && (
           <Notice
-            intent="attention"
-            role="alert"
+            intent="destructive"
             data-testid={`${p}-projects-error`}
             actions={
               <>
@@ -138,7 +143,7 @@ export function CreateTeamStep({
           </p>
         )}
         {projects.items.length > 0 && (
-          <div className="space-y-2" data-testid={`${p}-projects`}>
+          <Stack gap="inline" data-testid={`${p}-projects`}>
             {projects.items.map((project) => (
               <ProjectRow
                 key={project.workspaceId}
@@ -150,14 +155,14 @@ export function CreateTeamStep({
                 testIdPrefix={p}
               />
             ))}
-          </div>
+          </Stack>
         )}
-      </fieldset>
+      </Fieldset>
     );
   })();
 
   return (
-    <div className="space-y-4" data-testid={`${p}-create-team`}>
+    <Stack gap="group" data-testid={`${p}-create-team`}>
       <FormField id={nameId} label={COPY.nameLabel}>
         {(control) => (
           <TextInput
@@ -172,6 +177,6 @@ export function CreateTeamStep({
         )}
       </FormField>
       {projectSection}
-    </div>
+    </Stack>
   );
 }

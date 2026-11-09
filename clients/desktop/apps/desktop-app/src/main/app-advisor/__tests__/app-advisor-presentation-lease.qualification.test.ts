@@ -1,3 +1,12 @@
+import { BrowserWindow } from 'electron';
+import { sendToWindowDetailed } from '../../lib/window-send';
+import type * as WindowSendModule from '../../lib/window-send';
+
+jest.mock('../../lib/window-send', () => ({
+  ...jest.requireActual<typeof WindowSendModule>('../../lib/window-send'),
+  sendToWindowDetailed: jest.fn(() => ({ delivered: true })),
+}));
+
 import type * as AppAdvisorIpcModule from '../../ipc/app-advisor';
 
 jest.mock('../../ipc/app-advisor', () => ({
@@ -43,12 +52,18 @@ import {
   type AppAdvisorActionResponse,
 } from '@canopy/desktop-shared/types';
 import {
+  getLatestAppAdvisorUiState,
+  setLatestAppAdvisorUiState,
   requestAppAdvisorRendererTool,
   routeRendererToolRequest,
   surfaceUnavailableResponse,
   type RemoteAppAdvisorWindowHost,
+  type AppAdvisorRendererToolSurfaces,
 } from '../../ipc/app-advisor';
-import { setSessionInterfaceToolRegistry } from '../../agents/interface-tool-binding';
+import {
+  setInterfaceToolAudienceResolver,
+  setSessionInterfaceToolRegistry,
+} from '../../agents/interface-tool-binding';
 import { dispatchLegacyChatCreation } from '../creation-adapters';
 import { presentAppAdvisorAction } from '../presentation-tools';
 import { executeAppAdvisorTool } from '../tool-executor';
@@ -144,20 +159,19 @@ beforeEach(() => {
 });
 afterEach(() => {
   setSessionInterfaceToolRegistry(null);
+  setInterfaceToolAudienceResolver(null);
 });
 
 describe('App Advisor presentation through interface leases (CAN-4133)', () => {
   it('a presentation action reaches only the serving lease', async () => {
     const lease = leases();
     mockBoundTools = ['ui.app_advisor.present'];
-    const fallback = surfaces();
 
     const pending = presentAppAdvisorAction({
       action: { type: 'navigation.go_to_page', page: 'workflows' },
       requestId: 'r1',
       expectedUiRevision: 4,
       destination,
-      remoteFallbackSurfaces: fallback,
     });
     const call = await delivered(lease.main);
     expect(call.toolName).toBe('ui.app_advisor.present');
@@ -176,18 +190,16 @@ describe('App Advisor presentation through interface leases (CAN-4133)', () => {
     await expect(pending).resolves.toEqual({ requestId: 'r1', ok: true });
     expect(lease.advisor).toHaveLength(0);
     expect(windowRequest).not.toHaveBeenCalled();
-    expect(fallback.getMainWindow).not.toHaveBeenCalled();
+    expect(routeRequest).not.toHaveBeenCalled();
   });
 
   it('with no lease it is unavailable and no window opens', async () => {
     const lease = leases();
-    const fallback = surfaces();
 
     const response = await presentAppAdvisorAction({
       action: { type: 'navigation.go_to_page', page: 'workflows' },
       requestId: 'r2',
       destination,
-      remoteFallbackSurfaces: fallback,
     });
 
     expect(response).toEqual({
@@ -200,8 +212,7 @@ describe('App Advisor presentation through interface leases (CAN-4133)', () => {
       requestId: 'r2',
     });
     expect(lease.main).toHaveLength(0);
-    expect(fallback.openAppAdvisorWindow).not.toHaveBeenCalled();
-    expect(fallback.ensureAppAdvisorWindow).not.toHaveBeenCalled();
+    expect(windowRequest).not.toHaveBeenCalled();
   });
 
   it('a domain action is never sent through the presentation tool', async () => {
@@ -212,7 +223,6 @@ describe('App Advisor presentation through interface leases (CAN-4133)', () => {
       action: { type: 'pipeline.create', name: 'Nightly' },
       requestId: 'r3',
       destination,
-      remoteFallbackSurfaces: surfaces(),
     });
 
     expect(response).toMatchObject({
@@ -220,6 +230,43 @@ describe('App Advisor presentation through interface leases (CAN-4133)', () => {
       error: { code: 'unsupported_action' },
     });
     expect(lease.main).toHaveLength(0);
+  });
+
+  it('a guarded core write reaches the lease only when main marks it guarded (CAN-5999 D3)', async () => {
+    const lease = leases();
+    mockBoundTools = ['ui.app_advisor.present'];
+    const action = {
+      type: 'worktree-chat.set_model',
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat-1',
+      model: 'sonnet',
+    } as const;
+
+    const unguarded = await presentAppAdvisorAction({
+      action,
+      requestId: 'r4',
+      destination,
+    });
+    expect(unguarded).toMatchObject({
+      ok: false,
+      error: { code: 'unsupported_action' },
+    });
+    expect(lease.main).toHaveLength(0);
+
+    const pending = presentAppAdvisorAction({
+      action,
+      requestId: 'r5',
+      destination,
+      guarded: true,
+    });
+    const call = await delivered(lease.main);
+    expect(call.input).toMatchObject({ action });
+    lease.registry.reply('main-1', call.callId, {
+      requestId: call.callId,
+      ok: true,
+    });
+    await expect(pending).resolves.toEqual({ requestId: 'r5', ok: true });
   });
 
   it('a chat without an SDK session presents with the tools its call bound', async () => {
@@ -274,34 +321,76 @@ describe('App Advisor presentation through interface leases (CAN-4133)', () => {
     expect(lease.advisor).toHaveLength(1);
   });
 
-  it("a remote-driven chat keeps today's path", async () => {
+  it("a remote-driven chat is never presented in this computer's windows (CAN-5823)", async () => {
     const lease = leases();
     mockBoundTools = ['ui.app_advisor.present'];
-    const remote = surfaces();
-    const closed = { open: false, focused: false };
-    const host: RemoteAppAdvisorWindowHost = {
-      ...remote,
-      routeKey: 'controller',
-      focusMainWindow: () => Promise.resolve(),
-      closeAppAdvisorWindow: () => Promise.resolve(closed),
-      toggleAppAdvisorWindow: () => Promise.resolve(closed),
-      getAppAdvisorWindowState: () => closed,
-      markAppAdvisorWindowRendererReady: () => closed,
-      reportAppAdvisorWindowUiState: () => undefined,
-    };
-    routeRequest.mockReturnValue(host);
-    windowRequest.mockResolvedValue({ requestId: 'r5', ok: true });
+    // The driving controller has no lease of its own.
+    setInterfaceToolAudienceResolver(() => 'controller');
 
-    await presentAppAdvisorAction({
+    const response = await presentAppAdvisorAction({
       action: { type: 'navigation.go_to_page', page: 'workflows' },
       requestId: 'r5',
       destination,
-      remoteFallbackSurfaces: remote,
     });
 
-    expect(windowRequest).toHaveBeenCalledTimes(1);
+    expect(response).toMatchObject({ requestId: 'r5', ok: false });
+    expect(windowRequest).not.toHaveBeenCalled();
     expect(lease.main).toHaveLength(0);
     expect(lease.advisor).toHaveLength(0);
+
+    // Its controller's lease presents it; the controller's screen state never
+    // becomes this computer's.
+    // A known local state: with none cached, each read builds a fallback
+    // stamped with the current time.
+    const localState = {
+      ...getLatestAppAdvisorUiState(),
+      capturedAt: '2026-11-09T00:00:00.000Z',
+      digest: 'local',
+    };
+    setLatestAppAdvisorUiState(localState);
+    const remote: InterfaceToolCall[] = [];
+    lease.registry.openLease(
+      {
+        leaseId: 'remote-1',
+        surface: 'main',
+        interfaceKind: 'desktop',
+        audience: 'controller',
+      },
+      {
+        deliver: (call) => {
+          remote.push(call);
+          return true;
+        },
+        cancel: () => undefined,
+      },
+    );
+    lease.registry.register('remote-1', {
+      tools: [interfaceToolDescriptor('ui.app_advisor.present')],
+      _meta: { idempotencyKey: 'remote-tools' },
+    });
+    const pending = presentAppAdvisorAction({
+      action: { type: 'navigation.go_to_page', page: 'workflows' },
+      requestId: 'r5b',
+      destination,
+    });
+    const call = await delivered(remote);
+    lease.registry.reply('remote-1', call.callId, {
+      requestId: call.callId,
+      ok: true,
+      uiState: {
+        version: 1,
+        revision: 99,
+        capturedAt: '2026-11-09T00:00:00.000Z',
+        digest: 'controller',
+        snapshot: { activePage: 'workflows' },
+      },
+    });
+    await expect(pending).resolves.toMatchObject({
+      requestId: 'r5b',
+      ok: true,
+    });
+    expect(lease.main).toHaveLength(0);
+    expect(getLatestAppAdvisorUiState()).toEqual(localState);
   });
 
   it('the creation reveal runs through the lease and an unbound reveal keeps the chat', async () => {
@@ -343,4 +432,68 @@ describe('App Advisor presentation through interface leases (CAN-4133)', () => {
     });
     expect(lease.main).toHaveLength(1);
   });
+});
+
+// Core continuity flow: a question from a desktop-started turn must also be
+// answerable in a ready paired view, without transferring its original route.
+it('a paired Orchestrator view replays and answers a desktop-started question', async () => {
+  const host = jest.requireActual<typeof AppAdvisorIpcModule>(
+    '../../ipc/app-advisor',
+  );
+  const localWindow = new BrowserWindow();
+  const pairedWindow = new BrowserWindow();
+  const state = { open: true, focused: true };
+  const local: AppAdvisorRendererToolSurfaces = {
+    getMainWindow: () => localWindow,
+    getAppAdvisorWindow: () => localWindow,
+    openAppAdvisorWindow: () => Promise.resolve(state),
+    ensureAppAdvisorWindow: () => Promise.resolve(state),
+  };
+  const paired: RemoteAppAdvisorWindowHost = {
+    ...local,
+    routeKey: 'paired-phone',
+    getAppAdvisorWindow: () => pairedWindow,
+    focusMainWindow: () => Promise.resolve(),
+    closeAppAdvisorWindow: () => Promise.resolve(state),
+    toggleAppAdvisorWindow: () => Promise.resolve(state),
+    getAppAdvisorWindowState: () => state,
+    markAppAdvisorWindowRendererReady: () => state,
+    reportAppAdvisorWindowUiState: () => undefined,
+  };
+  jest.mocked(sendToWindowDetailed).mockClear();
+  const requestId = 'desktop-to-paired-question';
+  const chatId = 'desktop-origin-chat';
+  const answer = { question: 'Which release?', selectedOptions: ['Stable'] };
+  const pendingQuestion = host.requestAppAdvisorRendererTool(
+    {
+      kind: 'ask_user_question',
+      requestId,
+      chatId,
+      question: { question: 'Which release?', options: ['Stable', 'Preview'] },
+    },
+    local,
+  );
+  try {
+    host.redeliverPendingAppAdvisorAskUserRequests(() => pairedWindow, paired);
+    expect(sendToWindowDetailed).toHaveBeenCalledWith(
+      pairedWindow,
+      'app-advisor:tool-request',
+      expect.objectContaining({ requestId, chatId }),
+    );
+    expect(
+      host.completeAppAdvisorAskUserRequest(requestId, 'another-chat', answer),
+    ).toBe(false);
+    expect(
+      host.completeAppAdvisorAskUserRequest(requestId, chatId, answer),
+    ).toBe(true);
+    await expect(pendingQuestion).resolves.toMatchObject({ ok: true, answer });
+    expect(sendToWindowDetailed).toHaveBeenCalledWith(
+      localWindow,
+      'app-advisor:tool-request-cancelled',
+      { requestId, originChatId: chatId },
+    );
+  } finally {
+    host.completeAppAdvisorAskUserRequest(requestId, chatId, null);
+    await pendingQuestion;
+  }
 });

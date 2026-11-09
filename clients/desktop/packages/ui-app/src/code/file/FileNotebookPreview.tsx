@@ -4,6 +4,7 @@ import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { fileViewerKey } from '@canopy/app-state';
 import type { PortalFileReadPayload } from '@canopy/protocol/portal';
 import {
+  Surface,
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
 } from '@canopy/ui-shared/components';
@@ -76,12 +77,14 @@ function NotebookSourceFallback({
 }): JSX.Element {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div
-        className="border-b px-4 py-2 text-xs fg-secondary"
-        data-testid="file-notebook-notice"
-      >
-        {notice}
-      </div>
+      <Surface variant="section" boundary="bottom">
+        <div
+          className="px-4 py-2 text-xs fg-secondary"
+          data-testid="file-notebook-notice"
+        >
+          {notice}
+        </div>
+      </Surface>
       {rawBody}
     </div>
   );

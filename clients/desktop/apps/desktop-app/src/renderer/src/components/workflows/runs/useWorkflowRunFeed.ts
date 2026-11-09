@@ -5,7 +5,7 @@ import type {
   ScheduledActivity,
   ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
 import {
   isSameWorkspaceContext,
   parseWorkspaceContext,

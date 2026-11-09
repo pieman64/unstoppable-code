@@ -1,7 +1,7 @@
 import type {
   ExecutionState,
   PipelineChatSendRecord,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 /**
  * Every `chat_send` record of one execution, in step completion order.

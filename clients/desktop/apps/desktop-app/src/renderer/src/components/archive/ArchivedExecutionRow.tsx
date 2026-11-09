@@ -8,7 +8,7 @@
  * tab, never a fetch per row.
  */
 import type { JSX } from 'react';
-import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
 import type { PipelineRunRowState } from '@/lib/pipelineRunRowState';
 import { DagProgressBar } from '@/components/activity/DagProgressBar';
 import { pipelineStatusBadge } from '@/components/activity/utils';

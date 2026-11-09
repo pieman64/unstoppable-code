@@ -1,4 +1,4 @@
-import type { BrowserInputSnapshotResponse } from '@canopy/desktop-shared/types/browser';
+import type { BrowserInputSnapshotResponse } from '@canopy/execution-engine/types/browser';
 import {
   hostsShadowRoot,
   hostWorldContext,

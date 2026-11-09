@@ -5,7 +5,7 @@
 // The target, input, and command shapes that `@canopy/agent-actions`
 // validates and the desktop host executes. The rest of the in-app browser
 // contract (the preload API, IPC payloads, and host-local fields) stays in
-// `@canopy/desktop-shared/types/browser`, which re-exports this module.
+// `@canopy/execution-engine/types/browser`, which re-exports this module.
 
 import type { BrowserProfileSelection } from '../browser-profiles';
 

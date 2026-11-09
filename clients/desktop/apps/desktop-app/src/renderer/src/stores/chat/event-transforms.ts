@@ -33,7 +33,7 @@ import {
   supersedeToolInterruptions,
 } from '@canopy/agent-transcript/settlement';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
-import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { normalizePersistedUsage } from '@/lib/chatUsageNormalization';
 import type { ChatBlock, ChatMessage, ChatTab, PendingQuestion } from './types';
 import { isRecord } from './utils';

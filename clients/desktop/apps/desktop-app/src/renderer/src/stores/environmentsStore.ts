@@ -1,4 +1,4 @@
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import { create } from 'zustand';
 import {
   isStoredSecretValue,

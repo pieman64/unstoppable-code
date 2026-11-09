@@ -3,7 +3,7 @@ import {
   PIPELINE_NOW_OWNED_ERROR_CODE,
   type PipelineData,
   type PipelineExecutionStartResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { WORKFLOW_RUN_STARTED_TOAST } from '@canopy/ui-app/workflows';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { useGitHubStore } from '@/stores/githubStore';

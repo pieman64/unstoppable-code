@@ -1,10 +1,12 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createScriptDevServerAutoOpener } from '@/lib/scriptDevServerAutoOpen';
 import { summarizeScriptFailure } from '@/lib/scriptFailureSummary';
 import { openScriptFailureOutput } from '@/stores/scriptFailureOutputStore';
 import { isBrowserOpenTargetAvailable } from '@/lib/remote-control/in-app-browser-availability';
 import { useScriptsStore } from '@/stores/scriptsStore';
-import { useGitHubStore } from '@/stores/githubStore';
+import { addFailureToast, clearFailureToast } from '@/stores/toastStore';
+import { worktreeToastOrigin } from '@/lib/toastWorktreeNavigation';
+import { ownWorkToastError } from '@canopy/ui-shared/lib';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useFileListStore } from '@/stores/fileListStore';
@@ -46,8 +48,26 @@ export function shouldToastAfterScriptCompleteFailure(
   );
 }
 
-/** The failure toast's message: the script, then the output line that says why. */
+// Names who owns the failed command without claiming its cause: a timeout or
+// spawn failure doesn't prove the repository is at fault, so this only says
+// where the script comes from. The message also reaches toast details and OS
+// notifications, which don't show the toast's category.
+const SCRIPT_FAILURE_ATTRIBUTION = 'This is a script from your repository.';
+
+/**
+ * The failure toast's message: the script, then the output line that says
+ * why, then where the script comes from.
+ */
 export function buildScriptFailureToastMessage(
+  event: ScriptCompleteEvent,
+  outputLines: readonly string[],
+): string {
+  const summary = describeScriptFailure(event, outputLines).trimEnd();
+  const separator = /[.!?…]$/.test(summary) ? ' ' : '. ';
+  return `${summary}${separator}${SCRIPT_FAILURE_ATTRIBUTION}`;
+}
+
+function describeScriptFailure(
   event: ScriptCompleteEvent,
   outputLines: readonly string[],
 ): string {
@@ -55,6 +75,26 @@ export function buildScriptFailureToastMessage(
   if (event.result.timedOut) return `${label} timed out`;
   const reason = summarizeScriptFailure(outputLines);
   return reason === null ? `${label} failed` : `${label} failed: ${reason}`;
+}
+
+/** One script's visible failure in one worktree. */
+function scriptFailureToastKey(event: ScriptStartedEvent): string {
+  return `script:${event.projectId}/${event.worktreeId}/${event.script.scriptKey}`;
+}
+
+/**
+ * Whether this completion is the script's latest start. Only then can it speak
+ * for the script: an older run's success must not clear a newer run's failure.
+ * A run without a run ID can't be told apart, so it never qualifies.
+ */
+function isLatestScriptRun(
+  latestRuns: ReadonlyMap<string, string>,
+  event: ScriptCompleteEvent,
+): boolean {
+  return (
+    event.runId !== undefined &&
+    latestRuns.get(scriptFailureToastKey(event)) === event.runId
+  );
 }
 
 export function useScriptEventSubscriptions(): void {
@@ -74,6 +114,7 @@ export function useScriptEventSubscriptions(): void {
   );
   const appendOutput = useScriptsStore((state) => state.appendOutput);
   const startRunFromEvent = useScriptsStore((state) => state.startRunFromEvent);
+  const [latestRuns] = useState(() => new Map<string, string>());
 
   useEffect(() => {
     return window.api.terminal.onSpawned((session) => {
@@ -113,10 +154,13 @@ export function useScriptEventSubscriptions(): void {
       (event: ScriptStartedEvent) => {
         autoOpener.started(event);
         startRunFromEvent(event);
+        const key = scriptFailureToastKey(event);
+        if (event.runId === undefined) latestRuns.delete(key);
+        else latestRuns.set(key, event.runId);
       },
     );
     return unsubscribe;
-  }, [startRunFromEvent, autoOpener]);
+  }, [startRunFromEvent, autoOpener, latestRuns]);
 
   useEffect(() => {
     const unsubscribe = window.api.onScriptOutput(
@@ -131,8 +175,11 @@ export function useScriptEventSubscriptions(): void {
   useEffect(() => {
     const unsubscribe = window.api.onScriptComplete(
       (event: ScriptCompleteEvent) => {
-        autoOpener.completed(event);
-        useScriptsStore.getState().completeRunFromEvent(event);
+        const accepted = useScriptsStore.getState().completeRunFromEvent(event);
+        if (accepted) autoOpener.completed(event);
+        if (event.result.success && isLatestScriptRun(latestRuns, event)) {
+          clearFailureToast(scriptFailureToastKey(event));
+        }
         if (shouldInvalidateFileCacheAfterScriptComplete(event)) {
           // Any successful script may have written files into the
           // worktree, so drop cached file index/tree state for that
@@ -153,12 +200,15 @@ export function useScriptEventSubscriptions(): void {
               );
           }
         }
-        if (shouldToastAfterScriptCompleteFailure(event)) {
+        if (accepted && shouldToastAfterScriptCompleteFailure(event)) {
           const worktreeKey = `${event.projectId}/${event.worktreeId}`;
           const isTearingDown = useProjectsStore
             .getState()
             .tearingDownWorktrees.has(worktreeKey);
-          if (isTearingDown) {
+          if (
+            isTearingDown ||
+            !useScriptsStore.getState().claimFailureNotification(event)
+          ) {
             return;
           }
           // The store keeps the output's tail, where errors print; the event's
@@ -175,34 +225,37 @@ export function useScriptEventSubscriptions(): void {
           const project = useProjectsStore
             .getState()
             .projects.find((p) => p.id === event.projectId);
-          useGitHubStore
-            .getState()
-            .addToast(
-              buildScriptFailureToastMessage(event, outputLines),
-              'error',
-              undefined,
-              {
-                category: 'Script',
-                workspaceName: project?.name,
-                projectId: event.projectId,
-                worktreeId: event.worktreeId,
-                action: {
-                  label: 'View output',
-                  onClick: (): void =>
-                    openScriptFailureOutput({
-                      label: event.script.label,
-                      status: 'failed',
-                      outputLines,
-                      exitCode: event.result.exitCode,
-                      timedOut: event.result.timedOut,
-                      durationMs: event.result.durationMs,
-                    }),
-                },
+          const message = buildScriptFailureToastMessage(event, outputLines);
+          addFailureToast({
+            message,
+            error: ownWorkToastError(message),
+            origin: worktreeToastOrigin(event.projectId, event.worktreeId),
+            ...(isLatestScriptRun(latestRuns, event)
+              ? { key: scriptFailureToastKey(event) }
+              : {}),
+            meta: {
+              category: 'Script',
+              messageContext: SCRIPT_FAILURE_ATTRIBUTION,
+              workspaceName: project?.name,
+              projectId: event.projectId,
+              worktreeId: event.worktreeId,
+              action: {
+                label: 'View output',
+                onClick: (): void =>
+                  openScriptFailureOutput({
+                    label: event.script.label,
+                    status: 'failed',
+                    outputLines,
+                    exitCode: event.result.exitCode,
+                    timedOut: event.result.timedOut,
+                    durationMs: event.result.durationMs,
+                  }),
               },
-            );
+            },
+          });
         }
       },
     );
     return unsubscribe;
-  }, [autoOpener]);
+  }, [autoOpener, latestRuns]);
 }

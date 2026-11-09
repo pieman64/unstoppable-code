@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 /**
  * Full-page "Archived and deleted" overview for one workspace.
  *
@@ -14,6 +15,7 @@
  * All reads and mutations go through `useArchivedContainersStore`; this page
  * never touches archive files or re-implements retention rules.
  */
+import { Count } from '@canopy/ui-shared/components/Badge';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import type {
@@ -22,6 +24,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import {
+  Surface,
   ARCHIVED_LIST_CONTAINER_CLASS_NAME,
   ArchivedOverviewRow as SharedArchivedOverviewRow,
   ArchivedStateIcon,
@@ -353,10 +356,12 @@ export function ArchivedContainersOverviewPage({
       : null;
 
   return (
-    <div
+    <Surface
       data-testid="archived-overview-page"
       data-workspace-id={workspaceId}
-      className="flex h-full min-h-0 flex-col bg-base"
+      variant="pane"
+      extent="parent"
+      className="flex min-h-0 flex-col"
     >
       {/* Header: Back, title + workspace, count, Empty trash */}
       <ArchivedOverviewHeaderShell surface={surface}>
@@ -386,9 +391,9 @@ export function ArchivedContainersOverviewPage({
           </div>
           <span
             data-testid="archived-overview-count"
-            className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary"
+            className="text-xs fg-secondary"
           >
-            {totalCount} {totalCount === 1 ? 'item' : 'items'}
+            <Count value={totalCount} /> {totalCount === 1 ? 'item' : 'items'}
           </span>
           <div className="ml-auto flex shrink-0 items-center gap-2">
             {/* Mirrors the worktree top bar's git actions: while the run is
@@ -470,20 +475,22 @@ export function ArchivedContainersOverviewPage({
       </ArchivedOverviewHeaderShell>
 
       {/* Search */}
-      <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-        <SearchField
-          value={query}
-          onValueChange={setQuery}
-          placeholder="Search archived and deleted"
-          aria-label="Search archived and deleted"
-          data-testid="archived-overview-search"
-          className="min-w-0 flex-1"
-        />
-        <ArchivedStateFilterDropdown
-          hiddenStates={hiddenStates}
-          onChange={setHiddenStates}
-        />
-      </div>
+      <Surface variant="section" boundary="bottom" className="shrink-0">
+        <div className="flex shrink-0 items-center gap-2 px-4 py-2">
+          <SearchField
+            value={query}
+            onValueChange={setQuery}
+            placeholder="Search archived and deleted"
+            aria-label="Search archived and deleted"
+            data-testid="archived-overview-search"
+            className="min-w-0 flex-1"
+          />
+          <ArchivedStateFilterDropdown
+            hiddenStates={hiddenStates}
+            onChange={setHiddenStates}
+          />
+        </div>
+      </Surface>
 
       {/* List: mirrors the former in-sidebar archived list, one row per
           retained item with the state icon left-aligned. It is a container
@@ -517,8 +524,11 @@ export function ArchivedContainersOverviewPage({
             )}
           </div>
         ) : (
-          <>
-            <div className="space-y-0.5" data-testid="archived-overview-list">
+          <Stack gap="item">
+            <div
+              className="flex flex-col gap-0.5"
+              data-testid="archived-overview-list"
+            >
               {visiblePendingContainers.map((pending) => (
                 <PendingArchivedRow
                   key={pending.containerId}
@@ -538,11 +548,11 @@ export function ArchivedContainersOverviewPage({
               ))}
             </div>
             {visibleLegacyChats.length > 0 && (
-              <div className="mt-3" data-testid="archived-overview-legacy">
+              <div data-testid="archived-overview-legacy">
                 <div className="px-2 py-1 text-2xs font-medium fg-tertiary">
                   Legacy archived chats
                 </div>
-                <div className="space-y-0.5">
+                <div className="flex flex-col gap-0.5">
                   {visibleLegacyChats.map((chat) => (
                     <ListRow
                       key={chat.id}
@@ -563,7 +573,7 @@ export function ArchivedContainersOverviewPage({
                 </div>
               </div>
             )}
-          </>
+          </Stack>
         )}
       </div>
 
@@ -575,7 +585,7 @@ export function ArchivedContainersOverviewPage({
           onConfirm={startEmptyTrash}
         />
       )}
-    </div>
+    </Surface>
   );
 }
 
@@ -612,12 +622,11 @@ function ArchivedOverviewHeaderShell({
 }: ArchivedOverviewHeaderShellProps): JSX.Element {
   if (surface !== 'code') {
     return (
-      <div
-        className="shrink-0 border-b"
-        data-testid="archived-overview-titlebar"
-      >
-        {children}
-      </div>
+      <Surface variant="section" boundary="bottom" className="shrink-0">
+        <div className="shrink-0" data-testid="archived-overview-titlebar">
+          {children}
+        </div>
+      </Surface>
     );
   }
   // Sized by its header row rather than the shared 40px strip, and kept out
@@ -780,15 +789,15 @@ function ArchivedOverviewRow({
       stateTooltipTestId={`archived-overview-state-tooltip-${container.id}`}
       stateTestId={`archived-overview-state-${container.id}`}
       stateTooltip={
-        <>
-          <div className="mb-1 font-medium fg-primary">{stateLabel}</div>
+        <Stack gap="tight">
+          <div className="font-medium fg-primary">{stateLabel}</div>
           <span className="fg-secondary">
             {getArchivedContainerStateDescription(
               state,
               formatDateOrEmpty(container.expiresAt),
             )}
           </span>
-        </>
+        </Stack>
       }
       {...(observedCostUsd === undefined
         ? {}

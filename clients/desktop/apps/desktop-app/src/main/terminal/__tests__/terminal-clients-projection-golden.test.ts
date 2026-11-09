@@ -11,6 +11,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   RemoteTerminals,
+  type RemoteTerminalFrame,
   type RemoteTerminalTransport,
   type ResolvedTerminalShell,
   type TerminalAttachment,
@@ -298,6 +299,8 @@ let bridge: BrowserWindow;
 let unsubscribe: () => void;
 let remotePushes: { channel: string; args: readonly unknown[] }[];
 let daemonCreates: WorkerTerminalCreateParams[];
+/** The last attachment the daemon mirror opened, to deliver its frames. */
+let daemonFrames: ((frame: RemoteTerminalFrame) => void) | undefined;
 
 const unexpectedDaemonCall = (): Promise<never> =>
   Promise.reject(new Error('Unexpected daemon terminal call'));
@@ -325,7 +328,10 @@ const daemonTransport: RemoteTerminalTransport = {
   resize: unexpectedDaemonCall,
   kill: unexpectedDaemonCall,
   release: unexpectedDaemonCall,
-  attach: () => Promise.resolve({ close: (): void => undefined }),
+  attach: (_params, onFrame) => {
+    daemonFrames = onFrame;
+    return Promise.resolve({ close: (): void => undefined });
+  },
 };
 
 function invoke(
@@ -387,6 +393,7 @@ beforeEach(() => {
   engine.reset();
   mockState.daemonHealthy = false;
   daemonCreates = [];
+  daemonFrames = undefined;
   routed.useDaemonTerminals(
     new RemoteTerminals({
       transport: daemonTransport,
@@ -558,5 +565,61 @@ describe('terminal clients project one worker terminal (CAN-4148)', () => {
     );
     expect(remote.write).toHaveBeenCalledWith(session.id, 'ls\n');
     expect(engine.write).not.toHaveBeenCalled();
+  });
+  it("two windows see a daemon Claude terminal's output once each and replay does not consume it", async () => {
+    const daemon = routed.daemonTerminals;
+    if (!daemon) throw new Error('No daemon terminals');
+    const session = await daemon.create({
+      projectId: 'project',
+      worktreeId: 'task',
+      scope: { workspaceId: 'project', worktreeId: 'task' },
+      cwdRootId: 'project',
+      cwdRelativePath: '',
+      cwd: mockState.root,
+      shell: { shell: '/opt/claude', args: [], shellBasename: 'claude' },
+      environment: {},
+      cols: 80,
+      rows: 24,
+      managed: { kind: 'claude-code', title: 'Claude Code', chatId: 'chat-1' },
+    });
+    expect(daemonCreates).toEqual([
+      expect.objectContaining({ kind: 'managed' }),
+    ]);
+    expect(session).toMatchObject({ kind: 'claude-code', chatId: 'chat-1' });
+    daemonFrames?.({
+      kind: 'item',
+      item: {
+        terminalId: session.id,
+        fromOffset: 0,
+        toOffset: 13,
+        data: 'claude output',
+        encoding: 'utf8',
+        truncatedBefore: false,
+        exit: null,
+      },
+    });
+    jest.advanceTimersByTime(20);
+    const payload: unknown = expect.objectContaining({
+      projectId: 'project',
+      worktreeId: 'task',
+      terminalId: session.id,
+      data: Buffer.from('claude output'),
+    });
+    expect(outputs(main)).toEqual([payload]);
+    expect(mirroredOutput()).toEqual([payload]);
+    const replays = [];
+    for (const window of [main, bridge])
+      replays.push(
+        await invoke(
+          IPC_CHANNELS.terminalAttach,
+          { terminalId: session.id },
+          window,
+        ),
+      );
+    expect(replays[0]).toMatchObject({
+      session: { id: session.id, kind: 'claude-code' },
+      replay: Buffer.from('claude output'),
+    });
+    expect(replays[1]).toEqual(replays[0]);
   });
 });

@@ -3,11 +3,11 @@ import {
   resolveCodexContextWindowSupport,
   type CodexContextWindowSetting,
   type CodexContextWindowThreadConfig,
-} from '@canopy/desktop-shared/lib/codex-context-window';
+} from '@canopy/execution-engine/lib/codex-context-window';
 import {
   isCodexSpeedRouteCatalogBacked,
   type CodexSpeedRouteFacts,
-} from '@canopy/desktop-shared/lib/codex-speed-availability';
+} from '@canopy/execution-engine/lib/codex-speed-availability';
 import { readCodexSpeedCatalog } from '../model-routing/codex-account-models';
 
 export interface CodexContextWindowResolution {

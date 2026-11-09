@@ -1,4 +1,4 @@
-import { isHistoricalDelegateWatchToolName } from './canopy-injected-tools';
+import { isHistoricalDelegateWatchToolName } from '@canopy/execution-engine/lib/canopy-injected-tools';
 /**
  * Pure helper for mapping a tool-name string to one of the canonical
  * `PortalChatToolFamily` buckets used by the portal protocol. Keep this
@@ -22,7 +22,7 @@ import {
   isCanopyGetScriptOutputToolName,
   isCanopyImmediateTurnRestartToolName,
   isManagedDelegationAppToolKey,
-} from './canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { getCanonicalPipelineEditorToolKey } from './pipeline-editor-tools';
 
 const LEGACY_TOOL_NAMESPACE = ['cano', 'py'].join('');

@@ -3,7 +3,7 @@ import type { UnifiedEntryPlacement } from '../lib/unified-plugin-entry';
 import { mcpPlacementLabel } from '../lib/mcp-row-health';
 import { formatDateOrEmpty } from '../lib/format-date';
 import { ClaudeLogo, CodexLogo } from '../icons';
-import { PersonIcon } from '../icons/AppIcons';
+import { AlertTriangle, PersonIcon } from '../icons/AppIcons';
 import { curatedLogoKey } from '../lib/curated-logo-key';
 import { createdByViewer, pendingSignInLabel } from '../lib/customize-row-copy';
 import { displayVersion } from '../lib/display-version';
@@ -13,11 +13,13 @@ import {
   CustomizeRowMenu,
   type CustomizeRowMenuItem,
 } from './CustomizeRowMenu';
-import { Badge } from './Badge';
-import { Button } from './Button';
 import { EntrySurfaceIcon } from './EntrySurfaceIcon';
 import { McpConnectionStatusBadge } from './McpConnectionStatusBadge';
 import { McpServerLogo, type McpServerLogoProps } from './McpServerLogo';
+import {
+  EntrySourceProviderMark,
+  entrySourceTextWithoutProvider,
+} from './EntrySourceLabel';
 import { Tooltip } from './Tooltip';
 import { MarketplaceTypeLabel } from './MarketplaceTypeLabel';
 
@@ -127,13 +129,38 @@ function CompactMetadata({
 }: {
   entry: UnifiedPluginEntry;
   metadata: ReturnType<typeof compactMetadata>;
-}): JSX.Element {
-  const { source, version, tooltip, visibleCounts, triggerSummary } = metadata;
+}): JSX.Element | null {
+  const { version, tooltip, visibleCounts, triggerSummary } = metadata;
+  const source = metadata.source
+    ? entrySourceTextWithoutProvider(entry, metadata.source)
+    : metadata.source;
+  const hasHarnessIcons =
+    entry.installedHarnesses?.claude === true ||
+    entry.installedHarnesses?.codex === true;
+  // With nothing to say, the row drops the line so its name centers.
+  if (
+    !hasHarnessIcons &&
+    !source &&
+    !version &&
+    visibleCounts.length === 0 &&
+    !triggerSummary &&
+    !entry.bundledBy &&
+    !entry.sharedSourceProvider &&
+    !(entry.origin === 'marketplace' && entry.kind === 'plugin')
+  )
+    return null;
   return (
     <span
       data-testid={`customize-row-subtitle-${entry.id}`}
       className={`mt-0.5 flex h-4 min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-xs fg-tertiary ${entry.origin === 'shared' || entry.installedFrom || entry.sharedSource || entry.collectionProvenanceUnknown ? REPLAY_BLOCK_CLASS : entry.workflow?.sourceIsPerson ? REPLAY_MASK_CLASS : ''}`}
     >
+      {/* Where it's installed says more than the marketplace's mark, and one
+          row of logos reads better than two. */}
+      {hasHarnessIcons ? (
+        <HarnessIcons entry={entry} />
+      ) : (
+        entry.origin !== 'shared' && <EntrySourceProviderMark entry={entry} />
+      )}
       {source && (
         <Tooltip
           label={
@@ -149,6 +176,9 @@ function CompactMetadata({
             {source}
           </span>
         </Tooltip>
+      )}
+      {!hasHarnessIcons && entry.origin === 'shared' && (
+        <EntrySourceProviderMark entry={entry} />
       )}
       {source && version && <span>·</span>}
       {version && (
@@ -277,13 +307,13 @@ export interface CustomizeInstalledRowProps {
   /** Where an MCP row is saved; replaces the surface icon. */
   readonly placement?: UnifiedEntryPlacement;
   /**
-   * Starts sign-in from the sign-in or attention chip. Omit when the row has
-   * nothing to connect; the chip is then plain text.
+   * Starts sign-in from the row's menu, beside the marker that says one is
+   * pending. Omit when the row has nothing to connect.
    */
   readonly onConnect?: (entry: UnifiedPluginEntry) => void;
   /**
-   * What the chip connects, for its accessible name, when that is not this
-   * row (a plugin row signing in to a bundled server). Defaults to the row.
+   * What the menu item connects, when that is not this row (a plugin row
+   * signing in to a bundled server). Defaults to the row.
    */
   readonly connectName?: string;
   /**
@@ -305,29 +335,27 @@ function HarnessIcons({
   return (
     <span
       data-testid={`customize-row-harnesses-${entry.id}`}
-      className="flex shrink-0 items-center gap-1.5"
+      className="flex shrink-0 items-center gap-1"
     >
       {harnesses.claude === true && (
         <Tooltip label="Installed for Claude">
           <ClaudeLogo
-            width={14}
-            height={14}
+            width={12}
+            height={12}
             role="img"
             aria-label="Installed for Claude"
-            tabIndex={0}
-            className="focus-ring shrink-0 rounded-sm fg-secondary"
+            className="shrink-0 fg-secondary"
           />
         </Tooltip>
       )}
       {harnesses.codex === true && (
         <Tooltip label="Installed for Codex">
           <CodexLogo
-            width={14}
-            height={14}
+            width={12}
+            height={12}
             role="img"
             aria-label="Installed for Codex"
-            tabIndex={0}
-            className="focus-ring shrink-0 rounded-sm fg-secondary"
+            className="shrink-0 fg-secondary"
           />
         </Tooltip>
       )}
@@ -366,7 +394,7 @@ export function CustomizeInstalledRow({
   // Only real pending sign-ins are counted (`pendingSignIns`, set by the
   // entry projection); any other problem keeps `Needs attention`. A plugin
   // counts the sign-ins its bundled servers wait for. The host decides what
-  // the chip connects through `onConnect`.
+  // the marker's menu item connects through `onConnect`.
   const signInCount = entry.pendingSignIns ?? 0;
   const attentionLabel =
     signInCount > 0
@@ -374,6 +402,23 @@ export function CustomizeInstalledRow({
       : entry.state === 'needs-auth'
         ? 'Needs attention'
         : undefined;
+  const rowMenuItems =
+    health === undefined &&
+    attentionLabel !== undefined &&
+    onConnect &&
+    !menuItems?.some((item) => item.id === 'connect')
+      ? [
+          ...(menuItems ?? []),
+          {
+            id: 'connect',
+            label:
+              connectName && connectName !== entry.name
+                ? `Connect ${connectName}`
+                : 'Connect',
+            onSelect: (): void => onConnect(entry),
+          },
+        ]
+      : menuItems;
   // Opacity on the control itself would dim its focus ring, so the content
   // wrapper carries it.
   const content = (
@@ -440,6 +485,18 @@ export function CustomizeInstalledRow({
               testId={`plugins-surface-${entry.id}`}
             />
           )}
+          {health === undefined && attentionLabel !== undefined && (
+            <Tooltip label={`${attentionLabel}. Open details to fix it.`}>
+              <span
+                data-testid={`customize-row-sign-in-${entry.id}`}
+                aria-label={attentionLabel}
+                role="img"
+                className="inline-flex shrink-0 fg-warning"
+              >
+                <AlertTriangle width={13} height={13} aria-hidden="true" />
+              </span>
+            </Tooltip>
+          )}
         </span>
         {health !== undefined ? (
           <span className="mt-0.5 flex h-4 min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-xs fg-tertiary">
@@ -499,27 +556,6 @@ export function CustomizeInstalledRow({
         data-testid={`customize-row-controls-${entry.id}`}
         className={`ml-auto flex min-w-min max-w-full items-center justify-end empty:hidden ${compactMcp ? 'shrink-0 flex-nowrap gap-2' : 'flex-wrap gap-2'}`}
       >
-        {health === undefined &&
-          attentionLabel !== undefined &&
-          (onConnect ? (
-            <Button
-              variant="link"
-              className="inline-flex shrink-0"
-              data-testid={`customize-row-sign-in-${entry.id}`}
-              aria-label={`${attentionLabel}. Connect ${connectName ?? entry.name}`}
-              onClick={() => onConnect(entry)}
-            >
-              <Badge tone="warning">{attentionLabel}</Badge>
-            </Button>
-          ) : (
-            <Badge
-              tone="warning"
-              data-testid={`customize-row-sign-in-${entry.id}`}
-            >
-              {attentionLabel}
-            </Badge>
-          ))}
-        <HarnessIcons entry={entry} />
         {/* Health shows only once a check has a result; a server that was
           never checked shows nothing rather than a "Not checked" chip. An
           attention marker already says a sign-in is missing, so Auth
@@ -551,7 +587,7 @@ export function CustomizeInstalledRow({
           <CustomizeRowMenu
             entryName={entry.name}
             idPrefix={domId}
-            items={menuItems}
+            items={rowMenuItems}
             testId={menuTestId ?? `customize-row-menu-${entry.id}`}
           />
         </span>

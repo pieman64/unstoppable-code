@@ -18,14 +18,14 @@ import {
   PERSONAL_WORKSPACE_CONTEXT,
   serializeWorkspaceContext,
 } from '@canopy/protocol/workspace-context';
-import type { PipelineShareSource } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineShareSource } from '@canopy/execution-engine/types/pipeline';
 import { isThinkingLevel } from '@canopy/desktop-shared/types';
 import {
   codexSpeedFastMode,
   isCodexSpeed,
   readCodexSpeedRecord,
   withCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import type {
   AgentModelConfig,
   PortalEntityEnvelope,
@@ -54,7 +54,11 @@ import {
   exceedsSerializedBudget,
   measureSerializedBytes,
 } from '../lib/serialized-size-budget';
-import { pipelineSharePath } from '@canopy/protocol/pipelines';
+import {
+  hasOnlyLocalPipelineTriggers,
+  pipelineSharePath,
+  portablePipelineTriggerTypes,
+} from '@canopy/protocol/pipelines';
 import { sanitizePipelineSummaryForSync } from './sync-safe-pipeline-summary';
 import { join, resolve } from 'node:path';
 import {
@@ -84,6 +88,7 @@ import {
   listStoredPipelines,
 } from '@canopy/desktop-shared/pipelines/store';
 import {
+  isPathInsideExecutionsDir,
   listExecutionSummaries,
   loadExecutionState,
 } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
@@ -129,9 +134,10 @@ import type {
 import {
   getTriggerInputDefs,
   getTriggerTypes,
+  setTriggerTypes,
   type Pipeline,
   type StepLogLocator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   PORTAL_EVENT_BATCH_MAX_BYTES,
   projectPortalPipelineDispatchInputs,
@@ -161,7 +167,7 @@ import {
 import { logMainProcessError } from '../lib/main-process-logging';
 import { portalEventMaxRoutedByteLength } from '../portal/portal-outbox';
 import { toPipelineDefinitionViewModelWithoutCanonicalYaml } from '@canopy/desktop-shared/pipelines/pipeline-read-detail-adapter';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import {
   canResumeExecution,
   canRetryExecution,
@@ -917,7 +923,9 @@ async function fetchSharedPipelineSummaries(): Promise<
           // pipeline has no file.
           source: '',
           origin: 'shared',
-          ...(row.triggerTypes ? { triggerTypes: row.triggerTypes } : {}),
+          ...(row.triggerTypes
+            ? { triggerTypes: portablePipelineTriggerTypes(row.triggerTypes) }
+            : {}),
           scopes: row.scopes ?? ['directory'],
         };
       })
@@ -943,7 +951,9 @@ async function fetchPersonalSharedPipelineSummaries(): Promise<
       ...(row.description ? { description: row.description } : {}),
       source: '',
       origin: 'shared' as const,
-      ...(row.triggerTypes ? { triggerTypes: row.triggerTypes } : {}),
+      ...(row.triggerTypes
+        ? { triggerTypes: portablePipelineTriggerTypes(row.triggerTypes) }
+        : {}),
       scopes: row.scopes ?? ['directory'],
     }));
 }
@@ -1326,78 +1336,91 @@ async function summarizePipelines(
         ? loadProjectPipelineFromDisk(pipeline.filePath).catch(() => null)
         : Promise.resolve(null));
   const owned = await ownedByAutomations();
+  // The Portal never sees `workflow` (CAN-5782): a pipeline that can only
+  // start from the Workflows page is left out, and the others report only
+  // the triggers web knows.
   return Promise.all(
-    pipelines.map(async (pipeline) => {
-      const definition =
-        pipeline.filePath &&
-        (pipeline.triggerTypes?.includes('dispatch') ||
-          pipeline.triggerTypes?.includes('task_ready') ||
-          pipeline.triggerTypes?.includes('plan_ready'))
-          ? await load(pipeline)
-          : null;
-      if (definition && options.definitionBudget) {
-        const budget = options.definitionBudget;
-        const measured = measureSerializedBytes(
-          definition,
-          budget.remainingBytes,
-        );
-        budget.remainingBytes = Math.max(
-          0,
-          budget.remainingBytes - measured.bytes,
-        );
-        if (measured.exceeded) return null;
-      }
-      const taskReadyInputs = definition
-        ? getTriggerInputDefs(definition.on, 'task_ready')
-        : undefined;
-      const planReadyInputs = definition
-        ? getTriggerInputDefs(definition.on, 'plan_ready')
-        : undefined;
-      return {
-        workspaceLocalId,
-        worktreeLocalId,
-        pipelineId: pipeline.id,
-        name: pipeline.name,
-        ...(definition
-          ? {
-              hasRequiredInputs: Object.values(
-                getTriggerInputDefs(definition.on, 'dispatch') ?? {},
-              ).some(
-                (input) =>
-                  input.required === true && input.default === undefined,
-              ),
-            }
-          : {}),
-        description: pipeline.description,
-        // Long-standing shape: `source` is the FILENAME. The origin the UI
-        // labels and filters by rides `origin` (CAN-3019); `shared` is not
-        // projected, so anything else reads as a project pipeline.
-        source: pipeline.filename,
-        origin:
-          pipeline.source === 'bundled' || pipeline.source === 'user'
-            ? pipeline.source
-            : 'project',
-        triggerTypes: pipeline.triggerTypes,
-        ...(pipeline.stepCount !== undefined
-          ? { stepCount: pipeline.stepCount }
-          : {}),
-        scopes: pipeline.scopes ?? ['directory'],
-        ...(canSharePortalPipeline(pipeline) ? { shareable: true } : {}),
-        ...(pipeline.source === 'user' && owned.has(pipeline.id)
-          ? { ownedByAutomation: true }
-          : {}),
-        // `PipelineInputDef.default` is wider than the browser-safe portal
-        // projection (`PortalPipelineInputDefinition` stays scalar and keeps
-        // its four input types). Narrow through the protocol's own projector
-        // rather than widening the external portal contract.
-        ...(taskReadyInputs && Object.keys(taskReadyInputs).length > 0
-          ? projectPortalPipelineMetadata({ taskReadyInputs })
-          : {}),
-        ...(planReadyInputs && Object.keys(planReadyInputs).length > 0
-          ? projectPortalPipelineMetadata({ planReadyInputs })
-          : {}),
-      };
-    }),
+    pipelines
+      .filter(
+        (pipeline) => !hasOnlyLocalPipelineTriggers(pipeline.triggerTypes),
+      )
+      .map(async (pipeline) => {
+        const definition =
+          pipeline.filePath &&
+          (pipeline.triggerTypes?.includes('dispatch') ||
+            pipeline.triggerTypes?.includes('task_ready') ||
+            pipeline.triggerTypes?.includes('plan_ready'))
+            ? await load(pipeline)
+            : null;
+        if (definition && options.definitionBudget) {
+          const budget = options.definitionBudget;
+          const measured = measureSerializedBytes(
+            definition,
+            budget.remainingBytes,
+          );
+          budget.remainingBytes = Math.max(
+            0,
+            budget.remainingBytes - measured.bytes,
+          );
+          if (measured.exceeded) return null;
+        }
+        const taskReadyInputs = definition
+          ? getTriggerInputDefs(definition.on, 'task_ready')
+          : undefined;
+        const planReadyInputs = definition
+          ? getTriggerInputDefs(definition.on, 'plan_ready')
+          : undefined;
+        return {
+          workspaceLocalId,
+          worktreeLocalId,
+          pipelineId: pipeline.id,
+          name: pipeline.name,
+          ...(definition
+            ? {
+                hasRequiredInputs: Object.values(
+                  getTriggerInputDefs(definition.on, 'dispatch') ?? {},
+                ).some(
+                  (input) =>
+                    input.required === true && input.default === undefined,
+                ),
+              }
+            : {}),
+          description: pipeline.description,
+          // Long-standing shape: `source` is the FILENAME. The origin the UI
+          // labels and filters by rides `origin` (CAN-3019); `shared` is not
+          // projected, so anything else reads as a project pipeline.
+          source: pipeline.filename,
+          origin:
+            pipeline.source === 'bundled' || pipeline.source === 'user'
+              ? pipeline.source
+              : 'project',
+          ...(pipeline.triggerTypes
+            ? {
+                triggerTypes: portablePipelineTriggerTypes(
+                  pipeline.triggerTypes,
+                ),
+              }
+            : {}),
+          ...(pipeline.stepCount !== undefined
+            ? { stepCount: pipeline.stepCount }
+            : {}),
+          scopes: pipeline.scopes ?? ['directory'],
+          ...(canSharePortalPipeline(pipeline) ? { shareable: true } : {}),
+          ...(pipeline.source === 'user' && owned.has(pipeline.id)
+            ? { ownedByAutomation: true }
+            : {}),
+          // `PipelineInputDef.default` is wider than the browser-safe portal
+          // projection (`PortalPipelineInputDefinition` stays scalar and keeps
+          // its four input types). Narrow through the protocol's own projector
+          // rather than widening the external portal contract.
+          ...(taskReadyInputs && Object.keys(taskReadyInputs).length > 0
+            ? projectPortalPipelineMetadata({ taskReadyInputs })
+            : {}),
+          ...(planReadyInputs && Object.keys(planReadyInputs).length > 0
+            ? projectPortalPipelineMetadata({ planReadyInputs })
+            : {}),
+        };
+      }),
   );
 }
 
@@ -1516,8 +1539,23 @@ export async function getPipeline(
       throw new PortalServiceError('not_found', 'Workflow not found.');
     throw pipelineSourceFailure(error);
   }
+  // The Portal never sees `workflow` (CAN-5782): a pipeline that starts only
+  // from the Workflows page reads as missing, as it is missing from the list,
+  // and a mixed one is described by its portable triggers.
+  const triggerTypes = getTriggerTypes(pipeline.on);
+  if (hasOnlyLocalPipelineTriggers(triggerTypes)) {
+    throw new PortalServiceError('not_found', 'Workflow not found.');
+  }
+  const portalPipeline: Pipeline = {
+    ...pipeline,
+    on: setTriggerTypes(
+      pipeline.on,
+      portablePipelineTriggerTypes(triggerTypes),
+    ),
+  };
   return {
-    definition: toPipelineDefinitionViewModelWithoutCanonicalYaml(pipeline),
+    definition:
+      toPipelineDefinitionViewModelWithoutCanonicalYaml(portalPipeline),
     // Dispatch inputs ride `get` rather than every list row so the worktree
     // snapshot never re-reads every pipeline's YAML (CAN-3174).
     ...(getTriggerTypes(pipeline.on).includes('dispatch')
@@ -1699,6 +1737,19 @@ export async function runPipeline(
   }
   if (!pipeline) {
     throw new PortalServiceError('not_found', 'Workflow not found.');
+  }
+  // A Portal start with no event runs as `dispatch`; the Portal never lists a
+  // pipeline that can only start from the Workflows page, so refuse one sent
+  // anyway. `plan_ready`- and `task_ready`-only pipelines keep starting from
+  // the sidebar picker with no event, as before.
+  if (
+    portalEvent.eventName === undefined &&
+    hasOnlyLocalPipelineTriggers(getTriggerTypes(pipeline.on))
+  ) {
+    throw new PortalServiceError(
+      'invalid_payload',
+      'This workflow can only start from the Workflows page.',
+    );
   }
   if (
     portalEvent.eventName !== undefined &&
@@ -2594,7 +2645,7 @@ export async function readPipelineContent(
   const executionsDir = getPipelineExecutionsDir();
   const confined = (path: string): string => {
     const resolved = resolve(path);
-    if (!isPathInside(executionsDir, resolved)) {
+    if (!isPathInsideExecutionsDir(executionsDir, resolved)) {
       throw new PortalServiceError('not_found', 'This content is unavailable.');
     }
     return resolved;
@@ -2732,7 +2783,7 @@ export async function getPipelineFailureDebugContext(
         return { success: false, error: `${kind} report was not available` };
       }
       const resolvedPath = resolve(filePath);
-      if (!isPathInside(runtime.executionsDir, resolvedPath)) {
+      if (!isPathInsideExecutionsDir(runtime.executionsDir, resolvedPath)) {
         return { success: false, error: 'Invalid report file path' };
       }
       return {
@@ -2764,7 +2815,7 @@ export async function getPipelineFailureDebugContext(
           definition?.artifact_locator?.matrix_child_id,
         );
       const resolvedPath = resolve(logPath);
-      if (!isPathInside(runtime.executionsDir, resolvedPath)) {
+      if (!isPathInsideExecutionsDir(runtime.executionsDir, resolvedPath)) {
         return { success: false, error: 'Invalid log file path' };
       }
       try {
@@ -3031,7 +3082,8 @@ async function readStepOutputTail(
       childId,
     );
   const resolvedPath = resolve(logPath);
-  if (!isPathInside(runtime.executionsDir, resolvedPath)) return undefined;
+  if (!isPathInsideExecutionsDir(runtime.executionsDir, resolvedPath))
+    return undefined;
 
   return stepTailReadLimit.run(async (): Promise<string | undefined> => {
     let fileHandle: Awaited<ReturnType<typeof open>> | undefined;

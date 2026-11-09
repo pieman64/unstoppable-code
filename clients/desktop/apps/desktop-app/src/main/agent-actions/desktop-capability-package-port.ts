@@ -21,7 +21,7 @@ import type { PipelinePackageAnalysisSummary } from '@canopy/protocol/pipelines'
 import type {
   PipelineShareSource,
   PipelineData,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
 import { isPathInside } from '../lib/path-safety';
 import type * as SkillsService from '../skills/skill-service';

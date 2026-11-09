@@ -1,3 +1,4 @@
+import type { CoworkFolderMissing } from '@canopy/protocol/canopy-core';
 /**
  * Shared adapter primitives for the local Canopy Portal worker.
  *
@@ -148,6 +149,7 @@ export interface PortalAdapterContext {
     code: string,
     message: string,
     retryable?: boolean,
+    coworkFolderMissing?: CoworkFolderMissing,
   ): void;
 }
 

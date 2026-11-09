@@ -31,7 +31,7 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   QUEUED_MESSAGE_TRAY_CLASS,
   type QueuedMessageReorderProps,
-  StatusLabel,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 
 export const QUEUED_MESSAGE_REORDER_ERROR =
@@ -227,9 +227,9 @@ export function QueuedMessageStack({
           }
         >
           {error ? (
-            <p role="alert" className="flex h-9 items-center px-3 text-s">
-              <StatusLabel>{QUEUED_MESSAGE_REORDER_ERROR}</StatusLabel>
-            </p>
+            <div className="px-3 py-2">
+              <ErrorBanner className="" error={QUEUED_MESSAGE_REORDER_ERROR} />
+            </div>
           ) : null}
           {reorderable ? (
             <DndContext

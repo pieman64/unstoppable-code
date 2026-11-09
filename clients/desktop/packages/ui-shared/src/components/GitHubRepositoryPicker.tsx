@@ -1,5 +1,7 @@
 'use client';
 
+import { StatusPill } from './StatusPill';
+import { Stack } from './Stack';
 import { useEffect, useId, useRef, type JSX, type RefObject } from 'react';
 import { Button } from './Button';
 import { TextInput } from './Field';
@@ -177,16 +179,8 @@ function RepositoryRow({
           <span className="truncate text-s font-medium">
             {repository.fullName}
           </span>
-          {repository.private && (
-            <span className="rounded border px-1.5 py-0.5 text-3xs fg-secondary">
-              Private
-            </span>
-          )}
-          {repository.archived && (
-            <span className="rounded border px-1.5 py-0.5 text-3xs fg-secondary">
-              Archived
-            </span>
-          )}
+          {repository.private && <StatusPill>Private</StatusPill>}
+          {repository.archived && <StatusPill>Archived</StatusPill>}
           <PickerMenuOptionCheck
             selected={selected}
             reserveSpace
@@ -305,7 +299,7 @@ export function GitHubRepositoryPicker({
   const settled = !loading && !error;
 
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       <FormField label={label}>
         {(control) => (
           <TextInput
@@ -397,6 +391,6 @@ export function GitHubRepositoryPicker({
           {notice}
         </Notice>
       )}
-    </div>
+    </Stack>
   );
 }

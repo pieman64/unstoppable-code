@@ -16,7 +16,7 @@ import {
   ownedPipelineToChatAction,
   type ChatAutomationAction,
 } from '@canopy/desktop-shared/lib/chat-automation-conversion';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import type {
   AutomationAction,
   AutomationCreateRequest,
@@ -24,7 +24,7 @@ import type {
   AutomationUpdateRequest,
   ScheduledActivity,
 } from '@canopy/desktop-shared/types';
-import type { PipelineAgentAuthor } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineAgentAuthor } from '@canopy/execution-engine/types/pipeline';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
@@ -50,6 +50,12 @@ import {
 } from './owned-pipeline';
 import { projectOwnedChatAutomation } from './owned-chat-projection';
 import {
+  isSharedByOtherSchedules,
+  isWorkflowPagePipeline,
+  scheduledUserPipelineId,
+  sharedPipelineRelease,
+} from './workflow-schedules';
+import {
   getAutomationsService,
   type AutomationsService,
   type AutomationTrustedCreate,
@@ -60,11 +66,18 @@ import {
 /** A person writing the automation clears any agent marker. */
 const PERSON = { agentAuthor: null } as const;
 
-function projected(
+async function projected(
   response: AutomationMutationResponse,
-): AutomationMutationResponse {
+  service: AutomationsService,
+): Promise<AutomationMutationResponse> {
   return response.ok && response.activity
-    ? { ...response, activity: projectOwnedChatAutomation(response.activity) }
+    ? {
+        ...response,
+        activity: projectOwnedChatAutomation(
+          response.activity,
+          await service.allActivities(),
+        ),
+      }
     : response;
 }
 
@@ -92,13 +105,15 @@ export async function createAutomationFromForm(
   service: AutomationsService = getAutomationsService(),
 ): Promise<AutomationMutationResponse> {
   const created = await service.create(request, PERSON);
-  if (!(await chatAutomationPipelinesEnabled())) return projected(created);
-  return projected(await convertSaved(created, service));
+  if (!(await chatAutomationPipelinesEnabled()))
+    return projected(created, service);
+  return projected(await convertSaved(created, service), service);
 }
 
 /** Who writes an update, and the guard and context it writes with. */
 interface UpdateWriter {
-  agentAuthor: PipelineAgentAuthor | null;
+  /** `undefined` keeps the record's author (CAN-5782). */
+  agentAuthor: PipelineAgentAuthor | null | undefined;
   authorize?: (activity: ScheduledActivity) => Promise<boolean>;
   callerContext?: WorkspaceContext;
 }
@@ -114,6 +129,18 @@ interface AgentUpdateWriter extends UpdateWriter {
 }
 
 const PERSON_WRITER: UpdateWriter = PERSON;
+
+/**
+ * CAN-5782: a person's edit of a workflow schedule keeps its author, so an
+ * agent-written schedule's runs stay agent-originated.
+ */
+const SCHEDULE_EDITOR: UpdateWriter = { agentAuthor: undefined };
+
+export const OWNED_PIPELINE_SHARED =
+  'Its workflow is shared by other schedules, so you edit it there.';
+
+export const OWNED_PIPELINE_SHARED_FOR_AGENT =
+  'This automation’s workflow is shared by other schedules. Edit that workflow with pipeline.update, or send the automation’s worktree_pipeline action.';
 
 function writeUpdate(
   request: AutomationUpdateRequest,
@@ -146,7 +173,10 @@ function editedActivity(
     ...stored,
     name: request.name ?? stored.name,
     action,
-    agentAuthor: writer.agentAuthor ?? undefined,
+    agentAuthor:
+      writer.agentAuthor === undefined
+        ? stored.agentAuthor
+        : (writer.agentAuthor ?? undefined),
     targetRequirement,
     // An applied update replaces the provenance, as the update stores it.
     ...(request.installedFrom !== undefined
@@ -236,7 +266,13 @@ async function regenerateOwned(
       // The snapshot the hand-edit check read: a write since then fails the
       // save's revision check instead of being overwritten.
       regeneratesOwnedPipeline: () =>
-        saveOwnedChatPipeline(edited, { pipelineId, previous }),
+        saveOwnedChatPipeline(edited, {
+          pipelineId,
+          previous,
+          withholdGrant:
+            writer.agentAuthor === undefined &&
+            edited.agentAuthor !== undefined,
+        }),
     },
   );
 }
@@ -274,6 +310,27 @@ export async function updateAutomationFromForm(
     (entry) => entry.id === request.id,
   );
   const owned = stored ? ownedPipelineId(stored) : undefined;
+  const activities = await service.allActivities();
+  // CAN-5782: a chat action would regenerate the steps other schedules run.
+  if (
+    stored &&
+    owned !== undefined &&
+    chatActionOf(request.action) !== undefined &&
+    isSharedByOtherSchedules(activities, stored, owned)
+  )
+    return { ok: false, error: OWNED_PIPELINE_SHARED };
+  // CAN-5782: an owner leaving a pipeline other schedules run releases it
+  // inside the update, once nothing can refuse it.
+  const release =
+    stored && owned !== undefined
+      ? sharedPipelineRelease(activities, stored, owned, request.action)
+      : undefined;
+  // CAN-5782: a person's edit of a workflow schedule keeps its author.
+  const scheduled = stored ? scheduledUserPipelineId(stored) : undefined;
+  const writer =
+    scheduled !== undefined && isWorkflowPagePipeline(activities, scheduled)
+      ? SCHEDULE_EDITOR
+      : PERSON_WRITER;
   const loaded =
     owned === undefined ? undefined : getStoredPipelineBySource('user', owned);
   const current = loaded?.success ? loaded.data : undefined;
@@ -300,13 +357,13 @@ export async function updateAutomationFromForm(
   ) {
     const regenerated = await regenerateOwned(
       request,
-      editedActivity(request, stored, request.action, PERSON_WRITER),
+      editedActivity(request, stored, request.action, writer),
       owned,
       current,
-      PERSON_WRITER,
+      writer,
       service,
     );
-    if (regenerated) return projected(regenerated);
+    if (regenerated) return projected(regenerated, service);
   }
   // A chat action for an automation that owns its pipeline converts it back.
   const chatBack =
@@ -316,7 +373,11 @@ export async function updateAutomationFromForm(
     back ? back.request : request,
     undefined,
     undefined,
-    { ...back?.trusted, ...PERSON },
+    {
+      ...back?.trusted,
+      agentAuthor: writer.agentAuthor,
+      ...(release ? { releasesOwnedPipeline: release } : {}),
+    },
   );
   if (!updated.ok || !updated.activity) return updated;
   // Converted back, or pointed at another pipeline: it no longer owns this one.
@@ -333,8 +394,8 @@ export async function updateAutomationFromForm(
     request.action !== undefined &&
     ownedPipelineId(updated.activity) === undefined
   )
-    return projected(await convertSaved(updated, service));
-  return projected(updated);
+    return projected(await convertSaved(updated, service), service);
+  return projected(updated, service);
 }
 
 /**
@@ -388,6 +449,33 @@ export async function updateAutomationForAgent(
     stored.action.type !== 'worktree_pipeline'
   )
     return writeUpdate(request, writer, service);
+  // CAN-5782: while other schedules share the pipeline, a chat action would
+  // regenerate the steps they run. An update without one is applied as sent,
+  // never derived from the pipeline, so it rewrites nothing there.
+  const activities = await service.allActivities();
+  if (isSharedByOtherSchedules(activities, stored, owned)) {
+    if (chatActionOf(request.action) !== undefined)
+      return { ok: false, error: OWNED_PIPELINE_SHARED_FOR_AGENT };
+    const release = sharedPipelineRelease(
+      activities,
+      stored,
+      owned,
+      request.action,
+    );
+    const updated = await writeUpdate(
+      request,
+      writer,
+      service,
+      release ? { releasesOwnedPipeline: release } : {},
+    );
+    if (
+      updated.ok &&
+      updated.activity &&
+      ownedPipelineId(updated.activity) !== owned
+    )
+      await deleteOwnedPipeline(stored);
+    return updated;
+  }
   const loaded = getStoredPipelineBySource('user', owned);
   const current = loaded.success ? loaded.data : undefined;
   const sentChat =

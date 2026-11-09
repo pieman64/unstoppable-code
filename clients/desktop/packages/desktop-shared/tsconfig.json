@@ -10,7 +10,11 @@
     "rootDir": "../..",
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "../../.cache/brand/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "../execution-engine/src/build-constants.d.ts",
+    "../../.cache/brand/**/*.ts"
+  ],
   "exclude": [
     "src/**/*.test.ts",
     "src/**/*.test.tsx",
@@ -20,6 +24,9 @@
   "references": [
     {
       "path": "../code-graph"
+    },
+    {
+      "path": "../execution-engine"
     },
     {
       "path": "../core-platform"

@@ -7,6 +7,8 @@ import {
 import { z } from 'zod';
 
 import {
+  WORKER_GIT_LOCAL_MUTATION_INSTRUCTION_DEFINITIONS,
+  WORKER_GIT_WORKTREE_WRITE_INSTRUCTION_DEFINITIONS,
   CANOPY_QUERY_DEFINITIONS,
   CANOPY_INSTRUCTION_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
@@ -2298,6 +2300,9 @@ describe('common request and error contracts', () => {
       'worker.git.merge',
       'worker.git.pull',
       'worker.git.push',
+      'worker.git.worktree.add',
+      'worker.git.worktree.prune',
+      'worker.git.worktree.remove',
       'worker.pipeline.execution.cancel',
       // CAN-4141: the recovery controls.
       'worker.pipeline.execution.resume',
@@ -2791,6 +2796,79 @@ describe('core.pullRequest.list additive title query (CAN-5891)', () => {
       expect(definition.params.safeParse({ ...list, query }).success).toBe(
         false,
       );
+    },
+  );
+});
+
+describe('desktop-only Git primitive contract (CAN-5931)', () => {
+  const definitions = WORKER_GIT_LOCAL_MUTATION_INSTRUCTION_DEFINITIONS;
+  it('stays outside the composed registry until the desktop host installs it', () => {
+    for (const name of Object.keys(definitions)) {
+      expect(Object.hasOwn(CANOPY_INSTRUCTION_DEFINITIONS, name)).toBe(false);
+    }
+  });
+  const bindingId = '00000000-0000-4000-8000-000000000001';
+  it('uses the existing write grant, no idempotency and no path-bearing host input', () => {
+    for (const definition of Object.values(definitions)) {
+      expect(definition.placement).toBe('worker-only');
+      expect(definition.idempotency).toBe('none');
+      expect(definition.requiredGrants).toEqual(['worker.git.write']);
+    }
+    const params = { bindingId, treeSha: 'a'.repeat(40) };
+    const restore = definitions['worker.git.snapshot.restore'];
+    expect(restore.params.safeParse(params).success).toBe(true);
+    expect(
+      restore.params.safeParse({ ...params, repoPath: '/host' }).success,
+    ).toBe(false);
+    expect(restore.params.safeParse({ ...params, _meta: {} }).success).toBe(
+      false,
+    );
+    expect(restore.params.safeParse({ ...params, bindingId: '' }).success).toBe(
+      false,
+    );
+    expect(
+      definitions['worker.git.repoShadow.ensure'].result.safeParse({
+        defaultBranch: 'main',
+        lastSyncAt: 'now',
+        shadowPath: '/host',
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('worktree Git writes (CAN-5940)', () => {
+  it.each([
+    'worker.git.worktree.add',
+    'worker.git.worktree.remove',
+    'worker.git.worktree.prune',
+  ] as const)(
+    '%s is unkeyed and accepts no host path or params metadata',
+    (name) => {
+      const definition =
+        WORKER_GIT_WORKTREE_WRITE_INSTRUCTION_DEFINITIONS[name];
+      const params =
+        name === 'worker.git.worktree.add'
+          ? {
+              scope: { workspaceId: 'workspace', worktreeId: 'reserved' },
+              branch: 'topic',
+            }
+          : {
+              scope: {
+                workspaceId: 'workspace',
+                ...(name === 'worker.git.worktree.remove'
+                  ? { worktreeId: 'task' }
+                  : {}),
+              },
+            };
+      expect(definition.params.safeParse(params).success).toBe(true);
+      expect(
+        definition.params.safeParse({ ...params, _meta: {} }).success,
+      ).toBe(false);
+      expect(
+        definition.params.safeParse({ ...params, repoPath: '/host' }).success,
+      ).toBe(false);
+      expect(definition.idempotency).toBe('none');
+      expect(definition.requiredGrants).toEqual(['worker.git.write']);
     },
   );
 });

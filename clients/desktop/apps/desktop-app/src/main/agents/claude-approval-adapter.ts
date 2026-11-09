@@ -2,7 +2,7 @@ import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   CODE_GRAPH_INJECTED_TOOL_KEYS,
   LEDGER_INJECTED_TOOL_KEYS,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import * as nodePath from 'node:path';
 import { approvalFileChangeForClaudeTool } from '@canopy/protocol/approvals';

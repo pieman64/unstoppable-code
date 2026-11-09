@@ -8,6 +8,7 @@
     "@canopy/code-graph": "workspace:*",
     "@canopy/core-platform": "workspace:*",
     "@canopy/core-runtime": "workspace:*",
+    "@canopy/execution-engine": "workspace:*",
     "@canopy/pipeline-interop": "workspace:*",
     "@canopy/plugin-interop": "workspace:*",
     "@canopy/protocol": "workspace:*",

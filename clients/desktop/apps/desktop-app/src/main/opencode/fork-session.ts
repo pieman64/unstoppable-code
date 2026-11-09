@@ -1,7 +1,7 @@
 import { lstat, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolveRuntimeModel } from '@canopy/desktop-shared/types';
-import { getRawOpenCodeModelId } from '@canopy/desktop-shared/lib/opencode-models';
+import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import { prepareOpenCodeInferenceRoute } from '@canopy/desktop-shared/node/opencode/inference-route';
 import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
 import type { OpenCodeExecutionRuntime } from './execution-runtime';

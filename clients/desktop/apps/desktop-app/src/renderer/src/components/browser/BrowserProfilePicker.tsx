@@ -1,4 +1,4 @@
-import { Divider, Heading } from '@canopy/ui-shared/components';
+import { Stack, Divider, Heading } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -258,22 +258,22 @@ export function BrowserProfilePicker({
         aria-label="Choose browser profile"
         data-testid="browser-profile-menu"
       >
-        <div className="flex flex-col gap-4">
+        <Stack gap="group">
           <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
+            <Stack gap="tight" className="min-w-0">
               <Heading level={3} variant="title">
                 Browser profile
               </Heading>
               {switchChangesProfile && (
-                <p className="mt-1 text-xs fg-secondary">
+                <p className="text-xs fg-secondary">
                   Replacing reloads this tab in the selected profile. Unsaved
                   changes may be lost, and other tabs keep their profiles.
                 </p>
               )}
-            </div>
+            </Stack>
             <CloseButton onClick={close} />
           </div>
-          <div className="space-y-1.5">
+          <div className="flex flex-col gap-1.5">
             <FormField label="Use profile">
               {(fieldControl) => (
                 <SettingsSelect
@@ -313,7 +313,7 @@ export function BrowserProfilePicker({
                 variant="ghost"
                 size="sm"
                 disabled={busy}
-                className="-ml-2.5"
+                className="-ml-2.5 self-start"
                 onClick={() =>
                   void run(async () => {
                     const page = await window.api.browser.profiles.list({
@@ -419,7 +419,7 @@ export function BrowserProfilePicker({
           )}
           {error && <Notice intent="destructive">{error}</Notice>}
           {notice && <Notice intent="neutral">{notice}</Notice>}
-        </div>
+        </Stack>
       </Popover>
     </>
   );

@@ -108,12 +108,23 @@ export interface ScriptRunLogPaths {
   fileStem(scriptKey: string): string;
 }
 
+/**
+ * Holds `work` while no other process writes the same worktree's run logs
+ * (CAN-5839). Electron main and the daemon both write `script_runs`; a lock
+ * that cannot be taken rejects, and the write is dropped rather than made
+ * unlocked.
+ */
+export interface RunLogProcessLock {
+  run<T>(runDir: string, work: () => Promise<T>): Promise<T>;
+}
+
 export interface ScriptRunLogStoreOptions {
   paths: ScriptRunLogPaths;
   files: RunLogFiles;
   warn?: (message: string, details: Record<string, unknown>) => void;
   clock?: () => number;
   writerFence?: ScriptRunWriterFence;
+  processLock?: RunLogProcessLock;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -372,7 +383,20 @@ export class ScriptRunLogStore {
   }
 
   constructor(private readonly options: ScriptRunLogStoreOptions) {
-    this.runLogs = createRunLogCoordinator(options.files);
+    const lock = options.processLock;
+    this.runLogs = createRunLogCoordinator(
+      options.files,
+      lock
+        ? {
+            exclusive: <T>(
+              projectId: string,
+              worktreeId: string,
+              work: () => Promise<T>,
+            ): Promise<T> =>
+              lock.run(options.paths.runDir(projectId, worktreeId), work),
+          }
+        : {},
+    );
     this.clock = options.clock ?? Date.now;
   }
 

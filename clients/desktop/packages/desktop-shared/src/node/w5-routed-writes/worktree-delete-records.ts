@@ -11,8 +11,8 @@ import {
   readWorktreeList,
 } from '@canopy/core-runtime/node/workspace/read-formats';
 import { getCanopyDataDir } from '../../canopy-paths';
-import { validateId } from '../lib/validation';
-import { isPathInside } from '../lib/path-safety';
+import { validateId } from '@canopy/execution-engine/node/lib/validation';
+import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 import { journalSchema } from '../w5-destructive-journal';
 
 export function deleteRefusal(message: string): W5CommitRefusedError {

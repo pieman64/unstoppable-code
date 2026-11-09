@@ -11,9 +11,11 @@ import {
   type CanopyCallerDescriptor,
   type CanopyWorkspaceScope,
   type WorkerTerminalAttachItem,
+  type WorkerTerminalListResult,
 } from '@canopy/protocol/canopy-core';
 import { isSafePortableRelativePath } from '@canopy/protocol/safe-relative-path';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
+import type { TerminalKind } from '@canopy/protocol/terminal';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
   resolveWorktreeCwd,
@@ -44,10 +46,10 @@ import { createDesktopTerminalHost, workerTerminal } from './worker-terminal';
  * Terminals already placed keep running where they are.
  */
 
-/** Which hosts may place terminals in the daemon. Windows waits for CAN-5091. */
+/** Which hosts may place terminals in the daemon. Windows since CAN-5091. */
 export const DAEMON_TERMINAL_PLATFORMS: Readonly<
   Record<PlatformOperatingSystem, boolean>
-> = { darwin: true, linux: true, win32: false };
+> = { darwin: true, linux: true, win32: true };
 
 /** Set only by the renderer terminal IPC handlers, from the trusted event. */
 export interface DaemonTerminalRouteContext {
@@ -184,6 +186,134 @@ export async function selectDaemonTerminalTarget(
   return eligible ? resolveTarget(request) : null;
 }
 
+/** The managed kinds main places in the daemon terminal host (CAN-5097). */
+export const DAEMON_MANAGED_TERMINAL_KINDS: ReadonlySet<TerminalKind> =
+  new Set<TerminalKind>(['claude-code', 'claude-worker']);
+
+export interface DaemonManagedTerminalRouteRequest {
+  readonly projectId: string;
+  readonly worktreeId: string;
+  readonly selectedRepoId?: string;
+  readonly relativeCwd?: string;
+  /** The directory the managed command starts in, as its trusted caller resolved it. */
+  readonly cwd: string;
+  readonly managedKind: TerminalKind;
+  /** The launch came from the Remote Control bridge. */
+  readonly fromRemoteBridge: boolean;
+}
+
+export interface DaemonManagedTerminalRouteInput {
+  readonly platform: PlatformOperatingSystem | null;
+  readonly request: DaemonManagedTerminalRouteRequest;
+  readonly daemonLatched: boolean;
+  readonly daemonTerminals: number;
+}
+
+/** Whether a managed Claude terminal may be placed in the daemon, as code (CAN-5097 D4). */
+export function isDaemonManagedTerminalRouteEligible(
+  input: DaemonManagedTerminalRouteInput,
+): boolean {
+  const { platform, request } = input;
+  return (
+    platform !== null &&
+    DAEMON_TERMINAL_PLATFORMS[platform] &&
+    DAEMON_MANAGED_TERMINAL_KINDS.has(request.managedKind) &&
+    !request.fromRemoteBridge &&
+    request.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID &&
+    (request.relativeCwd === undefined || request.relativeCwd === '') &&
+    !input.daemonLatched &&
+    input.daemonTerminals < DAEMON_TERMINAL_LIMIT
+  );
+}
+
+/** The daemon placement for a managed Claude terminal, or `null` to keep it in process. */
+export async function selectDaemonManagedTerminalTarget(
+  request: DaemonManagedTerminalRouteRequest,
+): Promise<DaemonTerminalTarget | null> {
+  const health = getElectronDaemonHealth();
+  const eligible = isDaemonManagedTerminalRouteEligible({
+    platform: hostPlatform(),
+    request,
+    daemonLatched: health.isLatched(),
+    daemonTerminals: workerTerminal.daemonTerminals?.count() ?? 0,
+  });
+  if (!eligible) return null;
+  const target = await resolveTarget({
+    projectId: request.projectId,
+    worktreeId: request.worktreeId,
+    selectedRepoId: request.selectedRepoId,
+  });
+  if (!target) return null;
+  const cwd = await canonical(request.cwd);
+  return cwd !== null && cwd === (await canonical(target.rootPath))
+    ? target
+    : null;
+}
+
+const SWEEP_TIMEOUT_MS = 5_000;
+const SWEEP_WARNING =
+  'Could not sweep daemon Claude terminals; launching anyway.';
+let sweep: Promise<void> | undefined;
+
+async function sweepOnce(): Promise<void> {
+  const session = await client();
+  let cursor: string | null = null;
+  do {
+    const page: WorkerTerminalListResult = await session.query(
+      'worker.terminal.list',
+      {
+        states: ['running'],
+        pageSize: 500,
+        ...(cursor ? { cursor } : {}),
+      },
+    );
+    for (const item of page.items) {
+      if (
+        item.kind !== 'managed' ||
+        workerTerminal.daemonTerminals?.has(item.terminalId)
+      )
+        continue;
+      try {
+        await session.instruction('worker.terminal.kill', {
+          scope: item.scope,
+          terminalId: item.terminalId,
+        });
+      } catch (error) {
+        if (errorCode(error) !== 'worker.terminal.notFound') throw error;
+      }
+    }
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+}
+
+/**
+ * Kills managed daemon terminals this main process does not mirror: Claude
+ * CLIs left by a main process that ended without quitting (CAN-5097 D9).
+ * Runs once per process; never rejects.
+ */
+export function sweepOrphanedDaemonManagedTerminals(): Promise<void> {
+  if (sweep) return sweep;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolveTimeout) => {
+    timer = setTimeout(() => {
+      logMainProcessWarn(SWEEP_WARNING, { reason: 'timeout' });
+      resolveTimeout();
+    }, SWEEP_TIMEOUT_MS);
+  });
+  const work = sweepOnce().catch((error: unknown) => {
+    logMainProcessWarn(SWEEP_WARNING, {
+      reason: error instanceof Error ? error.name : 'error',
+    });
+  });
+  sweep = Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+  return sweep;
+}
+
+/** Test seam: forget that the sweep ran. */
+export function resetDaemonManagedTerminalSweepForTests(): void {
+  sweep = undefined;
+}
+
 /**
  * A restored terminal's directory, as the engine picks it: its persisted
  * directory while that still exists inside the root, otherwise the root.
@@ -222,6 +352,16 @@ export function noteDaemonTerminalFallback(error: unknown): boolean {
   // they are; only this terminal opens in process.
   logMainProcessWarn('Daemon terminal host unavailable; opening in process.');
   return true;
+}
+
+function errorCode(error: unknown): unknown {
+  const payload: unknown =
+    typeof error === 'object' && error !== null
+      ? Reflect.get(error, 'payload')
+      : undefined;
+  return typeof payload === 'object' && payload !== null
+    ? Reflect.get(payload, 'code')
+    : undefined;
 }
 
 function errorPayload(error: unknown): { kind: unknown; retry: unknown } {

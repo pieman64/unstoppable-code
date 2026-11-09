@@ -1,4 +1,4 @@
-import { backgroundExecutionDeniedMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
+import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/automation-context-copy';
 import type { ExecutePipelineRequestOptions } from '@canopy/desktop-shared/node/pipelines/executor';
 import {
   executionContextSatisfies,
@@ -7,7 +7,7 @@ import {
 import type {
   Pipeline,
   PIPELINE_NOW_OWNED_ERROR_CODE,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
 import {
   accountMayRunIn,

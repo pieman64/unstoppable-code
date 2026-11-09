@@ -1,7 +1,7 @@
 import type {
   RewriteMcpServerRefsRequest,
   RewriteMcpServerRefsResponse,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { useProjectsStore } from '@/stores/projectsStore';
 
 /**

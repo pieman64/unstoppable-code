@@ -1,7 +1,12 @@
 'use client';
 
 import type { JSX, ReactNode, RefObject } from 'react';
-import { ConfirmDialog, LoadingSpinner } from '@canopy/ui-shared/components';
+import {
+  ConfirmDialog,
+  LoadingSpinner,
+  Stack,
+  ErrorBanner,
+} from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 export interface MarketplaceSourceRemoveDialogProps {
@@ -32,27 +37,24 @@ export function MarketplaceSourceRemoveDialog({
     <ConfirmDialog
       title={title}
       message={
-        <>
-          {message}
+        <Stack gap="item">
+          <div>{message}</div>
           {busy && progress && (
             <p
               role="status"
               data-testid="remove-marketplace-progress"
-              className="mt-3 flex items-center gap-2 text-xs fg-secondary"
+              className="flex items-center gap-2 text-xs fg-secondary"
             >
               <LoadingSpinner decorative />
               <span className={REPLAY_BLOCK_CLASS}>{progress}</span>
             </p>
           )}
           {error && (
-            <p
-              role="alert"
-              className={`mt-3 text-s fg-destructive ${REPLAY_BLOCK_CLASS}`}
-            >
-              {error}
-            </p>
+            <div>
+              <ErrorBanner className="" error={error} blockMessageFromReplay />
+            </div>
           )}
-        </>
+        </Stack>
       }
       confirmLabel="Remove"
       busyLabel="Removing…"

@@ -30,6 +30,8 @@ export const CanopyRuntimeDescriptorSchema = z.object({
     .object({ min: PositiveIntegerSchema, max: PositiveIntegerSchema })
     .refine(({ min, max }) => min <= max),
   buildVersion: TextSchema,
+  /** Local storage compatibility is separate from wire protocol compatibility. */
+  secureStorageLayout: TextSchema.optional(),
   tokenRef: TextSchema,
   /** POSIX socket the owner bound; stale-path recovery fails closed without a match. */
   socketIdentity: z

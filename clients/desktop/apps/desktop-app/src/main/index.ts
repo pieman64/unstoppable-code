@@ -1,3 +1,5 @@
+import './lifecycle/build-storage-startup';
+import { prepareCanopySecureStorage } from '@canopy/desktop-shared/node/build-storage-startup';
 import { replayHookChatPlaceholders } from './lib/hook-chat-placeholders';
 import { BRAND } from '@canopy/brand/current';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
@@ -186,6 +188,7 @@ import {
   createForeignCrashDumpFilter,
   flushDesktopInstrumentation,
   initializePostHogMain,
+  suspendPostHogMain,
 } from '@canopy/desktop-instrumentation/electron/main';
 import { getPostHogEmailDomain } from '@canopy/desktop-instrumentation/posthog-account';
 import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
@@ -335,6 +338,7 @@ import {
   initializeFeatureFlagService,
   installFeatureFlagRecoveryTriggers,
 } from './feature-flags';
+import { getLastBuiltFeatureFlagIdentity } from './feature-flags/context';
 import { subscribeTurnFeedbackFlush } from './feedback/turn-feedback-client';
 import { getClaudeTerminalSessionService } from './integration/claude-terminal-session-service';
 import { getClaudeWorkerSessionService } from './integration/claude-worker-session-service';
@@ -349,6 +353,7 @@ import { shutdownCursorConnections } from './ipc/cursor-connection';
 import { disposeDesktopSessionSnapshotHandlers } from './ipc/desktop-session-snapshot';
 import { releaseIdleSplitLocksForRendererLifecycle } from './ipc/github';
 import { setModelHarnessAssignmentController } from './ipc/model-harness-assignments';
+import { installClaudeModAdmissionHost } from './agents/claude-mod-admission-launch';
 import { shutdownOpenCodeConnections } from './ipc/opencode-connection';
 import { reprobeAndApplyCanopyCloudEnforcedSettings } from './ipc/settings';
 import { cancelAllDiscoveries } from './ipc/worktree-discovery';
@@ -368,7 +373,7 @@ import {
   setLedgerSyncProhibitionHandler,
   stopLedgerSync,
 } from './ledger/sync-host';
-import { setMemorySyncEnabled, stopMemorySync } from './memory/sync/host';
+import { startMemorySync, stopMemorySync } from './memory/sync/host';
 import { refreshAgentModelsFromStore } from './lib/agent-models';
 import {
   getPostHogInstallLaunch,
@@ -453,6 +458,13 @@ import {
 import { installOrgDefaultCoworkProvisioning } from './lib/org-cowork-binding-deps';
 import { updatePerformanceLimitsFromPreferences } from './lib/performance-limits';
 import { installPostHogOperationCaptureGate } from './lib/posthog-operation-capture-gate';
+import { getUsageDataPolicy } from './lib/usage-data-policy';
+import {
+  attachUsageDataPolicyToWorkspaceContext,
+  initializeStartupUsageDataPolicy,
+  installPostHogMainLifecycle,
+  installUsageDataPolicyFeatureFlagRefresh,
+} from './lib/usage-data-policy-host';
 import {
   capturePreferenceMigrationSnapshots,
   migrateApprovalDefaultsToFullAccess,
@@ -522,6 +534,7 @@ import {
   getNativeThemeSource,
 } from './lib/window-material';
 import { sendToAllWindows, sendToWindowDetailed } from './lib/window-send';
+import { subscribeCanopyCloudSessionStatus } from './canopy-cloud/session-status';
 import { validateWindowBounds } from './lib/window-state';
 import { getWindowTitleBarOptions } from './lib/window-title-bar';
 import {
@@ -617,8 +630,10 @@ import { registerPluginHandlers } from './plugins';
 import { shutdownCodexPluginMaterializationWorker } from './plugins/codex-plugin-materialization-runner';
 import { startProviderPluginBackfill } from './plugins/provider-plugin-backfill';
 import {
+  getCanopyPortalState,
   resumeCanopyPortalIfPossible,
   setCanopyPortalPowerMonitor,
+  startCanopyPortal,
   stopCanopyPortal,
 } from './portal/portal-session-manager';
 import { cancelPortalStructuralSync } from './portal/portal-structural-sync';
@@ -654,6 +669,10 @@ import {
   startCloudProjectBinding,
   stopCloudProjectBinding,
 } from './cloud-projects/cloud-project-binding-host';
+import {
+  startCloudProjectSetupSweep,
+  stopCloudProjectSetupSweep,
+} from './cloud-projects/project-setup-host';
 import {
   disposeProductActivityReporter,
   initializeProductActivityReporter,
@@ -866,6 +885,7 @@ let runtimeCleanupPromise: Promise<void> | null = null;
 let drainedProcessExitGuard: DrainedProcessExitGuard | null = null;
 let desktopCanopyRuntime: DesktopCanopyDispatcher | null = null;
 let closeChatStatePush: (() => void) | null = null;
+let closeCanopyCloudSessionStatusPush: (() => void) | null = null;
 /** E2E builds only: the daemon-backed W5 store arm a performance launch chose. */
 let w5StoreArm: W5StoreArmHandle | null = null;
 const DESKTOP_CANOPY_RUNTIME_SHUTDOWN_TIMEOUT_MS = 750;
@@ -1732,43 +1752,53 @@ function getInstrumentationAccountEmail(
   return isGuestAccount(account) ? undefined : account?.account?.email;
 }
 
+/**
+ * The main PostHog client follows the effective usage-data policy (see
+ * `installPostHogMainLifecycle`): it starts once the policy settles on the
+ * selected context and while Usage analytics or Error reports is on.
+ */
 function startDesktopInstrumentation(): void {
-  void initializePostHogMain(
-    getStablePostHogAnonymousKey,
-    {
-      getSnapshot: async (): Promise<string | null> =>
-        getPostHogEmailDomain(
-          getInstrumentationAccountEmail(await loadCanopyCloudAccount()),
-        ),
-      onSnapshotChanged: (listener): (() => void) =>
-        subscribeCanopyCloudAccountChanges((account): void => {
-          const domain = getPostHogEmailDomain(
-            getInstrumentationAccountEmail(account),
-          );
-          listener(domain);
-          sendToAllWindows(
-            IPC_CHANNELS.observabilityPostHogEmailDomainUpdate,
-            domain,
-          );
+  installPostHogMainLifecycle(
+    getUsageDataPolicy(),
+    suspendPostHogMain,
+    () =>
+      void initializePostHogMain(
+        getStablePostHogAnonymousKey,
+        {
+          getSnapshot: async (): Promise<string | null> =>
+            getPostHogEmailDomain(
+              getInstrumentationAccountEmail(await loadCanopyCloudAccount()),
+            ),
+          onSnapshotChanged: (listener): (() => void) =>
+            subscribeCanopyCloudAccountChanges((account): void => {
+              const domain = getPostHogEmailDomain(
+                getInstrumentationAccountEmail(account),
+              );
+              listener(domain);
+              sendToAllWindows(
+                IPC_CHANNELS.observabilityPostHogEmailDomainUpdate,
+                domain,
+              );
+            }),
+        },
+        getPostHogInstallLaunch,
+        () => ({
+          osVersion: process.getSystemVersion(),
+          cpuArchitecture: app.runningUnderARM64Translation
+            ? 'arm64'
+            : process.arch,
         }),
-    },
-    getPostHogInstallLaunch,
-    () => ({
-      osVersion: process.getSystemVersion(),
-      cpuArchitecture: app.runningUnderARM64Translation
-        ? 'arm64'
-        : process.arch,
-    }),
-  ).then((result) => {
-    if (!result.enabled && result.reason && result.reason !== 'disabled') {
-      getObservabilityService().recordAppDiagnostic({
-        version: 1,
-        timestamp: new Date().toISOString(),
-        kind: 'desktop_instrumentation_init_failed',
-        reason: `posthog: ${result.reason}`,
-      });
-    }
-  });
+      ).then((result) => {
+        if (!result.enabled && result.reason && result.reason !== 'disabled') {
+          getObservabilityService().recordAppDiagnostic({
+            version: 1,
+            timestamp: new Date().toISOString(),
+            kind: 'desktop_instrumentation_init_failed',
+            reason: `posthog: ${result.reason}`,
+          });
+        }
+      }),
+  );
 }
 
 /**
@@ -2111,6 +2141,7 @@ async function cleanupRuntimeResources(
   stopMainEventLoopMonitor = null;
   stopPersonalCatalogSync();
   stopCloudProjectBinding();
+  stopCloudProjectSetupSweep();
   stopResumeQueue();
   beginSplitTemporaryWorkspaceShutdown();
   cancelPendingW5FlipHandoff();
@@ -2241,7 +2272,8 @@ async function cleanupRuntimeResources(
       .run('split-background', drainSplitTemporaryWorkspaceBackgroundPhases)
       .catch(() => undefined);
     // Stop in-flight Add project clones so git's helpers do not outlive the
-    // app and partial checkouts are removed rather than left half-written.
+    // app. Clone jobs remove their partial checkouts; clones without a job
+    // keep theirs, reserved for launch recovery.
     const cloneJobsShutdown = stages
       .run('clone-jobs', shutdownCloneJobs)
       .catch(() => undefined);
@@ -2424,6 +2456,8 @@ async function cleanupRuntimeResources(
         async () => {
           closeChatStatePush?.();
           closeChatStatePush = null;
+          closeCanopyCloudSessionStatusPush?.();
+          closeCanopyCloudSessionStatusPush = null;
           await stages.run('core-runtime', () =>
             desktopCanopyRuntime?.shutdown(),
           );
@@ -2438,6 +2472,10 @@ async function cleanupRuntimeResources(
     await stages.bestEffort(
       'electron-daemon-connections',
       async (): Promise<void> => {
+        // The owner subscription closes before the shared sessions (CAN-5771).
+        await import('./pipelines/daemon-pipeline-owner')
+          .then((owner) => owner.disposeDaemonPipelineOwnerSettlement())
+          .catch(() => undefined);
         disposeDesktopDaemonGitRoute();
         await disposeElectronDaemonFiles();
       },
@@ -4870,6 +4908,16 @@ if (hasSingleInstanceLock) {
 
 void app.whenReady().then(async (): Promise<void> => {
   if (!hasSingleInstanceLock) return;
+  try {
+    await prepareCanopySecureStorage();
+  } catch (error) {
+    exitForW5HostRefusal(
+      error instanceof Error
+        ? error.message
+        : 'Secure storage maintenance failed.',
+    );
+    return;
+  }
   recordDesktopInstanceEvent({ event: 'app-ready' });
   let recoveryRefusal: { kind: 'refused'; message: string } | undefined;
   try {
@@ -4973,6 +5021,8 @@ void app.whenReady().then(async (): Promise<void> => {
     preferenceMigrationSnapshots?.chatSummaryModelSelection;
   const localMemoryModelSnapshot =
     preferenceMigrationSnapshots?.localMemoryModel;
+  // Before any gated flow starts: an unreadable stored account fails closed.
+  await initializeStartupUsageDataPolicy();
   startDesktopInstrumentation();
   childToolsSettlement ??= startChildToolsSettlement();
   setCodexGatewayProxyDiagnosticSink((record) => {
@@ -4982,9 +5032,9 @@ void app.whenReady().then(async (): Promise<void> => {
     // eslint-disable-next-line no-console
     console.error('Failed to initialize telemetry sync service:', error);
   });
-  // Counts chat-turn starts as basic usage (CAN-3561). Deliberately not gated
-  // on the sharing scopes or organization policy: it is analytics, not
-  // activity sharing, and sends no content.
+  // Counts chat-turn starts as basic usage (CAN-3561). Gated by the member's
+  // Active use count choice and the selected organization's usage-data
+  // policy, not by activity sharing: it is analytics and sends no content.
   initializeProductActivityReporter();
   // Keep already-shared chats' runs current: re-share (idempotent) as new
   // conversation turns finish, so shared sessions stay live without a manual
@@ -5126,9 +5176,15 @@ void app.whenReady().then(async (): Promise<void> => {
   // Seed the durable account/local state before Early access consumers start.
   getLabsExperimentsService();
   await initializeFeatureFlagService();
+  installClaudeModAdmissionHost();
   void initializeLabsExperimentsService();
-  // Background operations reach PostHog only while LaunchDarkly allows capture.
+  // Background operations reach PostHog only while LaunchDarkly allows capture
+  // and the member's effective usage-data policy allows the category.
   installPostHogOperationCaptureGate(getFeatureFlagService());
+  installUsageDataPolicyFeatureFlagRefresh(
+    () => getFeatureFlagService().refreshContext(),
+    getLastBuiltFeatureFlagIdentity,
+  );
   // Subscribed once the capture flag is known: the auth feed replays a
   // sign-in the startup prewarm already confirmed (CAN-4015).
   disposeProviderAccountConnectTelemetry ??=
@@ -5149,6 +5205,8 @@ void app.whenReady().then(async (): Promise<void> => {
   scheduleCostIndexStartup();
   // The Personal/organization context must be restored before the first
   // renderer read; it only touches the account store and one small JSON file.
+  // Usage-data prohibitions apply by the selected context from here on.
+  attachUsageDataPolicyToWorkspaceContext(getWorkspaceContextService());
   await getWorkspaceContextService().initialize();
   installOrgDefaultCoworkProvisioning();
   await getForeignActivityCarryoverService().initialize();
@@ -5156,6 +5214,7 @@ void app.whenReady().then(async (): Promise<void> => {
   await getOrgProjectCatalogService().initialize();
   startPersonalCatalogSync();
   startCloudProjectBinding();
+  startCloudProjectSetupSweep();
   // The shared session snapshot projects catalog placeholder rows, so catalog,
   // context, and flag changes must mark it stale like local mutations do.
   installOrgProjectSnapshotInvalidation();
@@ -5507,10 +5566,6 @@ void app.whenReady().then(async (): Promise<void> => {
     });
     setLedgerSyncEnabled(
       snapshot.values[CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key] === true,
-    );
-    setMemorySyncEnabled(
-      snapshot.values[CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync.key] ===
-        true,
     );
   });
   // Before the IPC handlers, which read the service through its throwing
@@ -6641,6 +6696,11 @@ void app.whenReady().then(async (): Promise<void> => {
       await import('./e2e-fixtures/delegation-stream-fixture');
     await seedDelegationStreamFixture(getChatStateService());
   }
+  closeCanopyCloudSessionStatusPush = subscribeCanopyCloudSessionStatus(
+    (): void => {
+      sendToAllWindows(IPC_CHANNELS.settingsCanopyCloudSessionStatusChanged);
+    },
+  );
   closeChatStatePush = registerAllIpcHandlers(
     {
       getMainWindow,
@@ -6779,11 +6839,27 @@ void app.whenReady().then(async (): Promise<void> => {
       // A controller's App Advisor window opens on the same data as this
       // computer's: the commands resolve here and run in its window.
       appAdvisorRequestCommands: sendAppAdvisorWindowRequestCommands,
+      // The single Remote Control opt-in also starts and ends Portal; its
+      // own flag still decides whether it may start.
+      portal: {
+        isEnabled: (): boolean =>
+          getFeatureFlagService().isEnabled(
+            CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key,
+          ),
+        start: async (): Promise<void> => {
+          if (getCanopyPortalState().status !== 'disabled') return;
+          await startCanopyPortal();
+        },
+        stop: async (): Promise<void> => {
+          if (getCanopyPortalState().status === 'disabled') return;
+          await stopCanopyPortal('local_disconnect');
+        },
+      },
     });
   } catch (error) {
     logMainProcessError('Remote control failed to start', error);
   }
-  registerExecutionHandlers(() => mainWindow);
+  registerExecutionHandlers(() => mainWindow, getAppAdvisorRendererSurface);
   registerPluginHandlers();
   registerSkillHandlers();
 
@@ -6897,13 +6973,9 @@ void app.whenReady().then(async (): Promise<void> => {
       CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key,
     ),
   );
-  // Cloud memory sync (CAN-5185): off by default; while on it waits out the
-  // launch quiet period before any request.
-  setMemorySyncEnabled(
-    getFeatureFlagService().isEnabled(
-      CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync.key,
-    ),
-  );
+  // Cloud memory sync (CAN-5185): runs only for an account carrying
+  // memory-sync-v1, and waits out the launch quiet period before any request.
+  startMemorySync();
   setLedgerPendingTitleScheduler(enqueueDesktopPendingTitle);
   startDesktopPendingTitleOrchestrator({
     isEnabled: (): boolean =>

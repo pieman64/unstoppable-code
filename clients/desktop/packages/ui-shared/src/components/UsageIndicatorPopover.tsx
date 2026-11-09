@@ -10,13 +10,9 @@ import {
   formatDuration,
   formatTokenCount,
 } from '../lib/format-usage';
-import {
-  UsageActionRow,
-  UsageDisclosureChevron,
-  USAGE_DISCLOSURE_ROW_CLASS,
-  USAGE_DISCLOSURE_INK_CLASS,
-} from './UsageIndicatorActions';
+import { UsageActionRow, UsageExpandableRow } from './UsageIndicatorActions';
 import { CONTEXT_SERIES_COLORS } from '../lib/usage-series-colors';
+import { SegmentsBar, type BarSegment } from './Progress';
 import { SegmentedControl } from './SegmentedControl';
 import { COMPOSER_ROW_MENU_GAP, FloatingMenu } from './FloatingMenu';
 import { UsageMeter, formatUsagePercent } from './usage-indicator-meter';
@@ -122,34 +118,28 @@ function ContextBreakdownMeter({
   breakdown: UsageIndicatorContextBreakdown;
 }): JSX.Element {
   let usedIndex = -1;
+  const segments: BarSegment[] = [];
+  for (const category of breakdown.categories) {
+    if (category.kind === 'used') usedIndex += 1;
+    if (
+      category.tokens > 0 &&
+      category.kind !== 'free' &&
+      category.kind !== 'deferred'
+    ) {
+      segments.push({
+        key: category.name,
+        value: category.tokens,
+        color: contextCategoryColor(category.kind, usedIndex),
+      });
+    }
+  }
+  const filledTokens = segments.reduce((sum, part) => sum + part.value, 0);
   return (
-    <div
-      role="img"
-      aria-label="Context window by category"
-      className="flex h-1.5 w-full gap-px overflow-hidden rounded-full bg-fg-primary/[0.08]"
-    >
-      {breakdown.categories.map((category) => {
-        if (category.kind === 'used') usedIndex += 1;
-        if (
-          category.tokens <= 0 ||
-          category.kind === 'free' ||
-          category.kind === 'deferred'
-        ) {
-          return null;
-        }
-        const width = (category.tokens / breakdown.maxTokens) * 100;
-        return (
-          <span
-            key={category.name}
-            className="h-full shrink-0"
-            style={{
-              width: `${Math.min(width, 100)}%`,
-              backgroundColor: contextCategoryColor(category.kind, usedIndex),
-            }}
-          />
-        );
-      })}
-    </div>
+    <SegmentsBar
+      segments={segments}
+      scale={breakdown.maxTokens > 0 ? filledTokens / breakdown.maxTokens : 1}
+      label="Context window by category"
+    />
   );
 }
 
@@ -500,29 +490,19 @@ export default function UsagePopover({
         )}
         {showContextWindow && (
           <div className="flex flex-col gap-1.5">
-            <button
-              type="button"
-              onClick={(): void => setDetailsOpen((value) => !value)}
-              aria-expanded={detailsOpen}
-              aria-controls={detailsId}
-              data-testid="usage-indicator-context"
-              // No hover surface: the row's text brightens instead, and the
-              // pickers' own chevron turns over as the details open.
-              className={`${USAGE_DISCLOSURE_ROW_CLASS} items-center justify-between gap-3`}
-            >
-              {/* "Context", not "Context window": at 292px the longest
-                  numbers ("999.9k / 999.9k (100%)") and the chevron still
-                  fit on one line beside it. */}
-              <span className="whitespace-nowrap fg-primary">Context</span>
-              <span
-                className={`flex items-center gap-1 whitespace-nowrap tabular-nums ${USAGE_DISCLOSURE_INK_CLASS}`}
-              >
-                {formatTokenCount(usage.contextTokens)} /{' '}
-                {formatTokenCount(usage.contextWindow)} (
-                {formatUsagePercent(percentage)})
-                <UsageDisclosureChevron open={detailsOpen} />
-              </span>
-            </button>
+            {/* No hover surface: the row's text brightens instead, and the
+                pickers' own chevron turns over as the details open.
+                "Context", not "Context window": at 292px the longest numbers
+                ("999.9k / 999.9k (100%)") and the chevron still fit on one
+                line beside it. */}
+            <UsageExpandableRow
+              label="Context"
+              value={`${formatTokenCount(usage.contextTokens)} / ${formatTokenCount(usage.contextWindow)} (${formatUsagePercent(percentage)})`}
+              open={detailsOpen}
+              onToggle={(): void => setDetailsOpen((value) => !value)}
+              bodyId={detailsId}
+              testId="usage-indicator-context"
+            />
             <ThresholdMeter
               thresholdTokens={longContextThresholdTokens}
               windowTokens={contextBreakdown?.maxTokens ?? usage.contextWindow}

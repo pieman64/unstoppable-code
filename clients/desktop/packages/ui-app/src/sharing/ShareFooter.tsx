@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { Button, LoadingButton } from '@canopy/ui-shared/components';
+import { Surface, Button, LoadingButton } from '@canopy/ui-shared/components';
 
 /** A second footer action between Cancel and the primary. */
 export interface ShareFooterSecondaryAction {
@@ -52,49 +52,51 @@ export function ShareFooter({
   submitTestId,
 }: ShareFooterProps): JSX.Element {
   return (
-    <div
-      className="flex items-center gap-2 border-t px-6 py-3"
-      data-testid={`${testIdPrefix}-footer`}
-    >
-      <div className="flex min-w-0 flex-1 items-center">{leading}</div>
-      {showCancel && (
-        <Button
-          type="button"
-          variant="secondary"
-          size="compact"
-          data-testid={cancelTestId}
-          onClick={onCancel}
-          disabled={cancelDisabled || loading}
-        >
-          {cancelLabel}
-        </Button>
-      )}
-      {secondary && (
-        <Button
-          type="button"
-          variant="secondary"
-          size="compact"
-          data-testid={secondary.testId}
-          onClick={secondary.onClick}
-          disabled={secondary.disabled === true || loading}
-        >
-          {secondary.label}
-        </Button>
-      )}
-      {showPrimary && (
-        <LoadingButton
-          variant="primary"
-          size="compact"
-          data-testid={submitTestId ?? `${testIdPrefix}-submit`}
-          onClick={onSubmit}
-          disabled={submitDisabled}
-          loading={loading}
-          {...(loadingLabel !== undefined ? { loadingLabel } : {})}
-          spinnerTestId={`${testIdPrefix}-submit-spinner`}
-        >
-          {submitLabel}
-        </LoadingButton>
-      )}
-    </div>
+    <Surface variant="section" boundary="top">
+      <div
+        className="flex items-center gap-2 px-6 py-3"
+        data-testid={`${testIdPrefix}-footer`}
+      >
+        <div className="flex min-w-0 flex-1 items-center">{leading}</div>
+        {showCancel && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="compact"
+            data-testid={cancelTestId}
+            onClick={onCancel}
+            disabled={cancelDisabled || loading}
+          >
+            {cancelLabel}
+          </Button>
+        )}
+        {secondary && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="compact"
+            data-testid={secondary.testId}
+            onClick={secondary.onClick}
+            disabled={secondary.disabled === true || loading}
+          >
+            {secondary.label}
+          </Button>
+        )}
+        {showPrimary && (
+          <LoadingButton
+            variant="primary"
+            size="compact"
+            data-testid={submitTestId ?? `${testIdPrefix}-submit`}
+            onClick={onSubmit}
+            disabled={submitDisabled}
+            loading={loading}
+            {...(loadingLabel !== undefined ? { loadingLabel } : {})}
+            spinnerTestId={`${testIdPrefix}-submit-spinner`}
+          >
+            {submitLabel}
+          </LoadingButton>
+        )}
+      </div>
+    </Surface>
   );
 }

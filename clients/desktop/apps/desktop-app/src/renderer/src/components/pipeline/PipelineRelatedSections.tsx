@@ -17,12 +17,12 @@ import {
   rawCapabilitySimilarityKey,
 } from '@/lib/relatedCapabilities';
 import { collectPipelineCapabilityRefs } from '@canopy/desktop-shared/pipelines/plugin-collections';
-import { getTriggerTypes } from '@canopy/desktop-shared/types/pipeline';
+import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import type {
   Pipeline,
   PipelineCapabilityRefsEntry,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 interface RelatedPipelineSourceData {
   candidates: PipelineInfo[];
@@ -308,8 +308,7 @@ export function PipelineRelatedSections({
           key: `${item.info.source}:${item.info.id}`,
           icon: item.info.icon,
           title: item.info.name,
-          badge: PIPELINE_SOURCE_META[item.info.source].label,
-          badgeClass: PIPELINE_SOURCE_META[item.info.source].badgeClass,
+          sourceLabel: PIPELINE_SOURCE_META[item.info.source].label,
           reason: item.reasons.join(' · '),
           onOpen: (): void => {
             onNavigate((savedPipelineInfo) => {

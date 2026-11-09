@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { PluginHarnessConnections } from '@canopy/ui-shared/components';
+import { PluginWorksWith } from '@canopy/ui-shared/components';
 import { useClaudeAuthStatus } from '@/hooks/useClaudeAuthStatus';
 import { useCodexAuthStatus } from '@/hooks/useCodexAuthStatus';
 import { useCursorChatAvailable } from '@/hooks/useCursorChatAvailable';
@@ -11,7 +11,7 @@ interface PluginHarnessStatusProps {
 /** Rows describe availability inside the app; the app itself is not a row. */
 export function PluginHarnessStatus({
   installed,
-}: PluginHarnessStatusProps): JSX.Element {
+}: PluginHarnessStatusProps): JSX.Element | null {
   const claude = useClaudeAuthStatus();
   const codex = useCodexAuthStatus();
   const cursor = useCursorChatAvailable(true);
@@ -21,7 +21,7 @@ export function PluginHarnessStatus({
     ...(cursor ? [{ id: 'cursor', name: 'Cursor' }] : []),
   ];
   return (
-    <PluginHarnessConnections
+    <PluginWorksWith
       rows={harnesses.map((harness) => ({
         id: harness.id,
         name: harness.name,

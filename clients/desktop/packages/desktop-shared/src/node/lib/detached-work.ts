@@ -18,7 +18,7 @@
 import {
   inheritStorageAdmission,
   outsideStorageAdmission,
-} from './storage-admission';
+} from '@canopy/execution-engine/node/lib/storage-admission';
 
 type Settled<T extends readonly unknown[]> = {
   -readonly [K in keyof T]: Awaited<T[K]>;

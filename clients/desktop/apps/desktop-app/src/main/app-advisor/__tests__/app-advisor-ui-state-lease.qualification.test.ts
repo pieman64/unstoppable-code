@@ -10,12 +10,14 @@ import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-adviso
 import type { AppAdvisorUiStateEnvelope } from '@canopy/desktop-shared/types';
 import {
   getLatestAppAdvisorUiState,
+  setLatestAppAdvisorUiState,
   requestCurrentAppAdvisorUiStateThroughLease,
-  setRendererToolSurfaceRouter,
   type AppAdvisorRendererToolSurfaces,
-  type RemoteAppAdvisorWindowHost,
 } from '../../ipc/app-advisor';
-import { setSessionInterfaceToolRegistry } from '../../agents/interface-tool-binding';
+import {
+  setInterfaceToolAudienceResolver,
+  setSessionInterfaceToolRegistry,
+} from '../../agents/interface-tool-binding';
 import { buildCodexSessionDynamicToolSpecs } from '../../codex/session-dynamic-tools';
 import { getCanopyRouteTools } from '../../mcp/canopy-route-tools';
 import type { CanopyWorktreeSessionRoute } from '../../mcp/canopy-tool-router';
@@ -86,15 +88,11 @@ function mainWindowLease(): Lease {
   return { registry, delivered };
 }
 
-const read = (
-  bound: boolean,
-  fallback = surfaces(),
-): Promise<AppAdvisorUiStateEnvelope> =>
+const read = (bound: boolean): Promise<AppAdvisorUiStateEnvelope> =>
   requestCurrentAppAdvisorUiStateThroughLease({
     scope,
     originChatTabId: 'c',
     bound,
-    remoteFallbackSurfaces: fallback,
   });
 
 const advisorRoute = (
@@ -134,22 +132,19 @@ function expectFallback(state: AppAdvisorUiStateEnvelope): void {
 
 afterEach(() => {
   setSessionInterfaceToolRegistry(null);
-  setRendererToolSurfaceRouter(null);
+  setInterfaceToolAudienceResolver(null);
 });
 
 describe("App Advisor's GetCurrentUiState through the main window lease (CAN-4131)", () => {
   it('an unbound session gets the fallback state without a call', async () => {
     const lease = mainWindowLease();
-    const fallback = surfaces();
-    expectFallback(await read(false, fallback));
+    expectFallback(await read(false));
     expect(lease.delivered).toHaveLength(0);
-    expect(fallback.mainWindow).not.toHaveBeenCalled();
   });
 
   it('GetCurrentUiState reaches the main window only through its lease and refreshes the cache', async () => {
     const lease = mainWindowLease();
-    const fallback = surfaces();
-    const pending = read(true, fallback);
+    const pending = read(true);
     const call = await deliveredCall(lease);
     expect(lease.delivered).toHaveLength(1);
     expect(call.toolName).toBe('ui.get_current_ui_state');
@@ -163,27 +158,50 @@ describe("App Advisor's GetCurrentUiState through the main window lease (CAN-413
     ).toBe('settled');
     await expect(pending).resolves.toEqual(uiState);
     expect(getLatestAppAdvisorUiState()).toEqual(uiState);
-    expect(fallback.mainWindow).not.toHaveBeenCalled();
   });
 
-  it("a remote-driven chat keeps today's path", async () => {
+  it("a remote-driven chat reads through its controller's lease, never this computer's (CAN-5823)", async () => {
     const lease = mainWindowLease();
-    const remote = surfaces();
-    const closed = { open: false, focused: false };
-    const host: RemoteAppAdvisorWindowHost = {
-      ...remote,
-      routeKey: 'controller',
-      focusMainWindow: () => Promise.resolve(),
-      closeAppAdvisorWindow: () => Promise.resolve(closed),
-      toggleAppAdvisorWindow: () => Promise.resolve(closed),
-      getAppAdvisorWindowState: () => closed,
-      markAppAdvisorWindowRendererReady: () => closed,
-      reportAppAdvisorWindowUiState: () => undefined,
-    };
-    setRendererToolSurfaceRouter(() => host);
+    const localState = { ...uiState, revision: 3, digest: 'local' };
+    setLatestAppAdvisorUiState(localState);
+    // The driving controller has no lease: the fallback, not this window.
+    setInterfaceToolAudienceResolver(() => 'controller');
     expectFallback(await read(true));
-    expect(remote.mainWindow).toHaveBeenCalled();
     expect(lease.delivered).toHaveLength(0);
+    const remote: InterfaceToolCall[] = [];
+    lease.registry.openLease(
+      {
+        leaseId: 'remote-1',
+        surface: 'main',
+        interfaceKind: 'desktop',
+        audience: 'controller',
+      },
+      {
+        deliver: (call) => {
+          remote.push(call);
+          return true;
+        },
+        cancel: () => undefined,
+      },
+    );
+    lease.registry.register('remote-1', {
+      tools: [interfaceToolDescriptor('ui.get_current_ui_state')],
+      _meta: { idempotencyKey: 'remote-tools' },
+    });
+    const pending = read(true);
+    for (let tick = 0; tick < 10 && remote.length === 0; tick += 1)
+      await Promise.resolve();
+    const call = remote[0];
+    if (!call) throw new Error('no call delivered');
+    lease.registry.reply('remote-1', call.callId, {
+      requestId: call.callId,
+      ok: true,
+      uiState,
+    });
+    await expect(pending).resolves.toEqual(uiState);
+    expect(lease.delivered).toHaveLength(0);
+    // The controller's window describes that window, not this computer's.
+    expect(getLatestAppAdvisorUiState()).toEqual(localState);
   });
 
   it('a route that bound the tool reads UI state through the lease without a provider session', async () => {

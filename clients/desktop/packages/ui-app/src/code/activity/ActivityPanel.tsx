@@ -36,6 +36,7 @@ import {
   type ActivityWorkspaceType,
 } from '@canopy/app-state';
 import {
+  Stack,
   HeaderActionButton,
   ProgressBar,
   OverlayScrollArea,
@@ -43,6 +44,7 @@ import {
   RefreshButton,
   type CollapsedIconColor,
   type RailTabBarTab,
+  type SpaceRole,
 } from '@canopy/ui-shared/components';
 import {
   formatRelativeTime,
@@ -857,6 +859,7 @@ export interface ActivityPanelSectionOverride {
   readonly icon?: ReactNode;
   readonly subtitle?: ReactNode;
   readonly subtitleInline?: boolean;
+  readonly subtitleGap?: SpaceRole;
   /**
    * Render-only trailing node placed in the section header row (e.g. a
    * Scripts/Hooks settings gear). Ephemeral React only — never serialized or
@@ -908,6 +911,7 @@ export interface ActivityPanelExtraSection {
   readonly icon?: ReactNode;
   readonly subtitle?: ReactNode;
   readonly subtitleInline?: boolean;
+  readonly subtitleGap?: SpaceRole;
   /** Render-only trailing header node; see {@link ActivityPanelSectionOverride.headerAction}. */
   readonly headerAction?: ReactNode;
   readonly collapsedIconColor?: CollapsedIconColor;
@@ -1996,7 +2000,7 @@ export function ActivityPanel({
           )}
           strategy={verticalListSortingStrategy}
         >
-          <div className="space-y-2">
+          <Stack gap="inline">
             {visibleOrder.map((id) => {
               const extra = extraSections.find((section) => section.key === id);
               const sectionOverride = sectionOverrides?.[id];
@@ -2016,6 +2020,9 @@ export function ActivityPanel({
                   subtitle={chrome.subtitle}
                   subtitleInline={
                     sectionOverride?.subtitleInline ?? extra?.subtitleInline
+                  }
+                  subtitleGap={
+                    sectionOverride?.subtitleGap ?? extra?.subtitleGap
                   }
                   headerAction={chrome.headerAction}
                   collapsedIconColor={
@@ -2042,7 +2049,7 @@ export function ActivityPanel({
                 </SortableSection>
               );
             })}
-          </div>
+          </Stack>
         </SortableContext>
       </DndContext>
     </OverlayScrollArea>

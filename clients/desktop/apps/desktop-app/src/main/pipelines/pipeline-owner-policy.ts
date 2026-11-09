@@ -1,4 +1,4 @@
-import { backgroundExecutionDeniedMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
+import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/automation-context-copy';
 import type {
   PipelineOwnershipPort,
   PipelineOwnershipWorktreeTarget,
@@ -14,7 +14,7 @@ import {
   type Pipeline,
   type PipelineExecutionScope,
   type ResolvedPipelineExecutionTarget,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { ProjectOwnerContext } from '@canopy/desktop-shared/types';
 import {
   parseWorkspaceContext,

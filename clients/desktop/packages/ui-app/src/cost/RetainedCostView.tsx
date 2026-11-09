@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type JSX } from 'react';
+import { Surface } from '@canopy/ui-shared/components';
 import type { CostClient, CostNavigator } from '@canopy/app-core';
 import type { CostScopeStore } from '@canopy/app-state/cost';
 import type {
@@ -120,13 +121,18 @@ function RetainedCostLayout({
   };
 
   return (
-    <div
+    <Surface
+      variant="pane"
+      extent="parent"
       data-testid="retained-cost-view"
-      className="flex h-full min-h-0 w-full bg-base"
+      className="flex min-h-0 w-full"
     >
-      <div
+      <Surface
+        variant="section"
+        boundary="right"
+        extent="parent"
         data-testid="retained-cost-list"
-        className="flex h-full min-h-0 w-96 shrink-0 flex-col border-r border-line-base"
+        className="flex min-h-0 w-96 shrink-0 flex-col"
       >
         <CostScopeView
           client={client}
@@ -138,7 +144,7 @@ function RetainedCostLayout({
           onSelectRow={select}
           {...(now === undefined ? {} : { now })}
         />
-      </div>
+      </Surface>
       <div
         data-testid="retained-cost-detail"
         className="flex h-full min-h-0 min-w-0 flex-1 flex-col"
@@ -154,7 +160,7 @@ function RetainedCostLayout({
           />
         )}
       </div>
-    </div>
+    </Surface>
   );
 }
 

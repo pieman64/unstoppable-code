@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import type { JSX } from 'react';
 import { ErrorBanner } from './StatusBlocks';
 import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
@@ -42,7 +43,7 @@ export function SkillFilePreview({
   }
   const markdown = /\.(md|mdx|markdown)$/i.test(filePath);
   return (
-    <div data-testid="skill-file-preview" data-path={filePath}>
+    <Stack gap="inline" data-testid="skill-file-preview" data-path={filePath}>
       {markdown ? (
         <SkillMarkdownBody markdown={state.data.content} />
       ) : (
@@ -51,10 +52,10 @@ export function SkillFilePreview({
         </pre>
       )}
       {state.data.truncated && (
-        <p className="mt-2 text-xs fg-secondary italic">
+        <p className="text-xs fg-secondary italic">
           This file is large; only the beginning is shown.
         </p>
       )}
-    </div>
+    </Stack>
   );
 }

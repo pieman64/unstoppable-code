@@ -322,6 +322,7 @@ export function McpServersActivitySectionBody({
         getRowNavigation={model.getRowNavigation}
         getRowSettings={model.getRowSettings}
         renderRowExtra={model.renderRowExtra}
+        rowExtraLayout="footer"
         onCancelSignIn={(): void => model.cancelConnect()}
         onRefresh={(): void => {
           void model.refresh();

@@ -1,5 +1,7 @@
 import { SecureStorageNotice } from '@/components/auth/SecureStorageNotice';
 import {
+  Surface,
+  Stack,
   Button,
   DialogFormField,
   Heading,
@@ -448,7 +450,7 @@ export function WorkspaceEnvironmentTab({
   if (!data) {
     return (
       <div
-        className="space-y-4 p-2"
+        className="flex flex-col p-2 gap-4"
         data-testid={`workspace-environment-tab-${workspaceId}`}
       >
         {secureStorageFailure ? (
@@ -508,8 +510,8 @@ export function WorkspaceEnvironmentTab({
 
   if (layout === 'settings') {
     return (
-      <div
-        className="flex flex-col gap-10"
+      <Stack
+        gap="hero"
         data-testid={`workspace-environment-tab-${workspaceId}`}
       >
         {storageNotice}
@@ -565,17 +567,17 @@ export function WorkspaceEnvironmentTab({
             }
           />
         </SettingsGroup>
-      </div>
+      </Stack>
     );
   }
 
   return (
     <div
-      className="space-y-4 p-2"
+      className="flex flex-col p-2 gap-4"
       data-testid={`workspace-environment-tab-${workspaceId}`}
     >
       {storageNotice}
-      <div className="space-y-1">
+      <Stack gap="tight">
         <Heading level={3} variant="title">
           Environment
         </Heading>
@@ -585,9 +587,9 @@ export function WorkspaceEnvironmentTab({
           Unassigned runtimes use the global defaults in Settings →
           Environments.
         </p>
-      </div>
+      </Stack>
 
-      <div className="space-y-4">
+      <Stack gap="group">
         {RUNTIMES.map((runtime) => {
           const fallback = getFallbackEnvironment(data, runtime);
           const fallbackLabel = `Global default (${fallback?.name ?? 'unassigned'})`;
@@ -608,48 +610,50 @@ export function WorkspaceEnvironmentTab({
             </DialogFormField>
           );
         })}
-      </div>
+      </Stack>
 
-      <div className="flex items-center justify-between gap-3 border-t pt-3">
-        <Button
-          size="compact"
-          onClick={onManageEnvironments}
-          data-testid="workspace-environment-manage"
-        >
-          Manage environments
-        </Button>
-        <div className="flex items-center justify-end gap-3">
-          {saveStatus === 'saved' && (
-            <span
-              className="text-xs fg-secondary"
-              data-testid="workspace-environment-saved"
-            >
-              Saved.
-            </span>
-          )}
-          {saveStatus === 'error' && !secureStorageFailure && (
-            <Notice
-              intent="attention"
-              data-testid="workspace-environment-error"
-            >
-              {saveError ?? 'Could not save environment assignments.'}
-            </Notice>
-          )}
+      <Surface variant="section" boundary="top">
+        <div className="flex items-center justify-between gap-3 pt-3">
           <Button
-            variant="primary"
             size="compact"
-            onClick={() => {
-              void handleSave();
-            }}
-            disabled={!dirty || saveStatus === 'saving'}
-            data-testid="workspace-environment-save"
+            onClick={onManageEnvironments}
+            data-testid="workspace-environment-manage"
           >
-            {saveStatus === 'saving'
-              ? 'Saving…'
-              : 'Save environment assignments'}
+            Manage environments
           </Button>
+          <div className="flex items-center justify-end gap-3">
+            {saveStatus === 'saved' && (
+              <span
+                className="text-xs fg-secondary"
+                data-testid="workspace-environment-saved"
+              >
+                Saved.
+              </span>
+            )}
+            {saveStatus === 'error' && !secureStorageFailure && (
+              <Notice
+                intent="attention"
+                data-testid="workspace-environment-error"
+              >
+                {saveError ?? 'Could not save environment assignments.'}
+              </Notice>
+            )}
+            <Button
+              variant="primary"
+              size="compact"
+              onClick={() => {
+                void handleSave();
+              }}
+              disabled={!dirty || saveStatus === 'saving'}
+              data-testid="workspace-environment-save"
+            >
+              {saveStatus === 'saving'
+                ? 'Saving…'
+                : 'Save environment assignments'}
+            </Button>
+          </div>
         </div>
-      </div>
+      </Surface>
     </div>
   );
 }

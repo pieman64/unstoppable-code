@@ -9,7 +9,7 @@ import {
   isGatewayRoutableModel,
   isOrgGatewayRoute,
   resolveGatewayModelEntry,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   DEFAULT_OLLAMA_HARNESS,
   getExecutionHarnessForModel,

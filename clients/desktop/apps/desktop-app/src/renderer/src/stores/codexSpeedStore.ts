@@ -13,12 +13,12 @@ import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import {
   isCodexSpeedCatalog,
   shouldAcceptCodexSpeedCatalog,
-} from '@canopy/desktop-shared/lib/codex-speed-availability';
+} from '@canopy/execution-engine/lib/codex-speed-availability';
 import type {
   CodexSpeedApi,
   CodexSpeedCatalog,
   CodexSpeedCatalogRoute,
-} from '@canopy/desktop-shared/types/codex-speed-capabilities';
+} from '@canopy/execution-engine/types/codex-speed-capabilities';
 import { reportRendererConsoleError } from '../lib/renderer-error-logging';
 
 const READ_FAILURE_MESSAGE =

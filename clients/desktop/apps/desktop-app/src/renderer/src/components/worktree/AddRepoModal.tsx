@@ -25,7 +25,21 @@ import {
   WORKSPACE_ROOT_REPO_ID,
 } from '@canopy/desktop-shared/types';
 import { CHAT_LABEL } from '@canopy/protocol';
-import { RepositoryCloneError, Surface } from '@canopy/ui-shared/components';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError, type AppError } from '@canopy/protocol/app-errors';
+import {
+  RepositoryCloneError,
+  Stack,
+  Surface,
+} from '@canopy/ui-shared/components';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { DesktopReportThisAction } from '@/components/shared/DesktopReportThisAction';
+import { rendererAppErrorDisplayPolicy } from '@/lib/renderer-app-error';
+import { brandText } from '@/lib/brand';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import {
   trackAddProjectDialogCancel,
   trackAddProjectDialogOpen,
@@ -62,6 +76,7 @@ import {
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   BuildingIcon,
+  CloudBackendIcon,
   CoworkWorkspaceIcon,
   FolderIcon,
   FolderPlusIcon,
@@ -69,6 +84,8 @@ import {
 } from '@canopy/ui-shared/icons';
 import { WorkspaceMultiSelectPicker } from './WorkspaceMultiSelectPicker';
 import { AddOrgProjectCatalog } from './AddOrgProjectCatalog';
+import { AddCloudProjectSetup } from './AddCloudProjectSetup';
+import { useCanopyProjectIdentityAvailable } from '@/hooks/useCanopyCloudConnected';
 import { useOrgCatalogSession } from './orgCatalogSession';
 import {
   OrgRepositoryOwnerNotice,
@@ -112,7 +129,6 @@ import { saveWorkspacePrivateMemory } from '@/lib/privateMemory';
 import { useOrgProjectsStore, useOrgProjectsStoreApi } from '@canopy/app-state';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import { extractIpcErrorMessage } from '@/lib/errors';
 import { openOrgProject } from '@/lib/openOrgProjectDeepLink';
 import {
   resolveOrgFolderConflict,
@@ -124,7 +140,7 @@ import {
 } from './OrgFolderConflictNotice';
 
 /** `catalog` is the organization's own option; Personal never offers it. */
-type AddWorkspaceMode = 'catalog' | 'existing' | 'remote' | 'create';
+type AddWorkspaceMode = 'catalog' | 'cloud' | 'existing' | 'remote' | 'create';
 type CreateWorkspaceType =
   | 'single-repo'
   | 'multi-repo'
@@ -158,6 +174,29 @@ function remoteWorkspaceFailureMessage(error: unknown): string {
   return repositoryCloneErrorMessage(
     prefix ? message.slice(prefix.length) : message,
   );
+}
+
+/** The sentence a failure leads with, for surfaces that show only text. */
+function failureMessage(failure: InlineFailure): string {
+  return typeof failure.error === 'string'
+    ? failure.error
+    : failure.error.copy.title;
+}
+
+/**
+ * A Remote add's failure. The clone path already rethrows safe clone copy
+ * (`remoteWorkspaceFailureMessage`), which leads as it is; anything else
+ * leads with the action's own sentence.
+ */
+function remoteAddFailure(appError: AppError): InlineFailure {
+  const message = appError.detail.message;
+  if (
+    appError.kind === 'defect' &&
+    appError.recordedBy === undefined &&
+    repositoryCloneErrorMessage(message) === message
+  )
+    return { error: message };
+  return inlineFailure(appError, "Couldn't clone the repository.");
 }
 
 /** A folder's name from its path, on either platform's separators. */
@@ -356,7 +395,7 @@ const TEMPORARY_WORKSPACE_DISABLED_TOOLTIP =
 /** The non-catalog options in each navigation mode's order (CAN-5041). */
 const CHOICE_ORDER: Record<
   NavigationMode,
-  readonly Exclude<AddWorkspaceMode, 'catalog'>[]
+  readonly Exclude<AddWorkspaceMode, 'catalog' | 'cloud'>[]
 > = {
   work: ['existing', 'create', 'remote'],
   code: ['remote', 'existing', 'create'],
@@ -743,7 +782,8 @@ function AddRepoModalDraft({
       .then((eligibility): void => {
         if (active) setOrgCreateEligible(eligibility === 'eligible');
       })
-      .catch((): void => {
+      .catch((error: unknown): void => {
+        reportClientAppError(error);
         if (active) setOrgCreateEligible(false);
       });
     void window.api.orgProjects
@@ -751,7 +791,8 @@ function AddRepoModalDraft({
       .then((eligibility): void => {
         if (active) setOrgCodeEligible(eligibility === 'eligible');
       })
-      .catch((): void => {
+      .catch((error: unknown): void => {
+        reportClientAppError(error);
         if (active) setOrgCodeEligible(false);
       });
     void window.api
@@ -769,7 +810,8 @@ function AddRepoModalDraft({
         );
         setOrgRequiresActivitySharing(requiresTranscripts === true);
       })
-      .catch((): void => {
+      .catch((error: unknown): void => {
+        reportClientAppError(error);
         if (active) setOrgRequiresActivitySharing(false);
       });
     return (): void => {
@@ -827,6 +869,10 @@ function AddRepoModalDraft({
   });
   // A clone is a repository, so Remote needs the Code capability.
   const orgRemoteAvailable = catalogWithheld && orgCodeAvailable;
+  // CAN-5192: a Personal project from the user's other computers.
+  const projectIdentityAvailable = useCanopyProjectIdentityAvailable();
+  const cloudSetupAvailable =
+    !inOrganization && projectIdentityAvailable === true;
   const choiceRow = useRef<HTMLDivElement>(null);
   const catalogFocused = useRef(false);
   useLayoutEffect((): void => {
@@ -859,7 +905,8 @@ function AddRepoModalDraft({
       : catalogWithheld
         ? 'existing'
         : 'catalog'
-    : selectedMode === 'catalog'
+    : selectedMode === 'catalog' ||
+        (selectedMode === 'cloud' && !cloudSetupAvailable)
       ? 'existing'
       : selectedMode;
   // Another option invalidates the folder conflict and any answer in flight.
@@ -1052,7 +1099,10 @@ function AddRepoModalDraft({
   const [remoteUrl, setRemoteUrl] = useState('');
   const [destinationDir, setDestinationDir] = useState('');
   const [workspaceName, setWorkspaceName] = useState('');
-  const [error, setError] = useState('');
+  const [error, setErrorFailure] = useState<InlineFailure | null>(null);
+  /** An authored sentence (validation, a known outcome); `''` clears it. */
+  const setError = (message: string): void =>
+    setErrorFailure(message ? { error: message } : null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [repos, setRepos] = useState<GitHubRepoSummary[] | null>(null);
   const [repoFetchState, setRepoFetchState] = useState<RepoFetchState>('idle');
@@ -1207,11 +1257,16 @@ function AddRepoModalDraft({
         if (!alive.current || repoFetchRequestRef.current !== requestId) {
           return;
         }
-        setReposError(
-          cause instanceof Error
-            ? cause.message
-            : 'Unable to load repositories from GitHub.',
-        );
+        const appError = toAppError(resolveClientAppError(cause));
+        if (appError)
+          setReposError(
+            failureMessage(
+              inlineFailure(
+                appError,
+                "Couldn't load repositories from GitHub.",
+              ),
+            ),
+          );
         setRepoFetchState('error');
       });
   }, []);
@@ -1369,11 +1424,13 @@ function AddRepoModalDraft({
           setDestinationDir(defaultCloneDir);
         }
       } catch (cause) {
-        if (!canceled) {
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : 'Unable to load default clone directory',
+        const appError = toAppError(resolveClientAppError(cause));
+        if (!canceled && appError) {
+          setErrorFailure(
+            inlineFailure(
+              appError,
+              "Couldn't find the default download folder.",
+            ),
           );
         }
       }
@@ -1459,7 +1516,10 @@ function AddRepoModalDraft({
     if (workspaceId !== null && privateMemorySelected) {
       try {
         await saveWorkspacePrivateMemory(workspaceId, true);
-      } catch {
+      } catch (cause) {
+        // The pending notice (or the toast below) tells the person; the
+        // failure itself is recorded.
+        reportClientAppError(cause);
         if (isCurrent(submission))
           setPrivateMemoryPending({
             workspaceId,
@@ -1497,10 +1557,9 @@ function AddRepoModalDraft({
       );
       if (completed) pending.onOpened?.();
     } catch (cause) {
-      if (isCurrent(submission))
-        setError(
-          cause instanceof Error ? cause.message : 'Unable to open project',
-        );
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && isCurrent(submission))
+        setErrorFailure(inlineFailure(appError, "Couldn't open the project."));
     } finally {
       endSubmission();
     }
@@ -1657,7 +1716,9 @@ function AddRepoModalDraft({
         resumeWith(result.organizationProjectId);
         // Creation already succeeded. A stale sidebar is recoverable and must
         // not turn the next click into a second create request.
-        await loadProjects({ silent: true }).catch(() => undefined);
+        await loadProjects({ silent: true }).catch((error: unknown) => {
+          reportClientAppError(error);
+        });
         await completeWorkspace(result.localWorkspaceId, submission, {
           cowork: true,
         });
@@ -1669,11 +1730,18 @@ function AddRepoModalDraft({
         orgCreateFailure(result.code, request.name, organizationName, false),
       );
     } catch (cause) {
-      if (isCurrent(submission))
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && isCurrent(submission))
         fail({
           kind: createdProjectId === null ? 'failed' : 'setup-failed',
-          message:
-            cause instanceof Error ? cause.message : 'Unable to create project',
+          message: failureMessage(
+            inlineFailure(
+              appError,
+              createdProjectId === null
+                ? "Couldn't create the project."
+                : "Couldn't set up the project.",
+            ),
+          ),
         });
     }
   };
@@ -1714,12 +1782,10 @@ function AddRepoModalDraft({
       .inspectFolder({ organizationId, path: folder.path })
       // A check that cannot answer refuses the folder: guessing Cowork would
       // attach a repository without its git features.
-      .catch(
-        (): OrgMemberFolderInspection => ({
-          kind: 'refused',
-          reason: 'unreadable',
-        }),
-      );
+      .catch((error: unknown): OrgMemberFolderInspection => {
+        reportClientAppError(error);
+        return { kind: 'refused', reason: 'unreadable' };
+      });
     if (!isCurrent(submission)) return;
     setOrgFolderCheck({ status: 'checked', inspection });
     if (inspection.kind === 'refused' || orgFolderNeedsConfirmation(inspection))
@@ -1755,7 +1821,9 @@ function AddRepoModalDraft({
       )
         return null;
       return owner;
-    } catch {
+    } catch (error) {
+      // Advisory: the add goes ahead as if no other owner were found.
+      reportClientAppError(error);
       return null;
     }
   };
@@ -1779,15 +1847,17 @@ function AddRepoModalDraft({
   };
 
   const reportExistingFailure = (
-    cause: unknown,
+    appError: AppError,
     submission: Submission,
   ): void => {
     if (!isCurrent(submission)) return;
-    const message =
-      cause instanceof Error ? cause.message : 'Unable to add project';
+    const failure = inlineFailure(appError, "Couldn't add this folder.");
     if (inOrganization)
-      setOrgError({ source: 'existing', error: { kind: 'failed', message } });
-    else setError(message);
+      setOrgError({
+        source: 'existing',
+        error: { kind: 'failed', message: failureMessage(failure) },
+      });
+    else setErrorFailure(failure);
   };
 
   // Checks whether the organization project behind a conflicting folder can
@@ -1849,7 +1919,10 @@ function AddRepoModalDraft({
       // check remains advisory; the import is still the final authority.
       const check = await window.api
         .checkAddWorkspaceFromFolder({ repoPath: selected.path })
-        .catch((): null => null);
+        .catch((error: unknown): null => {
+          reportClientAppError(error);
+          return null;
+        });
       if (!live()) return;
       if (check?.status === 'already-tracked' && check.owner !== null) {
         await resolveConflict(
@@ -1874,15 +1947,8 @@ function AddRepoModalDraft({
       preAddPending.current = false;
       await addExistingFolder(selected, submission);
     } catch (cause) {
-      if (live()) {
-        if (inOrganization) reportExistingFailure(cause, submission);
-        else
-          setError(
-            cause instanceof Error
-              ? extractIpcErrorMessage(cause)
-              : 'Unable to add project',
-          );
-      }
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && live()) reportExistingFailure(appError, submission);
     } finally {
       endSubmission();
     }
@@ -1972,7 +2038,8 @@ function AddRepoModalDraft({
     try {
       await addOrgFolder(targetOrganizationId, folder, submission);
     } catch (cause) {
-      reportExistingFailure(cause, submission);
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError) reportExistingFailure(appError, submission);
     } finally {
       endSubmission();
     }
@@ -2055,10 +2122,11 @@ function AddRepoModalDraft({
           useWorkspaceContextStore.getState().state.revision !== result.revision
         )
           return;
-      } catch {
+      } catch (cause) {
         // An account change or another switch supersedes this one silently;
         // an ordinary failure keeps the action so the member can retry.
-        if (live())
+        const appError = toAppError(resolveClientAppError(cause));
+        if (appError && live())
           setOrgConflict({ conflict, resolution: fresh, switchFailed: true });
         return;
       } finally {
@@ -2233,7 +2301,11 @@ function AddRepoModalDraft({
     if (!settledFirst) {
       const handedOff = await window.api
         .backgroundCloneJob(jobId)
-        .catch((): boolean => false);
+        .catch((error: unknown): boolean => {
+          // The clone stays in this dialog instead.
+          reportClientAppError(error);
+          return false;
+        });
       if (handedOff) {
         // The clone outlives this dialog, so the choice made here is saved
         // when the project lands. Nothing opens it automatically.
@@ -2324,10 +2396,9 @@ function AddRepoModalDraft({
       }
       await probeAndClone(normalizedUrl, normalizedDestination, submission);
     } catch (cause) {
-      if (isCurrent(submission))
-        setError(
-          cause instanceof Error ? cause.message : 'Unable to clone project',
-        );
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && isCurrent(submission))
+        setErrorFailure(remoteAddFailure(appError));
     } finally {
       endSubmission();
     }
@@ -2352,12 +2423,12 @@ function AddRepoModalDraft({
           submission,
         );
     } catch (cause) {
+      const appError = toAppError(resolveClientAppError(cause));
+      if (!appError) return;
       if (nudge.pending.kind === 'existing')
-        reportExistingFailure(cause, submission);
+        reportExistingFailure(appError, submission);
       else if (isCurrent(submission))
-        setError(
-          cause instanceof Error ? cause.message : 'Unable to clone project',
-        );
+        setErrorFailure(remoteAddFailure(appError));
     } finally {
       endSubmission();
     }
@@ -2391,10 +2462,16 @@ function AddRepoModalDraft({
     };
     try {
       await useWorkspaceContextStore.getState().setContext(target);
-    } catch {
+    } catch (cause) {
       dropAddWorkspaceHandoff(targetIdentity);
-      if (alive.current)
-        setError(orgRepositoryOwnerSwitchFailure(nudge.owner.organizationName));
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && alive.current)
+        setErrorFailure(
+          inlineFailure(
+            appError,
+            orgRepositoryOwnerSwitchFailure(nudge.owner.organizationName),
+          ),
+        );
     } finally {
       endSubmission();
     }
@@ -2456,10 +2533,9 @@ function AddRepoModalDraft({
         cowork: workspace?.type === 'cowork',
       });
     } catch (cause) {
-      if (isCurrent(submission))
-        setError(
-          cause instanceof Error ? cause.message : 'Unable to reuse project',
-        );
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && isCurrent(submission))
+        setErrorFailure(inlineFailure(appError, "Couldn't add this copy."));
     } finally {
       endSubmission();
     }
@@ -2477,10 +2553,9 @@ function AddRepoModalDraft({
         submission,
       );
     } catch (cause) {
-      if (isCurrent(submission))
-        setError(
-          cause instanceof Error ? cause.message : 'Unable to clone project',
-        );
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && isCurrent(submission))
+        setErrorFailure(remoteAddFailure(appError));
     } finally {
       endSubmission();
     }
@@ -2496,11 +2571,10 @@ function AddRepoModalDraft({
       if (isCurrent(submission) && !result.canceled && result.directoryPath)
         setDestinationDir(result.directoryPath);
     } catch (cause) {
-      if (isCurrent(submission))
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "Couldn't open the folder picker. Try again.",
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && isCurrent(submission))
+        setErrorFailure(
+          inlineFailure(appError, "Couldn't open the folder picker."),
         );
     } finally {
       if (alive.current) setBrowsingCloneDir(false);
@@ -2571,7 +2645,7 @@ function AddRepoModalDraft({
       if (!finalized) {
         await loadProjects();
         if (!isCurrent(submission)) return;
-        setError('Unable to create temporary project worktree');
+        setError("Couldn't create the temporary worktree.");
         return;
       }
       void loadProjects({ silent: true });
@@ -2580,11 +2654,10 @@ function AddRepoModalDraft({
         worktreeId: finalized.id,
       });
     } catch (cause) {
-      if (isCurrent(submission))
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : 'Unable to create temporary project',
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && isCurrent(submission))
+        setErrorFailure(
+          inlineFailure(appError, "Couldn't create the temporary worktree."),
         );
     } finally {
       endSubmission();
@@ -2673,9 +2746,10 @@ function AddRepoModalDraft({
         });
       }
     } catch (cause) {
-      if (isCurrent(submission))
-        setError(
-          cause instanceof Error ? cause.message : 'Unable to create project',
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && isCurrent(submission))
+        setErrorFailure(
+          inlineFailure(appError, "Couldn't create the project."),
         );
     } finally {
       endSubmission();
@@ -2702,7 +2776,7 @@ function AddRepoModalDraft({
     orgFolderForMode !== null && orgLinkedProject !== null;
   const orgFolderOutcome =
     orgFolderForMode === null ? null : (
-      <>
+      <Stack gap="inline">
         <ChosenFolderPath
           path={orgFolderForMode.path}
           testId="add-workspace-org-folder-path"
@@ -2729,7 +2803,7 @@ function AddRepoModalDraft({
             }
           />
         )}
-      </>
+      </Stack>
     );
   const orgFolderAddButton =
     orgFolderForMode !== null && orgFolderAddOffered ? (
@@ -2784,7 +2858,7 @@ function AddRepoModalDraft({
       placement="top"
     >
       {privateMemoryPending !== null && (
-        <div className="">
+        <div>
           <Notice
             intent="attention"
             data-testid="add-workspace-private-memory-failed"
@@ -2808,7 +2882,7 @@ function AddRepoModalDraft({
         // A project waiting on its Private memory save locks the form, so the
         // only way forward is to finish that project rather than add another.
         disabled={isSubmitting || privateMemoryPending !== null}
-        className="min-h-0 min-w-0 space-y-4 text-s"
+        className="flex min-h-0 min-w-0 flex-col gap-4 text-s"
         data-testid="add-workspace-drop-target"
         onDragOver={handleFolderDragOver}
         onDragLeave={handleFolderDragLeave}
@@ -2832,11 +2906,21 @@ function AddRepoModalDraft({
           // An organization keeps room for its catalog tile while create
           // eligibility resolves; a withheld catalog without Remote leaves two.
           className={`grid gap-2 ${
-            catalogWithheld && !orgRemoteAvailable
+            (catalogWithheld && !orgRemoteAvailable) || cloudSetupAvailable
               ? 'sm:grid-cols-2'
               : 'sm:grid-cols-3'
           }`}
         >
+          {cloudSetupAvailable && (
+            <ProjectChoiceCard
+              testId="add-workspace-mode-cloud"
+              selected={mode === 'cloud'}
+              onSelect={() => selectMode('cloud')}
+              icon={<CloudBackendIcon className="shrink-0" />}
+              title="From another computer"
+              description="Set up a project you use elsewhere"
+            />
+          )}
           {inOrganization && !catalogWithheld && (
             <ProjectChoiceCard
               testId="add-workspace-mode-catalog"
@@ -2921,6 +3005,15 @@ function AddRepoModalDraft({
           />
         )}
 
+        {!inOrganization && mode === 'cloud' && (
+          <AddCloudProjectSetup
+            onClose={onClose}
+            onWorkspaceCreated={(workspaceId): void =>
+              onWorkspaceCreated?.(workspaceId)
+            }
+          />
+        )}
+
         {inOrganization && mode !== 'catalog' && (
           <OrgProjectOwnershipNotice
             organizationName={organizationName}
@@ -2932,7 +3025,7 @@ function AddRepoModalDraft({
         )}
 
         {mode === 'existing' && (
-          <div className="space-y-3" data-testid="add-workspace-existing-panel">
+          <Stack gap="item" data-testid="add-workspace-existing-panel">
             {inOrganization && !orgCodeAvailable && (
               <p
                 className="text-xs fg-secondary"
@@ -3014,11 +3107,11 @@ function AddRepoModalDraft({
                   {orgFolderAddButton}
                 </div>
               )}
-          </div>
+          </Stack>
         )}
 
         {mode === 'remote' && (
-          <div data-testid="add-workspace-remote-panel" className="space-y-3">
+          <Stack data-testid="add-workspace-remote-panel" gap="item">
             {canListRepos && (
               <SegmentedControl
                 label="Source"
@@ -3150,15 +3243,15 @@ function AddRepoModalDraft({
                 )}
               </div>
             )}
-          </div>
+          </Stack>
         )}
 
         {mode === 'create' && (
-          <div className="space-y-3">
+          <Stack gap="item">
             {/* An organization takes a member's single-repo, multi-repo and
                 Cowork projects. Without the Code capability Cowork is the only
                 kind, so there is nothing to choose. */}
-            <div className="space-y-1.5">
+            <div className="flex flex-col gap-1.5">
               {(!inOrganization || orgCodeAvailable) && (
                 <SegmentedControl
                   label="Project type"
@@ -3258,7 +3351,7 @@ function AddRepoModalDraft({
                 />
               )
             ) : (
-              <div>
+              <Stack gap="inline">
                 <FormSectionHeading
                   title="Project name"
                   id="add-workspace-name-heading"
@@ -3285,7 +3378,7 @@ function AddRepoModalDraft({
                       : 'my-project'
                   }
                 />
-              </div>
+              </Stack>
             )}
             <div className="flex items-center justify-between gap-4">
               {workspaceType !== 'temporary' && privateMemoryField !== null ? (
@@ -3322,20 +3415,32 @@ function AddRepoModalDraft({
                         : 'Create project'}
               </Button>
             </div>
-          </div>
+          </Stack>
         )}
 
-        {error &&
-          (mode === 'remote' ? (
-            <RepositoryCloneError
-              message={error}
-              testId="add-workspace-error"
-            />
-          ) : (
-            <Notice intent="destructive" data-testid="add-workspace-error">
-              {error}
-            </Notice>
-          ))}
+        {/* A failure can name folders and quote git output. */}
+        {error && mode === 'remote' ? (
+          <RepositoryCloneError
+            message={error.error}
+            {...(error.details === undefined ? {} : { details: error.details })}
+            displayPolicy={rendererAppErrorDisplayPolicy}
+            reportAction={(defect): JSX.Element => (
+              <DesktopReportThisAction
+                error={defect}
+                appName={brandText.appName}
+              />
+            )}
+            testId="add-workspace-error"
+          />
+        ) : (
+          <DesktopErrorBanner
+            className=""
+            error={error?.error}
+            details={error?.details}
+            blockMessageFromReplay
+            testId="add-workspace-error"
+          />
+        )}
       </fieldset>
     </DialogModal>
   );

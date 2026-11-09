@@ -19,6 +19,7 @@ import {
   WaitingRows,
 } from './external-agents-parts';
 import { ExternalAgentsOverviewSkeleton } from './external-agents-skeletons';
+import { ExternalAgentComputersSection } from './external-agents-computers';
 import { externalAgentPath } from './paths';
 import { useMountedStore } from './use-mounted-store';
 
@@ -37,10 +38,15 @@ export function ExternalAgentsPage({
   }
 
   return (
-    <ExternalAgentsOverviewContent
-      client={externalAgents}
-      onOpenPath={onOpenPath}
-    />
+    <>
+      <ExternalAgentsOverviewContent
+        client={externalAgents}
+        onOpenPath={onOpenPath}
+      />
+      {externalAgents.computers ? (
+        <ExternalAgentComputersSection client={externalAgents.computers} />
+      ) : null}
+    </>
   );
 }
 

@@ -11,7 +11,9 @@ import type {
   ExternalAgentServerAddress,
   ExternalAgentWaitingAction,
 } from '@canopy/protocol/external-agents';
+import { externalAgentDisplayName } from '@canopy/protocol/external-agents';
 import {
+  Stack,
   Button,
   Checkbox,
   CopyButton,
@@ -26,6 +28,7 @@ import {
   ToggleSwitch,
   EmptyStateRow,
   Heading,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import {
   ChevronLeftMediumIcon,
@@ -89,7 +92,7 @@ export function SettingsSection({
   return (
     <section className="flex min-w-0 flex-col gap-3" data-testid={testId}>
       {title || description ? (
-        <div className="space-y-1">
+        <Stack gap="tight">
           {title ? (
             <Heading level={2} variant="section">
               {title}
@@ -100,7 +103,7 @@ export function SettingsSection({
               {description}
             </div>
           ) : null}
-        </div>
+        </Stack>
       ) : null}
       {children}
     </section>
@@ -181,7 +184,7 @@ export function WaitingRows({
           now,
         );
         const description = showAgent
-          ? `${request.clientName} · ${EXTERNAL_AGENT_SERVER_COPY[request.server].title}. ${timing}`
+          ? `${externalAgentDisplayName(request)} · ${EXTERNAL_AGENT_SERVER_COPY[request.server].title}. ${timing}`
           : timing;
         return (
           <SettingsRow
@@ -222,7 +225,7 @@ export function FactRow({
 }): JSX.Element {
   return (
     <div className="flex min-h-7 min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
-      <div className="min-w-24 flex-1 space-y-0.5">
+      <div className="min-w-24 flex-1 flex flex-col gap-0.5">
         <div className="text-s fg-secondary">{label}</div>
         {description ? (
           <div className="text-xs text-pretty fg-secondary">{description}</div>
@@ -342,8 +345,8 @@ export function NoticeList({
         const serverTitle = EXTERNAL_AGENT_SERVER_COPY[notice.server].title;
         const connected = notice.kind === 'connected';
         const message = connected
-          ? `${notice.clientName} can now use ${serverTitle}.`
-          : `${notice.clientName} can now do more with ${serverTitle}.`;
+          ? `${externalAgentDisplayName(notice)} can now use ${serverTitle}.`
+          : `${externalAgentDisplayName(notice)} can now do more with ${serverTitle}.`;
         return (
           <Notice
             key={noticeKey(notice)}
@@ -404,10 +407,10 @@ export function AgentRow({
           size={32}
           fallback="monogram"
         />
-        <span className="min-w-0 flex-1 space-y-0.5">
+        <span className="min-w-0 flex-1 flex flex-col gap-0.5">
           <span className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="min-w-0 text-s font-medium fg-primary">
-              {connection.clientName}
+              {externalAgentDisplayName(connection)}
             </span>
             {status ? (
               <StatusPill
@@ -463,7 +466,7 @@ export function ConnectSection({
                 <SettingsRow
                   label={copy.title}
                   description={
-                    <span className="min-w-0 space-y-0.5">
+                    <span className="min-w-0 flex flex-col gap-0.5">
                       <span className="block">{copy.line}</span>
                       <span className="block wrap-anywhere font-mono fg-secondary">
                         {server.url}
@@ -751,10 +754,10 @@ export function IdentityBlock({
         fallback="monogram"
         shape="squircle"
       />
-      <div className="min-w-0 space-y-0.5">
+      <div className="min-w-0 flex flex-col gap-0.5">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Heading level={2} variant="page" className="min-w-0">
-            {detail.clientName}
+            {externalAgentDisplayName(detail)}
           </Heading>
           {status ? <StatusPill tone="secondary">{status}</StatusPill> : null}
         </div>
@@ -787,7 +790,7 @@ export function ActivityList({
               data-testid="external-agent-activity-row"
               className="flex min-w-0 flex-wrap items-center gap-x-6 gap-y-1"
             >
-              <div className="min-w-0 flex-1 space-y-0.5">
+              <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                 <div className="text-s text-pretty fg-primary">
                   {item.toolTitle ?? item.tool}
                 </div>
@@ -1166,13 +1169,13 @@ export function HostAccessChoices({
         )}
       </div>
       {missing ? (
-        <Notice
-          intent="attention"
-          role="alert"
+        <FieldError
+          id={`${idPrefix}-hosts-required`}
+          announce
           data-testid={`${idPrefix}-hosts-required`}
         >
           {HOSTS_REQUIRED_MESSAGE}
-        </Notice>
+        </FieldError>
       ) : null}
     </div>
   );

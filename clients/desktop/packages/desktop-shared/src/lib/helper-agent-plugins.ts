@@ -1,10 +1,14 @@
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
-import type { CodexConfig } from './codex-model-config';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import type { CodexSelectedCapabilityRoot } from '../types';
 
 export interface HelperClaudePluginConfig {
   type: 'local';
   path: string;
+  /** The plugin id Mod admission checks consent for; never sent to Claude. */
+  pluginId?: string;
+  /** The installed copy a projected `path` came from, for admission only. */
+  sourcePath?: string;
 }
 
 export interface HelperAgentPluginRuntime {

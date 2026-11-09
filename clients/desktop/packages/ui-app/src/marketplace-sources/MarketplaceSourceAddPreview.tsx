@@ -108,7 +108,7 @@ export function MarketplaceSourceAddPreview({
         error={review.syncError}
         blockMessageFromReplay
       />
-      <div className="max-h-64 space-y-2 overflow-y-auto">
+      <div className="grid grid-cols-1 content-start max-h-64 overflow-y-auto gap-2">
         {review.plugins.length === 0 ? (
           <p className="text-xs fg-secondary">No plugins were detected.</p>
         ) : (

@@ -230,7 +230,7 @@ export function abandonGitHubConnectOffer(
         homeLinkKey() === continuation.linkKey
       ) {
         useHomeComposerStore.setState({
-          sendError: continuation.failureMessage,
+          sendError: { error: continuation.failureMessage },
           sendErrorRetryable: true,
         });
       }

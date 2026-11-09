@@ -9,6 +9,7 @@ import {
   QUEUED_MESSAGE_SENDING_TOOLTIP,
   QueuedMessageReason,
   QueuedMessageRow,
+  Stack,
   splitSubagentReference,
   SUBAGENT_REFERENCE_PREFIX,
   type QueuedMessageAttachment,
@@ -24,6 +25,7 @@ import {
   VIDEO_FILENAME,
 } from '@/lib/file-type';
 import type { QueuedChatMessage } from '@/stores/chatStore';
+import { QueuedMessageEditFailureBanner } from './QueuedMessageEditFailureBanner';
 
 const NO_PATHS: readonly string[] = [];
 
@@ -162,48 +164,51 @@ export const QueuedMessageCompactRow = memo(function QueuedMessageCompactRow({
   const interruptReady =
     canForce && Boolean(onForce) && waitReason === undefined;
   return (
-    <QueuedMessageRow
-      data-testid="queued-message-bubble"
-      data-queued-message-id={message.hostQueueEntryId}
-      text={text}
-      watcherFired={watcherFired}
-      label={
-        agentSent ? (
-          <AgentSentTitle
-            agentSent={agentSent}
-            receivingContext={receivingContext}
-            layout="inline"
-          />
-        ) : undefined
-      }
-      status={reason}
-      attachments={attachments}
-      reorder={reorder}
-      sending={sending}
-      onEdit={canEdit ? (): void => onEdit?.(index, message) : undefined}
-      onSteer={steerReady ? (): void => onSteer?.(index) : undefined}
-      steerUnavailableReason={steerUnavailableReason}
-      steerBlockedByCapabilityChange={capabilityChange}
-      settingsHeld={settingsHeld}
-      onInterrupt={
-        interruptReady && message.retryBlockedReason === undefined
-          ? (): void => onForce?.(index)
-          : undefined
-      }
-      forceKind={forceKind}
-      interruptUnavailableReason={
-        onForce && !interruptReady
-          ? (waitReason ?? QUEUED_MESSAGE_BUSY_TOOLTIP)
-          : undefined
-      }
-      sendBlockedReason={
-        canForce && !anyEditing && !message.editLocked
-          ? message.retryBlockedReason
-          : undefined
-      }
-      onDelete={(): void => onClear(index)}
-      surface={surface}
-      interruptIcon={surface === 'drawer' ? ArrowUpIcon : undefined}
-    />
+    <Stack gap="tight">
+      <QueuedMessageRow
+        data-testid="queued-message-bubble"
+        data-queued-message-id={message.hostQueueEntryId}
+        text={text}
+        watcherFired={watcherFired}
+        label={
+          agentSent ? (
+            <AgentSentTitle
+              agentSent={agentSent}
+              receivingContext={receivingContext}
+              layout="inline"
+            />
+          ) : undefined
+        }
+        status={reason}
+        attachments={attachments}
+        reorder={reorder}
+        sending={sending}
+        onEdit={canEdit ? (): void => onEdit?.(index, message) : undefined}
+        onSteer={steerReady ? (): void => onSteer?.(index) : undefined}
+        steerUnavailableReason={steerUnavailableReason}
+        steerBlockedByCapabilityChange={capabilityChange}
+        settingsHeld={settingsHeld}
+        onInterrupt={
+          interruptReady && message.retryBlockedReason === undefined
+            ? (): void => onForce?.(index)
+            : undefined
+        }
+        forceKind={forceKind}
+        interruptUnavailableReason={
+          onForce && !interruptReady
+            ? (waitReason ?? QUEUED_MESSAGE_BUSY_TOOLTIP)
+            : undefined
+        }
+        sendBlockedReason={
+          canForce && !anyEditing && !message.editLocked
+            ? message.retryBlockedReason
+            : undefined
+        }
+        onDelete={(): void => onClear(index)}
+        surface={surface}
+        interruptIcon={surface === 'drawer' ? ArrowUpIcon : undefined}
+      />
+      <QueuedMessageEditFailureBanner message={message} />
+    </Stack>
   );
 });

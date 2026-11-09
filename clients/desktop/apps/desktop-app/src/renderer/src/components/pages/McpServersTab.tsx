@@ -1,3 +1,4 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import {
   deleteDesktopMcpTarget,
   moveDesktopMcpTarget,
@@ -25,7 +26,7 @@ import {
   isStoredSecretValue,
   type SecretValueInput,
   type StoredSecretValue,
-} from '@canopy/desktop-shared/types/stored-secrets';
+} from '@canopy/execution-engine/types/stored-secrets';
 import {
   McpMoveToCloudDialog,
   McpMoveToDeviceDialog,
@@ -73,6 +74,7 @@ import { DialogModal } from '../shared/DialogModal';
 import { ErrorBanner } from '../shared/StatusBlocks';
 import { McpAccountBindingSkeleton } from './McpServersTabSkeletons';
 import {
+  Stack,
   DelayedLoadingPlaceholder,
   Divider,
   Surface,
@@ -99,8 +101,8 @@ import type {
   McpServerHealthCheckResult,
   McpServerTestConnectionResult,
   UpdateAccountMcpConnectionRequest,
-} from '@canopy/desktop-shared/types/mcp-servers';
-import { AccountMcpConnectionError } from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
+import { AccountMcpConnectionError } from '@canopy/execution-engine/types/mcp-servers';
 import { Button } from '@canopy/ui-shared';
 import {
   Checkbox,
@@ -415,22 +417,18 @@ function McpScopeControl({
     >
       {options.map(
         (option): JSX.Element => (
-          <button
+          <Button
+            variant={value === option.scope ? 'primary' : 'ghost'}
+            size="compact"
             key={option.scope}
-            type="button"
             role="radio"
             aria-checked={value === option.scope}
             disabled={option.scope === 'cloud' && cloudDisabled}
             onClick={(): void => onChange(option.scope)}
             data-testid={`mcp-server-scope-${option.scope}`}
-            className={`focus-ring inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
-              value === option.scope
-                ? 'bg-accent fg-emphasis'
-                : 'fg-secondary hover:bg-fg-primary/[0.06]'
-            }`}
           >
             {option.label}
-          </button>
+          </Button>
         ),
       )}
     </div>
@@ -519,7 +517,7 @@ function KeyValueEditor({
   }
 
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       {Object.entries(entries).map(([key, value]) => (
         <div key={key} className="flex items-center gap-2">
           <div className="min-w-0 flex-1">
@@ -575,7 +573,7 @@ function KeyValueEditor({
           Add
         </Button>
       </div>
-    </div>
+    </Stack>
   );
 }
 
@@ -633,7 +631,7 @@ function ConfigEditor({
 
       {/* Expanded content */}
       {expanded && (
-        <div className="border-t px-3 py-3 space-y-3">
+        <div className="flex flex-col border-t px-3 py-3 gap-3">
           {/* Name */}
           <DialogFormField label="Name" htmlFor={`${fieldId}-name`}>
             <TextInput
@@ -662,10 +660,8 @@ function ConfigEditor({
           </DialogFormField>
 
           {/* Env vars */}
-          <div className="text-xs">
-            <span className="mb-1 block fg-secondary">
-              Environment variables
-            </span>
+          <div className="flex flex-col text-xs gap-1">
+            <span className="block fg-secondary">Environment variables</span>
             <KeyValueEditor
               entries={config.envVars}
               onChange={(envVars: Record<string, SecretValueInput>) =>
@@ -694,8 +690,8 @@ function ConfigEditor({
           </DialogFormField>
 
           {/* Extra headers */}
-          <div className="text-xs">
-            <span className="mb-1 block fg-secondary">Extra headers</span>
+          <div className="flex flex-col text-xs gap-1">
+            <span className="block fg-secondary">Extra headers</span>
             <KeyValueEditor
               entries={config.extraHeaders}
               onChange={(extraHeaders: Record<string, SecretValueInput>) =>
@@ -730,6 +726,7 @@ function ConfigEditor({
           </DialogFormField>
           {isStoredSecretValue(config.authToken) && (
             <Button
+              className="self-start"
               variant="ghost"
               size="compact"
               onClick={(): void => {
@@ -2103,7 +2100,7 @@ export function McpServerDialog({
         maxWidth="xl"
         closeOnBackdrop
       >
-        <div className="flex flex-col gap-4" data-testid="mcp-account-setup">
+        <Stack gap="group" data-testid="mcp-account-setup">
           {requiresOAuthClient && !clientSetup && (
             <p className="text-s fg-secondary">
               {mcpConnectErrorMessage('client_credentials_required')}
@@ -2168,28 +2165,30 @@ export function McpServerDialog({
           ) : (
             <p className="text-s fg-secondary">{unsupportedMessage}</p>
           )}
-          <ErrorBanner error={error} />
-          <div className="flex justify-end gap-2">
-            <Button size="compact" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button
-              size="compact"
-              variant="primary"
-              onClick={connectAccount}
-              disabled={!supportedFields}
-            >
-              Connect
-            </Button>
-          </div>
-        </div>
+          <Stack gap="page">
+            <ErrorBanner className="" error={error} />
+            <div className="flex justify-end gap-2">
+              <Button size="compact" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button
+                size="compact"
+                variant="primary"
+                onClick={connectAccount}
+                disabled={!supportedFields}
+              >
+                Connect
+              </Button>
+            </div>
+          </Stack>
+        </Stack>
       </DialogModal>
     );
   }
 
   const serverTypeField = !cloudOnly && (
-    <div className="text-s">
-      <span className="mb-1.5 block fg-secondary">Server type</span>
+    <div className="flex flex-col gap-1.5 text-s">
+      <span className="block fg-secondary">Server type</span>
       <SegmentedControl<'command' | 'http'>
         label="Server type"
         value={serverType}
@@ -2469,49 +2468,50 @@ export function McpServerDialog({
         </div>
       )}
 
-      <div className="text-s">
-        <span className="mb-1.5 block fg-secondary">Headers</span>
-        {storedHeadersNote && effectiveScope === 'cloud' && (
-          <div
-            className="mb-2 flex items-center justify-between gap-2 text-xs fg-secondary"
-            data-testid="mcp-cloud-stored-headers"
-          >
-            <span>
-              {clearStoredHeaders
-                ? 'Stored headers are removed when you save.'
-                : 'Custom headers are stored in your cloud account. Add headers here to replace them.'}
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={(): void =>
-                setClearStoredHeaders((current): boolean => !current)
-              }
+      <div className="flex flex-col gap-1.5 text-s">
+        <span className="block fg-secondary">Headers</span>
+        <Stack gap="inline">
+          {storedHeadersNote && effectiveScope === 'cloud' && (
+            <div
+              className="flex items-center justify-between gap-2 text-xs fg-secondary"
+              data-testid="mcp-cloud-stored-headers"
             >
-              {clearStoredHeaders
-                ? 'Keep stored headers'
-                : 'Remove stored headers'}
-            </Button>
-          </div>
-        )}
-        {headersLeftInCloud && (
-          <Notice
-            role="none"
-            intent="attention"
-            className="mb-2"
-            data-testid="mcp-cloud-stored-headers"
-          >
-            {storedHeadersKnown
-              ? "Its stored headers can't be copied to this device. Enter them again here to keep them."
-              : "It may have stored headers, which can't be copied to this device. Enter them again here to keep them."}
-          </Notice>
-        )}
-        <KeyValueEditor
-          entries={headers}
-          onChange={setHeaders}
-          keyPlaceholder="Header-Name"
-          valuePlaceholder="header-value"
-        />
+              <span>
+                {clearStoredHeaders
+                  ? 'Stored headers are removed when you save.'
+                  : 'Custom headers are stored in your cloud account. Add headers here to replace them.'}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={(): void =>
+                  setClearStoredHeaders((current): boolean => !current)
+                }
+              >
+                {clearStoredHeaders
+                  ? 'Keep stored headers'
+                  : 'Remove stored headers'}
+              </Button>
+            </div>
+          )}
+          {headersLeftInCloud && (
+            <Notice
+              role="none"
+              intent="attention"
+              data-testid="mcp-cloud-stored-headers"
+            >
+              {storedHeadersKnown
+                ? "Its stored headers can't be copied to this device. Enter them again here to keep them."
+                : "It may have stored headers, which can't be copied to this device. Enter them again here to keep them."}
+            </Notice>
+          )}
+          <KeyValueEditor
+            entries={headers}
+            onChange={setHeaders}
+            keyPlaceholder="Header-Name"
+            valuePlaceholder="header-value"
+          />
+        </Stack>
       </div>
 
       {curatedRequiresProvider && (
@@ -2527,7 +2527,7 @@ export function McpServerDialog({
       {/* OAuth section (HTTP only, for locally managed public clients) */}
       {!curatedRequiresProvider && !cloudOnlyInCloud && (
         <Surface variant="group" padding="compact">
-          <div className="space-y-3">
+          <div className="flex flex-col gap-3">
             <ChoiceField
               checked={oauthForm.enabled}
               onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
@@ -2544,7 +2544,7 @@ export function McpServerDialog({
             {oauthForm.enabled && (
               <div>
                 <Divider />
-                <div className="space-y-3 pt-3">
+                <div className="flex flex-col gap-3 pt-3">
                   {oauthForm.enabled && hasAnyAuthTokenConfigured(configs) && (
                     <Notice
                       role="none"
@@ -2580,7 +2580,7 @@ export function McpServerDialog({
 
                   {oauthForm.advancedOpen && (
                     <Surface variant="group" size="small">
-                      <div className="space-y-3 p-3">
+                      <div className="flex flex-col gap-3 p-3">
                         <p className="text-xs fg-secondary">
                           Fill these only when OAuth discovery or dynamic
                           registration is unavailable for this MCP server.
@@ -2611,11 +2611,11 @@ export function McpServerDialog({
                           />
                         </DialogFormField>
 
-                        <div className="text-xs">
+                        <div className="flex flex-col gap-1 text-xs">
                           <p className="fg-secondary">
                             Standalone saved client secrets are not supported.
                           </p>
-                          <p className="mt-1 text-2xs fg-secondary">
+                          <p className="text-2xs fg-secondary">
                             {brandText.appName} stores standalone MCP server
                             definitions on disk, so this editor only supports
                             public-client OAuth metadata plus PKCE.
@@ -2757,8 +2757,8 @@ export function McpServerDialog({
   const configurationsField = !cloudOnlyInCloud && (
     <div>
       <Divider />
-      <div className="pt-4">
-        <div className="flex items-center justify-between mb-3">
+      <div className="flex flex-col gap-3 pt-4">
+        <div className="flex items-center justify-between">
           <span className="text-s font-medium fg-primary">Configurations</span>
           <Button
             size="compact"
@@ -2769,24 +2769,27 @@ export function McpServerDialog({
           </Button>
         </div>
 
-        {configs.length === 0 && (
-          <p className="text-xs fg-secondary py-3 text-center">
-            No configurations. Add one to define environment-specific settings.
-          </p>
-        )}
+        <div>
+          {configs.length === 0 && (
+            <p className="text-xs fg-secondary py-3 text-center">
+              No configurations. Add one to define environment-specific
+              settings.
+            </p>
+          )}
 
-        <div className="space-y-2">
-          {configs.map((config, index) => (
-            <ConfigEditor
-              key={config.id || `new-${index}`}
-              config={config}
-              initialExpanded={expandedNewIds.has(config.id)}
-              onChange={(updated: McpServerConfigView) =>
-                handleUpdateConfig(index, updated)
-              }
-              onDelete={() => handleDeleteConfig(index)}
-            />
-          ))}
+          <div className="flex flex-col gap-2">
+            {configs.map((config, index) => (
+              <ConfigEditor
+                key={config.id || `new-${index}`}
+                config={config}
+                initialExpanded={expandedNewIds.has(config.id)}
+                onChange={(updated: McpServerConfigView) =>
+                  handleUpdateConfig(index, updated)
+                }
+                onDelete={() => handleDeleteConfig(index)}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -2956,7 +2959,7 @@ export function McpServerDialog({
 
           {/* Test connection result */}
           {testResult && (
-            <div className="space-y-2">
+            <Stack gap="inline">
               <Notice
                 intent={testResult.success ? 'positive' : 'destructive'}
                 title={testResult.success ? 'Connected' : "Couldn't connect"}
@@ -2974,23 +2977,18 @@ export function McpServerDialog({
                 {testResult.message}
               </Notice>
               {testResult.tools && testResult.tools.length > 0 && (
-                <div className="text-xs">
-                  <p className="fg-secondary mb-1">
+                <div className="flex flex-col text-xs gap-1">
+                  <p className="fg-secondary">
                     Available tools ({testResult.tools.length}):
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {testResult.tools.map((tool: string) => (
-                      <span
-                        key={tool}
-                        className="inline-block rounded bg-secondary px-1.5 py-0.5 text-3xs fg-primary"
-                      >
-                        {tool}
-                      </span>
+                      <Badge key={tool}>{tool}</Badge>
                     ))}
                   </div>
                 </div>
               )}
-            </div>
+            </Stack>
           )}
 
           {!customCreate && serverTypeField}
@@ -3305,12 +3303,9 @@ export function McpServerDetailOverlay({
       title={def?.name ?? 'MCP server'}
       titleId="mcp-detail-overlay-title"
       onBack={onBack}
+      badgeGap="group"
       badge={
-        def ? (
-          <span className="ml-2 px-2 py-0.5 text-3xs font-medium rounded bg-secondary fg-secondary">
-            {def.type === 'http' ? 'HTTP' : 'Command'}
-          </span>
-        ) : null
+        def ? <Badge>{def.type === 'http' ? 'HTTP' : 'Command'}</Badge> : null
       }
     >
       {loading && (
@@ -3322,7 +3317,7 @@ export function McpServerDetailOverlay({
       {error && <Notice intent="destructive">{error}</Notice>}
 
       {def && !loading && (
-        <>
+        <Stack gap="group">
           <InstalledEntryStatusSection
             entry={{
               state: 'installed',
@@ -3333,11 +3328,11 @@ export function McpServerDetailOverlay({
           />
           {/* Description */}
           {def.description && (
-            <p className="text-s fg-secondary mb-4">{def.description}</p>
+            <p className="text-s fg-secondary">{def.description}</p>
           )}
 
           {/* Connection details */}
-          <Surface variant="group" className="mb-4">
+          <Surface variant="group">
             <div className="px-4 py-3">
               <McpConnectionFacts
                 type={def.type === 'command' ? 'command' : 'http'}
@@ -3362,7 +3357,7 @@ export function McpServerDetailOverlay({
             error={null}
             serverData={server}
           />
-        </>
+        </Stack>
       )}
     </BackDetailOverlayShell>
   );

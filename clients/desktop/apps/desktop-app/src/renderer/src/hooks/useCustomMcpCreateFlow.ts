@@ -3,7 +3,7 @@ import type {
   McpServerFileView,
   McpServerStatusEntry,
   SaveMcpServerRequest,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { extractIpcErrorMessage } from '@/lib/errors';
 
 const SIGN_IN_POLL_INTERVAL_MS = 1_500;

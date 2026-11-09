@@ -1,9 +1,9 @@
-import type { Pipeline } from '@canopy/desktop-shared/types/pipeline';
+import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import {
   getJobOrder,
   normalizeNeeds,
   parseLogFormatHint,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   MAX_ITERATIONS_LIMIT,
   MAX_RETRIES_LIMIT,
@@ -14,7 +14,7 @@ import { normalizePipelineScopes } from '@canopy/desktop-shared/pipelines/scope'
 import { normalizePipelineRunTarget } from '@canopy/desktop-shared/pipelines/target';
 import { normalizeMatrixStrategy } from '@canopy/desktop-shared/pipelines/matrix';
 import { resolveKnownModel } from '@canopy/desktop-shared/types';
-import { AGENT_MODEL_PREFIX } from '@canopy/desktop-shared/types/agent-models';
+import { AGENT_MODEL_PREFIX } from '@canopy/execution-engine/types/agent-models';
 import {
   declaredPipelineAssetIds,
   findPipelineAssetReferences,

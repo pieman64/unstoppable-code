@@ -56,7 +56,10 @@ export function CreatePipelineSplitButton({
       >
         New workflow
       </button>
-      <span aria-hidden="true" className="my-1.5 w-px bg-current opacity-30" />
+      <span
+        aria-hidden="true"
+        className="h-4 w-px self-center bg-current opacity-30"
+      />
       <button
         ref={chevronRef}
         type="button"

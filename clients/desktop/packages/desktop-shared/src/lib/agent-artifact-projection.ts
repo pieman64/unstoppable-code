@@ -26,7 +26,7 @@ import {
 import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   getCanonicalCanopyToolKey,
-} from './canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   APP_ADVISOR_TOOL_REGISTRY,
   getCanonicalAppAdvisorToolKey,

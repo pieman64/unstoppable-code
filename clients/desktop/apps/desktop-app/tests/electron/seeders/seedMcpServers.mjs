@@ -8,7 +8,7 @@ import { writeJson } from './fsHelpers.mjs';
  *   - `mcp-servers/index.json`            (`McpServersIndexFile`)
  *   - `mcp-servers/server-<id>.json`      (`McpServerFile`, one per server)
  *
- * Shapes (`packages/desktop-shared/src/types/mcp-servers.ts`):
+ * Shapes (`packages/execution-engine/src/types/mcp-servers.ts`):
  *   McpServersIndexFile = { version: 1, servers: McpServerIndexEntry[] }
  *   McpServerFile       = { version: 1, server: McpServerData }
  *   McpServerData       = { definition: McpServerDefinitionData,
@@ -22,11 +22,11 @@ import { writeJson } from './fsHelpers.mjs';
  *
  * @param {object} options
  * @param {string} options.userDataDir absolute CANOPY_DATA_DIR
- * @param {import('@canopy/desktop-shared/types/mcp-servers').McpServerData[]} options.servers
+ * @param {import('@canopy/execution-engine/types/mcp-servers').McpServerData[]} options.servers
  * @returns {{
  *   indexFilePath: string,
  *   serverFilePaths: Record<string, string>,
- *   index: import('@canopy/desktop-shared/types/mcp-servers').McpServersIndexFile,
+ *   index: import('@canopy/execution-engine/types/mcp-servers').McpServersIndexFile,
  * }}
  */
 export function seedMcpServers(options) {

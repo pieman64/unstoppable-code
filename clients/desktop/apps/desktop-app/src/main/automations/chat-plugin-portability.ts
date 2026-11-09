@@ -10,7 +10,7 @@ import type {
   ChatPluginSelection,
 } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
-import type { PipelinePluginDefault } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePluginDefault } from '@canopy/execution-engine/types/pipeline';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
   loadShareablePluginCatalog,

@@ -3,12 +3,15 @@ import {
   type GitRepositoryRead,
 } from '@canopy/core-runtime/node/git';
 import type { GitReadCommand } from '../git-read/commands';
+import type { GitReadOutput } from '../git-read/runner';
+import { createChildServices } from '../supervision/child';
 import {
   createWorld,
   fakeHost,
   type FakeHost,
   output,
   type World,
+  worldRunner,
 } from './git-read-host-fakes';
 
 // CAN-5138: the host's worker.git repository reads and executable selection
@@ -409,6 +412,298 @@ describe('executable selection facts', () => {
       override: false,
     });
     expect(world.probes).toEqual([]);
+  });
+
+  it('reports Windows precedence, winget and existing unusable candidates without changing preferences', async () => {
+    const saved = 'C:\\Saved Git\\git.exe';
+    const override = 'C:\\Override Git\\git.exe';
+    const discovered = 'C:\\Discovered Git\\git.exe';
+    const world = createWorld('win32', {
+      whereExe: {
+        git: `${discovered}\r\n${discovered.toUpperCase()}\r\n`,
+        winget: 'C:\\winget.exe\r\n',
+      },
+      filesystem: {
+        [saved]: version('2.48.0.windows.1'),
+        [override]: version('2.49.0.windows.1'),
+        [discovered]: version('2.50.0.windows.1'),
+      },
+    });
+    const localAppData = 'C:\\Users\\Test User\\AppData\\Local';
+    const windowsApps = `${localAppData}\\Microsoft\\WindowsApps`;
+    const environment: Record<string, string> = {
+      ...createChildServices('win32').childEnvironment({
+        source: {
+          SystemRoot: 'C:\\Windows',
+          USERPROFILE: 'C:\\Users\\Test User',
+          APPDATA: 'C:\\Users\\Test User\\AppData\\Roaming',
+          LOCALAPPDATA: localAppData,
+          Path: `${windowsApps};C:\\User Git`,
+        },
+      }),
+      canopy_git_executable: override,
+    };
+    expect(environment.PATH).not.toContain(windowsApps);
+    const target = fakeHost(
+      world,
+      { environment },
+      {
+        createRunner: (options) => {
+          const runner = worldRunner(world)(options);
+          return {
+            ...runner,
+            async run(command, request): Promise<GitReadOutput> {
+              const result = await runner.run(command, request);
+              if (
+                command.kind === 'where-winget' &&
+                !request.environment.PATH?.split(';').includes(windowsApps)
+              )
+                return output('', 1);
+              return result;
+            },
+          };
+        },
+      },
+    );
+    await expect(select(target, saved)).resolves.toMatchObject({
+      origin: 'saved',
+      wingetAvailable: true,
+    });
+    delete world.filesystem[saved];
+    await expect(select(target, saved)).resolves.toMatchObject({
+      origin: 'override',
+      wingetAvailable: true,
+    });
+    world.filesystem[override] = { kind: 'directory' };
+    await expect(select(target, saved, true)).resolves.toMatchObject({
+      origin: 'discovered',
+    });
+    world.filesystem[discovered] = {
+      kind: 'executable',
+      stdout: 'usage: not-git\n',
+    };
+    await expect(select(target, saved, true)).resolves.toEqual({
+      ready: false,
+      code: 'selection_rejected',
+      explicit: false,
+      wingetAvailable: true,
+    });
+    delete world.filesystem[override];
+    delete world.filesystem[discovered];
+    delete world.whereExe.winget;
+    await expect(select(target, saved)).resolves.toEqual({
+      ready: false,
+      code: 'git_unavailable',
+      explicit: false,
+      wingetAvailable: false,
+    });
+    expect(
+      world.ran.filter((candidate) => candidate === discovered.toUpperCase()),
+    ).toEqual([]);
+    for (const { command, environment: observed } of world.probes)
+      if (command.kind !== 'where-winget')
+        expect(observed).toEqual(environment);
+  });
+
+  it.each(['relative/git.exe', 'C:\\Git\\not-git.exe'])(
+    'reports invalid Windows explicit candidate %s as unusable, not absent',
+    async (saved) => {
+      await expect(
+        select(fakeHost(createWorld('win32')), saved, true),
+      ).resolves.toMatchObject({
+        ready: false,
+        code: 'selection_rejected',
+        explicit: false,
+        wingetAvailable: false,
+      });
+    },
+  );
+
+  it('reports Windows stat failures as missing during detection, not selected-unusable', async () => {
+    const saved = 'C:\\Saved Git\\git.exe';
+    const world = createWorld('win32', {
+      filesystem: { [saved]: version('2.48.0') },
+    });
+    const target = fakeHost(world);
+    await expect(select(target, saved)).resolves.toMatchObject({ ready: true });
+    world.filesystem[saved] = { kind: 'eacces' };
+    await expect(select(target, saved)).resolves.toEqual({
+      ready: false,
+      code: 'git_unavailable',
+      explicit: false,
+      wingetAvailable: false,
+    });
+  });
+
+  it('reports a Windows candidate removed after successful stat as unusable', async () => {
+    const saved = 'C:\\Saved Git\\git.exe';
+    const world = createWorld('win32', {
+      filesystem: { [saved]: version('2.48.0.windows.1') },
+    });
+    let release = (): void => undefined;
+    let reached = (): void => undefined;
+    const held = new Promise<void>((done) => {
+      release = done;
+    });
+    const spawning = new Promise<void>((done) => {
+      reached = done;
+    });
+    const target = fakeHost(
+      world,
+      {},
+      {
+        createRunner: (options) => {
+          const runner = worldRunner(world)(options);
+          return {
+            ...runner,
+            run: async (command, request): Promise<GitReadOutput> => {
+              if (command.kind === 'git-version') {
+                reached();
+                await held;
+              }
+              return runner.run(command, request);
+            },
+          };
+        },
+      },
+    );
+    const pending = select(target, saved, true);
+    await spawning;
+    delete world.filesystem[saved];
+    release();
+    await expect(pending).resolves.toMatchObject({
+      ready: false,
+      code: 'selection_rejected',
+      explicit: false,
+    });
+  });
+
+  it('revalidates Windows facts without a rejection TTL and does not join a forced recheck', async () => {
+    const saved = 'C:\\Saved Git\\git.exe';
+    const world = createWorld('win32', {
+      filesystem: { [saved]: version('2.48.0.windows.1') },
+    });
+    const target = fakeHost(world);
+    const facts = (): ReturnType<typeof select> => select(target, saved);
+    await facts();
+    const first = world.ran.length;
+    await facts();
+    expect(world.ran.length).toBe(first + 1);
+    world.filesystem[saved] = {
+      kind: 'executable',
+      stdout: 'git version 2.48.0.windows.1\n',
+      transient: 'timeout',
+    };
+    await expect(select(target, saved, true)).resolves.toMatchObject({
+      ready: false,
+      code: 'selection_rejected',
+    });
+    world.filesystem[saved] = version('2.48.0.windows.1');
+    await expect(select(target, saved, true)).resolves.toMatchObject({
+      ready: true,
+    });
+
+    let release = (): void => undefined;
+    let firstStarted = (): void => undefined;
+    let secondStarted = (): void => undefined;
+    const held = new Promise<void>((done) => {
+      release = done;
+    });
+    const firstProbe = new Promise<void>((done) => {
+      firstStarted = done;
+    });
+    const secondProbe = new Promise<void>((done) => {
+      secondStarted = done;
+    });
+    let probes = 0;
+    const concurrent = fakeHost(
+      world,
+      {},
+      {
+        createRunner: (options) => {
+          const runner = worldRunner(world)(options);
+          return {
+            ...runner,
+            run: async (command, request): Promise<GitReadOutput> => {
+              if (command.kind === 'git-version') {
+                probes += 1;
+                if (probes === 1) firstStarted();
+                if (probes === 2) secondStarted();
+                await held;
+              }
+              return runner.run(command, request);
+            },
+          };
+        },
+      },
+    );
+    const pending = select(concurrent, saved);
+    await firstProbe;
+    const joined = select(concurrent, saved);
+    const forced = select(concurrent, saved, true);
+    await secondProbe;
+    release();
+    await expect(pending).resolves.toMatchObject({ ready: true });
+    await expect(joined).resolves.toMatchObject({ ready: true });
+    await expect(forced).resolves.toMatchObject({ ready: true });
+    expect(probes).toBe(2);
+  });
+
+  it('keeps the newer forced Windows detection after the older finishes last', async () => {
+    const saved = 'C:\\Saved Git\\git.exe';
+    const world = createWorld('win32', {
+      filesystem: { [saved]: version('2.48.0.windows.1') },
+    });
+    let release = (): void => {};
+    let started = (): void => {};
+    const held = new Promise<void>((done) => {
+      release = done;
+    });
+    const reached = new Promise<void>((done) => {
+      started = done;
+    });
+    let versions = 0;
+    const target = fakeHost(
+      world,
+      {},
+      {
+        createRunner: (options) => {
+          const runner = worldRunner(world)(options);
+          return {
+            ...runner,
+            run: async (command, request): Promise<GitReadOutput> => {
+              if (command.kind !== 'git-version')
+                return runner.run(command, request);
+              versions += 1;
+              if (versions === 1) {
+                started();
+                await held;
+                return output('git version 2.40.0.windows.1');
+              }
+              return output('git version 2.50.0.windows.1');
+            },
+          };
+        },
+      },
+    );
+    const facts = (): ReturnType<typeof select> =>
+      target.host.repository.selectExecutable({
+        readSavedExecutablePath: () => Promise.resolve(saved),
+        signal: neverAborted(),
+        recheck: true,
+      });
+    const older = facts();
+    await reached;
+    await expect(facts()).resolves.toMatchObject({
+      version: 'git version 2.50.0.windows.1',
+    });
+    release();
+    await expect(older).resolves.toMatchObject({
+      version: 'git version 2.40.0.windows.1',
+    });
+    await target.resolve(saved);
+    expect(world.checks.at(-1)?.version).toBe('git version 2.50.0.windows.1');
+    expect(versions).toBe(2);
   });
 
   it('reports a stopped host as a failure, writing nothing', async () => {

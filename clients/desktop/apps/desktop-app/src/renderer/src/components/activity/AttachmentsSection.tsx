@@ -19,6 +19,7 @@ import {
   type DesktopFilesGuestGate,
 } from '@/hooks/useDesktopFilesGuestGate';
 import {
+  Stack,
   AttachmentDropZone,
   AttachmentItemRow,
   HeaderActionButton,
@@ -472,7 +473,7 @@ function AuthenticatedAttachmentsSection({
             testId="workspace-attachments-empty-dropzone"
           />
         ) : (
-          <div className="space-y-1">
+          <Stack gap="tight">
             {attachments.map((attachment) => (
               <AttachmentRow
                 key={attachment.filename}
@@ -496,7 +497,7 @@ function AuthenticatedAttachmentsSection({
                 onMouseLeave={popoverMouseLeave}
               />
             )}
-          </div>
+          </Stack>
         )}
       </div>
     </PanelSection>

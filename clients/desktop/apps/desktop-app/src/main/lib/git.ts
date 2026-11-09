@@ -1,3 +1,7 @@
+import {
+  classifyGitError,
+  rethrowClassifiedGitError,
+} from './git-error-classification';
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -34,6 +38,9 @@ import type {
   ListBranchesResponse,
 } from '@canopy/desktop-shared/types';
 import {
+  addGitWorktree,
+  classifyWorktreeAddFailure,
+  readGitHeadState,
   appendBranchSuffix,
   checkoutGitBranch,
   createGitBranch,
@@ -252,10 +259,12 @@ async function runGit(
               trimmedStderr && baseMessage.includes(trimmedStderr),
             );
             reject(
-              new Error(
-                trimmedStderr && !messageIncludesStderr
-                  ? `${baseMessage}\n${trimmedStderr}`
-                  : baseMessage,
+              classifyGitError(
+                new Error(
+                  trimmedStderr && !messageIncludesStderr
+                    ? `${baseMessage}\n${trimmedStderr}`
+                    : baseMessage,
+                ),
               ),
             );
             return;
@@ -297,7 +306,7 @@ async function runGit(
   if (launch.lowerPriorityAfterSpawn && typeof pending.child.pid === 'number') {
     lowerSpawnedProcessPriority(pending.child.pid);
   }
-  const { stdout } = await pending;
+  const { stdout } = await pending.catch(rethrowClassifiedGitError);
 
   return options?.preserveWhitespace ? stdout : stdout.trim();
 }
@@ -321,7 +330,7 @@ async function runGitRaw(
       maxBuffer: 1024 * 1024 * 8,
       windowsHide: process.platform === 'win32',
     },
-  );
+  ).catch(rethrowClassifiedGitError);
   return stdout;
 }
 
@@ -330,7 +339,7 @@ async function runGitBuffer(
   cwd?: string,
   options?: { disableReplaceObjects?: boolean },
 ): Promise<Buffer> {
-  const { stdout } = (await execFileAsync(
+  const { stdout } = await execFileAsync(
     await getResolvedGitExecutableForSpawn(),
     args,
     {
@@ -345,7 +354,7 @@ async function runGitBuffer(
       maxBuffer: MAX_IMAGE_DIFF_PREVIEW_BYTES + 1024,
       windowsHide: process.platform === 'win32',
     },
-  )) as { stdout: Buffer | string };
+  ).catch(rethrowClassifiedGitError);
 
   return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
 }
@@ -360,7 +369,7 @@ async function runGitUntrimmedBuffer(
     args,
     false,
   );
-  const { stdout } = (await execFileAsync(launch.command, launch.args, {
+  const { stdout } = await execFileAsync(launch.command, launch.args, {
     cwd,
     env: withGitRequestContextEnv(
       getEnhancedEnv({ includeCanopySecrets: false, environment: false }),
@@ -370,7 +379,7 @@ async function runGitUntrimmedBuffer(
     timeout: options.timeoutMs,
     signal: options.signal,
     windowsHide: process.platform === 'win32',
-  })) as { stdout: Buffer | string };
+  }).catch(rethrowClassifiedGitError);
   return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
 }
 
@@ -2850,10 +2859,22 @@ async function readBranchListWorktrees(
 export function gitBranchListReads(worktreePath: string): {
   readBranchRefs(): Promise<string>;
   readWorktreeList(): Promise<{ output: string; checkoutPath: string }>;
+  readHeadUnborn(): Promise<boolean | undefined>;
 } {
   return {
     readBranchRefs: () => runGit([...GIT_BRANCH_LIST_REF_ARGS], worktreePath),
     readWorktreeList: () => readBranchListWorktrees(worktreePath),
+    readHeadUnborn: async () =>
+      (
+        await readGitHeadState(worktreePath, {
+          verifyCommit: () =>
+            runGit(
+              ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'],
+              worktreePath,
+              { timeoutMs: 2000, maxBuffer: 4096 },
+            ),
+        })
+      ).headUnborn,
   };
 }
 
@@ -2942,49 +2963,32 @@ export async function createWorktree(
   branchName: string,
   options: { backgroundPriority?: boolean } = {},
 ): Promise<string> {
-  // Best-effort fetch and default-branch detection in parallel
-  const [, defaultBranch] = await Promise.all([
-    fetchOrigin(repoPath, {
-      backgroundPriority: options.backgroundPriority,
-    }),
-    getRemoteDefaultBranch(repoPath, { preferRemote: true }),
-  ]);
-  const startPoint = defaultBranch ? `origin/${defaultBranch}` : null;
-
-  const branchExists = await doesLocalBranchExist(repoPath, branchName);
-
-  if (branchExists) {
-    await runGit(
-      disableGitHooks(['worktree', 'add', worktreePath, branchName]),
-      repoPath,
-      { backgroundPriority: options.backgroundPriority },
-    );
-    return branchName;
-  }
-
-  const resolvedName = await safeBranchName(repoPath, branchName);
-  if (startPoint) {
-    await runGit(
-      disableGitHooks([
-        'worktree',
-        'add',
-        '-b',
-        resolvedName,
-        worktreePath,
-        startPoint,
-      ]),
-      repoPath,
-      { backgroundPriority: options.backgroundPriority },
-    );
-  } else {
-    await runGit(
-      disableGitHooks(['worktree', 'add', '-b', resolvedName, worktreePath]),
-      repoPath,
-      { backgroundPriority: options.backgroundPriority },
-    );
-  }
-
-  return resolvedName;
+  return addGitWorktree(
+    {
+      fetch: () =>
+        fetchOrigin(repoPath, {
+          backgroundPriority: options.backgroundPriority,
+        }),
+      defaultBranch: () =>
+        getRemoteDefaultBranch(repoPath, { preferRemote: true }),
+      localBranchExists: (branch) => doesLocalBranchExist(repoPath, branch),
+      availableBranchName: (branch) => safeBranchName(repoPath, branch),
+      add: async (branch, startPoint, create) => {
+        await runWorktreeAdd(
+          disableGitHooks([
+            'worktree',
+            'add',
+            ...(create ? ['-b', branch, worktreePath] : [worktreePath, branch]),
+            ...(create && startPoint ? [startPoint] : []),
+          ]),
+          repoPath,
+          create ? (startPoint ?? 'HEAD') : branch,
+          options,
+        );
+      },
+    },
+    branchName,
+  );
 }
 
 /**
@@ -3042,7 +3046,7 @@ export async function createWorktreeFromStartPoint(
   options: { backgroundPriority?: boolean } = {},
 ): Promise<string> {
   const resolvedName = await safeBranchName(repoPath, branchName);
-  await runGit(
+  await runWorktreeAdd(
     disableGitHooks([
       'worktree',
       'add',
@@ -3052,9 +3056,30 @@ export async function createWorktreeFromStartPoint(
       startPoint,
     ]),
     repoPath,
-    { backgroundPriority: options.backgroundPriority },
+    startPoint,
+    options,
   );
   return resolvedName;
+}
+
+/** Preserve successful creation cost; diagnose only the failed add itself. */
+async function runWorktreeAdd(
+  args: string[],
+  repoPath: string,
+  startPoint: string,
+  options: { backgroundPriority?: boolean },
+): Promise<void> {
+  try {
+    await runGit(args, repoPath, options);
+  } catch (error) {
+    await classifyWorktreeAddFailure(error, repoPath, startPoint, () =>
+      runGit(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], repoPath, {
+        timeoutMs: 2000,
+        maxBuffer: 4096,
+      }),
+    );
+    throw error;
+  }
 }
 
 export function parseWorktreeListPorcelain(

@@ -6,7 +6,7 @@ import {
 } from '@/components/activity/PipelineTriggerModal';
 import type { PipelineExecutionScope } from '@canopy/protocol/pipelines';
 import type { PipelineWatcherSelection } from '@/components/activity/usePipelineRunWatcher';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import type { WatcherRecipientGroup } from '@/components/watchers/WatcherRecipientPicker';
 
 interface TaskReadyPipelineModalProps {

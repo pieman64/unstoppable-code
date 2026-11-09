@@ -13,6 +13,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { PinUserMessagesContext } from '@/components/chat/pin-user-messages-context';
 import { WorktreeChatSurface } from '@/components/chat/WorktreeChatSurface';
+import { WorktreeGitActionError } from '@/components/github/WorktreeGitActionError';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { readUiZoomFactor } from '@/lib/ui-zoom-factor';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
@@ -270,6 +271,12 @@ export function AppAdvisorFloatingSurface({
         // A panel this small has no room for a pinned prompt over the
         // reply, so its user messages scroll with the rest.
         <PinUserMessagesContext.Provider value={false}>
+          {/* A failed git or GitHub action from this chat, above it as under
+              the expanded view's top bar. */}
+          <WorktreeGitActionError
+            projectId={APP_ADVISOR_PROJECT_ID}
+            worktreeId={activeWorkEntryId}
+          />
           <WorktreeChatSurface
             chatTabId={activeChatId}
             worktreeSelection={{

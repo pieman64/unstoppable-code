@@ -1,3 +1,4 @@
+import { Stack } from '../Stack';
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { ChevronDownIcon, ChevronRightIcon } from '../../icons';
 import type {
@@ -104,7 +105,7 @@ export function TurnGroup({
   if (reverted && isRevertedCollapsed) {
     return (
       <div
-        className="-ml-3 space-y-2 border-l-2 border-line-attention/40 pl-3 opacity-60"
+        className="-ml-3 flex flex-col gap-2 border-l-2 border-line-attention/40 pl-3 opacity-60"
         aria-label="Reverted turn"
         data-testid={dataTestId}
         data-reverted="true"
@@ -170,7 +171,7 @@ export function TurnGroup({
           />
           {!isCollapsed && (
             <div
-              className="animate-collapse-in space-y-2"
+              className="animate-collapse-in flex flex-col gap-2"
               data-testid="turn-group-intermediate-region"
             >
               {intermediateBlocks}
@@ -178,9 +179,9 @@ export function TurnGroup({
           )}
         </>
       ) : hasIntermediate ? (
-        <div className="space-y-2" data-testid="turn-group-intermediate-region">
+        <Stack gap="inline" data-testid="turn-group-intermediate-region">
           {intermediateBlocks}
-        </div>
+        </Stack>
       ) : null}
 
       {finalBlocks}
@@ -192,7 +193,7 @@ export function TurnGroup({
   if (reverted) {
     return (
       <div
-        className="-ml-3 space-y-2 border-l-2 border-line-attention/40 pl-3 opacity-60"
+        className="-ml-3 flex flex-col gap-2 border-l-2 border-line-attention/40 pl-3 opacity-60"
         aria-label="Reverted turn"
         data-testid={dataTestId}
         data-reverted="true"
@@ -204,8 +205,8 @@ export function TurnGroup({
   }
 
   return (
-    <div data-testid={dataTestId} className="space-y-2">
+    <Stack data-testid={dataTestId} gap="inline">
       {content}
-    </div>
+    </Stack>
   );
 }

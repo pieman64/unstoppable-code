@@ -1,11 +1,12 @@
 import type { JSX, ReactNode } from 'react';
 import {
+  Stack,
   SettingsRowsGroup,
   SettingsRowsRow,
   SettingsRowsSection,
   SettingsRowsValue,
 } from '@canopy/ui-shared/components';
-import type { AgentModelDefinition } from '@canopy/desktop-shared/types/agent-models';
+import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
 import { getAgentModelAvailability } from '@canopy/desktop-shared/types';
 import {
   AgentDefinitionSummary,
@@ -47,7 +48,7 @@ export function LocalAgentMarketplaceDetail({
 }: LocalAgentMarketplaceDetailProps): JSX.Element {
   const available = getAgentModelAvailability(agent.id).available;
   return (
-    <div className="space-y-6" data-testid="local-agent-marketplace-detail">
+    <Stack gap="section" data-testid="local-agent-marketplace-detail">
       <DetailPageActions
         secondary={
           <ExecutionActionButton
@@ -122,6 +123,6 @@ export function LocalAgentMarketplaceDetail({
           plugins={agentPluginLabels(agent)}
         />
       </div>
-    </div>
+    </Stack>
   );
 }

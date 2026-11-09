@@ -3,7 +3,7 @@ import { useState, type JSX } from 'react';
 import type {
   ExecutionState,
   PipelineStatusReason,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { ScheduleIcon } from '@canopy/ui-shared/icons';
 import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
@@ -218,8 +218,8 @@ function StatusReasonPanel({
 
   return (
     <Notice
+      className=""
       intent="attention"
-      className="mb-4"
       title={executionStatus === 'running' ? 'Steps paused' : 'Run paused'}
       detail={
         error || scheduleError

@@ -2,7 +2,7 @@ import {
   clearCodexAccountModels,
   setCodexAccountModels,
 } from '@canopy/desktop-shared/types';
-import type { CodexSpeedCatalog } from '@canopy/desktop-shared/types/codex-speed-capabilities';
+import type { CodexSpeedCatalog } from '@canopy/execution-engine/types/codex-speed-capabilities';
 import { subscribeCodexSpeedCatalog } from './codex-account-models';
 
 /**

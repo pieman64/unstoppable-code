@@ -1,4 +1,4 @@
-import type { ToastMeta } from '@/stores/githubStore';
+import type { ToastMeta } from '@/stores/toastStore';
 
 /** Sample toasts for the development-only bench on the Notice states page. */
 type ToastType = 'error' | 'info' | 'success' | 'warning';

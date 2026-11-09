@@ -11,7 +11,7 @@ import path from 'node:path';
 import {
   damagedCopiesOf,
   pruneDamagedCopies,
-} from '@canopy/desktop-shared/node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import { writeFileAtomically } from '../lib/atomic-file';
 import {
   COST_BILLING_BASES,

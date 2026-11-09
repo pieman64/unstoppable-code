@@ -323,7 +323,7 @@ function QuietParticipationLabel({
         type="button"
         data-settings-control="disclosure"
         data-testid={`memory-participation-quiet-${userId}`}
-        className="cursor-default text-left text-xs fg-secondary"
+        className="text-left text-xs fg-secondary"
       >
         No recent chat contributions
       </button>

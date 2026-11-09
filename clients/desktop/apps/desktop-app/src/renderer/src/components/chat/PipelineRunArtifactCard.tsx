@@ -13,7 +13,7 @@ import type { PipelineRunArtifactReceiptV1 } from '@canopy/desktop-shared/types'
 import type {
   ExecutionState,
   PipelineData,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   PipelineRunBreadcrumbEntry,
   PipelineRunPauseResponse,

@@ -7,7 +7,7 @@ import type {
   PipelineAdvisorInefficiency,
   PipelineAdvisorReport,
   PipelineAdvisorSnapshot,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   advisorErrorIsStale,
   formatAdvisorEta,
@@ -99,11 +99,11 @@ function AdvisorPreviewContent({
   const errorMessage = stale ? snapshot.lastError?.message : undefined;
 
   return (
-    <span className="block leading-snug">
+    <span className="flex flex-col gap-1 leading-snug">
       <span className="block text-2xs font-semibold fg-secondary">
         Workflow Advisor
       </span>
-      <span className="mt-1.5 block">
+      <span className="block">
         <span className="block text-3xs font-medium fg-secondary/70">
           Health
         </span>
@@ -111,13 +111,13 @@ function AdvisorPreviewContent({
           {healthSummary}
         </PipelineAdvisorMarkdownText>
       </span>
-      <span className="mt-1.5 block">
+      <span className="block">
         <span className="block text-3xs font-medium fg-secondary/70">ETA</span>
         <span className="mt-0.5 block break-words fg-primary/85">
           {etaText}
         </span>
       </span>
-      <span className="mt-1.5 block">
+      <span className="block">
         <span className="block text-3xs font-medium fg-secondary/70">
           Inefficiencies
         </span>
@@ -126,7 +126,7 @@ function AdvisorPreviewContent({
             No inefficiencies flagged.
           </span>
         ) : (
-          <span className="mt-0.5 block space-y-0.5">
+          <span className="mt-0.5 flex flex-col gap-0.5">
             {inefficiencies.slice(0, 2).map((item, index) => (
               <span
                 key={`${item.title}-${index}`}
@@ -144,7 +144,7 @@ function AdvisorPreviewContent({
         )}
       </span>
       {errorMessage ? (
-        <span className="mt-1.5 block break-words fg-warning">
+        <span className="block break-words fg-warning">
           Advisor update failed: {errorMessage}
         </span>
       ) : null}

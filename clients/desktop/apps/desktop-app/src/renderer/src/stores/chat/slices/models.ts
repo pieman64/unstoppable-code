@@ -27,9 +27,9 @@ import {
   isCodexSpeed,
   readCodexSpeedRecord,
   type CodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
-import { resolveOwnerScopedModelId } from '@canopy/desktop-shared/lib/gateway-model-availability';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+} from '@canopy/execution-engine/lib/codex-speed';
+import { resolveOwnerScopedModelId } from '@canopy/execution-engine/lib/gateway-model-availability';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import { getWorktreeChatContext, updateCapturedChatTab } from '../context';
 import {
   beginLocalCodexSpeedWrite,

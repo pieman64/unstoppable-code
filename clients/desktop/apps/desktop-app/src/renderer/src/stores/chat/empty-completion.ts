@@ -9,7 +9,7 @@
 // Nothing here ever retries on its own. `automaticRetryAllowed` is typed
 // `false` on the wire for exactly that reason, and both actions below are only
 // ever reached from an explicit click.
-import { USAGE_LIMIT_RESUME_CONTINUE_PROMPT } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { USAGE_LIMIT_RESUME_CONTINUE_PROMPT } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import type {
   ChatAttachmentPromptContext,
   EmptyCompletionRecovery,

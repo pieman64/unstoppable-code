@@ -9,7 +9,7 @@ import type {
 import type { ConfiguredPromptReference } from '@canopy/protocol/configured-prompt-references';
 import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
 import type { ConfigurationComposerContext } from '@/lib/configurationComposerTargets';
-import type { CodexSpeedRouteContext } from '@canopy/desktop-shared/types/codex-speed-capabilities';
+import type { CodexSpeedRouteContext } from '@canopy/execution-engine/types/codex-speed-capabilities';
 
 export interface ConfigurationChatComposerValue {
   prompt: string;

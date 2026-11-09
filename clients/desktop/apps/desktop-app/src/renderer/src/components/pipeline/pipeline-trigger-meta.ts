@@ -1,8 +1,6 @@
-import type { PipelineTriggerType } from '@canopy/desktop-shared/types/pipeline';
-import {
-  PIPELINE_FILTER_TRIGGERS,
-  PIPELINE_TRIGGER_LABELS,
-} from '@canopy/ui-shared/lib';
+import type { PipelineTriggerType } from '@canopy/execution-engine/types/pipeline';
+import { API_PIPELINE_TRIGGER_TYPES } from '@canopy/protocol/pipelines';
+import { PIPELINE_TRIGGER_LABELS } from '@canopy/ui-shared/lib';
 
 export interface TriggerMeta {
   label: string;
@@ -31,10 +29,16 @@ export const TRIGGER_META: Record<PipelineTriggerType, TriggerMeta> = {
     description: 'Runs when a task definition is ready for planning',
     badgeClass: 'bg-info-subtle fg-info',
   },
+  workflow: {
+    label: PIPELINE_TRIGGER_LABELS.workflow,
+    description: 'Runs from the Workflows page and its schedules',
+    badgeClass: 'bg-success-subtle fg-success',
+  },
 };
 
+/** Desktop's pipeline list can hold `workflow` pipelines, so it filters on every trigger. */
 export const TRIGGER_TYPES: readonly PipelineTriggerType[] =
-  PIPELINE_FILTER_TRIGGERS;
+  API_PIPELINE_TRIGGER_TYPES;
 
 export function getTriggerMeta(type: string): TriggerMeta | null {
   switch (type) {
@@ -44,6 +48,8 @@ export function getTriggerMeta(type: string): TriggerMeta | null {
       return TRIGGER_META.plan_ready;
     case 'task_ready':
       return TRIGGER_META.task_ready;
+    case 'workflow':
+      return TRIGGER_META.workflow;
     default:
       return null;
   }

@@ -295,7 +295,7 @@ export function ShareDialogFrame({
         stage.total > 0;
       return (
         <div
-          className="min-w-0 flex-1 space-y-1 pr-3"
+          className="min-w-0 flex-1 flex flex-col gap-1 pr-3"
           data-testid={`${p}-stage`}
         >
           <p className="truncate text-xs fg-secondary">
@@ -347,7 +347,7 @@ export function ShareDialogFrame({
       trapFocus
     >
       <div
-        className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 py-4"
+        className="grid grid-cols-1 content-start min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4 gap-4"
         data-testid={`${p}-body`}
       >
         {gated ? (
@@ -355,13 +355,9 @@ export function ShareDialogFrame({
         ) : (
           <>
             {notes}
-            {/*
-              `mx-0`, not `m-0`: the parent's `space-y-4` spaces `after` by
-              giving this fieldset a bottom margin, which `m-0` would win over.
-            */}
             <fieldset
               disabled={busy}
-              className="mx-0 min-w-0 space-y-4 border-0 p-0"
+              className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0"
               data-testid={`${p}-form`}
             >
               {scope}

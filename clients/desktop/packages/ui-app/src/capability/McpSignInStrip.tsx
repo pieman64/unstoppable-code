@@ -1,5 +1,6 @@
 'use client';
 
+import { Stack, type SpaceRole } from '@canopy/ui-shared/components/Stack';
 import type { McpServersSectionBodyProps } from '../code/activity/McpServersSectionBody';
 
 import { useId, useState, type JSX, type ReactNode } from 'react';
@@ -116,8 +117,11 @@ export interface McpSignInStripProps {
   readonly onCancelSignIn?: (server: McpServersSectionItem) => void;
   /** Host-owned content under a row: token or OAuth app prompts, errors. */
   readonly renderRowExtra?: (server: McpServersSectionItem) => ReactNode;
+  readonly rowExtraLayout?: McpServersSectionBodyProps['rowExtraLayout'];
   /** A failure with no row to sit on, shown under the summary. */
   readonly notice?: ReactNode;
+  /** Opt-in gap after and between margin-free notices; the summary keeps its existing boundary. */
+  readonly noticeGap?: SpaceRole;
   /**
    * The summary line for the rows still waiting, in display order. Defaults
    * to {@link mcpSignInSummary} of their names.
@@ -145,7 +149,9 @@ export function McpSignInStrip({
   onConnect,
   onCancelSignIn,
   renderRowExtra,
+  rowExtraLayout,
   notice,
+  noticeGap,
   summary,
   getRowNavigation,
   getRowSettings,
@@ -179,6 +185,53 @@ export function McpSignInStrip({
   )
     setObserved({ selection: selectionKey, keys, gap });
   if (pending.length === 0 && !notice && !loading && !gap) return null;
+  const summaryContent = (
+    <p
+      id={summaryId}
+      aria-live="polite"
+      data-testid={`${dataTestId}-summary`}
+      className="px-2 py-1.5 text-xs fg-secondary"
+    >
+      {pending.length === 0
+        ? 'Checking MCP sign-in details…'
+        : summary === undefined
+          ? selectedSummary(pending)
+          : summary(pending)}
+    </p>
+  );
+  const rowsContent = (
+    <>
+      {gap && notice === undefined && (
+        <Notice
+          intent="destructive"
+          role="status"
+          actions={
+            onRetryInventory ? (
+              <NoticeButton onClick={onRetryInventory}>Try again</NoticeButton>
+            ) : undefined
+          }
+        >
+          This MCP server is no longer available
+        </Notice>
+      )}
+      <McpServersSectionBody
+        servers={rows.map(stripRow)}
+        warnings={[]}
+        loading={loading}
+        error={null}
+        connectingKey={connectingKey}
+        showProxyToggle={false}
+        brandAppName=""
+        proxyLogo={null}
+        getRowNavigation={getRowNavigation}
+        getRowSettings={getRowSettings}
+        onConnect={onConnect}
+        onCancelSignIn={onCancelSignIn}
+        renderRowExtra={renderRowExtra}
+        rowExtraLayout={rowExtraLayout}
+      />
+    </>
+  );
   return (
     <ComposerDrawer
       edge="bottom"
@@ -187,49 +240,20 @@ export function McpSignInStrip({
       data-testid={dataTestId}
     >
       <ComposerDrawerSection>
-        <p
-          id={summaryId}
-          aria-live="polite"
-          data-testid={`${dataTestId}-summary`}
-          className="px-2 py-1.5 text-xs fg-secondary"
-        >
-          {pending.length === 0
-            ? 'Checking MCP sign-in details…'
-            : summary === undefined
-              ? selectedSummary(pending)
-              : summary(pending)}
-        </p>
-        {notice}
-        {gap && notice === undefined && (
-          <Notice
-            intent="destructive"
-            role="status"
-            actions={
-              onRetryInventory ? (
-                <NoticeButton onClick={onRetryInventory}>
-                  Try again
-                </NoticeButton>
-              ) : undefined
-            }
-          >
-            This MCP server is no longer available
-          </Notice>
+        {summaryContent}
+        {noticeGap === undefined ? (
+          <>
+            {notice}
+            {rowsContent}
+          </>
+        ) : (
+          <Stack gap={noticeGap}>
+            <Stack gap={noticeGap} className="empty:hidden">
+              {notice}
+            </Stack>
+            <div>{rowsContent}</div>
+          </Stack>
         )}
-        <McpServersSectionBody
-          servers={rows.map(stripRow)}
-          warnings={[]}
-          loading={loading}
-          error={null}
-          connectingKey={connectingKey}
-          showProxyToggle={false}
-          brandAppName=""
-          proxyLogo={null}
-          getRowNavigation={getRowNavigation}
-          getRowSettings={getRowSettings}
-          onConnect={onConnect}
-          onCancelSignIn={onCancelSignIn}
-          renderRowExtra={renderRowExtra}
-        />
       </ComposerDrawerSection>
     </ComposerDrawer>
   );

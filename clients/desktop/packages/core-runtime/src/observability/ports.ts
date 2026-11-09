@@ -1,5 +1,6 @@
 import type {
   AgentAuditEntry,
+  AgentAuditInterfaceToolCall,
   AgentAuditProvider,
   AgentAuditStatus,
   AgentTranscriptInjectedPrompt,
@@ -248,6 +249,27 @@ export interface AgentObservabilityIngest<
     worktreeId: string,
     chatId: string,
     turn: CanonicalChatTurnDuration,
+  ): void;
+  /**
+   * An interface lease received one agent tool call (CAN-5828): binds the
+   * call to the chat's open entry, the only entry its settlement can reach.
+   */
+  noteInterfaceToolCallDelivered(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    callId: string,
+  ): void;
+  /**
+   * Which interface lease answered one agent tool call (CAN-5828). Applies
+   * only to the entry that was open when the call was delivered, while it
+   * is still open.
+   */
+  recordInterfaceToolCall(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    call: AgentAuditInterfaceToolCall,
   ): void;
   recordInjectedPromptForOpenChatTurn(
     projectId: string,

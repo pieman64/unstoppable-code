@@ -1,6 +1,8 @@
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
 import {
   IPC_CHANNELS,
+  type HookPauseChangeRequest,
+  type HookPauseChangeResponse,
   type HookRunRequest,
   type HookRunResponse,
   type HookRunSnapshot,
@@ -16,6 +18,7 @@ import {
   type SetWorktreePausedHooksRequest,
 } from '@canopy/desktop-shared/types';
 import { validateId } from '../lib/validation';
+import { PortalServiceError } from '../services/portal-service-error';
 import { assertWritableScope } from '../lib/read-only-scope';
 import { registerIpcHandler } from './register';
 import {
@@ -26,6 +29,7 @@ import {
 import { inspectHookChatPluginDependencies } from '../lib/hook-chat-plugin-dependencies';
 import {
   cancelHook,
+  changeListedHookPause,
   loadWorktreeHookRuns,
   runHookCommand,
   saveProjectHooksFromService,
@@ -152,6 +156,52 @@ export function registerHookHandlers(
       _event,
       request: LoadWorktreeHookRunsRequest,
     ): Promise<HookRunSnapshot[]> => loadWorktreeHookRuns(request),
+  );
+
+  // Pause or resume one listed hook or every listed hook on the latest
+  // worktree row, as Portal's hook pause does (browser Remote Control,
+  // CAN-5985). An unknown hook or worktree is a definite refusal.
+  registerIpcHandler(
+    IPC_CHANNELS.hookChangePause,
+    async (
+      event,
+      request: HookPauseChangeRequest,
+    ): Promise<HookPauseChangeResponse> => {
+      const hookKey =
+        typeof request.hookKey === 'string' && request.hookKey.length > 0
+          ? request.hookKey
+          : undefined;
+      if (
+        (request.kind !== 'pause' && request.kind !== 'resume') ||
+        (hookKey !== undefined) === (request.all === true)
+      ) {
+        return {
+          ok: false,
+          code: 'invalid_payload',
+          error: 'Provide exactly one of hookKey or all: true.',
+        };
+      }
+      validateId(request.projectId, 'projectId');
+      validateId(request.worktreeId, 'worktreeId');
+      try {
+        const { pausedHookKeys } = await changeListedHookPause(
+          {
+            projectId: request.projectId,
+            worktreeId: request.worktreeId,
+            kind: request.kind,
+            selection: hookKey === undefined ? { all: true } : { hookKey },
+            source: 'desktop',
+          },
+          (change) => guardedCommands(event).setWorktreeHooksPaused(change),
+        );
+        return { ok: true, pausedHookKeys };
+      } catch (error) {
+        if (error instanceof PortalServiceError && error.code === 'not_found') {
+          return { ok: false, code: 'not_found', error: error.message };
+        }
+        throw error;
+      }
+    },
   );
 
   registerIpcHandler(

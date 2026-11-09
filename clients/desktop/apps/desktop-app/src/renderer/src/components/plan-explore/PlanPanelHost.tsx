@@ -28,7 +28,11 @@ import {
   type PlanFileVisibilityRef,
 } from '@/components/plan-explore/usePlanFileVisibilityLease';
 import { usePlanViewData } from '@/components/plan-explore/usePlanViewData';
-import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  EmptyState,
+} from '@canopy/ui-shared/components';
 import type { PlanPanelKind } from '@/lib/panels/plan-panel-identity';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 
@@ -49,12 +53,14 @@ interface PlanPanelStatusProps {
   readonly kind: PlanPanelKind;
   readonly testId: string;
   readonly label: string;
+  readonly loading?: boolean;
 }
 
 function PlanPanelStatus({
   kind,
   testId,
   label,
+  loading = false,
 }: PlanPanelStatusProps): JSX.Element {
   return (
     <div
@@ -62,7 +68,16 @@ function PlanPanelStatus({
       data-plan-panel-kind={kind}
       className="flex min-h-0 flex-1"
     >
-      <LoadingPlaceholder label={label} className="flex-1" />
+      {loading ? (
+        // Neither the plan document nor its diagram is available to measure yet.
+        <DelayedLoadingPlaceholder slowNote="Still loading the plan…">
+          <CenteredLoadingSpinner />
+        </DelayedLoadingPlaceholder>
+      ) : (
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState title={label} tone="quiet" titleWeight="normal" />
+        </div>
+      )}
     </div>
   );
 }
@@ -133,7 +148,8 @@ function PlanPanelHostContent({
       <PlanPanelStatus
         kind={kind}
         testId="plan-panel-loading"
-        label="Loading plan…"
+        loading
+        label="Plan"
       />
     );
   }

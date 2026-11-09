@@ -2,7 +2,7 @@ import type {
   StepLogReadResult,
   StepOutputEvent,
   StepOutputLogPosition,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 export interface StreamRemainder {
   text: string;

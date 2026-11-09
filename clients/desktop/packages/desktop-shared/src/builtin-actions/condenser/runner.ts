@@ -7,8 +7,8 @@ import { setOutput, writeOutputFile } from '../_lib/output';
 import {
   redactStructuredValue,
   redactValues,
-} from '@canopy/desktop-shared/lib/redaction';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+} from '@canopy/execution-engine/lib/redaction';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import {
   redactNormalizedPreservingFormat,
   buildQueryOptions,

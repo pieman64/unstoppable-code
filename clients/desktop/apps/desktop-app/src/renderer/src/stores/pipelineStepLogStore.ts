@@ -3,7 +3,7 @@ import type {
   StepLogLocator,
   StepLogReadResult,
   StepOutputEvent,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   applyStepLogOutputEvent,
   getReconciledStepLogLines,

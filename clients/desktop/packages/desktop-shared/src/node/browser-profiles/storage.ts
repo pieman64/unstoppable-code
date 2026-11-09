@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { BrowserProfileError } from '../../browser-profile-error';
-import { renameWithRetry } from '../lib/rename-with-retry';
+import { renameWithRetry } from '@canopy/execution-engine/node/lib/rename-with-retry';
 
 const queues = new Map<string, Promise<unknown>>();
 const MAX_METADATA_BYTES = 16 * 1024 * 1024;

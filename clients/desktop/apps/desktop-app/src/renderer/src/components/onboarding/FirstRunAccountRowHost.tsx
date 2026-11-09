@@ -4,7 +4,6 @@ import {
   AI_CREDITS_PURCHASE_LABEL,
   AI_CREDITS_REOPEN_BILLING_LABEL,
   Button,
-  buttonClassName,
 } from '@canopy/ui-shared/components';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -39,8 +38,6 @@ import { announceCanopyCloudAccountChanged } from '@/lib/canopyCloudAccountChang
 import { useCloudConnectGateStore } from '@/stores/cloudConnectGateStore';
 
 /** Sized like the provider rows' Connect buttons beside it. */
-const ACTION_CLASS = buttonClassName({ size: 'compact' });
-
 function handleConnectSuccess(result: CanopyCloudConnectSuccess): void {
   if (didGuestMergeFail(result)) showGuestMergeFailureToast();
 }
@@ -224,7 +221,6 @@ export function FirstRunAccountRowHost(): JSX.Element {
           // Inert until the balance read settles, so the decision never
           // comes from a guess.
           disabled={credits.loading}
-          buttonClassName={ACTION_CLASS}
           // The row is one line: the CTA shows only Check again and the row's
           // description says what is happening.
           handoffLayout="compact"

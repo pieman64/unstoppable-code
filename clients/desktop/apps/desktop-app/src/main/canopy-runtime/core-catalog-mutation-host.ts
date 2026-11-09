@@ -5,7 +5,7 @@ import {
 } from '@canopy/core-runtime/node/catalog';
 import { pluginEntryId } from '@canopy/protocol/canopy-core';
 import { parseGitHubRepo } from '@canopy/desktop-shared/lib/github-repo';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type {
   MarketplaceInfo,
   PluginInfo,

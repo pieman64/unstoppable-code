@@ -120,6 +120,7 @@ import { useProjectsStore } from '@/stores/projectsStore';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
+  Stack,
   ChatMessageLinkActionsProvider,
   ComposerTray,
   InputDeliveryList,
@@ -605,6 +606,18 @@ function useStartingTurnSetup(
         }
       : undefined;
   }, [createdAt, messageTimestamp, projectName, setupPhase, starting]);
+}
+
+/**
+ * CAN-5782: opens the Workflow page of a scheduled message that is read-only
+ * in chat because other schedules share its workflow.
+ */
+function openScheduleWorkflow(scheduled: ScheduledQueuedMessage): void {
+  if (scheduled.workflowPipelineId === undefined) return;
+  useNavigationStore.getState().openWorkflowEdit({
+    kind: 'pipeline',
+    pipelineId: scheduled.workflowPipelineId,
+  });
 }
 
 export function ChatMessageList({
@@ -2993,7 +3006,9 @@ export function ChatMessageList({
         // watcher-fired follow-up turn grouped into it, so hovering one turn
         // would reveal every other turn's controls.
         className={
-          item.kind === 'turn-group' ? 'group/turn space-y-2' : undefined
+          item.kind === 'turn-group'
+            ? 'group/turn flex flex-col gap-2'
+            : undefined
         }
         data-chat-turn-group={item.kind === 'turn-group' ? key : undefined}
       >
@@ -3337,7 +3352,7 @@ export function ChatMessageList({
           <div
             ref={contentRef}
             data-testid="chat-message-list-content"
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} mx-auto w-full max-w-[var(--chat-reading-width)] chat-width-transition space-y-2 [&_[data-chat-call-focus]]:rounded-lg [&_[data-chat-call-focus]]:ring-2 [&_[data-chat-call-focus]]:ring-line-accent`}
+            className={`${POSTHOG_REPLAY_BLOCK_CLASS} mx-auto w-full max-w-[var(--chat-reading-width)] chat-width-transition flex flex-col gap-2 [&>*]:shrink-0 [&_[data-chat-call-focus]]:rounded-lg [&_[data-chat-call-focus]]:ring-2 [&_[data-chat-call-focus]]:ring-line-accent`}
           >
             {/* Keep the loading lane stable: changing its height outside the
                 virtual window would move an otherwise correctly anchored row. */}
@@ -3347,17 +3362,17 @@ export function ChatMessageList({
               forkedFrom && <ForkedFromLink forkedFrom={forkedFrom} />}
             {!virtualizationEnabled ? (
               stickySections.map((section) => (
-                <div key={section.key} className="space-y-2">
+                <Stack key={section.key} gap="inline">
                   {section.startIndex === 0 &&
                     forkDividerIndex === -1 &&
                     forkedFrom && <ForkedFromLink forkedFrom={forkedFrom} />}
                   <div
                     data-chat-sticky-section={section.key}
-                    className="relative space-y-2 rounded-lg transition-shadow data-[chat-turn-focus]:ring-2 data-[chat-turn-focus]:ring-line-accent"
+                    className="flex flex-col relative rounded-lg transition-shadow data-[chat-turn-focus]:ring-2 data-[chat-turn-focus]:ring-line-accent gap-2"
                   >
                     {renderStickySection(section)}
                   </div>
-                </div>
+                </Stack>
               ))
             ) : (
               <div
@@ -3400,7 +3415,7 @@ export function ChatMessageList({
                       // leave every row's layout position at 0, which breaks
                       // the sticky-header math for the section's hoisted user
                       // message — position: sticky works off layout geometry.
-                      className="absolute left-0 w-full space-y-2 pb-2"
+                      className="flex flex-col absolute left-0 w-full pb-2 gap-2"
                       style={{
                         top: `${virtualItem.start}px`,
                       }}
@@ -3412,7 +3427,7 @@ export function ChatMessageList({
                         )}
                       <div
                         data-chat-sticky-section={section.key}
-                        className="relative space-y-2 rounded-lg transition-shadow data-[chat-turn-focus]:ring-2 data-[chat-turn-focus]:ring-line-accent"
+                        className="flex flex-col relative rounded-lg transition-shadow data-[chat-turn-focus]:ring-2 data-[chat-turn-focus]:ring-line-accent gap-2"
                       >
                         {renderStickySection(section)}
                       </div>
@@ -3529,6 +3544,12 @@ export function ChatMessageList({
                       onClearScheduledMessage?.(scheduled.automationId),
                     onInterrupt: (): void =>
                       onInterruptScheduledMessage?.(scheduled.automationId),
+                    ...(scheduled.workflowPipelineId !== undefined
+                      ? {
+                          onOpenWorkflow: (): void =>
+                            openScheduleWorkflow(scheduled),
+                        }
+                      : {}),
                   }}
                 />
               );

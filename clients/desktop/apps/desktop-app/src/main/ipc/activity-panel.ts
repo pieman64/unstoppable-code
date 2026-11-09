@@ -1,3 +1,7 @@
+import {
+  revertFileThroughWorker,
+  type WorkerGitLocalMutationDispatcher,
+} from '../canopy-runtime/worker-git-local-mutations-dispatch';
 import { logMainProcessError } from '../lib/main-process-logging';
 import { realpathSync } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
@@ -42,7 +46,6 @@ import {
   getFileDiffCommitted,
   getFileDiffCombined,
   getFileDiffBetweenTrees,
-  revertUncommittedFile,
   type FileDiffContent,
 } from '../lib/git';
 import { startOutputPolling, stopOutputPolling } from '../lib/bg-output-poller';
@@ -532,7 +535,7 @@ async function getViewerChangedFiles(
 export function registerActivityPanelHandlers(
   getWindow: () => BrowserWindow | null,
   runtime: {
-    dispatcher: WorkerGitDispatcher;
+    dispatcher: WorkerGitDispatcher & WorkerGitLocalMutationDispatcher;
     resolveCaller: DesktopIpcCallerResolver;
   },
 ): void {
@@ -793,7 +796,7 @@ export function registerActivityPanelHandlers(
 
   registerIpcHandler<[ActivityRevertFileRequest], void>(
     IPC_CHANNELS.activityRevertFile,
-    async (_event, request) => {
+    async (event, request) => {
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
       assertWritableScope(request.projectId);
@@ -828,11 +831,17 @@ export function registerActivityPanelHandlers(
         throw new Error('previousPath is required for renamed files');
       }
 
-      await revertUncommittedFile(
+      await revertFileThroughWorker(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
         repoPath,
-        request.filePath,
-        revertStatus,
-        revertPreviousPath,
+        {
+          filePath: request.filePath,
+          status: revertStatus,
+          ...(revertPreviousPath === undefined
+            ? {}
+            : { previousPath: revertPreviousPath }),
+        },
       );
     },
   );

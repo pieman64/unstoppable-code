@@ -30,7 +30,7 @@ const ANSWERS: McpQuestionAnswer[] = [
 
 describe('pending-requests over the chat wait lifecycle', () => {
   beforeEach(() => {
-    resetDesktopChatWaitsForTest();
+    resetDesktopChatWaitsForTest({ noClientMode: 'wait' });
   });
   afterEach(() => {
     jest.useRealTimers();

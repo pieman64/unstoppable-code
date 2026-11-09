@@ -1,43 +1,51 @@
 import type { JSX } from 'react';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
-import { pairingMachineLabel } from '@/components/portal/pairingMachineLabel';
+
+/** A transparent pixel: the tile's stand-in while the code is drawn. */
+const PLACEHOLDER_SRC =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 /**
- * The primary Remote Control pairing affordance (CAN-2938): a QR code that a
- * phone's camera opens in the browser, with one line saying what scanning it
- * does. The caller renders the 6-digit code beneath as the manual fallback.
+ * The pairing link as a QR code a phone's camera opens (CAN-5985 A2). The
+ * dialog's subtitle says what to do with it. The link authorizes a pairing,
+ * so session replay never records the code.
  *
  * The tile is white in both color modes: a QR code inverted by a dark surface
  * is unreliable for phone cameras (same rule as `MobileAppQrPromo`).
  */
 export function RemoteControlPairingQr({
   qrSrc,
-  machineName,
 }: {
-  qrSrc: string;
-  machineName: string | null;
+  /**
+   * Null while the code is still being drawn: an empty image keeps the
+   * tile's space, and a surrounding `Skeleton` draws it as one block.
+   */
+  qrSrc: string | null;
 }): JSX.Element {
-  const machine = pairingMachineLabel(machineName);
+  if (qrSrc === null) {
+    return (
+      <img
+        src={PLACEHOLDER_SRC}
+        alt=""
+        aria-hidden="true"
+        className="h-44 w-44"
+        draggable={false}
+      />
+    );
+  }
   return (
     <div
-      className="flex flex-col items-center gap-3"
-      data-testid="canopy-portal-pairing-qr"
+      className={`${POSTHOG_REPLAY_BLOCK_CLASS} rounded-lg bg-white p-2`}
+      data-testid="remote-control-pairing-qr"
     >
-      <div className="rounded-lg bg-white p-2">
-        <img
-          src={qrSrc}
-          alt={`QR code to connect ${machine} to ${REMOTE_CONTROL_LABEL}`}
-          className="h-40 w-40"
-          draggable={false}
-          data-testid="canopy-portal-pairing-qr-image"
-        />
-      </div>
-      <p
-        className="text-s font-medium fg-primary"
-        data-testid="canopy-portal-pairing-qr-instruction"
-      >
-        {`Scan with your phone's camera to connect ${machine}.`}
-      </p>
+      <img
+        src={qrSrc}
+        alt={`QR code to pair a device with ${REMOTE_CONTROL_LABEL}`}
+        className="h-40 w-40"
+        draggable={false}
+        data-testid="remote-control-pairing-qr-image"
+      />
     </div>
   );
 }

@@ -535,10 +535,16 @@ export interface ClaimOrgProjectInstanceResponse {
 export const ORG_PROJECT_CLAIM_CONFLICT_REASONS = {
   /** The account already has as many active setups as it may. */
   instanceLimit: 'instance_limit',
+  /** The account has recorded as many device setups of this project as it may. */
+  projectInstanceLimit: 'project_instance_limit',
+  /** The setup's claim has been joined under as many other keys as it may. */
+  claimAliasLimit: 'claim_alias_limit',
   /** Another checkout of the same device installation holds the project's setup. */
   checkoutConflict: 'checkout_conflict',
   /** The key's claim was released or replaced; a claim under a new key may succeed. */
   claimInvalid: 'claim_invalid',
+  /** The key was already used for a claim with a different body; a new key may succeed. */
+  idempotencyMismatch: 'idempotency_mismatch',
 } as const;
 export type OrgProjectClaimConflictReason =
   (typeof ORG_PROJECT_CLAIM_CONFLICT_REASONS)[keyof typeof ORG_PROJECT_CLAIM_CONFLICT_REASONS];

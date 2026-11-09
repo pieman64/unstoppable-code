@@ -1,4 +1,4 @@
-import type { OpenCodeModelEntry } from './opencode-models';
+import type { OpenCodeModelEntry } from '@canopy/execution-engine/types/opencode-models';
 
 export const OPENCODE_CONNECTION_TIMEOUT_MS = 10 * 60_000;
 

@@ -71,20 +71,22 @@ export function PendingProjectRow({
           <FolderIcon size="sm" aria-hidden="true" />
         </span>
       </Surface>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-s fg-primary" title={project.name}>
-          {project.name}
-        </div>
-        <div
-          role="status"
-          className="break-words text-xs fg-secondary"
-          data-testid={`sidebar-pending-project-status-${project.id}`}
-        >
-          {statusLine}
+      <div className="min-w-0 flex-1 flex flex-col gap-1">
+        <div>
+          <div className="truncate text-s fg-primary" title={project.name}>
+            {project.name}
+          </div>
+          <div
+            role="status"
+            className="break-words text-xs fg-secondary"
+            data-testid={`sidebar-pending-project-status-${project.id}`}
+          >
+            {statusLine}
+          </div>
         </div>
         {hasActions && (
           // The link actions take the size of the copy around them.
-          <div className="mt-1 flex items-center gap-3 text-xs">
+          <div className="flex items-center gap-3 text-xs">
             {failed && project.onRetry && (
               <Button
                 variant="link"

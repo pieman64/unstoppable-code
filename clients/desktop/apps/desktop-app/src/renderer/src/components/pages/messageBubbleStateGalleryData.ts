@@ -26,6 +26,8 @@ export interface QueuedGalleryState {
   message: QueuedChatMessage;
   canForce?: boolean;
   scheduled?: boolean;
+  /** A scheduled message other schedules' shared workflow makes read-only. */
+  scheduledWorkflow?: boolean;
   /** The row offers Steer as well as Interrupt. */
   steerable?: boolean;
 }
@@ -253,6 +255,18 @@ export const QUEUED_BUBBLE_STATES: QueuedGalleryState[] = [
       enqueuedAtMs: NOW,
     },
     scheduled: true,
+  },
+  {
+    id: 'scheduled-shared-workflow',
+    title: 'Scheduled message, shared workflow',
+    description:
+      'Other schedules run the same workflow, so the message is edited on its Workflow page: no Edit, and an "Open workflow" link.',
+    message: {
+      text: 'Post the nightly summary of merged PRs to the team channel.',
+      enqueuedAtMs: NOW,
+    },
+    scheduled: true,
+    scheduledWorkflow: true,
   },
 ];
 

@@ -4,7 +4,10 @@ import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type * as AtomicFile from '../../node/lib/atomic-file';
-import type { PipelineIndex, PipelineSaveInput } from '../../types/pipeline';
+import type {
+  PipelineIndex,
+  PipelineSaveInput,
+} from '@canopy/execution-engine/types/pipeline';
 
 let mockRoot = '';
 let mockFailIndex = false;

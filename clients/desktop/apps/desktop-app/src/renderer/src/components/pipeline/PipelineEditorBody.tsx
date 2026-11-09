@@ -1,5 +1,12 @@
 import { focusPipelineAssistantComposer } from '@/lib/pipelineAssistantEvents';
-import { type JSX, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  type JSX,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
 import { createJobId, type ValidationIssue } from '../../lib/pipelineEditor';
 import {
@@ -11,6 +18,7 @@ import {
   ResizeRailIndicator,
 } from '@canopy/ui-shared/components';
 import { PipelineReadDetail } from '@canopy/ui-app';
+import { SharedPipelineNotice } from '@canopy/ui-app/workflows';
 import { PipelineSettingsPanel } from './PipelineSettingsPanel';
 import { RawYamlView } from './RawYamlView';
 import { PipelinePublicShareRow } from './PipelinePublicShareRow';
@@ -47,7 +55,7 @@ function clampSettingsWidth(w: number): number {
  * Placement for the notices above the editor: the full width of the content
  * below them (CAN-4319), stacked with a small gap.
  */
-const EDITOR_NOTICE_PLACEMENT = 'mb-2 shrink-0';
+const EDITOR_NOTICE_PLACEMENT = 'shrink-0';
 
 /** One notice per validation severity, listing every issue at `path: message`. */
 function ValidationIssuesNotice({
@@ -79,11 +87,18 @@ function ValidationIssuesNotice({
 
 export interface PipelineEditorNoticesProps {
   readonly session: PipelineEditorSession;
+  /** Editor region whose separation from the notices this group owns. */
+  readonly children: ReactNode;
   /**
    * Offer Duplicate on the read-only notice. A host whose header carries
    * Duplicate turns this off. Defaults to `true`.
    */
   readonly showDuplicateAction?: boolean;
+  /**
+   * How many workflows use this pipeline (CAN-5782): from two, a notice says
+   * an edit reaches all of them.
+   */
+  readonly sharedUserCount?: number;
 }
 
 /**
@@ -92,7 +107,9 @@ export interface PipelineEditorNoticesProps {
  */
 export function PipelineEditorNotices({
   session,
+  children,
   showDuplicateAction = true,
+  sharedUserCount = 0,
 }: PipelineEditorNoticesProps): JSX.Element {
   const { pipelineInfo } = session;
   const duplicateAction =
@@ -135,7 +152,7 @@ export function PipelineEditorNotices({
 
   if (session.readDefinition) {
     return (
-      <>
+      <div className="flex min-h-0 flex-1 flex-col gap-2">
         {errorNotice}
         {session.validationErrors.length > 0 && (
           <ValidationIssuesNotice
@@ -155,32 +172,43 @@ export function PipelineEditorNotices({
             : 'Duplicate it to make changes.'}
         </Notice>
         {duplicateErrorNotice}
-        {publicShareRow}
-      </>
+        <div className="flex min-h-0 flex-1 flex-col gap-0">
+          {publicShareRow}
+          {children}
+        </div>
+      </div>
     );
   }
 
   return (
-    <>
-      {/* Error banner */}
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
       {errorNotice}
       {duplicateErrorNotice}
-      {publicShareRow}
-
-      {/* Validation issues (hidden in raw mode — RawYamlView shows its own errors) */}
-      {!session.isRawMode && session.validationErrors.length > 0 && (
-        <ValidationIssuesNotice
-          intent="destructive"
-          issues={session.validationErrors}
-        />
-      )}
-      {!session.isRawMode && session.validationWarnings.length > 0 && (
-        <ValidationIssuesNotice
-          intent="attention"
-          issues={session.validationWarnings}
-        />
-      )}
-    </>
+      {/* The share row has no trailing gap; only notices separate the next block. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-0">
+        {publicShareRow}
+        <div className="flex min-h-0 flex-1 flex-col gap-2">
+          <SharedPipelineNotice
+            count={sharedUserCount}
+            className={EDITOR_NOTICE_PLACEMENT}
+          />
+          {/* RawYamlView owns validation in raw mode. */}
+          {!session.isRawMode && session.validationErrors.length > 0 && (
+            <ValidationIssuesNotice
+              intent="destructive"
+              issues={session.validationErrors}
+            />
+          )}
+          {!session.isRawMode && session.validationWarnings.length > 0 && (
+            <ValidationIssuesNotice
+              intent="attention"
+              issues={session.validationWarnings}
+            />
+          )}
+          {children}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -190,6 +218,11 @@ export interface PipelineEditorBodyProps {
   readonly returnToEntryContext?: EntryDetailReturnContext;
   readonly returnToPipeline?: PipelineReturnTarget;
   readonly returnToMarketplace?: PipelineReturnTarget['returnToMarketplace'];
+  /**
+   * Values the steps' `inputs.*` stand for, such as a workflow page's first
+   * schedule's (CAN-5782): a create step's sidebar group reads its project.
+   */
+  readonly inputValues?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -203,6 +236,7 @@ export function PipelineEditorBody({
   returnToEntryContext,
   returnToPipeline,
   returnToMarketplace,
+  inputValues,
 }: PipelineEditorBodyProps): JSX.Element {
   const { editor, flowSource, selectionIsValid } = session;
   const [detailPanelWidth, setDetailPanelWidth] =
@@ -481,6 +515,7 @@ export function PipelineEditorBody({
                         )
                       }
                       onClose={() => editor.setSelection({ type: 'none' })}
+                      {...(inputValues ? { inputValues } : {})}
                       readonly={editor.readonly}
                     />
                   )}

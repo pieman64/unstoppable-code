@@ -1,3 +1,4 @@
+import { API_PIPELINE_TRIGGER_TYPES } from '../pipelines';
 import { z } from 'zod';
 import { externalAgentSenderSchema } from '../portal/external-agent-sender';
 
@@ -618,8 +619,8 @@ export const pipelineSummarySchema = z.strictObject({
   description: z.string().max(1000).nullable(),
   origin: z.enum(['bundled', 'user', 'project', 'shared']).nullable(),
   triggerTypes: z
-    .array(z.enum(['dispatch', 'plan_ready', 'task_ready']))
-    .max(3),
+    .array(z.enum(API_PIPELINE_TRIGGER_TYPES))
+    .max(API_PIPELINE_TRIGGER_TYPES.length),
   // Only known when the call names a worktree.
   latestRun: pipelineRunRefSchema.nullable(),
 });

@@ -46,3 +46,56 @@ export async function registerInterfaceTools(
 export async function unregisterAllInterfaceTools(): Promise<void> {
   await invoke(CORE_CLIENT_TOOLS_UNREGISTER, { all: true }, false);
 }
+
+/** Removes the named tools from this page's lease. Failures are ignored. */
+export async function unregisterInterfaceTools(
+  names: readonly InterfaceToolName[],
+): Promise<void> {
+  await invoke(CORE_CLIENT_TOOLS_UNREGISTER, { toolNames: [...names] }, false);
+}
+
+/*
+ * A page has one lease, and a registration replaces its whole set, so every
+ * bridge on the page contributes here and the page registers the union
+ * (CAN-5822). Changes run one at a time, in order. Removing tools uses
+ * unregister, which spends none of the lease's registration keys.
+ */
+const contributions = new Map<number, readonly InterfaceToolName[]>();
+let nextContribution = 0;
+let registered: ReadonlySet<InterfaceToolName> = new Set();
+let pending: Promise<void> = Promise.resolve();
+
+async function syncContributions(): Promise<void> {
+  const wanted = [...new Set([...contributions.values()].flat())].sort();
+  const added = wanted.some((name) => !registered.has(name));
+  const removed = [...registered].filter((name) => !wanted.includes(name));
+  registered = new Set(wanted);
+  if (added)
+    await registerInterfaceTools(
+      wanted,
+      `interface-tools:${crypto.randomUUID()}`,
+    );
+  else if (wanted.length === 0 && removed.length > 0)
+    await unregisterAllInterfaceTools();
+  else if (removed.length > 0) await unregisterInterfaceTools(removed);
+}
+
+function scheduleSync(): void {
+  pending = pending.then(syncContributions, syncContributions);
+}
+
+/**
+ * Adds the catalog tools one bridge implements to this page's lease and
+ * returns the function that withdraws them. Failures are logged and ignored:
+ * the tools are then simply absent.
+ */
+export function contributeInterfaceTools(
+  names: readonly InterfaceToolName[],
+): () => void {
+  const id = nextContribution++;
+  contributions.set(id, [...names]);
+  scheduleSync();
+  return (): void => {
+    if (contributions.delete(id)) scheduleSync();
+  };
+}

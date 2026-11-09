@@ -1,7 +1,11 @@
+import {
+  ensureWorkspaceWriteDirectory,
+  withCoworkWrite,
+  withWorkspaceDirectoryWrite,
+} from './cowork-folder-guard';
 import { constants as fsConstants } from 'node:fs';
 import {
   copyFile,
-  mkdir,
   readFile,
   readdir,
   rm,
@@ -45,7 +49,7 @@ function inferTitleFromMarkdown(id: string, content: string): string {
 }
 
 async function ensureDir(path: string): Promise<void> {
-  await mkdir(path, { recursive: true });
+  await ensureWorkspaceWriteDirectory(path);
 }
 
 const PORTABLE_FILENAME_MAX_BYTES = 255;
@@ -196,11 +200,10 @@ export interface CopiedAttachmentFile {
   createdAt: string;
 }
 
-export async function copyAttachmentFileToDir(
+async function copyAttachmentFileToDirUnchecked(
   dir: string,
   sourcePath: string,
 ): Promise<CopiedAttachmentFile> {
-  await ensureDir(dir);
   const sourceInfo = await stat(sourcePath);
   const sourceName = basename(sourcePath);
   const extension = extname(sourceName);
@@ -220,11 +223,10 @@ export async function copyAttachmentFileToDir(
   };
 }
 
-export async function writeClipboardAttachmentToDir(
+async function writeClipboardAttachmentToDirUnchecked(
   dir: string,
   item: ClipboardAttachmentData,
 ): Promise<CopiedAttachmentFile> {
-  await ensureDir(dir);
   const extension = extname(item.filename);
   const stem =
     item.filename.slice(0, item.filename.length - extension.length) ||
@@ -313,7 +315,7 @@ export async function readNote(
   };
 }
 
-export async function saveNote(
+async function saveNoteUnchecked(
   projectId: string,
   title: string,
   content: string,
@@ -417,7 +419,7 @@ export async function readPrompt(
   };
 }
 
-export async function savePrompt(
+async function savePromptUnchecked(
   projectId: string,
   title: string,
   content: string,
@@ -501,7 +503,7 @@ export async function listAttachments(
   }
 }
 
-export async function importAttachment(
+async function importAttachmentUnchecked(
   projectId: string,
   sourcePath: string,
 ): Promise<StandaloneAttachmentMeta> {
@@ -519,7 +521,7 @@ export async function importAttachment(
   };
 }
 
-export async function importClipboardAttachment(
+async function importClipboardAttachmentUnchecked(
   projectId: string,
   item: ClipboardAttachmentData,
 ): Promise<StandaloneAttachmentMeta> {
@@ -553,4 +555,54 @@ export async function deleteAttachment(
     throw new Error('Invalid attachment filename');
   }
   await rm(absolutePath, { force: true });
+}
+
+export async function saveNote(
+  ...args: Parameters<typeof saveNoteUnchecked>
+): ReturnType<typeof saveNoteUnchecked> {
+  return args[0] === APP_ADVISOR_PROJECT_ID
+    ? saveNoteUnchecked(...args)
+    : withCoworkWrite(args[0], () => saveNoteUnchecked(...args));
+}
+
+export async function savePrompt(
+  ...args: Parameters<typeof savePromptUnchecked>
+): ReturnType<typeof savePromptUnchecked> {
+  return args[0] === APP_ADVISOR_PROJECT_ID
+    ? savePromptUnchecked(...args)
+    : withCoworkWrite(args[0], () => savePromptUnchecked(...args));
+}
+
+export async function importAttachment(
+  ...args: Parameters<typeof importAttachmentUnchecked>
+): ReturnType<typeof importAttachmentUnchecked> {
+  return args[0] === APP_ADVISOR_PROJECT_ID
+    ? importAttachmentUnchecked(...args)
+    : withCoworkWrite(args[0], () => importAttachmentUnchecked(...args));
+}
+
+export async function importClipboardAttachment(
+  ...args: Parameters<typeof importClipboardAttachmentUnchecked>
+): ReturnType<typeof importClipboardAttachmentUnchecked> {
+  return args[0] === APP_ADVISOR_PROJECT_ID
+    ? importClipboardAttachmentUnchecked(...args)
+    : withCoworkWrite(args[0], () =>
+        importClipboardAttachmentUnchecked(...args),
+      );
+}
+
+export async function copyAttachmentFileToDir(
+  ...args: Parameters<typeof copyAttachmentFileToDirUnchecked>
+): ReturnType<typeof copyAttachmentFileToDirUnchecked> {
+  return withWorkspaceDirectoryWrite(args[0], () =>
+    copyAttachmentFileToDirUnchecked(...args),
+  );
+}
+
+export async function writeClipboardAttachmentToDir(
+  ...args: Parameters<typeof writeClipboardAttachmentToDirUnchecked>
+): ReturnType<typeof writeClipboardAttachmentToDirUnchecked> {
+  return withWorkspaceDirectoryWrite(args[0], () =>
+    writeClipboardAttachmentToDirUnchecked(...args),
+  );
 }

@@ -2,9 +2,9 @@ import {
   ASK_USER_HTTP_TIMEOUT_MS,
   CANOPY_MCP_TOOL_TIMEOUT_MS,
   isCanopyAskUserToolName,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { getCanonicalAppAdvisorToolKey } from '@canopy/desktop-shared/lib/app-advisor-tools';
-import { applyCodexMultiAgentConfig } from '@canopy/desktop-shared/lib/codex-multi-agent';
+import { applyCodexMultiAgentConfig } from '@canopy/execution-engine/lib/codex-multi-agent';
 import { clampCodexCommandOutput } from './command-output-clamp';
 import { normalizeEpochMs } from '@canopy/desktop-shared/ai-credits-routing-state';
 import { randomUUID } from 'node:crypto';
@@ -35,16 +35,16 @@ import {
   clampThinkingLevelForModel,
 } from '@canopy/desktop-shared/types';
 import { suggestedCommandPattern } from '@canopy/desktop-shared/lib/approval-engine';
-import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   readCodexSpeedRecord,
   withCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   assertCodexTurnSpeedAdmitted,
   codexLifecycleServiceTier,
 } from './speed-policy';
-import { CODEX_NATIVE_REASONING_ROUTE_FAMILY } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { CODEX_NATIVE_REASONING_ROUTE_FAMILY } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { formatAskUserAnswers } from '../canopy-tools/core';
 import { requestAnswersFromRenderer } from '../canopy-tools/session-runtime';
 import { rejectAllForSession } from '../mcp/pending-requests';
@@ -1426,6 +1426,8 @@ function buildMcpElicitationForm(
           header: title,
           question,
           options: ['Yes', 'No'],
+          // Its answer is the option alone; keep typed text in the composer.
+          keepTextOnPick: true,
         },
         decode: (answer) => {
           const value = selectedAnswer(answer);
@@ -1581,7 +1583,9 @@ function buildMcpElicitationForm(
         question,
         options,
         ...(optionDescriptions ? { optionDescriptions } : {}),
-        ...(options.length === 0 ? { allowOther: true } : {}),
+        ...(options.length === 0
+          ? { allowOther: true }
+          : { keepTextOnPick: true }),
       },
       decode: (answer) => {
         const value =

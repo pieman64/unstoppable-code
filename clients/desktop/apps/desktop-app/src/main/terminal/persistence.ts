@@ -6,7 +6,7 @@ import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-
 import {
   damagedCopyPath,
   pruneDamagedCopiesSync,
-} from '@canopy/desktop-shared/node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import {
   DEFAULT_TERMINAL_DRAWER_COLLAPSED,
   TERMINAL_CUSTOM_NAME_MAX_LENGTH,

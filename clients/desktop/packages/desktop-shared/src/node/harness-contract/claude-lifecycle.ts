@@ -5,7 +5,7 @@ import type {
   SDKSessionStateChangedMessage,
   TerminalReason,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { LifecycleRole } from './lifecycle-role';
+import type { LifecycleRole } from '@canopy/execution-engine/node/harness-contract/lifecycle-role';
 
 export const CLAUDE_LIFECYCLE = {
   messageTypes: {

@@ -33,6 +33,7 @@ import { validateAcquisitionContextValue } from '@canopy/desktop-instrumentation
 import type {
   PairingTelemetryAttempt,
   PairingTelemetryContext,
+  RemoteControlTelemetryEvent,
 } from '@canopy/desktop-instrumentation/pairing';
 import { invitationReference } from './invitation-reference';
 import type { ConfirmedProviderAuthEvent } from '../auth/provider-auth-state';
@@ -851,6 +852,32 @@ export function recordInviteAcceptTelemetry(
     });
   } catch {
     /* Metadata, hashing and scheduling are all best effort. */
+  }
+}
+
+const REMOTE_CONTROL_OPERATIONS = {
+  device_add: 'canopy.remote_control_device_add',
+  pairing_fail: 'canopy.remote_control_pairing_fail',
+  session_start: 'canopy.remote_control_session_start',
+  session_end: 'canopy.remote_control_session_end',
+  device_remove: 'canopy.remote_control_device_remove',
+} as const satisfies Record<
+  RemoteControlTelemetryEvent['event'],
+  DesktopOperationName
+>;
+
+/**
+ * Records one Remote Control host event (`remote_control:*`). Only the fixed
+ * enum fields of the event leave this function.
+ */
+export function recordRemoteControlTelemetry(
+  input: RemoteControlTelemetryEvent,
+): void {
+  try {
+    const { event, ...context } = input;
+    scheduleAcquisitionOperation(REMOTE_CONTROL_OPERATIONS[event], context);
+  } catch {
+    /* Telemetry never affects Remote Control. */
   }
 }
 

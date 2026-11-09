@@ -69,6 +69,19 @@ export function getBrandSourceRepository(): BrandSourceRepository | null {
 }
 
 /**
+ * The public list of every flow that leaves the device (`HOSTED-SERVICES.md`
+ * at the root of the brand's source repository), or `null` when the brand
+ * publishes no source repository. Linked from Settings → Privacy.
+ */
+export function getBrandHostedServicesUrl(): string | null {
+  const repository = getBrandSourceRepository();
+  if (!repository) {
+    return null;
+  }
+  return `${repository.url.replace(/\/+$/, '')}/blob/HEAD/HOSTED-SERVICES.md`;
+}
+
+/**
  * Stable short-hand accessors for the most common brand-name slots. These are
  * re-evaluated lazily through getters so test setups that swap the brand
  * runtime module see the new values without import-order surprises.

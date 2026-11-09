@@ -15,7 +15,51 @@ export const API_PIPELINE_TRIGGER_TYPES = [
   'dispatch',
   'plan_ready',
   'task_ready',
+  'workflow',
 ] as const;
+
+/**
+ * Trigger types a pipeline may declare to leave this machine: shares, curated
+ * publication, capability packages and the Portal. `workflow` is readable and
+ * runnable locally, but released desktops and web can't store it yet
+ * (CAN-5782), so anything that carries a definition off this machine refuses
+ * it.
+ */
+export const PORTABLE_PIPELINE_TRIGGER_TYPES = [
+  'dispatch',
+  'plan_ready',
+  'task_ready',
+] as const satisfies readonly ApiPipelineTriggerType[];
+
+export type PortablePipelineTriggerType =
+  (typeof PORTABLE_PIPELINE_TRIGGER_TYPES)[number];
+
+export function isPortablePipelineTriggerType(
+  value: string,
+): value is PortablePipelineTriggerType {
+  return PORTABLE_PIPELINE_TRIGGER_TYPES.some((type) => type === value);
+}
+
+/** The trigger types that may leave this machine, in their original order. */
+export function portablePipelineTriggerTypes(
+  types: readonly string[],
+): PortablePipelineTriggerType[] {
+  return types.filter(isPortablePipelineTriggerType);
+}
+
+/**
+ * Whether a pipeline declares triggers but none that may leave this machine,
+ * such as a pipeline whose only trigger is `workflow`.
+ */
+export function hasOnlyLocalPipelineTriggers(
+  types: readonly string[] | undefined,
+): boolean {
+  return (
+    types !== undefined &&
+    types.length > 0 &&
+    portablePipelineTriggerTypes(types).length === 0
+  );
+}
 
 export type ApiPipelineTriggerType =
   (typeof API_PIPELINE_TRIGGER_TYPES)[number];
@@ -123,6 +167,49 @@ export interface PipelineIndexEntry {
   revision?: number;
 }
 
+/** CAN-5782: why a workflow page can have only one schedule. */
+export const WORKFLOW_SINGLE_SCHEDULE_REASONS = [
+  'orchestrator_prompt',
+  'agent_grant',
+  'installed_package',
+] as const;
+
+export type WorkflowSingleScheduleReason =
+  (typeof WORKFLOW_SINGLE_SCHEDULE_REASONS)[number];
+
+/** Where a schedule's `worktree_pipeline` run goes; mirrors the automation's. */
+export type WorkflowScheduleTarget =
+  | { kind: 'global' }
+  | { kind: 'new_worktree' }
+  | { kind: 'task'; taskId: string }
+  | { kind: 'project' };
+
+/**
+ * CAN-5782: the run values of a workflow page's last schedule, kept when it
+ * was removed, so the next schedule starts from them. A converted pipeline
+ * declares no input defaults, so they are the only source.
+ */
+export interface WorkflowScheduleValues {
+  inputs?: Record<string, string>;
+  target?: WorkflowScheduleTarget;
+  /** The project a project-bound schedule ran in, and its repository. */
+  workspaceId?: string;
+  repoId?: string;
+  modelAliasPreferences?: Record<string, unknown>;
+  pluginCollectionPreferences?: Record<string, unknown>;
+}
+
+/**
+ * CAN-5782: what the Workflow page needs about a pipeline its schedules run,
+ * present with zero schedules. Desktop-local: never sent off this machine.
+ */
+export interface PipelineWorkflowPageInfo {
+  /** Present when the pipeline can have only one schedule. */
+  singleSchedule?: { reason: WorkflowSingleScheduleReason };
+  /** Present when the page has no schedules and kept the last one's values. */
+  lastScheduleValues?: WorkflowScheduleValues;
+}
+
 /**
  * `'shared'` covers pipelines hosted on the singleton Canopy Cloud backend.
  * Shared pipelines do not have a stable on-disk path; their internal
@@ -165,6 +252,17 @@ export interface PipelineInfo extends PipelineIndexEntry {
   publicShare?: SharedPipelinePublicShareInfo | null;
   /** Package mode returned with an authenticated shared-pipeline snapshot. */
   distributionMode?: PipelineDistributionMode;
+  /**
+   * CAN-5782: set on a user pipeline that is a workflow page (a live
+   * automation owns it, or it was kept as one). Desktop-local projection.
+   */
+  workflowPage?: PipelineWorkflowPageInfo;
+  /**
+   * CAN-5782 phase 09: how many other workflow pages call this user pipeline
+   * through a `builtin/run-pipeline` step whose child is fixed before a run.
+   * Absent when none does. Desktop-local projection.
+   */
+  workflowCallers?: number;
 }
 
 /** Mirrors the web `OrganizationRole` enum: the caller's role in an org. */

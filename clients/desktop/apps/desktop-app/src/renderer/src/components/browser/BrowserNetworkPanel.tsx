@@ -1,3 +1,4 @@
+import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
 import { useMemo, useState, type JSX } from 'react';
 import type { BrowserNetworkEntry } from '@canopy/desktop-shared/types';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
@@ -5,7 +6,7 @@ import { ChatIcon } from '@canopy/ui-shared/icons';
 import { useBrowserStore } from '@/stores/browserStore';
 import { stageBrowserNetworkEntry } from '@/lib/browserChatStaging';
 import { Button, SegmentedControl, Tooltip } from '@canopy/ui-shared';
-import { StatusLabel } from '@canopy/ui-shared/components';
+import { Surface, StatusLabel } from '@canopy/ui-shared/components';
 
 interface BrowserNetworkPanelProps {
   browserId: string;
@@ -25,14 +26,14 @@ function statusLabel(entry: BrowserNetworkEntry): string {
   return '—';
 }
 
-function statusClass(entry: BrowserNetworkEntry): string {
+function statusTone(entry: BrowserNetworkEntry): BadgeTone {
   if (entry.failed) {
-    return 'bg-destructive-subtle fg-destructive';
+    return 'danger';
   }
   if (entry.status !== undefined && entry.status >= 400) {
-    return 'bg-warning-subtle fg-warning';
+    return 'warning';
   }
-  return 'bg-muted/50 fg-secondary';
+  return 'neutral';
 }
 
 function durationLabel(entry: BrowserNetworkEntry): string {
@@ -92,30 +93,32 @@ export function BrowserNetworkPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-1 border-b px-2 py-1">
-        <SegmentedControl<NetworkFilter>
-          value={filter}
-          onChange={setFilter}
-          label="Filter"
-          width="content"
-          shape="capsule"
-          options={[
-            { value: 'all', label: 'All' },
-            { value: 'failed', label: 'Failed' },
-          ]}
-        />
-        <div className="flex-1" />
-        <Tooltip label="Clear network">
-          <Button
-            variant="ghost"
-            size="compact"
-            onClick={(): void => clearNetwork(browserId)}
-            aria-label="Clear network"
-          >
-            Clear
-          </Button>
-        </Tooltip>
-      </div>
+      <Surface variant="section" boundary="bottom">
+        <div className="flex items-center gap-1 px-2 py-1">
+          <SegmentedControl<NetworkFilter>
+            value={filter}
+            onChange={setFilter}
+            label="Filter"
+            width="content"
+            shape="capsule"
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'failed', label: 'Failed' },
+            ]}
+          />
+          <div className="flex-1" />
+          <Tooltip label="Clear network">
+            <Button
+              variant="ghost"
+              size="compact"
+              onClick={(): void => clearNetwork(browserId)}
+              aria-label="Clear network"
+            >
+              Clear
+            </Button>
+          </Tooltip>
+        </div>
+      </Surface>
       <div className="min-h-0 flex-1 overflow-auto text-2xs">
         {visible.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs fg-secondary">
@@ -138,13 +141,12 @@ export function BrowserNetworkPanel({
                       <span className="uppercase fg-secondary">
                         {entry.method || 'GET'}
                       </span>
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-center text-3xs font-medium ${statusClass(
-                          entry,
-                        )}`}
+                      <Badge
+                        tone={statusTone(entry)}
+                        className="justify-self-start"
                       >
                         {statusLabel(entry)}
-                      </span>
+                      </Badge>
                       <span
                         className="min-w-0 truncate fg-primary"
                         title={entry.url || undefined}

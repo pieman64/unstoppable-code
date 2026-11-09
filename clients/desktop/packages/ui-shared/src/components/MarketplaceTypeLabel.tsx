@@ -1,4 +1,7 @@
-import type { JSX } from 'react';
+'use client';
+
+import { createContext, useContext, useMemo } from 'react';
+import type { JSX, ReactNode } from 'react';
 import type { UnifiedEntryKind } from '@canopy/protocol/unified-entry';
 import {
   AgentIcon,
@@ -43,6 +46,51 @@ function MarketplaceTypeIcon({
     case 'blueprint':
       return <SingleRepoWorkspaceIcon {...props} />;
   }
+}
+
+/** The kind a detail page is showing, so every header labels it the same way. */
+export const DetailEntityTypeContext = createContext<{
+  readonly kind: UnifiedEntryKind;
+  readonly label: string;
+} | null>(null);
+
+const DETAIL_ENTITY_TYPE_LABELS: Partial<Record<UnifiedEntryKind, string>> = {
+  plugin: 'Plugin',
+  app: 'MCP server',
+  skill: 'Skill',
+  agent: 'Agent',
+  collection: 'Collection',
+  blueprint: 'Template',
+};
+
+/** Labels every header on a detail page with the kind it shows. */
+export function DetailEntityTypeProvider({
+  kind,
+  children,
+}: {
+  kind: UnifiedEntryKind;
+  children: ReactNode;
+}): JSX.Element {
+  const label = DETAIL_ENTITY_TYPE_LABELS[kind];
+  const value = useMemo(() => (label ? { kind, label } : null), [kind, label]);
+  return (
+    <DetailEntityTypeContext.Provider value={value}>
+      {children}
+    </DetailEntityTypeContext.Provider>
+  );
+}
+
+/** The detail page's type label, beside its title. Nothing outside a page. */
+export function DetailEntityType(): JSX.Element | null {
+  const type = useContext(DetailEntityTypeContext);
+  if (!type) return null;
+  return (
+    <MarketplaceTypeLabel
+      kind={type.kind}
+      label={type.label}
+      dataTestId="detail-entity-type"
+    />
+  );
 }
 
 /** A quiet icon-and-text label for a Customize resource kind. */

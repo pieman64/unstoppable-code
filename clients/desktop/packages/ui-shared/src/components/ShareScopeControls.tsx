@@ -1,4 +1,5 @@
-import type { JSX, ReactNode } from 'react';
+import { Stack, type SpaceRole } from './Stack';
+import { Children, type JSX, type ReactNode } from 'react';
 import type { ShareAudience } from '@canopy/protocol/sharing';
 import { CheckIcon } from '../icons/CheckIcon';
 import {
@@ -162,6 +163,8 @@ export interface ShareScopeSelectorProps<T extends string> {
   dataTestId?: string;
   /** Helper and upgrade copy rendered under the options. */
   children?: ReactNode;
+  /** Own the options-to-content gaps when child content has no outer margins. */
+  contentGap?: SpaceRole;
 }
 
 /**
@@ -176,41 +179,56 @@ export function ShareScopeSelector<T extends string>({
   disabled = false,
   dataTestId,
   children,
+  contentGap,
 }: ShareScopeSelectorProps<T>): JSX.Element {
+  const optionsRow = (
+    <div
+      className="inline-flex rounded-lg bg-base p-0.5 inset-ring-[length:var(--border-hairline)] inset-ring-line-base"
+      role="radiogroup"
+      aria-label={legend}
+    >
+      {options.map((option) => (
+        <ShareScopeOption
+          key={option.value}
+          label={option.label}
+          value={option.value}
+          current={value}
+          onSelect={onChange}
+          disabled={
+            disabled ||
+            (option.disabled === true && option.unavailable === undefined)
+          }
+          {...(option.describedBy !== undefined
+            ? { describedBy: option.describedBy }
+            : {})}
+          {...(option.disabled === true && option.unavailable !== undefined
+            ? { unavailable: option.unavailable }
+            : {})}
+          dataTestId={
+            dataTestId === undefined
+              ? undefined
+              : `${dataTestId}-${option.value}`
+          }
+        />
+      ))}
+    </div>
+  );
   return (
     <fieldset className="block text-s" data-testid={dataTestId}>
       <legend className="mb-1.5 block font-medium fg-primary">{legend}</legend>
-      <div
-        className="inline-flex rounded-lg bg-base p-0.5 inset-ring-[length:var(--border-hairline)] inset-ring-line-base"
-        role="radiogroup"
-        aria-label={legend}
-      >
-        {options.map((option) => (
-          <ShareScopeOption
-            key={option.value}
-            label={option.label}
-            value={option.value}
-            current={value}
-            onSelect={onChange}
-            disabled={
-              disabled ||
-              (option.disabled === true && option.unavailable === undefined)
-            }
-            {...(option.describedBy !== undefined
-              ? { describedBy: option.describedBy }
-              : {})}
-            {...(option.disabled === true && option.unavailable !== undefined
-              ? { unavailable: option.unavailable }
-              : {})}
-            dataTestId={
-              dataTestId === undefined
-                ? undefined
-                : `${dataTestId}-${option.value}`
-            }
-          />
-        ))}
-      </div>
-      {children}
+      {contentGap === undefined ? (
+        <>
+          {optionsRow}
+          {children}
+        </>
+      ) : (
+        <Stack gap={contentGap}>
+          <div>{optionsRow}</div>
+          {Children.map(children, (child) => (
+            <div className="empty:hidden">{child}</div>
+          ))}
+        </Stack>
+      )}
     </fieldset>
   );
 }
@@ -242,6 +260,8 @@ export interface ShareAudienceSelectorProps {
   upgradeHint?: string;
   /** Extra hint content under the selector, e.g. an organization setup CTA. */
   hint?: ReactNode;
+  /** Share the parent-owned gap with margin-free custom hint content. */
+  contentGap?: SpaceRole;
   disabled?: boolean;
   /** Fieldset test id; options get `${dataTestId}-${audience}`. */
   dataTestId?: string;
@@ -282,6 +302,7 @@ export function ShareAudienceSelector({
   descriptions,
   upgradeHint,
   hint,
+  contentGap,
   disabled = false,
   dataTestId,
   keepDisabledVisible = false,
@@ -309,6 +330,7 @@ export function ShareAudienceSelector({
   }
   return (
     <ShareScopeSelector<ShareAudience>
+      contentGap={contentGap}
       legend={legend}
       value={value}
       onChange={onChange}
@@ -335,7 +357,11 @@ export function ShareAudienceSelector({
     >
       {description !== undefined && description !== '' && (
         <p
-          className="mt-2 text-xs fg-secondary"
+          className={
+            contentGap === undefined
+              ? 'mt-2 text-xs fg-secondary'
+              : 'text-xs fg-secondary'
+          }
           data-testid={
             dataTestId === undefined ? undefined : `${dataTestId}-description`
           }
@@ -345,7 +371,11 @@ export function ShareAudienceSelector({
       )}
       {upgradeHint !== undefined && upgradeHint !== '' && (
         <p
-          className="mt-2 text-xs fg-secondary"
+          className={
+            contentGap === undefined
+              ? 'mt-2 text-xs fg-secondary'
+              : 'text-xs fg-secondary'
+          }
           data-testid={
             dataTestId === undefined ? undefined : `${dataTestId}-upgrade-hint`
           }
@@ -425,7 +455,7 @@ export function SharedTargetPicker<T>({
   dataTestId,
 }: SharedTargetPickerProps<T>): JSX.Element {
   return (
-    <div className="space-y-2" data-testid={dataTestId}>
+    <Stack gap="inline" data-testid={dataTestId}>
       {/*
         The glyph is not decoration. The results list used to repeat this
         control's exact chrome - same radius, same fill, same hairline - so a
@@ -453,7 +483,7 @@ export function SharedTargetPicker<T>({
           selection indicator, so a one-result list reads as one selectable
           person rather than as a filled input.
         */
-        <ul className="-mx-1 max-h-56 space-y-0.5 overflow-y-auto px-1">
+        <ul className="-mx-1 max-h-56 grid grid-cols-1 content-start gap-0.5 overflow-y-auto px-1">
           {items.map((item) => {
             const key = getKey(item);
             const selected = isSelected(item);
@@ -487,7 +517,7 @@ export function SharedTargetPicker<T>({
           })}
         </ul>
       )}
-    </div>
+    </Stack>
   );
 }
 

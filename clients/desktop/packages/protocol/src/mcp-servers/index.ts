@@ -7,7 +7,7 @@
 // surfaces. Shared by the desktop renderer and the web app (portal surfaces).
 //
 // Deliberately NOT here (they stay in
-// `packages/desktop-shared/src/types/mcp-servers.ts`):
+// `packages/execution-engine/src/types/mcp-servers.ts`):
 //   - on-disk file envelopes (`McpServersIndexFile`, `McpServerFile`) and
 //     their trust-boundary validators/normalizers
 //   - the tools cache, proxy state, and OAuth login request/response types

@@ -20,7 +20,14 @@ import { applyAssistantPatches } from './assistant-snapshot';
 import { normalizeCodexNeutralItem } from './codex-neutral-item';
 import { isUserTurnBoundary } from './turn-boundary';
 import { normalizeEpochMs } from './epoch-ms';
-import { CANOPY_ACCOUNT_PROXY_SWITCH_EVENT_TYPE } from '../types';
+import {
+  CANOPY_ACCOUNT_PROXY_SWITCH_EVENT_TYPE,
+  CANOPY_CLAUDE_MODS_SKIPPED_EVENT_TYPE,
+} from '../types';
+import {
+  isClaudeModsSkippedBlock,
+  isClaudeModsSkippedEntry,
+} from './claude-mods-skipped';
 import {
   applyTaskUpdateItem,
   parseTaskCreateItem,
@@ -38,6 +45,8 @@ import type {
   CodexAgentReceiver,
   CodexAgentState,
   AccountProxySwitchBlock,
+  ClaudeModsSkippedBlock,
+  ClaudeModsSkippedEntry,
   CompactionInfoBlock,
   PersistedChatBlock,
   PersistedChatMessage,
@@ -1975,6 +1984,9 @@ function reduceClaudeTranscriptEvent(
   if (data.type === CANOPY_ACCOUNT_PROXY_SWITCH_EVENT_TYPE) {
     return applyAccountProxySwitchEvent(state, data, options);
   }
+  if (data.type === CANOPY_CLAUDE_MODS_SKIPPED_EVENT_TYPE) {
+    return applyClaudeModsSkippedEvent(state, data, options);
+  }
 
   const claudeHandler = CLAUDE_EVENT_HANDLERS[asString(data.type)];
   if (claudeHandler) {
@@ -2089,6 +2101,71 @@ function applyAccountProxySwitchEvent(
         role: 'system',
         blocks: [block],
         timestamp,
+      },
+    ],
+    lastEventAt: options.now,
+  };
+}
+
+/** Append a launch's bounded Claude Mods skip notice once across replay. */
+function applyClaudeModsSkippedEvent(
+  state: TranscriptReducerState,
+  data: Record<string, unknown>,
+  options: TranscriptReducerOptions,
+): TranscriptReducerState {
+  if (
+    typeof data.timestamp !== 'number' ||
+    !Number.isFinite(data.timestamp) ||
+    (data.sourceEventId !== undefined &&
+      typeof data.sourceEventId !== 'string') ||
+    !Array.isArray(data.mods)
+  ) {
+    return state;
+  }
+
+  const mods: ClaudeModsSkippedEntry[] = [];
+  const seen = new Set<string>();
+  for (const candidate of data.mods.slice(0, 50)) {
+    if (!isClaudeModsSkippedEntry(candidate)) continue;
+    const key = `${candidate.pluginId}\u0000${candidate.reason}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    mods.push({ pluginId: candidate.pluginId, reason: candidate.reason });
+  }
+  if (mods.length === 0) return state;
+
+  const sourceEventId =
+    typeof data.sourceEventId === 'string' ? data.sourceEventId : undefined;
+  if (
+    sourceEventId !== undefined &&
+    state.messages.some((message) =>
+      message.blocks.some(
+        (block) =>
+          block.type === 'claude_mods_skipped' &&
+          block.sourceEventId === sourceEventId,
+      ),
+    )
+  ) {
+    return { ...state, lastEventAt: options.now };
+  }
+
+  const block: ClaudeModsSkippedBlock = {
+    type: 'claude_mods_skipped',
+    timestamp: data.timestamp,
+    mods,
+    ...(sourceEventId !== undefined ? { sourceEventId } : {}),
+  };
+  if (!isClaudeModsSkippedBlock(block)) return state;
+
+  return {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id: sourceEventId ?? options.createMessageId(),
+        role: 'system',
+        blocks: [block],
+        timestamp: block.timestamp,
       },
     ],
     lastEventAt: options.now,
@@ -5208,6 +5285,9 @@ function reduceCodexTranscriptEvent(
   if (event.type === CANOPY_ACCOUNT_PROXY_SWITCH_EVENT_TYPE) {
     return applyAccountProxySwitchEvent(state, event, options);
   }
+  if (event.type === CANOPY_CLAUDE_MODS_SKIPPED_EVENT_TYPE) {
+    return applyClaudeModsSkippedEvent(state, event, options);
+  }
 
   const eventType = typeof event.type === 'string' ? event.type : '';
   const handler = CODEX_EVENT_HANDLERS[eventType];
@@ -5351,6 +5431,7 @@ export function parseAgentTranscriptLines(
       parsed.type === 'canopy_helper_diagnostic' ||
       parsed.type === 'canopy_compaction' ||
       parsed.type === CANOPY_ACCOUNT_PROXY_SWITCH_EVENT_TYPE ||
+      parsed.type === CANOPY_CLAUDE_MODS_SKIPPED_EVENT_TYPE ||
       // The consumer half of the Portal's structured-auth-failure replay —
       // without this entry the surface the wire model exists for silently
       // drops every one. The producer half is

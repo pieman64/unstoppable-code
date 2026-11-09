@@ -28,7 +28,7 @@ import type { ChatTabPluginSelections } from '../types';
 import type {
   McpHttpAuthHandler,
   McpHttpAuthPreference,
-} from '../types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 
 export type ChatTabPluginSelectionsReadInput = Omit<
   ChatTabPluginSelections,

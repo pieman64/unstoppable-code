@@ -7,6 +7,8 @@ interface PluginAlternativesProps {
   onOpenEntryId?: (entryId: string) => void;
   /** `plugin-detail-also-available` or a surface-specific prefix. */
   testIdPrefix: string;
+  /** Only the links, for a host that labels them itself. */
+  linksOnly?: boolean;
 }
 
 /**
@@ -18,11 +20,11 @@ export function PluginAlternatives({
   alternatives,
   onOpenEntryId,
   testIdPrefix,
+  linksOnly = false,
 }: PluginAlternativesProps): JSX.Element | null {
   if (!alternatives || alternatives.length === 0) return null;
-  return (
-    <p data-testid={testIdPrefix} className="mt-2 text-xs fg-secondary">
-      Also available from{' '}
+  const links = (
+    <>
       {alternatives.map((alternative, index) => (
         <Fragment key={alternative.entryId}>
           {index > 0 && ', '}
@@ -36,6 +38,12 @@ export function PluginAlternatives({
           </Button>
         </Fragment>
       ))}
+    </>
+  );
+  if (linksOnly) return <span data-testid={testIdPrefix}>{links}</span>;
+  return (
+    <p data-testid={testIdPrefix} className="mt-2 text-xs fg-secondary">
+      Also available from {links}
     </p>
   );
 }

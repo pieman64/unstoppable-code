@@ -12,10 +12,15 @@ import {
   Button,
   ComponentSection,
   CopyLinkButton,
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
   ErrorBanner,
   ShareAudienceLabel,
 } from '@canopy/ui-shared/components';
-import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { formatMonthDay } from '@canopy/ui-shared/lib/billing-format';
 import type { SharedByYouRow } from '../sharing/sharedByYouRow';
 import {
@@ -123,107 +128,123 @@ function OwnerRow({
   return (
     <div data-testid="shared-by-you">
       <ComponentSection title="Shared by you">
-        <ul>
-          <li
-            data-testid="shared-by-you-row"
-            data-access={row.audience}
-            className="flex flex-wrap items-center gap-4 px-4 py-2.5 text-s"
-          >
-            <span
-              className={`min-w-0 truncate fg-primary ${REPLAY_MASK_CLASS}`}
+        <DataTableFrame caption="Shared by you" layout="fixed">
+          <DataTableHead>
+            <DataTableHeaderCell width="34%">Shared with</DataTableHeaderCell>
+            <DataTableHeaderCell width="18%">Access</DataTableHeaderCell>
+            <DataTableHeaderCell width="16%">Since</DataTableHeaderCell>
+            <DataTableHeaderCell align="right">Actions</DataTableHeaderCell>
+          </DataTableHead>
+          <DataTableBody>
+            <DataTableRow
+              data-testid="shared-by-you-row"
+              data-access={row.audience}
             >
-              {row.name}
-            </span>
-            <ShareAudienceLabel audience={row.audience} />
-            {row.sinceIso && (
-              <span className="text-xs fg-tertiary">
-                Since {formatMonthDay(row.sinceIso)}
-              </span>
-            )}
-            <div className="ml-auto flex flex-wrap items-center gap-3">
-              {copy && (
-                <CopyLinkButton
-                  key={`${copy.link}:${marketplaceLinkCopiedNotice(copy.access)}`}
-                  url={copy.link}
-                  dataTestId="shared-by-you-copy-link"
-                  write={() =>
-                    copyMarketplaceLink(
-                      copy.link,
-                      copy.access,
-                      copy.port,
-                      () =>
-                        active.current &&
-                        current.current.copy?.link === copy.link &&
-                        JSON.stringify(current.current.copy?.access) ===
-                          JSON.stringify(copy.access),
-                    )
-                  }
-                />
-              )}
-              {!row.action.available && (
-                <span id={reasonId} className="text-xs fg-tertiary">
-                  {row.action.reason}
-                </span>
-              )}
-              <Button
-                ref={trigger}
-                size="compact"
-                variant="ghost-destructive"
-                data-testid="shared-by-you-unshare"
-                disabled={
-                  !row.action.available || busy || removed || unshare.disabled
-                }
-                aria-describedby={row.action.available ? undefined : reasonId}
-                onClick={() =>
-                  row.mode === 'delete' ? unshare.open() : setRemoving(true)
-                }
-              >
-                Unshare
-              </Button>
-            </div>
-            {row.audience === 'public' && (
-              <div
-                className="flex w-full items-center gap-3 text-xs fg-secondary"
-                data-testid="shared-by-you-public-version"
-              >
-                <span>
-                  {row.publicLinkPinnedAt
-                    ? `Public link shows the version from ${formatMonthDay(row.publicLinkPinnedAt)}`
-                    : 'Public link shows a pinned version.'}
-                </span>
-                {row.refresh?.available && (
+              <DataTableCell tone="primary" replay="mask" overflow="truncate">
+                {row.name}
+              </DataTableCell>
+              <DataTableCell>
+                <ShareAudienceLabel audience={row.audience} />
+              </DataTableCell>
+              <DataTableCell>
+                {row.sinceIso ? formatMonthDay(row.sinceIso) : ''}
+              </DataTableCell>
+              <DataTableCell align="right" overflow="wrap">
+                <div className="flex items-center justify-end gap-3">
+                  {copy && (
+                    <CopyLinkButton
+                      key={`${copy.link}:${marketplaceLinkCopiedNotice(copy.access)}`}
+                      url={copy.link}
+                      dataTestId="shared-by-you-copy-link"
+                      write={() =>
+                        copyMarketplaceLink(
+                          copy.link,
+                          copy.access,
+                          copy.port,
+                          () =>
+                            active.current &&
+                            current.current.copy?.link === copy.link &&
+                            JSON.stringify(current.current.copy?.access) ===
+                              JSON.stringify(copy.access),
+                        )
+                      }
+                    />
+                  )}
+                  {!row.action.available && (
+                    <span id={reasonId} className="text-xs fg-tertiary">
+                      {row.action.reason}
+                    </span>
+                  )}
                   <Button
-                    data-testid="shared-by-you-public-update"
+                    ref={trigger}
                     size="compact"
-                    variant="ghost"
-                    disabled={busy || removed}
-                    onClick={() => void refresh()}
+                    variant="ghost-destructive"
+                    data-testid="shared-by-you-unshare"
+                    disabled={
+                      !row.action.available ||
+                      busy ||
+                      removed ||
+                      unshare.disabled
+                    }
+                    aria-describedby={
+                      row.action.available ? undefined : reasonId
+                    }
+                    onClick={() =>
+                      row.mode === 'delete' ? unshare.open() : setRemoving(true)
+                    }
                   >
-                    Update
+                    Unshare
                   </Button>
-                )}
-              </div>
+                </div>
+              </DataTableCell>
+            </DataTableRow>
+            {row.audience === 'public' && (
+              <DataTableRow>
+                <DataTableCell colSpan={4} overflow="wrap">
+                  <div
+                    className="flex items-center gap-3 text-xs fg-secondary"
+                    data-testid="shared-by-you-public-version"
+                  >
+                    <span>
+                      {row.publicLinkPinnedAt
+                        ? `Public link shows the version from ${formatMonthDay(row.publicLinkPinnedAt)}`
+                        : 'Public link shows a pinned version.'}
+                    </span>
+                    {row.refresh?.available && (
+                      <Button
+                        data-testid="shared-by-you-public-update"
+                        size="compact"
+                        variant="ghost"
+                        disabled={busy || removed}
+                        onClick={() => void refresh()}
+                      >
+                        Update
+                      </Button>
+                    )}
+                  </div>
+                </DataTableCell>
+              </DataTableRow>
             )}
-            <ErrorBanner error={removing ? null : error} />
-            {row.mode === 'delete' && unshare.dialog}
-            {removing && (
-              <RemovePublicLinkConfirmDialog
-                testIdPrefix="shared-by-you"
-                trapFocus
-                restoreFocusRef={trigger}
-                busy={busy}
-                onCancel={() => {
-                  if (!inFlight.current) {
-                    setRemoving(false);
-                    setError(null);
-                  }
-                }}
-                onConfirm={() => void revoke()}
-                errorMessage={error}
-              />
-            )}
-          </li>
-        </ul>
+          </DataTableBody>
+        </DataTableFrame>
+        <ErrorBanner error={removing ? null : error} />
+        {row.mode === 'delete' && unshare.dialog}
+        {removing && (
+          <RemovePublicLinkConfirmDialog
+            testIdPrefix="shared-by-you"
+            trapFocus
+            restoreFocusRef={trigger}
+            busy={busy}
+            onCancel={() => {
+              if (!inFlight.current) {
+                setRemoving(false);
+                setError(null);
+              }
+            }}
+            onConfirm={() => void revoke()}
+            errorMessage={error}
+          />
+        )}
       </ComponentSection>
     </div>
   );

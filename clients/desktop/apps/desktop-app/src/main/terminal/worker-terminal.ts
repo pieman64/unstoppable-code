@@ -4,6 +4,8 @@ import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import {
   TerminalEngine,
   TerminalShells,
+  prependPathEntries,
+  sanitizeManagedBaseEnv,
   type TerminalEngineHost,
   type TerminalEngineOptions,
   type TerminalResourceHandle,
@@ -12,13 +14,14 @@ import {
   type WorkerTerminalEventType,
 } from '@canopy/core-runtime/node/terminal';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import type { ManagedTerminalCommand } from '@canopy/protocol/terminal';
 import {
   getEnhancedEnv,
   isLinuxLoginShellPathSupported,
   resolveLinuxAccountShell,
 } from '@canopy/desktop-shared/pipelines/config-paths';
-import { findExecutableOnPath } from '@canopy/desktop-shared/node/lib/path-lookup';
-import { startWindowsProcessTreeKill } from '@canopy/desktop-shared/node/lib/process-kill';
+import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
+import { startWindowsProcessTreeKill } from '@canopy/execution-engine/node/lib/process-kill';
 import { lowerSpawnedProcessPriority } from '../lib/background-process';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { drainOwnedProcess } from '../lib/process-kill';
@@ -95,6 +98,27 @@ export function desktopTerminalEnvironmentFor(
   return {
     ...desktopTerminalEnvironment.base(),
     ...desktopTerminalEnvironment.worktree(projectId, worktreeId),
+  };
+}
+
+/**
+ * A managed command's whole environment as the in-process engine gives its
+ * PTY, less what the terminal host adds itself (TERM, COLORTERM, a LANG
+ * fallback); daemon-placed Claude terminals receive it from main (CAN-5097).
+ */
+export function desktopManagedTerminalEnvironmentFor(
+  projectId: string,
+  worktreeId: string,
+  command: ManagedTerminalCommand,
+): TerminalEnvironment {
+  return {
+    ...prependPathEntries(
+      sanitizeManagedBaseEnv(
+        desktopTerminalEnvironmentFor(projectId, worktreeId),
+      ),
+      command.pathPrepend,
+    ),
+    ...(command.env ?? {}),
   };
 }
 

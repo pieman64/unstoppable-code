@@ -1,4 +1,4 @@
-import type { BrowserKeyModifier } from '@canopy/desktop-shared/types/browser';
+import type { BrowserKeyModifier } from '@canopy/execution-engine/types/browser';
 import { isCDPRecord } from '../frames/cdp-decode';
 import type { BrowserCdpSend } from './actionability';
 import type { ActionLaneContext } from './action-lane';

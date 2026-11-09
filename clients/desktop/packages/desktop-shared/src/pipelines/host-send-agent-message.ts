@@ -31,7 +31,7 @@ import type { ThinkingLevel } from '@canopy/protocol/thinking';
 import { normalizePluginSelections } from '../lib/plugin-selections-normalization';
 import type { ChatTabPluginSelections } from '../types';
 import { APPROVAL_MODES, type ApprovalMode } from '../types/approvals';
-import type { PipelineChatSendRecord } from '../types/pipeline';
+import type { PipelineChatSendRecord } from '@canopy/execution-engine/types/pipeline';
 import {
   presentInput,
   SAFE_BOT_ID_RE,

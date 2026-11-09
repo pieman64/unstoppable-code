@@ -84,8 +84,8 @@ import type {
   BrowserMouseButton,
   BrowserProfileSwitchRequest,
   BrowserProfileSwitchResult,
-} from '@canopy/desktop-shared/types/browser';
-import { isMcpOAuthBrowserScope } from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
+import { isMcpOAuthBrowserScope } from '@canopy/execution-engine/types/browser';
 import type {
   BrowserClearPreview,
   BrowserProfileRecord,

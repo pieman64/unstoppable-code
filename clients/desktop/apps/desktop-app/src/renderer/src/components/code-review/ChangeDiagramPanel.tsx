@@ -111,15 +111,15 @@ export function ChangeDiagramPanel({
       data-testid="change-diagram-panel"
       {...find.surfaceProps}
     >
-      {(error || artifacts.error) && (
-        <Notice intent="destructive" className="m-2">
-          {error ?? artifacts.error}
-        </Notice>
-      )}
-      {notice && (
-        <Notice intent="positive" className="mx-2 mt-2">
-          {notice}
-        </Notice>
+      {(error || artifacts.error || notice) && (
+        <div
+          className={`flex shrink-0 flex-col gap-4 px-2 pt-2 ${notice ? '' : 'pb-2'}`}
+        >
+          {(error || artifacts.error) && (
+            <Notice intent="destructive">{error ?? artifacts.error}</Notice>
+          )}
+          {notice && <Notice intent="positive">{notice}</Notice>}
+        </div>
       )}
       <div className="flex min-h-0 flex-1">
         <CodeReviewDiagramsPanel

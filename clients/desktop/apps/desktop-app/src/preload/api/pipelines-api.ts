@@ -51,7 +51,7 @@ import type {
   SharedPipelinePublicShareInfo,
   SharedPipelineSaveImpact,
   SharedPipelineWriteRequest,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   ExecutionEvent,
   ExecutePipelineRequestOptions,

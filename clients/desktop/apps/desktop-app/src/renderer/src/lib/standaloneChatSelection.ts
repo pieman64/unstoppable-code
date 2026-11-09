@@ -1,4 +1,4 @@
-import { workspaceOwnerMatchesContext } from '@canopy/desktop-shared/lib/workspace-owner';
+import { workspaceOwnerMatchesContext } from '@canopy/execution-engine/lib/workspace-owner';
 import type {
   ArchivedChatSummary,
   CoworkWorkEntryMeta,

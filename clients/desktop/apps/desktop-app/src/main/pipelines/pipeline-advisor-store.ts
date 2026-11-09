@@ -15,7 +15,7 @@ import type {
   PipelineAdvisorSeverity,
   PipelineAdvisorSnapshot,
   PipelineAdvisorTurnKind,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { ThinkingLevel } from '@canopy/desktop-shared/types';
 
 export const PIPELINE_ADVISOR_FILE_NAME = 'pipeline-advisor.json';

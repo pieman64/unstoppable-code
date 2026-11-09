@@ -2,7 +2,7 @@ import type {
   BrowserJavaScriptDialogResponse,
   BrowserKeyModifier,
   BrowserMouseButton,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 
 /** What the direct (synthetic) action does on the retained target. */
 export interface SyntheticAction {

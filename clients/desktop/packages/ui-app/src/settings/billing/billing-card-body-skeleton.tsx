@@ -61,7 +61,7 @@ export type BillingCardBody = 'plan' | 'credits';
 function SampleBody({ body }: { readonly body: BillingCardBody }): JSX.Element {
   if (body === 'plan') {
     return (
-      <div className="flex flex-col gap-2 pt-1">
+      <div className="flex flex-col gap-2">
         <p className="text-xs fg-secondary">{SAMPLE_PLAN.description}</p>
         <p className="text-s fg-secondary">{SAMPLE_PLAN.nextBilling}</p>
       </div>

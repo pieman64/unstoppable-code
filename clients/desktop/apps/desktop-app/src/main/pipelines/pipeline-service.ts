@@ -10,7 +10,7 @@ import {
 import type {
   IPCResult,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   parseShareRemoteMetadata,
   type ShareRemoteMetadata,

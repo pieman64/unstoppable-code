@@ -8,7 +8,7 @@ import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/exe
 import type {
   PipelineData,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 /*
  * What the desktop definition sources read beside the portable records they

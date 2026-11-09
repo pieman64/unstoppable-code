@@ -1,3 +1,4 @@
+import { Fieldset } from '@canopy/ui-shared/components';
 import {
   type JSX,
   useCallback,
@@ -9,7 +10,12 @@ import {
 import { sharedAutomationActivity } from '@/lib/workflows/stored-automation-activity';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import { Disclosure, Notice } from '@canopy/ui-shared';
-import { FormField, TextArea, Heading } from '@canopy/ui-shared/components';
+import {
+  Stack,
+  FormField,
+  TextArea,
+  Heading,
+} from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { AutomationTargetRequirementLine } from '@canopy/ui-shared/components/AutomationDefinitionSummary';
 import { CHAT_LABEL } from '@canopy/protocol';
@@ -1012,7 +1018,7 @@ export function ShareAutomationModal({
 
   const extraOptions = useCallback(
     ({ packageReview }: ShareResourceExtraOptionsContext) => (
-      <div className="space-y-4">
+      <Stack gap="group">
         <FormField label="Description (optional)" error={descriptionError}>
           {(control) => (
             <TextArea
@@ -1064,41 +1070,45 @@ export function ShareAutomationModal({
           >
             {pipelineTargetContexts !== undefined &&
               pipelineTargetContexts.length > 1 && (
-                <fieldset
-                  className="space-y-1 text-s"
-                  data-testid="share-automation-target-narrowing"
-                >
-                  <legend className="mb-1 fg-secondary">
-                    {TARGET_NARROWING_LABEL}
-                  </legend>
-                  {TARGET_NARROWING_CHOICES.map(
-                    ({ context, label, testId }) => {
-                      const selected =
-                        declaredTargetContexts ?? pipelineTargetContexts;
-                      const checked = selected.includes(context);
-                      return (
-                        <ShareCheckbox
-                          key={context}
-                          checked={checked}
-                          // At least one context must stay allowed.
-                          disabled={checked && selected.length === 1}
-                          onChange={(next) =>
-                            setDeclaredTargetContexts(
-                              pipelineTargetContexts.filter((candidate) =>
-                                candidate === context
-                                  ? next
-                                  : selected.includes(candidate),
-                              ),
-                            )
-                          }
-                          inputTestId={testId}
-                        >
-                          {label}
-                        </ShareCheckbox>
-                      );
-                    },
-                  )}
-                </fieldset>
+                <div className="text-s">
+                  <Fieldset
+                    gap="tight"
+                    legend={
+                      <span className="fg-secondary">
+                        {TARGET_NARROWING_LABEL}
+                      </span>
+                    }
+                    data-testid="share-automation-target-narrowing"
+                  >
+                    {TARGET_NARROWING_CHOICES.map(
+                      ({ context, label, testId }) => {
+                        const selected =
+                          declaredTargetContexts ?? pipelineTargetContexts;
+                        const checked = selected.includes(context);
+                        return (
+                          <ShareCheckbox
+                            key={context}
+                            checked={checked}
+                            // At least one context must stay allowed.
+                            disabled={checked && selected.length === 1}
+                            onChange={(next) =>
+                              setDeclaredTargetContexts(
+                                pipelineTargetContexts.filter((candidate) =>
+                                  candidate === context
+                                    ? next
+                                    : selected.includes(candidate),
+                                ),
+                              )
+                            }
+                            inputTestId={testId}
+                          >
+                            {label}
+                          </ShareCheckbox>
+                        );
+                      },
+                    )}
+                  </Fieldset>
+                </div>
               )}
             {buildResult.ok &&
               !(
@@ -1164,10 +1174,7 @@ export function ShareAutomationModal({
               </Notice>
             )}
             {runConditionCommand && (
-              <div
-                className="space-y-2"
-                data-testid="share-automation-run-condition"
-              >
+              <Stack gap="inline" data-testid="share-automation-run-condition">
                 <ShareCheckbox
                   checked={includesRunCondition}
                   onChange={setIncludeRunCondition}
@@ -1212,8 +1219,8 @@ export function ShareAutomationModal({
                     </p>
                   )}
                 {includesRunCondition && runConditionWarnings.length > 0 && (
-                  <div
-                    className="space-y-1"
+                  <Stack
+                    gap="tight"
                     data-testid="share-automation-run-condition-warnings"
                   >
                     {runConditionWarnings.map((warning) => (
@@ -1225,18 +1232,21 @@ export function ShareAutomationModal({
                         }
                       </p>
                     ))}
-                  </div>
+                  </Stack>
                 )}
-              </div>
+              </Stack>
             )}
             {packageReview}
             {buildResult.ok && (
-              <div data-testid="share-automation-preview">
+              <div
+                className="flex flex-col gap-1"
+                data-testid="share-automation-preview"
+              >
                 <Heading level={3} variant="title">
                   Shared document
                 </Heading>
                 <pre
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-1 max-h-52 overflow-auto rounded-lg bg-secondary p-3 text-xs fg-secondary`}
+                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-52 overflow-auto rounded-lg bg-secondary p-3 text-xs fg-secondary`}
                 >
                   {JSON.stringify(buildResult.document, null, 2)}
                 </pre>
@@ -1244,7 +1254,7 @@ export function ShareAutomationModal({
             )}
           </Disclosure>
         )}
-      </div>
+      </Stack>
     ),
     [
       buildResult,

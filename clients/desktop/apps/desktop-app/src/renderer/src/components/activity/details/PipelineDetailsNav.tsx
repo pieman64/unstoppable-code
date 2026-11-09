@@ -3,7 +3,7 @@ import type {
   ExecutionState,
   MaterializedJob,
   JobResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   getPresentJobStatuses,
   type JobStatus,
@@ -13,6 +13,7 @@ import type { PipelineEditDeepLink } from '@/stores/navigationStore';
 import { CostIcon } from '@canopy/ui-shared/components/cost';
 import { capitalizeFirstLetter } from '@canopy/ui-shared/lib';
 import {
+  Surface,
   Button,
   Count,
   FloatingPickerMenu,
@@ -221,15 +222,17 @@ export function PipelineDetailsNav({
         ))}
       </div>
 
-      <div className="border-t px-3.5 py-2 text-s">
-        <Button
-          variant="link"
-          onClick={openDefinition}
-          data-testid="pipeline-details-open-definition"
-        >
-          Open current definition ↗
-        </Button>
-      </div>
+      <Surface variant="section" boundary="top">
+        <div className="px-3.5 py-2 text-s">
+          <Button
+            variant="link"
+            onClick={openDefinition}
+            data-testid="pipeline-details-open-definition"
+          >
+            Open current definition ↗
+          </Button>
+        </div>
+      </Surface>
     </nav>
   );
 }

@@ -1,4 +1,4 @@
-import { getRawOpenCodeModelId } from '@canopy/desktop-shared/lib/opencode-models';
+import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import { resolveRuntimeModel } from '@canopy/desktop-shared/types';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
 import {

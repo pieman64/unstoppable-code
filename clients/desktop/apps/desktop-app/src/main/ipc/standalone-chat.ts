@@ -278,7 +278,30 @@ async function initStandaloneDir(projectId?: string): Promise<void> {
   await rebuildHistoryIndex(workspaceId);
 }
 
-async function listChats(
+/** The window's standalone-chat init, also run before App Advisor's Cowork history reads. */
+export async function initStandaloneChat(projectId?: string): Promise<void> {
+  const resolvedProjectId = resolveChatProjectId(projectId);
+  validateId(resolvedProjectId, 'projectId');
+  await initStandaloneDir(resolvedProjectId);
+  // Every init of a cowork workspace (first open, each workspace switch,
+  // App Advisor history actions) queues the workspace-scope local memory
+  // import, the counterpart of the readiness audit that queues it for
+  // code workspaces, which cowork never renders. The job's 24-hour
+  // per-source interval keeps repeats cheap. The id is translated the
+  // same way initStandaloneDir translates it, so a legacy chat-project id
+  // reaches the real workspace, and the gate is keyed on the registry so
+  // App Advisor and unknown ids never queue an import.
+  const coworkWorkspaceId = resolveCoworkWorkspaceId(resolvedProjectId);
+  if (getWorkspaceType(coworkWorkspaceId) === 'cowork') {
+    trackDetachedWork(() =>
+      enqueueWorkspaceLocalMemoryImportBatch(coworkWorkspaceId).catch(
+        () => undefined,
+      ),
+    );
+  }
+}
+
+export async function listChats(
   projectId?: string,
 ): Promise<StandaloneChatListResponse> {
   const resolvedProjectId = resolveChatProjectId(projectId);
@@ -571,7 +594,7 @@ async function getWorkspaceProjectFile(
   };
 }
 
-async function readArchive(
+export async function readArchive(
   req: StandaloneArchiveReadRequest,
 ): Promise<StandaloneArchiveReadResponse> {
   const snapshot = await readArchiveSnapshot(req.projectId, req.chatId, {
@@ -716,7 +739,7 @@ async function resumeArchive(
   return { tab };
 }
 
-async function loadWorkspace(
+export async function loadWorkspace(
   req: StandaloneWorkspaceSnapshotRequest,
 ): Promise<StandaloneWorkspaceSnapshotResponse> {
   const [project, archives] = await settleAll([
@@ -1386,27 +1409,7 @@ async function importProject(
 export function registerStandaloneChatHandlers(): void {
   registerIpcHandler<[string?], void>(
     IPC_CHANNELS.standaloneChatInit,
-    async (_event, projectId) => {
-      const resolvedProjectId = resolveChatProjectId(projectId);
-      validateId(resolvedProjectId, 'projectId');
-      await initStandaloneDir(resolvedProjectId);
-      // Every init of a cowork workspace (first open, each workspace switch,
-      // App Advisor history actions) queues the workspace-scope local memory
-      // import, the counterpart of the readiness audit that queues it for
-      // code workspaces, which cowork never renders. The job's 24-hour
-      // per-source interval keeps repeats cheap. The id is translated the
-      // same way initStandaloneDir translates it, so a legacy chat-project id
-      // reaches the real workspace, and the gate is keyed on the registry so
-      // App Advisor and unknown ids never queue an import.
-      const coworkWorkspaceId = resolveCoworkWorkspaceId(resolvedProjectId);
-      if (getWorkspaceType(coworkWorkspaceId) === 'cowork') {
-        trackDetachedWork(() =>
-          enqueueWorkspaceLocalMemoryImportBatch(coworkWorkspaceId).catch(
-            () => undefined,
-          ),
-        );
-      }
-    },
+    async (_event, projectId) => initStandaloneChat(projectId),
   );
 
   registerIpcHandler<[string?], StandaloneChatListResponse>(

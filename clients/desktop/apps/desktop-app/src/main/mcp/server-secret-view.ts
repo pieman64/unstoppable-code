@@ -6,11 +6,11 @@ import type {
   McpServerDefinitionView,
   McpServerFile,
   McpServerFileView,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   isStoredSecretValue,
   type SecretValueInput,
-} from '@canopy/desktop-shared/types/stored-secrets';
+} from '@canopy/execution-engine/types/stored-secrets';
 import {
   createStoredSecretResolver,
   StoredSecretError,
@@ -69,9 +69,12 @@ function configDestination<S>(
     : httpDestination(definition);
 }
 
+/** The OAuth client secret's slot; it stays with the desktop OAuth client and is never redeemed (CAN-4125). */
+export const MCP_OAUTH_CLIENT_SECRET_SLOT = 'definition/oauth/clientSecret';
+
 const slots = {
   header: (name: string): string => `definition/headers/${name}`,
-  clientSecret: 'definition/oauth/clientSecret',
+  clientSecret: MCP_OAUTH_CLIENT_SECRET_SLOT,
   envVar: (configId: string, key: string): string =>
     `config/${configId}/envVars/${key}`,
   extraHeader: (configId: string, name: string): string =>
@@ -169,6 +172,13 @@ function storedSlots(server: McpServerData): StoredSecretSlot[] {
       });
   }
   return result;
+}
+
+/** Every stored-secret slot the server holds, with its value (CAN-4125's execution-secret owner). */
+export function mcpServerStoredSecretSlots(
+  server: McpServerData,
+): StoredSecretSlot[] {
+  return storedSlots(server);
 }
 
 /** Resolves kept values against the stored server; none may be kept without one. */

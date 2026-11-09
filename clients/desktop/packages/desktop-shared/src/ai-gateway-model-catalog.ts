@@ -10,7 +10,7 @@ import type {
   GatewayRouteEntry,
   ThinkingLevel,
 } from './types';
-import type { OrgGatewayModelAliases } from './lib/gateway-model-availability';
+import type { OrgGatewayModelAliases } from '@canopy/execution-engine/lib/gateway-model-availability';
 
 export interface OrgGatewayCatalogInput {
   personal?: boolean;

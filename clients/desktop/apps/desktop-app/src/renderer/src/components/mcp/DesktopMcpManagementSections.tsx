@@ -1,24 +1,17 @@
-import type { SecretValueInput } from '@canopy/desktop-shared/types/stored-secrets';
+import type { SecretValueInput } from '@canopy/execution-engine/types/stored-secrets';
 import { useGitHubStore } from '@/stores/githubStore';
 import type { AccountMcpClientSetup } from '@canopy/protocol/mcp-servers';
 import {
   MCP_MANAGEMENT_REASONS,
   resolveMcpConnectionBadge,
 } from '@canopy/ui-shared/lib/mcp-card-display';
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type JSX,
-  type ReactNode,
-} from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type {
   AccountMcpConnection,
   McpServerDataView,
   McpServerIndexEntry,
   McpServerStatusEntry,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   McpServerManagementCard,
   type McpAction,
@@ -48,7 +41,7 @@ import {
   requireCapturedMcpAccount,
 } from './mcpManagementOperations';
 import type { AccountMcpDetailSignIn } from './useAccountMcpActionRequests';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { Stack, ErrorBanner } from '@canopy/ui-shared/components';
 
 /** Host lifecycle stays here; both hosts render the same feature sections. */
 export function DesktopMcpManagementSections({
@@ -66,7 +59,6 @@ export function DesktopMcpManagementSections({
   onBusyChange,
   onActionStart,
   registerErrorClearer,
-  tools,
 }: {
   server: McpServerDataView | null;
   status?: McpServerStatusEntry;
@@ -83,7 +75,6 @@ export function DesktopMcpManagementSections({
   onBusyChange: (busy: boolean) => void;
   onActionStart?: () => void;
   registerErrorClearer?: (clear: () => void) => () => void;
-  tools?: ReactNode;
 }): JSX.Element {
   const [linkedConnection, setLinkedConnection] =
     useState<AccountMcpConnection>();
@@ -353,10 +344,7 @@ export function DesktopMcpManagementSections({
     if (open) deleteAccount.current = loadSignedInAccountId();
   }, []);
   return (
-    <div
-      className="flex flex-col gap-5"
-      data-testid="mcp-browse-detail-management"
-    >
+    <Stack gap="block" data-testid="mcp-browse-detail-management">
       <McpServerManagementCard
         health={{
           targetKey: targetKey,
@@ -497,9 +485,8 @@ export function DesktopMcpManagementSections({
           registerErrorClearer: registerRowErrorClearer,
           onConfirmationChange: captureDeleteAccount,
         }}
-        tools={tools}
       />
-      <ErrorBanner error={refreshError} className="" blockMessageFromReplay />
+      <ErrorBanner className="" error={refreshError} blockMessageFromReplay />
       {promotion && server && (
         <McpPromoteDialog
           serverId={server.definition.id}
@@ -576,6 +563,6 @@ export function DesktopMcpManagementSections({
           }}
         />
       )}
-    </div>
+    </Stack>
   );
 }

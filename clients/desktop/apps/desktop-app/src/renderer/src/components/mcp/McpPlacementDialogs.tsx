@@ -5,12 +5,13 @@ import {
   isStoredSecretValue,
   type SecretValueInput,
   type StoredSecretValue,
-} from '@canopy/desktop-shared/types/stored-secrets';
+} from '@canopy/execution-engine/types/stored-secrets';
 import {
   defaultConfigAuthToken,
   CLOUD_SINGLE_CONFIG_REQUIRED,
 } from './mcpManagementOperations';
 import {
+  Stack,
   ChoiceField,
   FormField,
   TextInput,
@@ -57,7 +58,7 @@ export function McpMoveToCloudDialog({
       onClose={onClose}
       dataTestId={dataTestId}
     >
-      <div className="space-y-4">
+      <Stack gap="group">
         {blockedReason ? (
           <p className="text-s fg-secondary" data-testid="mcp-move-blocked">
             {blockedReason}
@@ -107,6 +108,7 @@ export function McpMoveToCloudDialog({
         )}
         {token?.saved?.kept && !blockedReason && token.value.length === 0 && (
           <Button
+            className="self-start"
             variant="ghost"
             size="compact"
             onClick={token.saved.onDrop}
@@ -128,7 +130,7 @@ export function McpMoveToCloudDialog({
             Move to cloud account
           </Button>
         </div>
-      </div>
+      </Stack>
     </DialogModal>
   );
 }
@@ -228,7 +230,7 @@ export function McpMoveToDeviceDialog({
       onClose={onClose}
       dataTestId="mcp-move-to-device-dialog"
     >
-      <div className="space-y-4">
+      <Stack gap="group">
         <p className="text-s fg-secondary">
           Cloud chats, cloud project defaults, and your other desktops lose{' '}
           {serverName}, because they can't use a server on this device. Chats
@@ -272,7 +274,7 @@ export function McpMoveToDeviceDialog({
             Move to this device
           </Button>
         </div>
-      </div>
+      </Stack>
     </DialogModal>
   );
 }

@@ -8,7 +8,7 @@ import type {
   UsageLimitedChatTarget,
 } from '@canopy/desktop-shared/types';
 import type { PortalScriptRun } from '@canopy/protocol/portal';
-import type { ExecutionEvent } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionEvent } from '@canopy/execution-engine/types/pipeline';
 import type { ForeignActivityOperation } from './foreign-activity-ledger';
 
 export type ForeignActivitySourceOperation = Omit<

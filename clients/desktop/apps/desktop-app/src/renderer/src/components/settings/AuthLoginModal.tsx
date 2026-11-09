@@ -30,6 +30,13 @@ import {
   Heading,
 } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { invalidateClaudeAuthStatusCache } from '@/hooks/useClaudeAuthStatus';
 import { invalidateCodexAuthStatusCache } from '@/hooks/useCodexAuthStatus';
@@ -64,6 +71,8 @@ type ModalView =
       exitCode: number | null;
       /** The provider's own failure line from the terminal output. */
       detail?: string;
+      /** The sign-in process couldn't start. */
+      failure?: InlineFailure;
       timedOut?: boolean;
     };
 
@@ -161,20 +170,22 @@ function StatusFooter({
           </span>
         )}
         {status?.authenticated && (
-          <span className="fg-secondary">
-            Signed in
-            {status.accountLabel ? (
-              <>
-                {' as '}
-                <span
-                  className={`font-medium fg-primary ${POSTHOG_REPLAY_BLOCK_CLASS}`}
-                >
-                  {status.accountLabel}
-                </span>
-              </>
-            ) : null}
+          <span className="inline-flex flex-wrap items-baseline gap-2 fg-secondary">
+            <span>
+              Signed in
+              {status.accountLabel ? (
+                <>
+                  {' as '}
+                  <span
+                    className={`font-medium fg-primary ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+                  >
+                    {status.accountLabel}
+                  </span>
+                </>
+              ) : null}
+            </span>
             {status.detail ? (
-              <span className="ml-2 text-xs">({status.detail})</span>
+              <span className="text-xs">({status.detail})</span>
             ) : null}
           </span>
         )}
@@ -193,6 +204,7 @@ function LoginFailedView({
   provider,
   exitCode,
   detail,
+  failure,
   timedOut,
   onLogin,
   onCancel,
@@ -200,6 +212,7 @@ function LoginFailedView({
   provider: AuthTerminalProvider;
   exitCode: number | null;
   detail?: string;
+  failure?: InlineFailure;
   timedOut?: boolean;
   onLogin: () => void;
   onCancel: () => void;
@@ -220,6 +233,15 @@ function LoginFailedView({
           >
             Sign-in timed out. Try again.
           </p>
+        ) : failure ? (
+          <DesktopErrorBanner
+            className="text-left"
+            error={failure.error}
+            {...(failure.details === undefined
+              ? {}
+              : { details: failure.details })}
+            testId="auth-login-failure-detail"
+          />
         ) : detail ? (
           <p
             className={`text-s fg-secondary ${POSTHOG_REPLAY_BLOCK_CLASS}`}
@@ -308,6 +330,8 @@ function TerminalAuthLoginModal({
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [fallbackOpen, setFallbackOpen] = useState(false);
+  // Status polls every two seconds; a failing streak records once.
+  const statusFailureReportedRef = useRef(false);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -374,9 +398,15 @@ function TerminalAuthLoginModal({
       invalidateProviderCache(provider);
       try {
         const result = await fetchProviderStatus(provider);
+        statusFailureReportedRef.current = false;
         setStatus(result);
         return result;
-      } catch {
+      } catch (error: unknown) {
+        // The footer keeps its last status and the next poll tries again.
+        if (!statusFailureReportedRef.current) {
+          statusFailureReportedRef.current = true;
+          reportClientAppError(error);
+        }
         return null;
       }
     }, [provider]);
@@ -462,8 +492,10 @@ function TerminalAuthLoginModal({
         cols = term.cols;
         rows = term.rows;
       }
-    } catch {
-      // FitAddon throws when the host has no layout yet; fall back above.
+    } catch (error: unknown) {
+      // FitAddon skips a host with no layout yet; a throw is unexpected.
+      // Fall back to the size above.
+      reportClientAppError(error);
     }
 
     const offOutput = window.api.authTerminal.onOutput((event) => {
@@ -536,9 +568,13 @@ function TerminalAuthLoginModal({
       if (!sessionId) {
         return;
       }
-      void window.api.authTerminal.write({ sessionId, data }).catch(() => {
-        // Best-effort: a stale session id just no-ops on main.
-      });
+      void window.api.authTerminal
+        .write({ sessionId, data })
+        .catch((error: unknown) => {
+          // A stale session id just no-ops on main, so a rejection is
+          // unexpected.
+          reportClientAppError(error);
+        });
     });
 
     const updateSelectionMenu = (): void => {
@@ -620,7 +656,9 @@ function TerminalAuthLoginModal({
         if (disposed) {
           void window.api.authTerminal
             .stop({ sessionId: response.sessionId })
-            .catch(() => undefined);
+            .catch((error: unknown) => {
+              reportClientAppError(error);
+            });
           return;
         }
         sessionIdRef.current = response.sessionId;
@@ -629,7 +667,8 @@ function TerminalAuthLoginModal({
           resizeObserver = new ResizeObserver(() => {
             try {
               fit.fit();
-            } catch {
+            } catch (error: unknown) {
+              reportClientAppError(error);
               return;
             }
             const sessionId = sessionIdRef.current;
@@ -645,28 +684,27 @@ function TerminalAuthLoginModal({
                 cols: term.cols,
                 rows: term.rows,
               })
-              .catch(() => undefined);
+              .catch((error: unknown) => {
+                reportClientAppError(error);
+              });
             updateSelectionMenu();
           });
           resizeObserver.observe(host);
         }
       })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        // The Claude terminal starts hidden, so say so instead of waiting on
-        // a browser that never opened.
-        if (browserSignIn) {
-          if (!disposed)
-            setView({
-              kind: 'login-failed',
-              exitCode: null,
-              detail: `Couldn't start ${providerLabel(provider)} sign-in: ${message}`,
-            });
-          return;
-        }
-        term.write(
-          `\r\n\x1b[31mFailed to start ${providerLabel(provider)} sign-in: ${message}\x1b[0m\r\n`,
-        );
+        const appError = toAppError(resolveClientAppError(error));
+        if (!appError || disposed) return;
+        // Say so instead of waiting on a browser that never opened (Claude's
+        // terminal starts hidden) or on a terminal with no process behind it.
+        setView({
+          kind: 'login-failed',
+          exitCode: null,
+          failure: inlineFailure(
+            appError,
+            `Couldn't start ${providerLabel(provider)} sign-in.`,
+          ),
+        });
       });
 
     return (): void => {
@@ -677,14 +715,14 @@ function TerminalAuthLoginModal({
       offExit();
       try {
         inputDisposable.dispose();
-      } catch {
-        // ignore
+      } catch (error: unknown) {
+        reportClientAppError(error);
       }
       try {
         selectionDisposable.dispose();
         scrollDisposable.dispose();
-      } catch {
-        // ignore
+      } catch (error: unknown) {
+        reportClientAppError(error);
       }
       setSelectionMenu(null);
       if (resizeObserver) {
@@ -693,15 +731,19 @@ function TerminalAuthLoginModal({
       }
       const sessionId = sessionIdRef.current;
       if (sessionId) {
-        void window.api.authTerminal.stop({ sessionId }).catch(() => undefined);
+        void window.api.authTerminal
+          .stop({ sessionId })
+          .catch((error: unknown) => {
+            reportClientAppError(error);
+          });
         sessionIdRef.current = null;
       }
       invalidateProviderCache(provider);
       disposeLinks();
       try {
         term.dispose();
-      } catch {
-        // ignore
+      } catch (error: unknown) {
+        reportClientAppError(error);
       }
       if (terminalRef.current === term) {
         terminalRef.current = null;
@@ -840,6 +882,9 @@ function TerminalAuthLoginModal({
                 provider={provider}
                 exitCode={view.exitCode}
                 detail={view.detail}
+                {...(view.failure === undefined
+                  ? {}
+                  : { failure: view.failure })}
                 timedOut={view.timedOut}
                 onLogin={handleLogin}
                 onCancel={onCancel ?? onClose}

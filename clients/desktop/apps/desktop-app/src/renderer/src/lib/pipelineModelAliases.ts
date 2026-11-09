@@ -23,7 +23,7 @@ import type {
   PipelineModelAlias,
   PipelineModelAliasDefaults,
   PipelineModelAliasPreference,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 // Re-export the shared locator derivation so alias consumers can import it from
 // this module without also reaching into the plugin-collection helper.

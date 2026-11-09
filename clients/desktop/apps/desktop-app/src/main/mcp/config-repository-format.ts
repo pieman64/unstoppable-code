@@ -8,11 +8,11 @@ import type {
   McpServerFile,
   McpServerIndexEntry,
   McpServersIndexFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   isMcpServersIndexFile,
   normalizeMcpServerFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 
 type JsonObject = Record<string, unknown>;
 

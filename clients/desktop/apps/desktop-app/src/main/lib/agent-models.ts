@@ -5,7 +5,7 @@ import {
 } from '../agents/resource-lanes';
 import { getWorkspaceContextService } from './workspace-context-service';
 import { initAgentModels } from '@canopy/desktop-shared/types';
-import type { AgentModelRegistryEntry } from '@canopy/desktop-shared/types/agent-models';
+import type { AgentModelRegistryEntry } from '@canopy/execution-engine/types/agent-models';
 import { listAgentModels } from '../agents/agent-model-store';
 
 export async function loadAgentModelRegistryEntries(): Promise<

@@ -5,7 +5,7 @@ import {
   CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS,
   isCodeGraphInjectedToolKey,
   type CanopyInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
 import {
   executeCanopyInjectedTool,

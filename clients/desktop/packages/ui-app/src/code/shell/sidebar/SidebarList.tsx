@@ -9,8 +9,8 @@ export type SidebarListRowGap = 'none' | 'hairline' | 'thin';
 
 export const SIDEBAR_ROW_GAP_CLASS_NAMES: Record<SidebarListRowGap, string> = {
   none: '',
-  hairline: 'space-y-px',
-  thin: 'space-y-0.5',
+  hairline: 'gap-px',
+  thin: 'gap-0.5',
 };
 
 export interface SidebarListProps extends Omit<

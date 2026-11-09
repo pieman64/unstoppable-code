@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { app as electronApp } from 'electron';
-import type { PostHogInstallLaunch } from '@canopy/desktop-shared/types/observability';
+import type { PostHogInstallLaunch } from '@canopy/execution-engine/types/observability';
 import {
   getCanopyDataDir,
   hasCanopyInstallData,

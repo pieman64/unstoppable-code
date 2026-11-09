@@ -1,4 +1,62 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { openCodeCapabilityDigest } from './capability-snapshot';
+
+/** Hash only the selected connection's public identity, never credential values. */
+export async function readOpenCodeConnectionDigest(
+  read: (pathname: string) => Promise<unknown>,
+  rawModelId: string,
+): Promise<string> {
+  const providerId = rawModelId.split('/')[0];
+  const identifier = (value: unknown): value is string =>
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    Array.from(value).every(
+      (character) =>
+        character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127,
+    );
+  // A failed metadata read cannot establish continuity. Keep its details out
+  // of user-visible errors; the native connection can contain account labels.
+  const unavailable = (): Error =>
+    new Error(
+      "Couldn't verify the OpenCode connection, so this message wasn't sent. Try again.",
+    );
+  if (!identifier(providerId)) throw unavailable();
+  let value: unknown;
+  try {
+    value = await read(
+      `/connection?provider=${encodeURIComponent(providerId)}`,
+    );
+  } catch {
+    throw unavailable();
+  }
+  if (
+    !record(value) ||
+    value.providerId !== providerId ||
+    !identifier(value.integrationId)
+  )
+    throw unavailable();
+  const active = value.connection;
+  let connection: unknown;
+  if (active === null) connection = null;
+  else if (record(active) && active.type === 'env' && identifier(active.name))
+    connection = { type: 'env', name: active.name };
+  else if (
+    record(active) &&
+    active.type === 'credential' &&
+    identifier(active.id) &&
+    (active.method === 'key' ||
+      active.method === 'oauth' ||
+      active.method === 'external')
+  )
+    connection = { type: 'credential', id: active.id, method: active.method };
+  else throw unavailable();
+  return openCodeCapabilityDigest({
+    providerId,
+    integrationId: value.integrationId,
+    connection,
+  });
+}
 
 /** Preserve only the HTTP status, never provider response bodies or credentials. */
 export class OpenCodeMetadataError extends Error {

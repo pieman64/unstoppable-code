@@ -5,7 +5,7 @@ import type {
   PipelinePackageCapabilityOverlay,
   PipelineRunTarget,
   NormalizedStep,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   executionContextSatisfies,
   reachableExecutionContexts,
@@ -15,7 +15,7 @@ import { normalizePipeline } from './normalize-pipeline';
 import { resolveActionRuntime } from '../action-resolver';
 import { resolveChildPipeline } from './child-pipeline-resolver';
 import type { ExecutionRuntime } from './types';
-import type { ShellType } from '@canopy/desktop-shared/types/pipeline';
+import type { ShellType } from '@canopy/execution-engine/types/pipeline';
 
 export interface PipelineScopeValidationOptions {
   pipeline: Pipeline;

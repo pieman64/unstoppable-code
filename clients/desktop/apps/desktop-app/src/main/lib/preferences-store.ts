@@ -26,7 +26,7 @@ import {
   createPreferencesLastGoodPath,
 } from './preferences-file-paths';
 import { getResolvedCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
-import { pruneDamagedCopies } from '@canopy/desktop-shared/node/lib/damaged-copies';
+import { pruneDamagedCopies } from '@canopy/execution-engine/node/lib/damaged-copies';
 import { commitSuggestionsGate } from './suggestions-gate';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { toShortcutPlatform } from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
@@ -562,6 +562,17 @@ export function invalidateRendererPreferencesCache(): void {
  */
 export function peekPreferencesLoadError(): PreferencesLoadErrorDetails | null {
   return preferencesRepository.peekLoadError();
+}
+
+/**
+ * Whether a failed recovery is latched, so reads serve defaults or a
+ * last-good copy that may predate the latest save. Either way they are not
+ * proven to be the member's current choices: callers that gate data leaving
+ * the device must not treat them as consent. The latch refuses saves and
+ * outlives `acknowledgePreferencesLoadError`, so this holds until restart.
+ */
+export function arePreferencesUnconfirmed(): boolean {
+  return preferencesRepository.isRecoveryLatched();
 }
 
 /** Clear a recovery error after the app shell has surfaced it to the user. */

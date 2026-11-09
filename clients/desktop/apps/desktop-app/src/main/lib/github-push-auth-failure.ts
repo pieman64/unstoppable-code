@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import type { GitHubAuthFailureCode } from '@canopy/desktop-shared/types/github';
 import { isGitHubBrokerError } from './github-broker/errors';
 
@@ -13,6 +14,7 @@ export class GitHubAuthFailureError extends Error {
     super(cause.message);
     this.cause = cause;
     this.name = 'GitHubAuthFailureError';
+    classifyError(this, 'external.sign_in_required');
   }
 }
 

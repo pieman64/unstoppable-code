@@ -1,6 +1,7 @@
 import type { JSX, ReactNode } from 'react';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { ChoiceField } from './Choice';
+import { SPACE_ROLE_GAP_CLASS, Stack, type SpaceRole } from './Stack';
 
 const LAYOUT_CLASS = {
   /** A selectable row in the resume dialog. */
@@ -56,6 +57,8 @@ export interface InterruptedSessionRowProps {
   replayMaskSecondaryMetadata?: boolean;
   /** Status or error content rendered after the metadata. */
   children?: ReactNode;
+  /** Opt-in gap after title/metadata and between margin-free status blocks. */
+  childrenGap?: SpaceRole;
   leading?: ReactNode;
   trailing?: ReactNode;
   /** Mutes the text of a row whose control is disabled. */
@@ -83,6 +86,7 @@ export function InterruptedSessionRow({
   secondaryMetadata,
   replayMaskSecondaryMetadata = false,
   children,
+  childrenGap,
   leading,
   trailing,
   disabled = false,
@@ -94,6 +98,52 @@ export function InterruptedSessionRow({
   const titleClass = `block truncate text-s ${disabled ? 'fg-secondary' : 'fg-primary'} ${replayMaskTitle ? REPLAY_MASK_CLASS : ''}`;
   // A native tooltip would expose a masked title outside its text node.
   const titleTooltip = replayMaskTitle ? undefined : title;
+  const titleContent = selection ? (
+    <ChoiceField
+      id={selection.id}
+      checked={selection.checked}
+      disabled={selection.disabled}
+      onChange={selection.onChange}
+      aria-describedby={selection.describedBy}
+      data-testid={selection.testId}
+      label={
+        <span id={titleId} title={titleTooltip} className={titleClass}>
+          {title}
+        </span>
+      }
+    />
+  ) : (
+    <p id={titleId} title={titleTooltip} className={titleClass}>
+      {title}
+    </p>
+  );
+  const metadataContent = (
+    <>
+      {context ? (
+        <p
+          className={`truncate text-xs fg-secondary ${replayMaskContext ? REPLAY_MASK_CLASS : ''}`}
+        >
+          {context}
+        </p>
+      ) : null}
+      {metadata ? (
+        <p
+          id={metadataId}
+          data-testid={metadataTestId}
+          className="text-xs fg-secondary"
+        >
+          {metadata}
+        </p>
+      ) : null}
+      {secondaryMetadata ? (
+        <p
+          className={`break-words text-xs fg-secondary ${replayMaskSecondaryMetadata ? REPLAY_MASK_CLASS : ''}`}
+        >
+          {secondaryMetadata}
+        </p>
+      ) : null}
+    </>
+  );
   return (
     <Element
       data-testid={testId}
@@ -101,51 +151,29 @@ export function InterruptedSessionRow({
     >
       {selection ? null : leading}
       <div className="min-w-0 flex-1">
-        {selection ? (
-          <ChoiceField
-            id={selection.id}
-            checked={selection.checked}
-            disabled={selection.disabled}
-            onChange={selection.onChange}
-            aria-describedby={selection.describedBy}
-            data-testid={selection.testId}
-            label={
-              <span id={titleId} title={titleTooltip} className={titleClass}>
-                {title}
-              </span>
-            }
-          />
+        {childrenGap === undefined ? (
+          <>
+            {titleContent}
+            <div className={selection ? 'pl-6' : undefined}>
+              {metadataContent}
+              {children}
+            </div>
+          </>
         ) : (
-          <p id={titleId} title={titleTooltip} className={titleClass}>
-            {title}
-          </p>
+          <Stack gap={childrenGap}>
+            <div>
+              {titleContent}
+              <div className={selection ? 'pl-6' : undefined}>
+                {metadataContent}
+              </div>
+            </div>
+            <div
+              className={`flex flex-col ${SPACE_ROLE_GAP_CLASS[childrenGap]} empty:hidden ${selection ? 'pl-6' : ''}`}
+            >
+              {children}
+            </div>
+          </Stack>
         )}
-        <div className={selection ? 'pl-6' : undefined}>
-          {context ? (
-            <p
-              className={`truncate text-xs fg-secondary ${replayMaskContext ? REPLAY_MASK_CLASS : ''}`}
-            >
-              {context}
-            </p>
-          ) : null}
-          {metadata ? (
-            <p
-              id={metadataId}
-              data-testid={metadataTestId}
-              className="text-xs fg-secondary"
-            >
-              {metadata}
-            </p>
-          ) : null}
-          {secondaryMetadata ? (
-            <p
-              className={`break-words text-xs fg-secondary ${replayMaskSecondaryMetadata ? REPLAY_MASK_CLASS : ''}`}
-            >
-              {secondaryMetadata}
-            </p>
-          ) : null}
-          {children}
-        </div>
       </div>
       {trailing}
     </Element>

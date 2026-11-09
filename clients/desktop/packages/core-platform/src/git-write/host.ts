@@ -217,6 +217,43 @@ export function gitWriteCommandFor(
       break;
     }
 
+    case 'worktree-add': {
+      const path = field('path');
+      const create = field('create');
+      const startPoint = field('startPoint');
+      if (
+        typeof path !== 'string' ||
+        !isHostAbsolute('linux', path) ||
+        path.includes('\0') ||
+        typeof create !== 'boolean'
+      )
+        throw invalid();
+      args = [
+        '-c',
+        'core.hooksPath=/dev/null',
+        'worktree',
+        'add',
+        ...(create
+          ? ['-b', refValue(field('branch')), path]
+          : [path, refValue(field('branch'))]),
+        ...(create && startPoint !== null ? [refValue(startPoint)] : []),
+      ];
+      break;
+    }
+    case 'worktree-remove': {
+      const path = field('path');
+      if (
+        typeof path !== 'string' ||
+        !isHostAbsolute('linux', path) ||
+        path.includes('\0')
+      )
+        throw invalid();
+      args = ['worktree', 'remove', '--force', path];
+      break;
+    }
+    case 'worktree-prune':
+      args = ['worktree', 'prune'];
+      break;
     case 'merge-worktree-list':
       args = ['worktree', 'list', '--porcelain'];
       break;

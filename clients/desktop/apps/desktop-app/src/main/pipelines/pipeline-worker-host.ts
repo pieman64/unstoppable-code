@@ -11,6 +11,7 @@ import {
   type PipelineExecutionWorker,
 } from '@canopy/core-runtime/node/pipeline';
 import type { WorkerPipelineControlOutcome } from '@canopy/protocol/canopy-core';
+import { CanopyOperationError } from '@canopy/core-runtime';
 import {
   cancelPipelineExecution,
   executePipeline,
@@ -29,16 +30,21 @@ import type { ExecutionRuntime } from '@canopy/desktop-shared/node/pipelines/exe
 import type {
   ExecutionState,
   Pipeline,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
 import { projectPipelineExecution } from '@canopy/desktop-shared/node/pipelines/execution-projection';
+import { getDaemonPipelineExecutionHandle } from './daemon-pipeline-execution';
+import type {
+  DaemonPipelineLaunch,
+  DaemonPipelineStartResult,
+} from './daemon-pipeline-route';
 export {
   definitionSourceOf,
   projectPipelineExecution,
 } from '@canopy/desktop-shared/node/pipelines/execution-projection';
 import {
   getActiveExecutionHandle,
-  getActivePipelineExecutionCount,
+  getInProcessPipelineExecutionCount,
   pauseAllActivePipelineExecutions,
 } from './pipeline-execution-registry';
 
@@ -55,6 +61,8 @@ import {
 export interface PipelineLaunch {
   readonly pipeline: Pipeline;
   readonly options: ExecutionOptions;
+  /** The host-local launch for the daemon, when the start's route took it (CAN-5086). */
+  readonly daemon?: DaemonPipelineLaunch;
 }
 
 /** What one recovery control did on the host. */
@@ -118,6 +126,8 @@ function attachSubscriber(
         observer.onOutput({
           jobId: event.jobId,
           stepId: event.stepId,
+          attempt: event.attempt,
+          ...(event.iteration !== undefined && { iteration: event.iteration }),
           stream: event.stream,
           text: event.data,
         });
@@ -158,6 +168,8 @@ function routeNestedRuns(handle: ExecutionHandle): void {
         observer.onOutput({
           jobId: event.jobId,
           stepId: event.stepId,
+          attempt: event.attempt,
+          ...(event.iteration !== undefined && { iteration: event.iteration }),
           stream: event.stream,
           text: event.data,
         });
@@ -258,6 +270,23 @@ export async function settlePipelineExecutionEvent(
   }
   const state = await canonicalTerminalState(event.state, source.executionsDir);
   deliverSettled(state === event.state ? event : { ...event, state });
+}
+
+/** A daemon run's event, through the same fan-out as an in-process run's (CAN-5086). */
+export function deliverDaemonPipelineEvent(
+  event: ExecutionEvent,
+  source: SettledEventSource,
+): void {
+  deliverEvent(event, source);
+}
+
+/** A daemon run's step output, through the desktop fan-out (CAN-5086). */
+export function deliverDaemonPipelineOutput(event: StepOutputEvent): void {
+  try {
+    fanOut?.onStepOutput(event);
+  } catch {
+    // Reported by the observer itself.
+  }
 }
 
 function deliverEvent(event: ExecutionEvent, source: SettledEventSource): void {
@@ -386,7 +415,11 @@ let cancelSequence = 0;
 const started = new Map<string, ExecutionHandle>();
 
 function liveHandle(executionId: string): ExecutionHandle | undefined {
-  return getActiveExecutionHandle(executionId) ?? started.get(executionId);
+  return (
+    getActiveExecutionHandle(executionId) ??
+    started.get(executionId) ??
+    getDaemonPipelineExecutionHandle(executionId)
+  );
 }
 
 /**
@@ -607,6 +640,13 @@ async function cancelExecution(executionId: string): Promise<ExecutionState> {
     const state = await loadExecutionState(id, runtime.executionsDir);
     return state === null ? [] : nestedPipelineExecutionIds(state);
   });
+  if (getDaemonPipelineExecutionHandle(executionId)) {
+    const { cancelPipelineInDaemon } = await import('./daemon-pipeline-route');
+    await cancelPipelineInDaemon(executionId, 'finalize');
+    const stored = await loadExecutionState(executionId, runtime.executionsDir);
+    if (!stored) throw new Error(`Execution "${executionId}" not found`);
+    return stored;
+  }
   const active = getActiveExecutionHandle(executionId);
   if (active) void active.cancel().catch(() => undefined);
   return cancelPipelineExecution(executionId, runtime);
@@ -621,6 +661,29 @@ export const desktopPipelineWorker: PipelineExecutionWorker = {
     launches.delete(params.executionId);
     const capture: HostCapture = {};
     captures.set(params.executionId, capture);
+    if (launch.daemon) {
+      let routed: DaemonPipelineStartResult;
+      try {
+        routed = await (
+          await import('./daemon-pipeline-route')
+        ).startPipelineInDaemon({
+          params,
+          launch: launch.daemon,
+          secrets,
+          options: launch.options,
+        });
+      } catch (error) {
+        capture.error = error;
+        throw error instanceof CanopyOperationError
+          ? error
+          : pipelineStartFailedError(error);
+      }
+      if (routed.kind === 'daemon') {
+        capture.handle = routed.handle;
+        attachPipelineHandle(routed.handle);
+        return projectPipelineExecution(routed.handle.getState());
+      }
+    }
     let handle: ExecutionHandle;
     try {
       handle = await executePipeline(
@@ -696,7 +759,7 @@ export const desktopPipelineWorker: PipelineExecutionWorker = {
     return { failureCount: errors.length };
   },
   async checkpoint({ requestId }) {
-    const checkpointedCount = getActivePipelineExecutionCount();
+    const checkpointedCount = getInProcessPipelineExecutionCount();
     try {
       await pauseAllActivePipelineExecutions();
     } catch (error) {
@@ -719,6 +782,11 @@ export const desktopPipelineWorker: PipelineExecutionWorker = {
   },
   async cancel(executionId, mode) {
     if (mode === 'drain') {
+      if (getDaemonPipelineExecutionHandle(executionId)) {
+        const { cancelPipelineInDaemon } =
+          await import('./daemon-pipeline-route');
+        return cancelPipelineInDaemon(executionId, 'drain');
+      }
       const drained = await drainPipelineExecution(
         executionId,
         await monitoredRuntime(),

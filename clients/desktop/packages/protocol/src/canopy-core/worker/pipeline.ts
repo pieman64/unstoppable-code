@@ -99,6 +99,9 @@ export const WORKER_PIPELINE_INITIATION_SOURCES = [
 export const WORKER_PIPELINE_ERROR_MAX_LENGTH = 4096;
 /** The most output text one events item carries. */
 export const WORKER_PIPELINE_OUTPUT_ITEM_MAX_LENGTH = 16_384;
+/** The longest notification title and body one events item carries (CAN-5868). */
+export const WORKER_PIPELINE_NOTIFICATION_TITLE_MAX_LENGTH = 256;
+export const WORKER_PIPELINE_NOTIFICATION_BODY_MAX_LENGTH = 4096;
 
 export const WorkerPipelineExecutionSchema = z.strictObject({
   executionId: id,
@@ -167,7 +170,7 @@ export const WorkerPipelineExecutionEventsOpenResultSchema = z.strictObject({
 });
 
 /**
- * One events item. Lifecycle items are never dropped. Output is budgeted:
+ * One events item. Lifecycle and notification items are never dropped. Output is budgeted:
  * text past an item's limit is cut, and output past the stream's budget is
  * dropped and reported by the next `gap` item, so output pressure never
  * crowds out a lifecycle or terminal item.
@@ -184,6 +187,9 @@ export const WorkerPipelineExecutionEventsItemSchema = z.discriminatedUnion(
       kind: z.literal('output'),
       jobId: id,
       stepId: id,
+      /** The retry attempt and job iteration that printed it (CAN-5086). */
+      attempt: z.number().int().min(0).optional(),
+      iteration: z.number().int().min(1).optional(),
       stream: z.enum(['stdout', 'stderr']),
       text: z.string().max(WORKER_PIPELINE_OUTPUT_ITEM_MAX_LENGTH),
       truncated: z.boolean(),
@@ -191,6 +197,13 @@ export const WorkerPipelineExecutionEventsItemSchema = z.discriminatedUnion(
     z.strictObject({
       kind: z.literal('gap'),
       droppedOutputItems: z.number().int().min(1),
+    }),
+    /** A desktop notification a step asked for, such as `builtin/notify` (CAN-5868). */
+    z.strictObject({
+      kind: z.literal('notification'),
+      stepId: id,
+      title: z.string().max(WORKER_PIPELINE_NOTIFICATION_TITLE_MAX_LENGTH),
+      body: z.string().max(WORKER_PIPELINE_NOTIFICATION_BODY_MAX_LENGTH),
     }),
   ],
 );
@@ -206,6 +219,7 @@ export const WorkerPipelineExecutionErrorSchema =
         'worker.pipeline.modelStepsUnsupported',
         'worker.pipeline.hostUnavailable',
         'worker.pipeline.hostLost',
+        'worker.pipeline.ownerUnavailable',
         ...WORKER_EXECUTION_SECRET_ERROR_CODES,
       ])
       .optional(),
@@ -606,6 +620,36 @@ export const WorkerPipelineHostRequestSchema = z.strictObject({
   request: WorkerPipelineHostActionRequestSchema,
 });
 
+/**
+ * A request the worker withdrew before it was settled (CAN-5771). Only a
+ * worker that announces withdrawals sends it; a settling core stops applying
+ * that request.
+ */
+export const WorkerPipelineHostWithdrawalSchema = z.strictObject({
+  withdrawn: z.literal(true),
+  executionId: id,
+  requestId: hostRequestId,
+});
+
+/** One `worker.pipeline.hostRequests` item: a request, or its withdrawal. */
+export const WorkerPipelineHostRequestsItemSchema = z.union([
+  WorkerPipelineHostRequestSchema,
+  WorkerPipelineHostWithdrawalSchema,
+]);
+
+export type WorkerPipelineHostWithdrawal = z.output<
+  typeof WorkerPipelineHostWithdrawalSchema
+>;
+export type WorkerPipelineHostRequestsItem = z.output<
+  typeof WorkerPipelineHostRequestsItemSchema
+>;
+
+export function isWorkerPipelineHostWithdrawal(
+  item: WorkerPipelineHostRequestsItem,
+): item is WorkerPipelineHostWithdrawal {
+  return 'withdrawn' in item;
+}
+
 export const WorkerPipelineHostResultSchema = z.discriminatedUnion('status', [
   z.strictObject({
     status: z.literal('success'),
@@ -873,7 +917,7 @@ export const WORKER_PIPELINE_STREAM_DEFINITIONS = defineCanopyStreamRegistry(
       requiredGrants: [WORKER_PIPELINE_GRANTS.host],
       params: WorkerPipelineHostRequestsParamsSchema,
       openResult: WorkerPipelineHostRequestsOpenResultSchema,
-      item: WorkerPipelineHostRequestSchema,
+      item: WorkerPipelineHostRequestsItemSchema,
       end: WorkerPipelineHostRequestsEndSchema,
       error: WorkerPipelineExecutionQueryErrorSchema,
     }),

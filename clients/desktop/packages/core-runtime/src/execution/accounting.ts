@@ -37,6 +37,14 @@ export interface ExecutionAccountingOptions<
   /** Rows a host measures itself, such as Electron's own processes. */
   readonly hostProcesses?: () => readonly ExecutionResourceItem<TMetadata>[];
   readonly limits: () => ExecutionAccountingLimits;
+  /**
+   * Resident memory the memory guard compares with the critical threshold;
+   * the sample's own by default. A host adds work it measures outside its
+   * process tree, such as a daemon another client launched.
+   */
+  readonly guardMemoryBytes?: (
+    snapshot: ExecutionAccountingSnapshot<TMetadata>,
+  ) => number;
   readonly productName: string;
   /** Holds the computer awake for families whose policy asks for it. */
   readonly wakeLock?: ExecutionWakeLock;
@@ -339,10 +347,11 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
   }
 
   private memoryGuardBlocked(limits: ExecutionAccountingLimits): boolean {
-    return (
-      limits.memoryGuardEnabled &&
-      this.snapshot.memoryRssBytes >= this.snapshot.pressure.criticalMemoryBytes
-    );
+    if (!limits.memoryGuardEnabled) return false;
+    const memoryRssBytes =
+      this.options.guardMemoryBytes?.(this.snapshot) ??
+      this.snapshot.memoryRssBytes;
+    return memoryRssBytes >= this.snapshot.pressure.criticalMemoryBytes;
   }
 
   private async sampleOnce(): Promise<ExecutionAccountingSnapshot<TMetadata>> {

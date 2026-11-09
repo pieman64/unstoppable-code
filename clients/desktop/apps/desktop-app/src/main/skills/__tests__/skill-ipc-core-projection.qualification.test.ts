@@ -16,6 +16,7 @@ import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
 import {
   CORE_CATALOG_SKILL_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_SKILL_QUERY_DEFINITIONS,
+  type CatalogSkillRow,
 } from '@canopy/protocol/canopy-core';
 import { SKILLS_CHANNELS } from '@canopy/desktop-shared/constants/skill-channels';
 
@@ -239,11 +240,36 @@ describe('skill IPC and Portal through core (CAN-4124)', () => {
   it("reports update checks with today's progress events", async () => {
     fakeHost.checkUpdates.mockResolvedValue([
       { sourceId: 'github:o:r', skillName: 'x', updateAvailable: true },
+      { sourceId: 'github:o:r', skillName: 'y', updateAvailable: false },
     ]);
+    const row = (
+      skillName: string,
+      origin: CatalogSkillRow['origin'],
+      updateAvailable: boolean,
+    ): CatalogSkillRow => ({
+      entryId: `skill:github:o:r/${skillName}`,
+      sourceId: 'github:o:r',
+      skillName,
+      description: '',
+      source: 'o/r',
+      origin,
+      installedAt: '',
+      updatedAt: '',
+      updateAvailable,
+      version: null,
+    });
+    // CAN-5898: the map comes from the list the check updated, so the
+    // false entry that clears an old positive survives a compact result.
+    fakeHost.list.mockResolvedValue([
+      row('x', 'installed', true),
+      row('y', 'installed', false),
+      row('b', 'builtin', false),
+    ]);
+    const updateMap = { 'github:o:r/x': true, 'github:o:r/y': false };
     const send = jest.fn();
     await expect(
       handler(SKILLS_CHANNELS.CHECK_UPDATES)({ sender: { send } }),
-    ).resolves.toEqual({ success: true, data: { 'github:o:r/x': true } });
+    ).resolves.toEqual({ success: true, data: updateMap });
     expect(send.mock.calls).toEqual([
       [
         SKILLS_CHANNELS.UPDATE_PROGRESS,
@@ -259,7 +285,7 @@ describe('skill IPC and Portal through core (CAN-4124)', () => {
           operation: 'check-updates',
           status: 'complete',
           message: 'Skill update check complete.',
-          updateMap: { 'github:o:r/x': true },
+          updateMap,
         },
       ],
     ]);

@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -11,7 +12,7 @@ import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type {
   AccountMcpConnectionSummary,
   DetectedMcpServerInfo,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import type { McpServersSectionItem } from '@canopy/ui-app';
 import { mcpServersNeedingSignIn } from '@canopy/ui-app/capability';
 import {
@@ -743,7 +744,7 @@ export function useSelectedMcpSignIn({
     const row = rowsByKey.get(item.key);
     if (row?.unavailableReason)
       return (
-        <p role="status" className="mt-1.5 text-2xs fg-secondary">
+        <p role="status" className="text-2xs fg-secondary">
           {row.unavailableReason}
         </p>
       );
@@ -752,7 +753,7 @@ export function useSelectedMcpSignIn({
       return null;
     return (
       <span
-        className="mt-1.5 flex items-center gap-2 text-2xs"
+        className="flex items-center gap-2 text-2xs"
         data-testid="mcp-sign-in-strip-waiting"
       >
         <span
@@ -861,28 +862,32 @@ export function useSelectedMcpSignIn({
               setChoice(null);
             }}
           >
-            <p className="text-s fg-secondary">
-              You’ll sign in to{' '}
-              {rowsByKey.get(choice.key)?.displayName ?? 'this service'} in your
-              browser. This task uses that sign-in on this desktop; web chats
-              aren’t affected.
-            </p>
-            <ErrorBanner error={actionError} className="mt-2" />
-            <div className="mt-4 flex justify-end gap-2">
-              <>
-                <Button
-                  variant="ghost"
-                  onClick={(): void => {
-                    generation.current += 1;
-                    busy.current = false;
-                    setChoice(null);
-                  }}
-                >
-                  Cancel
-                </Button>
-                <Button onClick={confirmDesktop}>Sign in</Button>
-              </>
-            </div>
+            <Stack gap="group">
+              <Stack gap="inline">
+                <p className="text-s fg-secondary">
+                  You’ll sign in to{' '}
+                  {rowsByKey.get(choice.key)?.displayName ?? 'this service'} in
+                  your browser. This task uses that sign-in on this desktop; web
+                  chats aren’t affected.
+                </p>
+                <ErrorBanner error={actionError} className="" />
+              </Stack>
+              <div className="flex justify-end gap-2">
+                <>
+                  <Button
+                    variant="ghost"
+                    onClick={(): void => {
+                      generation.current += 1;
+                      busy.current = false;
+                      setChoice(null);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button onClick={confirmDesktop}>Sign in</Button>
+                </>
+              </div>
+            </Stack>
           </DialogModal>
         )}
       </>
@@ -898,7 +903,7 @@ export function useSelectedMcpSignIn({
         <Notice
           intent="destructive"
           role="status"
-          className="mb-1"
+          className=""
           data-testid="mcp-sign-in-strip-load-error"
           actions={
             <NoticeButton
@@ -920,7 +925,7 @@ export function useSelectedMcpSignIn({
         >
           <ErrorBanner
             error={error}
-            className="mb-1"
+            className=""
             retryLabel="Try again"
             onRetry={
               detected.error !== null ||

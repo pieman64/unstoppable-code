@@ -12,7 +12,7 @@ import type { FileAssetPortableInput } from '@canopy/desktop-shared/node';
 import type {
   Pipeline,
   PipelinePackageAnalysisBlocker,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { getPipelinePackageInstallStorePath } from '../lib/paths';
 import { listPipelinePackageInstalls } from './pipeline-package-install-store';

@@ -1,9 +1,31 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <psapi.h>
+#include <stdlib.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <wchar.h>
+
+/* A vanished PID is evidence only after a fresh, complete enumeration. A present
+ * PID (including a reused one) must still be inspected or refuse. */
+static int cold_pid_absent(DWORD pid) {
+  DWORD *pids, bytes = 0, i;
+  const DWORD capacity = 100001 * sizeof(DWORD);
+  int absent = 0;
+  if (pid == 0 || pid == 4) return 0;
+  pids = malloc(capacity);
+  if (!pids) return 0;
+  if (EnumProcesses(pids, capacity, &bytes) && bytes && bytes < capacity &&
+      bytes % sizeof(DWORD) == 0) {
+    absent = 1;
+    for (i = 0; i < bytes / sizeof(DWORD); ++i)
+      if (pids[i] == pid) { absent = 0; break; }
+  }
+  free(pids);
+  return absent;
+}
 
 /* The opened handle, not a second PID lookup, brackets the creation query. */
 static int observe_process(DWORD pid, ULONGLONG *ticks) {
@@ -107,12 +129,102 @@ static int write_principal(const char *sid) {
   return written < 0 || fflush(stdout) == EOF ? 1 : 0;
 }
 
-/* Two fixed modes; anything else exits nonzero before any Win32 query. */
+static int cold_same_object(HANDLE left, HANDLE right) {
+  typedef BOOL (WINAPI *COMPARE)(HANDLE, HANDLE);
+  COMPARE compare;
+  FARPROC address = GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), "CompareObjectHandles");
+  if (!address || sizeof compare != sizeof address) {
+    SetLastError(ERROR_PROC_NOT_FOUND);
+    return -1;
+  }
+  memcpy(&compare, &address, sizeof compare);
+  SetLastError(NO_ERROR);
+  if (compare(left, right)) return 1;
+  return GetLastError() == NO_ERROR || GetLastError() == ERROR_NOT_SAME_OBJECT ? 0 : -1;
+}
+
+/* Metadata-only raw devices cannot establish filesystem data access. */
+static int cold_metadata_device(const WCHAR *name, size_t length, DWORD access) {
+  const WCHAR *end = name + length, *cursor;
+  const WCHAR disk[] = L"\\Device\\Harddisk";
+  const WCHAR volume[] = L"\\Device\\HarddiskVolume";
+  size_t prefix;
+  if (access & (FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA |
+                GENERIC_READ | GENERIC_WRITE | GENERIC_ALL)) return 0;
+  prefix = (sizeof volume / sizeof *volume) - 1;
+  if (length > prefix && !wcsncmp(name, volume, prefix)) {
+    for (cursor = name + prefix; cursor < end && *cursor >= L'0' && *cursor <= L'9'; ++cursor) {}
+    return cursor == end;
+  }
+  prefix = (sizeof disk / sizeof *disk) - 1;
+  if (length <= prefix || wcsncmp(name, disk, prefix)) return 0;
+  cursor = name + prefix;
+  if (*cursor < L'0' || *cursor > L'9') return 0;
+  while (cursor < end && *cursor >= L'0' && *cursor <= L'9') ++cursor;
+  if (end - cursor < 4 || wcsncmp(cursor, L"\\DR", 3)) return 0;
+  cursor += 3;
+  if (*cursor < L'0' || *cursor > L'9') return 0;
+  while (cursor < end && *cursor >= L'0' && *cursor <= L'9') ++cursor;
+  return cursor == end;
+}
+
+typedef struct {
+  WCHAR *names[4096];
+  size_t count, bytes;
+  int complete;
+} COLD_FILE_HOSTS;
+
+/* File object type also covers driver communication endpoints. Only complete
+ * filesystem-host namespace evidence can distinguish those from unresolved files.
+ */
+static int cold_nonfile_object(const WCHAR *name, size_t length, DWORD access,
+                               const COLD_FILE_HOSTS *hosts) {
+  const WCHAR prefix[] = L"\\Device\\";
+  const WCHAR *storage[] = { L"Harddisk", L"CdRom", L"Floppy", L"VhdHardDisk",
+                             L"Volume", L"Disk", L"Ramdisk", L"Mup" };
+  const WCHAR redirector[] = L"Redirector";
+  const size_t start = (sizeof prefix / sizeof *prefix) - 1;
+  const size_t suffix = (sizeof redirector / sizeof *redirector) - 1;
+  size_t i, chars;
+  if (!hosts->complete || !length || name[0] != L'\\') return 0;
+  for (i = 0; i < length; ++i) if (!name[i]) return 0;
+  if (cold_metadata_device(name, length, access)) return 1;
+  for (i = 0; i < hosts->count; ++i) {
+    size_t size = wcslen(hosts->names[i]);
+    if (length >= size && !_wcsnicmp(name, hosts->names[i], size) &&
+        (length == size || name[size] == L'\\')) return 0;
+  }
+  if (length > start && !_wcsnicmp(name, prefix, start)) {
+    chars = length - start;
+    for (i = 0; i < sizeof storage / sizeof *storage; ++i) {
+      size_t size = wcslen(storage[i]);
+      if (chars >= size && !_wcsnicmp(name + start, storage[i], size)) return 0;
+    }
+    for (i = start; i + suffix <= length && name[i] != L'\\'; ++i)
+      if (!_wcsnicmp(name + i, redirector, suffix)) return 0;
+  }
+  return 1;
+}
+
+#ifndef PROCESS_IDENTITY_TEST
+#include "cold-observation.h"
+#endif
+
+/* Fixed modes; anything else exits nonzero before any Win32 query. */
 static int dispatch(int argc, char **argv) {
   DWORD pid;
   ULONGLONG ticks = 0;
   char sid[SID_TEXT_MAX + 1];
   int result;
+#ifndef PROCESS_IDENTITY_TEST
+  if (argc == 3 && (!strcmp(argv[1], "--cold-snapshot") || !strcmp(argv[1], "--cold-process") || !strcmp(argv[1], "--cold-classify"))) {
+    if (parse_pid(argv[2], &pid)) return 1;
+    if (!strcmp(argv[1], "--cold-snapshot")) return cold_snapshot(pid);
+    if (!strcmp(argv[1], "--cold-classify")) return cold_classification(pid);
+    if (puts("canopy-cold-v1") < 0 || cold_inspect(pid, 0, &ticks)) return 1;
+    return puts("complete 1") < 0 || fflush(stdout) == EOF ? 1 : 0;
+  }
+#endif
   if (argc != 2) return 1;
   if (strcmp(argv[1], PRINCIPAL_MODE) == 0)
     return observe_principal(sid) ? 1 : write_principal(sid);

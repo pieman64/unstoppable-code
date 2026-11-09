@@ -4,12 +4,12 @@ import { chatVisualsEligible } from '../lib/chat-visuals-feature-flag';
 import { createShowVisualHost } from '../canopy-tools/show-visual-host';
 import { withProxyFailureRestored } from './ai-credits-proxy-failure-restore';
 import { SkillUsageTracker } from './skill-usage-tracker';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   codexSpeedFastMode,
   codexSpeedFromFastMode,
   type CodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   admitCodexSpeed,
   buildCodexSpeedRouteFacts,
@@ -17,8 +17,8 @@ import {
   reportCodexSpeedTurnFailure,
 } from '../codex/speed-policy';
 import { resolveCodexContextWindowConfig } from '../codex/context-window';
-import type { CodexContextWindowSetting } from '@canopy/desktop-shared/lib/codex-context-window';
-import type { CodexSpeedRouteFacts } from '@canopy/desktop-shared/lib/codex-speed-availability';
+import type { CodexContextWindowSetting } from '@canopy/execution-engine/lib/codex-context-window';
+import type { CodexSpeedRouteFacts } from '@canopy/execution-engine/lib/codex-speed-availability';
 import {
   APP_ADVISOR_TOOL_REGISTRY,
   getAppAdvisorLedgerToolNames,
@@ -31,7 +31,7 @@ import { randomUUID } from 'node:crypto';
 import { BRAND } from '@canopy/brand/current';
 import { AI_CREDITS_NO_BILLING_SOURCE_EVENT_FLAG } from '@canopy/protocol';
 import { isAiCreditsFailureEventShape } from '@canopy/agent-transcript';
-import { ASK_USER_TIMEOUT_MS } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { ASK_USER_TIMEOUT_MS } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type {
   AgentProvider,
   AgentSession,
@@ -69,7 +69,7 @@ import {
   resolveCodexReasoningRouteFamily,
   resolveGatewayToolSchemaProfile,
   resolveModelIdForGatewayId,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { getCodexGatewayProxyService } from './codex-gateway-proxy-service';
 import { ensureGatewayCompatibleCodexCatalog } from '../codex/gateway-model-catalog';
 import {
@@ -98,7 +98,7 @@ import {
   buildAccountProxyUsageLimitedEntry,
   classifyAccountChangeResumeReason,
 } from '../lib/usage-limited-chats-recording';
-import { classifyAgentFailure } from '@canopy/desktop-shared/agent-failures';
+import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import {
   CANOPY_MODEL_ACCESS_FAILURE_FIELD,
   type CodexAccountModelAccessFailure,
@@ -108,7 +108,6 @@ import { buildProviderAuthFailureEvent } from './provider-auth-failure-event';
 import { createCodexContractGuard } from './provider-contract-guard';
 import { resolveWorkspaceRecordingSnapshot } from '../lib/resolve-workspace-display-name';
 import {
-  SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
   hasAnySelections,
   IPC_CHANNELS,
   CODE_REVIEW_CHAT_PROJECT_ID,
@@ -209,7 +208,7 @@ import {
   type InvocationTokenInventoryEntry,
 } from '../plugins/invocation-prefix-normalizer';
 import { BUILTIN_APP_PLUGIN_NAME } from '../plugins/codex-plugin-compat';
-import { resolveCodexMockAppServerOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import { resolveCodexMockAppServerOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { logMainProcessWarn } from '../lib/main-process-logging';
@@ -224,12 +223,9 @@ import {
   requestAnswersFromRenderer,
   respondToFileCommentInSession,
 } from '../canopy-tools/session-runtime';
-import { codexNativeMemoryThreadConfig } from '@canopy/desktop-shared/node/lib/native-memory';
+import { codexNativeMemoryThreadConfig } from '@canopy/execution-engine/node/lib/native-memory';
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
-import {
-  mainWindowOnlyToolSurfaces,
-  requestShowFilesThroughLease,
-} from '../canopy-tools/show-files-runtime';
+import { requestShowFilesThroughLease } from '../canopy-tools/show-files-runtime';
 import { hasInterfaceTool } from './interface-tool-binding';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
 import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
@@ -240,7 +236,7 @@ import type {
 } from '@canopy/desktop-shared/node/codex-runtime';
 import { CODEX_PROJECT_DOC_THREAD_CONFIG } from '@canopy/desktop-shared/node/codex-runtime/thread-config';
 import { classifyCodexTransportError } from '@canopy/desktop-shared/node/codex-runtime/transport-errors';
-import type { CodexConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   resolveCodexRuntimeEnvironmentProfile,
   type CodexRuntimeEnvironmentProfile,
@@ -2979,22 +2975,19 @@ export class CodexProvider implements AgentProvider {
                 ...(hasInterfaceTool(opts.interfaceTools, 'ui.show_files')
                   ? {
                       showFiles: (files) =>
-                        requestShowFilesThroughLease(
-                          {
-                            files,
-                            target: {
-                              projectId: opts.projectId,
-                              worktreeId: opts.worktreeId,
-                            },
-                            origin: {
-                              projectId: opts.projectId,
-                              worktreeId: opts.worktreeId,
-                              chatTabId: opts.chatId,
-                            },
-                            cwd: opts.cwd,
+                        requestShowFilesThroughLease({
+                          files,
+                          target: {
+                            projectId: opts.projectId,
+                            worktreeId: opts.worktreeId,
                           },
-                          mainWindowOnlyToolSurfaces(getWindow),
-                        ),
+                          origin: {
+                            projectId: opts.projectId,
+                            worktreeId: opts.worktreeId,
+                            chatTabId: opts.chatId,
+                          },
+                          cwd: opts.cwd,
+                        }),
                     }
                   : {}),
                 getFileComments: ({ threadId }) =>
@@ -3047,11 +3040,11 @@ export class CodexProvider implements AgentProvider {
                       },
                     }
                   : {}),
-                setAutoArchiveForCurrentChat: (enabled) =>
-                  onEvent({
-                    type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
-                    enabled,
-                  }),
+                autoArchiveChat: {
+                  projectId: opts.projectId,
+                  worktreeId: opts.worktreeId,
+                  chatId: opts.chatId,
+                },
               }
             : {}),
           ...(ledger.tools ? { ledgerRuntime: ledger.tools } : {}),

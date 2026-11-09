@@ -4,7 +4,10 @@ import {
   type CoreOperationHandlers,
   type OperationLedger,
 } from '@canopy/core-runtime/node/operations';
-import { logMainProcessWarn } from '../lib/main-process-logging';
+import {
+  logMainProcessInfo,
+  logMainProcessWarn,
+} from '../lib/main-process-logging';
 import { getOperationLedgerPath } from '../lib/paths';
 
 /*
@@ -30,7 +33,23 @@ export function createCoreOperationAdapter(
     openLedger: async (): Promise<OperationLedger> => {
       const { OperationLedger } =
         await import('@canopy/core-runtime/node/operations/ledger');
-      return OperationLedger.open(ledgerPath());
+      return OperationLedger.open(ledgerPath(), {
+        onIdentityRetention: (result): void => {
+          if (result.status === 'pruned')
+            logMainProcessInfo(
+              `[operations] deleted ${result.operations} settled helper-run operation rows past retention`,
+            );
+          else if (result.status === 'indexed')
+            logMainProcessInfo(
+              `[operations] built the identity retention index in ${result.durationMs} ms`,
+            );
+          else
+            logMainProcessWarn(
+              '[operations] identity retention batch failed; rows kept',
+              result.error,
+            );
+        },
+      });
     },
     onError: (error, context): void => {
       logMainProcessWarn(`[operations] ${context} failed`, error);

@@ -1,7 +1,7 @@
 import {
   CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS,
   type CanopyInjectedToolSurface,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { LedgerToolsRuntime } from '../../../canopy-tools/ledger-tools-runtime';
 import type { CanopyWorktreeSessionRoute } from '../../http-proxy-service';
 
@@ -33,8 +33,19 @@ function fixture(
     authToken: `t-${name}`,
     createdAt: 0,
     hookHandler: () => undefined,
-    // Bound as a session created while the main window's lease serves both tools (CAN-4131).
-    interfaceTools: ['ui.get_current_ui_state', 'ui.show_files'],
+    // Bound as a session created while the main window's lease serves its tools (CAN-4131, CAN-5822).
+    interfaceTools: [
+      'ui.get_current_ui_state',
+      'ui.pipeline_editor.adopt_saved',
+      'ui.pipeline_editor.create',
+      'ui.pipeline_editor.get_current',
+      'ui.pipeline_editor.list',
+      'ui.pipeline_editor.open',
+      'ui.pipeline_editor.prepare_save',
+      'ui.pipeline_editor.set_yaml',
+      'ui.pipeline_editor.to_list',
+      'ui.show_files',
+    ],
     ...fields,
   };
 }

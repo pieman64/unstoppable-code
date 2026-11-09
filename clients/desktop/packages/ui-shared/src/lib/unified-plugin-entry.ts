@@ -209,7 +209,8 @@ export type UnifiedWorkflowTriggerKind =
   | 'once'
   | 'manual'
   | 'plan-approved'
-  | 'task-ready';
+  | 'task-ready'
+  | 'workflow';
 
 export interface UnifiedWorkflowTrigger {
   readonly kind: UnifiedWorkflowTriggerKind;
@@ -249,6 +250,8 @@ export interface UnifiedPluginEntry {
   /** Human-readable result metadata used by cross-capability search. */
   typeLabel?: string;
   sourceLabel?: string;
+  /** The provider a shared plugin was shared from, for its small logo. */
+  sharedSourceProvider?: 'Claude' | 'Codex';
   ownershipLabel?: string;
   /** Set on every entry shared with a team or organization. */
   sharedWith?: UnifiedEntrySharedWith;
@@ -340,4 +343,28 @@ export interface UnifiedPluginEntry {
    */
   pluginServerResult?: true;
   ref: UnifiedEntryRef;
+}
+
+/**
+ * A source label `pluginSourceLabel` built for a provider: `Claude · slackapi`
+ * or `Codex official`. A marketplace merely named `claude-tools` isn't one.
+ */
+export function parseProviderSourceLabel(
+  label: string | undefined,
+): { provider: 'Claude' | 'Codex'; rest: string } | undefined {
+  const match = /^(claude|codex)(?:\s*·\s*(.+)|\s+official)$/i.exec(
+    label?.trim() ?? '',
+  );
+  if (!match) return undefined;
+  return {
+    provider: match[1].toLowerCase() === 'claude' ? 'Claude' : 'Codex',
+    rest: match[2]?.trim() ?? '',
+  };
+}
+
+/** The provider a marketplace source label names, if it names one. */
+export function sourceLabelProvider(
+  label: string | undefined,
+): 'Claude' | 'Codex' | undefined {
+  return parseProviderSourceLabel(label)?.provider;
 }

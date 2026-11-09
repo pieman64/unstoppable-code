@@ -55,7 +55,7 @@ import {
   buildTrustedAutoResume,
   claimTrustedChatResume,
 } from '../lib/trusted-auto-resume';
-import { describeUsageLimitResumePromptKind } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { describeUsageLimitResumePromptKind } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import { describeLastAgentStep } from '@canopy/desktop-shared/lib/interrupted-chat-step';
 import {
   buildUsageLimitedChatGroups,

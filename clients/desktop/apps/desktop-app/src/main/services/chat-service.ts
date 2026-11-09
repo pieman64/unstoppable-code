@@ -102,7 +102,7 @@ import {
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import { portalChatAssetId } from '@canopy/protocol/portal';
 import { resolveClaudeForkResumePoint } from '@canopy/desktop-shared/lib/claude-fork-resume-point';
-import { readCodexSpeedRecord } from '@canopy/desktop-shared/lib/codex-speed';
+import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 import { getPortalChatToolFamily } from '@canopy/desktop-shared/lib/portal-tool-family';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';

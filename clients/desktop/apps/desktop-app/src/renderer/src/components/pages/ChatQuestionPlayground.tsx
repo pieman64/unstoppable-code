@@ -1,6 +1,7 @@
 import { useEffect, useState, type JSX } from 'react';
 import { ChatContent } from '../chat/ChatContent';
 import {
+  Stack,
   Button,
   Disclosure,
   Divider,
@@ -78,7 +79,7 @@ export function ChatQuestionPlayground(): JSX.Element {
       </section>
       <aside
         aria-label="Playground controls"
-        className="min-h-0 space-y-5 overflow-y-auto border-l border-line-base bg-base p-4"
+        className="flex min-h-0 flex-col gap-5 overflow-y-auto [&>*]:shrink-0 border-l border-line-base bg-base p-4"
       >
         <div className="flex items-center justify-between gap-2">
           <Heading level={2} variant="title">
@@ -103,11 +104,11 @@ export function ChatQuestionPlayground(): JSX.Element {
         >
           Turn still running
         </Button>
-        <div>
-          <Heading level={3} variant="label" className="mb-2">
+        <Stack gap="inline">
+          <Heading level={3} variant="label">
             Trigger a question
           </Heading>
-          <div className="space-y-1">
+          <Stack gap="tight">
             {QUESTION_PRESETS.map((item) => (
               <ListRow
                 key={item.id}
@@ -119,95 +120,102 @@ export function ChatQuestionPlayground(): JSX.Element {
                 {item.title}
               </ListRow>
             ))}
-          </div>
-        </div>
+          </Stack>
+        </Stack>
         <section aria-label="Question state machine">
           <Divider />
           <div className="pt-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <Heading level={2} variant="title">
-                  State machine
-                </Heading>
-                <p className="mt-1 text-xs fg-secondary">
-                  Submit or dismiss in the chat, then resolve or fail the
-                  request here.
-                </p>
-              </div>
-              <span
-                role="status"
-                className={`text-s ${machine.phase === 'error' ? 'fg-destructive-strong' : terminal ? 'fg-success-strong' : 'fg-secondary'}`}
-              >
-                {machine.phase}
-              </span>
-            </div>
-            <div
-              className="my-4 flex flex-wrap items-center gap-4"
-              aria-label="Submission path"
-            >
-              {phases.map((phase) => (
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <Stack gap="tight">
+                  <Heading level={2} variant="title">
+                    State machine
+                  </Heading>
+                  <p className="text-xs fg-secondary">
+                    Submit or dismiss in the chat, then resolve or fail the
+                    request here.
+                  </p>
+                </Stack>
                 <span
-                  key={phase}
-                  className={`border-b pb-1 text-xs ${machine.phase === phase ? 'border-line-primary fg-primary' : 'border-transparent fg-tertiary'}`}
+                  role="status"
+                  className={`text-s ${machine.phase === 'error' ? 'fg-destructive-strong' : terminal ? 'fg-success-strong' : 'fg-secondary'}`}
                 >
-                  {phase}
+                  {machine.phase}
                 </span>
-              ))}
+              </div>
+              <div
+                className="flex flex-wrap items-center gap-4"
+                aria-label="Submission path"
+              >
+                {phases.map((phase) => (
+                  <span
+                    key={phase}
+                    className={`border-b pb-1 text-xs ${machine.phase === phase ? 'border-line-primary fg-primary' : 'border-transparent fg-tertiary'}`}
+                  >
+                    {phase}
+                  </span>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  disabled={!inFlight}
+                  onClick={() => dispatch({ type: 'resolve' })}
+                >
+                  Resolve request
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={!inFlight}
+                  onClick={() => dispatch({ type: 'fail' })}
+                >
+                  Fail request
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={inFlight || terminal}
+                  onClick={() =>
+                    dispatch({
+                      type:
+                        machine.phase === 'disconnected'
+                          ? 'reconnect'
+                          : 'disconnect',
+                    })
+                  }
+                >
+                  {machine.phase === 'disconnected'
+                    ? 'Reconnect'
+                    : 'Disconnect'}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => startConversation(preset.id)}
+                >
+                  Start again
+                </Button>
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                disabled={!inFlight}
-                onClick={() => dispatch({ type: 'resolve' })}
-              >
-                Resolve request
-              </Button>
-              <Button
-                variant="outline"
-                disabled={!inFlight}
-                onClick={() => dispatch({ type: 'fail' })}
-              >
-                Fail request
-              </Button>
-              <Button
-                variant="outline"
-                disabled={inFlight || terminal}
-                onClick={() =>
-                  dispatch({
-                    type:
-                      machine.phase === 'disconnected'
-                        ? 'reconnect'
-                        : 'disconnect',
-                  })
-                }
-              >
-                {machine.phase === 'disconnected' ? 'Reconnect' : 'Disconnect'}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => startConversation(preset.id)}
-              >
-                Start again
-              </Button>
-            </div>
-            <div className="mt-5">
+            <div className="">
               <Divider />
               <div className="grid gap-4 pt-4 grid-cols-1">
-                <div>
+                <Stack gap="inline">
                   <Heading level={3} variant="label">
                     Event history
                   </Heading>
-                  <ol className="mt-2 space-y-1 text-xs fg-primary">
+                  <ol className="flex flex-col text-xs fg-primary gap-1">
                     {machine.events.map((event, index) => (
-                      <li key={`${index}-${event}`}>
-                        <span className="mr-2 tabular-nums fg-secondary">
+                      <li
+                        key={`${index}-${event}`}
+                        className="flex items-baseline gap-2"
+                      >
+                        <span className="tabular-nums fg-secondary">
                           {index + 1}.
                         </span>
                         {event}
                       </li>
                     ))}
                   </ol>
-                </div>
+                </Stack>
                 <Disclosure label="Response payload">
                   <pre className="overflow-auto whitespace-pre-wrap break-words rounded-lg bg-secondary p-3 text-xs fg-primary">
                     {JSON.stringify(safeAnswers, null, 2)}

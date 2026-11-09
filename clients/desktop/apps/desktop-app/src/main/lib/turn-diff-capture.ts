@@ -12,7 +12,7 @@ import {
   diffTreeObjects,
   setGitTreeSnapshotRuntime,
 } from './git-tree-snapshot';
-import { persistTurnDiffTreeRef } from './git';
+import { persistTurnRefThroughWorker } from '../canopy-runtime/worker-git-local-mutations-dispatch';
 import { getResolvedGitExecutableForSpawn } from './git-executable';
 
 setGitTreeSnapshotRuntime({
@@ -75,7 +75,7 @@ async function captureRepoTree(
   worktreeId: string,
 ): Promise<string> {
   const treeSha = await captureWorkingTreeSha(repoPath);
-  await persistTurnDiffTreeRef(repoPath, projectId, worktreeId, treeSha);
+  await persistTurnRefThroughWorker(repoPath, projectId, worktreeId, treeSha);
   return treeSha;
 }
 

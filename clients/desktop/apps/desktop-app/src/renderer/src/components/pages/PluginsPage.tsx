@@ -1,6 +1,6 @@
 import type { CustomizeRowMenuItem } from '@canopy/ui-shared/components/CustomizeRowMenu';
 import { isLocalCollectionConfig } from '@canopy/protocol/collections';
-import { Button } from '@canopy/ui-shared/components';
+import { Stack, Button } from '@canopy/ui-shared/components';
 import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
 import {
   CustomizeSearchRow,
@@ -134,7 +134,7 @@ import type {
   McpServerStatusEntry,
   McpServerIndexEntry,
   AccountMcpConnection,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   CUSTOMIZE_SECTION_SUBTITLE,
   EmptyState,
@@ -193,7 +193,7 @@ import { AgentModelModal } from '../agents/AgentModelModal';
 import { DeleteConfirmModal } from '../shared/DeleteConfirmModal';
 import { useAgentsStore } from '@/stores/agentsStore';
 import { extractIpcErrorMessage } from '@/lib/errors';
-import type { SaveAgentModelRequest } from '@canopy/desktop-shared/types/agent-models';
+import type { SaveAgentModelRequest } from '@canopy/execution-engine/types/agent-models';
 import type { SharedSkillSummary } from '@canopy/desktop-shared/types/skills';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
 
@@ -3140,6 +3140,15 @@ export function PluginsPage({
     <PluginEntryDetail
       key={`${detailEntry.id}:${entryDetailIntent}`}
       entry={detailEntry}
+      onOpenMarketplaceSource={
+        marketplaceSourcesAvailable
+          ? (sourceId): void => {
+              closeEntryDetail();
+              setKindFilter('sources');
+              openMarketplaceSource(sourceId);
+            }
+          : undefined
+      }
       presentation={presentation}
       initialIntent={entryDetailIntent}
       mcpTarget={
@@ -3648,13 +3657,16 @@ export function PluginsPage({
             </>
           </div>
         ) : activeBrowseGroup ? (
-          <div data-testid="plugins-category-page" className="-mt-1.5">
+          <div
+            data-testid="plugins-category-page"
+            className="flex flex-col -mt-1.5 gap-4"
+          >
             <PageHeader
               title={activeBrowseGroup.title}
               description={`Browse all ${activeBrowseGroup.title.toLowerCase()} capabilities.`}
             />
 
-            <PageSearchRow className="mt-4">
+            <PageSearchRow className="">
               <MarketplaceSearchField
                 inputRef={categorySearchInputRef}
                 value={categoryQuery}
@@ -3667,7 +3679,7 @@ export function PluginsPage({
               />
             </PageSearchRow>
 
-            <div className="mt-4">
+            <div>
               <PluginsDiscoveryList
                 sections={[
                   {
@@ -3688,383 +3700,410 @@ export function PluginsPage({
             </div>
           </div>
         ) : (
-          <>
-            <PageHeader
-              title={CUSTOMIZE_LABEL}
-              description={CUSTOMIZE_SECTION_SUBTITLE}
-              actions={
-                <PluginsAddCustomMenu
-                  onAddMarketplace={
-                    canAddMarketplace
-                      ? (): void => setAddMarketplaceOpen(true)
-                      : undefined
-                  }
-                  onAddMcpServer={() => setMcpDialogOpen(true)}
-                  onInstallSkillsFromGitHub={() => setAddSkillsOpen(true)}
-                  onCreateCustomSkill={() => setCreateSkillOpen(true)}
-                  onCreateCollection={
-                    canCreateCollection ? openCollectionCreate : undefined
-                  }
-                  onCreateAgent={
-                    sharedCustomAgentsEnabled
-                      ? (): void => openAgentDialog({ mode: 'create' })
-                      : undefined
-                  }
-                />
-              }
-            />
-
-            <ErrorBanner error={sourceNavigationError} />
-            {installedStatusError && (
-              <ErrorBanner error={installedStatusError} />
-            )}
-
-            {/* Marketplace controls and results use the full shared page width,
-            matching the other top-level utility pages. */}
-            <div className="mt-6 flex flex-col gap-4">
-              <MarketplaceTypeTabs
-                value={activeTypeTab}
-                tabs={typeTabs}
-                onChange={(tab) => {
-                  setAddMarketplaceOpen(false);
-                  setPendingSourcePlugin(null);
-                  setSelectedSourceId(null);
-                  setInstalledStatusFilter(null);
-                  setInstalledExpanded(false);
-                  setFocusSection(null);
-                  setKindFilter(tab === 'all' ? null : tab);
-                  setFocusSection(null);
-                  setCategory(null);
-                  setSelectedSourceId(null);
-                }}
-              />
-
-              {/* The search sits under the tabs it searches within, as the
-              page's toolbar. */}
-              {!showingSources && (
-                <CustomizeSearchRow
-                  tab={activeTypeTab}
-                  search={{
-                    inputRef: searchInputRef,
-                    value: query,
-                    onChange: (value) => {
-                      setAddMarketplaceOpen(false);
-                      setPendingSourcePlugin(null);
-                      setQuery(value);
-                      setFocusSection(null);
-                    },
-                    onEscapeEmpty: () => setCategory(null),
-                    ariaLabel: 'Search all capabilities',
-                    clearAriaLabel: `Clear ${CUSTOMIZE_LABEL} search`,
-                    testId: 'plugins-search',
-                    clearTestId: 'plugins-search-clear',
-                  }}
-                  installedStatusFilter={installedStatusFilter}
-                  onInstalledStatusFilterChange={(value) => {
-                    setInstalledStatusFilter(value);
-                    setFocusSection(null);
-                  }}
-                />
-              )}
-            </div>
-
-            {showingSources ? (
-              <div className="mt-6" data-testid="plugins-marketplace-sources">
-                <MarketplaceSourcesList
-                  state={marketplaceSources}
-                  onOpenSource={openMarketplaceSource}
-                  removeConfirmation={marketplaceSourceRemoveConfirmation}
-                  addAction={
-                    canAddMarketplace ? (
-                      <Button
-                        size="compact"
-                        data-testid="marketplace-sources-add"
-                        onClick={() => setAddMarketplaceOpen(true)}
-                      >
-                        Add marketplace
-                      </Button>
-                    ) : undefined
-                  }
-                />
-              </div>
-            ) : (
-              <div data-testid="plugins-results-scroll">
-                <ErrorBanner error={error} />
-                {inventoryErrorSummary && (
-                  <Notice
-                    intent="destructive"
-                    title={inventoryErrorSummary.title}
-                    className="mb-4"
-                    data-testid="plugins-load-error"
-                  >
-                    {inventoryErrorSummary.message}
-                  </Notice>
-                )}
-                {publisherSkills.error ? (
-                  <Notice
-                    intent="destructive"
-                    className="mb-4"
-                    data-testid="publisher-skills-error"
-                    actions={
-                      <NoticeButton
-                        onClick={() => void publisherSkills.refresh()}
-                      >
-                        Try again
-                      </NoticeButton>
+          <Stack gap="section">
+            <div className="flex flex-col gap-0">
+              <PageHeader
+                title={CUSTOMIZE_LABEL}
+                description={CUSTOMIZE_SECTION_SUBTITLE}
+                actions={
+                  <PluginsAddCustomMenu
+                    onAddMarketplace={
+                      canAddMarketplace
+                        ? (): void => setAddMarketplaceOpen(true)
+                        : undefined
                     }
-                  >
-                    Couldn't load publisher skills.
-                  </Notice>
-                ) : null}
-
-                {showLocalAgentsError && (
-                  <Notice
-                    intent="destructive"
-                    className="mb-4"
-                    data-testid="plugins-local-agents-error"
-                    actions={
-                      <NoticeButton onClick={() => void refreshLocalAgents()}>
-                        Try again
-                      </NoticeButton>
-                    }
-                  >
-                    Couldn't load your agents.
-                  </Notice>
-                )}
-
-                {/* 16px under the page search row, as on every page. */}
-                <div className="mt-4">
-                  <ErrorBanner error={skillUpdates.error} />
-                  <ErrorBanner
-                    error={collectionActionError}
-                    blockMessageFromReplay
-                  />
-                  <div
-                    title={mcpConnectErrorCodeTitle(mcpBannerErrorCode)}
-                    data-mcp-error-code={mcpBannerErrorCode ?? undefined}
-                  >
-                    <ErrorBanner
-                      error={mcpBannerError}
-                      blockMessageFromReplay
-                    />
-                  </div>
-                  <CustomizeTabSections
-                    tab={activeCatalogTab}
-                    entries={entries}
-                    query={deferredQuery}
-                    onClearSearch={() => {
-                      setQuery('');
-                      setFocusSection(null);
-                      searchInputRef.current?.focus();
-                    }}
-                    installedInventory={
-                      error ||
-                      skillsError ||
-                      mcpError ||
-                      capabilityInventory.installedInventory === 'error'
-                        ? 'error'
-                        : loading ||
-                            skillsLoading ||
-                            mcpLoading ||
-                            capabilityInventory.installedInventory === 'loading'
-                          ? 'loading'
-                          : 'ready'
-                    }
-                    loading={
-                      showLoading ||
-                      (kindFilter === 'agent' && localAgentsLoading)
-                    }
-                    ownershipAvailable={
-                      ownershipAvailable && !!capabilityInventory.viewerId
-                    }
-                    supportedUpdateKinds={['skill', 'automation', 'collection']}
-                    pipelineFilters={pipelineFilters}
-                    pipelineCategory={category}
-                    suggestedNames={suggestedNames}
-                    agentsAvailable={sharedCustomAgentsEnabled}
-                    projectTemplatesAvailable
-                    mcpSharedEntryIds={mcpSharedEntryIds}
-                    McpServerLogoComponent={McpServerLogo}
-                    contextKey={JSON.stringify([
-                      shareScopingContext,
-                      capabilityInventory.viewerId,
-                    ])}
-                    selectedEntryId={selectedEntryId}
-                    onSelectEntry={handleSelectEntry}
-                    onEditEntry={handleEditEntry}
-                    onAddEntry={handleAddEntry}
-                    onConnectEntry={handleAddEntry}
-                    onOpenEntryId={handleOpenEntryId}
-                    entryShareStates={entryShareStates}
-                    onShareEntry={handleShareEntry}
-                    onExpandBrowseGroup={(id) =>
-                      openBrowseGroup(
-                        id.startsWith('category-')
-                          ? `category-${id.slice(9)}`
-                          : 'suggested',
-                      )
-                    }
-                    collectionUpdateSummaries={collectionSummaries}
+                    onAddMcpServer={() => setMcpDialogOpen(true)}
+                    onInstallSkillsFromGitHub={() => setAddSkillsOpen(true)}
+                    onCreateCustomSkill={() => setCreateSkillOpen(true)}
                     onCreateCollection={
                       canCreateCollection ? openCollectionCreate : undefined
                     }
-                    onEditCollection={
-                      pendingCollectionScope === collectionScope
-                        ? undefined
-                        : editCollection
+                    onCreateAgent={
+                      sharedCustomAgentsEnabled
+                        ? (): void => openAgentDialog({ mode: 'create' })
+                        : undefined
                     }
-                    onDuplicateCollection={
-                      pendingCollectionScope === collectionScope
-                        ? undefined
-                        : duplicateCollection
-                    }
-                    onUpdateEntry={handleUpdateEntry}
-                    onUpdateFailures={skillUpdates.reportFailures}
-                    workflowActions={workflowActions}
-                    mcpRowActions={mcpRowActions}
-                    onRetryInventory={() => {
-                      void useAutomationsStore.getState().hydrate();
-                      void reloadMarketplaces();
-                      void refreshSkills();
-                      void refreshServers();
-                      void capabilityInventory.refreshPipelines();
-                      void refreshCollectionList().catch(() => {
-                        setCollectionActionError(
-                          'Could not refresh the collection inventory.',
-                        );
-                      });
-                      capabilityInventory.refreshOwnedShares();
+                  />
+                }
+              />
+
+              {(sourceNavigationError || installedStatusError) && (
+                <Stack gap="tight">
+                  <ErrorBanner className="" error={sourceNavigationError} />
+                  <ErrorBanner className="" error={installedStatusError} />
+                </Stack>
+              )}
+            </div>
+
+            {/* Marketplace controls and results use the full shared page width,
+            matching the other top-level utility pages. */}
+            <div
+              className={
+                showingSources ? 'flex flex-col gap-6' : 'flex flex-col gap-0'
+              }
+            >
+              <div className="flex flex-col gap-4">
+                <MarketplaceTypeTabs
+                  value={activeTypeTab}
+                  tabs={typeTabs}
+                  onChange={(tab) => {
+                    setAddMarketplaceOpen(false);
+                    setPendingSourcePlugin(null);
+                    setSelectedSourceId(null);
+                    setInstalledStatusFilter(null);
+                    setInstalledExpanded(false);
+                    setFocusSection(null);
+                    setKindFilter(tab === 'all' ? null : tab);
+                    setFocusSection(null);
+                    setCategory(null);
+                    setSelectedSourceId(null);
+                  }}
+                />
+
+                {/* The search sits under the tabs it searches within, as the
+              page's toolbar. */}
+                {!showingSources && (
+                  <CustomizeSearchRow
+                    tab={activeTypeTab}
+                    search={{
+                      inputRef: searchInputRef,
+                      value: query,
+                      onChange: (value) => {
+                        setAddMarketplaceOpen(false);
+                        setPendingSourcePlugin(null);
+                        setQuery(value);
+                        setFocusSection(null);
+                      },
+                      onEscapeEmpty: () => setCategory(null),
+                      ariaLabel: 'Search all capabilities',
+                      clearAriaLabel: `Clear ${CUSTOMIZE_LABEL} search`,
+                      testId: 'plugins-search',
+                      clearTestId: 'plugins-search-clear',
                     }}
-                    entryStatus={entryStatus}
-                    renderSharedActions={renderRowUnshare}
-                    installedStatusFilter={installedStatusFilter ?? undefined}
-                    installedStatusInventory={
-                      installedStatuses.state.kind === 'unsupported'
-                        ? 'unavailable'
-                        : installedStatuses.state.kind
-                    }
-                    installedStatusSnapshot={installedStatusSnapshot}
-                    onInstalledStatusSnapshotChange={setInstalledStatusSnapshot}
-                    installedExpanded={installedExpanded}
-                    onInstalledExpandedChange={setInstalledExpanded}
-                    focusSection={focusSection}
-                    focusPending={
-                      capabilityInventory.ownedSharesLoading ||
-                      capabilityInventory.loading
-                    }
-                    onFocusSectionSettled={() => setFocusSection(null)}
-                    browseActions={
-                      <div className="flex flex-wrap items-center gap-3">
-                        <PluginsPipelineFilters
-                          values={pipelineFilterValues}
-                          onChange={setPipelineFilterValues}
-                        />
-                        <RefreshButton
-                          dataTestId="plugins-pipelines-refresh"
-                          ariaLabel="Refresh workflows"
-                          busy={pipelinesRefreshBusy}
-                          onClick={handleRefreshPipelines}
-                        />
-                      </div>
-                    }
-                    emptyMessage="Nothing here yet. Use Add custom to bring in your own."
-                    emptyState={
-                      kindFilter === 'collection' ? (
-                        <EmptyState
-                          title="No collections yet"
-                          subtitle="Group skills, plugins, and MCP servers so a chat or workflow can pick them up together."
-                          action={
-                            <Button
-                              size="compact"
-                              data-testid="plugins-collections-empty-create"
-                              disabled={!canCreateCollection}
-                              onClick={openCollectionCreate}
-                            >
-                              Add collection
-                            </Button>
-                          }
-                        />
-                      ) : kindFilter === 'agent' && !showLocalAgentsError ? (
-                        <EmptyState
-                          title="No agents yet"
-                          subtitle="Create an agent to reuse instructions and plugins from model pickers and workflows."
-                          action={
-                            <Button
-                              size="compact"
-                              data-testid="plugins-agents-empty-create"
-                              onClick={() =>
-                                openAgentDialog({ mode: 'create' })
-                              }
-                            >
-                              New agent
-                            </Button>
-                          }
-                        />
-                      ) : kindFilter === 'workflow' && !inventoryError ? (
-                        <EmptyState
-                          title="No workflows yet"
-                          subtitle="Run an agent or a workflow on a schedule. Workflows you create or add show up here."
-                          action={
-                            <Button
-                              size="compact"
-                              data-testid="plugins-automations-empty-open"
-                              onClick={() =>
-                                useNavigationStore
-                                  .getState()
-                                  .navigate('automations')
-                              }
-                            >
-                              Open Workflows
-                            </Button>
-                          }
-                        />
+                    installedStatusFilter={installedStatusFilter}
+                    onInstalledStatusFilterChange={(value) => {
+                      setInstalledStatusFilter(value);
+                      setFocusSection(null);
+                    }}
+                  />
+                )}
+              </div>
+
+              {showingSources ? (
+                <div data-testid="plugins-marketplace-sources">
+                  <MarketplaceSourcesList
+                    state={marketplaceSources}
+                    onOpenSource={openMarketplaceSource}
+                    removeConfirmation={marketplaceSourceRemoveConfirmation}
+                    addAction={
+                      canAddMarketplace ? (
+                        <Button
+                          size="compact"
+                          data-testid="marketplace-sources-add"
+                          onClick={() => setAddMarketplaceOpen(true)}
+                        >
+                          Add marketplace
+                        </Button>
                       ) : undefined
                     }
                   />
                 </div>
-                {kindFilter === 'workflow' && (
-                  <PipelineCatalogStatus
-                    curated={
-                      curatedEnabled ? capabilityInventory.curated : undefined
-                    }
-                    sharedNextCursor={
-                      pipelineFilters.source === 'all' ||
-                      pipelineFilters.source === 'shared'
-                        ? capabilityInventory.sharedPipelineNextCursor
-                        : null
-                    }
-                    sharedLoadingMore={
-                      capabilityInventory.sharedPipelinesLoadingMore
-                    }
-                    onLoadMoreShared={() =>
-                      void capabilityInventory.loadMoreSharedPipelines()
-                    }
-                  />
-                )}
-                {kindFilter === 'workflow' && (
-                  <AutomationCatalogStatus
-                    curated={capabilityInventory.curatedAutomations}
-                    sharedNextCursor={
-                      capabilityInventory.sharedAutomationNextCursor
-                    }
-                    sharedLoadingMore={
-                      capabilityInventory.sharedAutomationsLoadingMore
-                    }
-                    onLoadMoreShared={() =>
-                      void capabilityInventory.loadMoreSharedAutomations()
-                    }
-                  />
-                )}
-              </div>
-            )}
-          </>
+              ) : (
+                <Stack gap="group" data-testid="plugins-results-scroll">
+                  <div className="flex flex-col gap-0">
+                    <ErrorBanner error={error} />
+                    {inventoryErrorSummary && (
+                      <Notice
+                        className=""
+                        intent="destructive"
+                        title={inventoryErrorSummary.title}
+                        data-testid="plugins-load-error"
+                      >
+                        {inventoryErrorSummary.message}
+                      </Notice>
+                    )}
+                  </div>
+                  {publisherSkills.error ? (
+                    <Notice
+                      className=""
+                      intent="destructive"
+                      data-testid="publisher-skills-error"
+                      actions={
+                        <NoticeButton
+                          onClick={() => void publisherSkills.refresh()}
+                        >
+                          Try again
+                        </NoticeButton>
+                      }
+                    >
+                      Couldn't load publisher skills.
+                    </Notice>
+                  ) : null}
+
+                  {showLocalAgentsError && (
+                    <Notice
+                      className=""
+                      intent="destructive"
+                      data-testid="plugins-local-agents-error"
+                      actions={
+                        <NoticeButton onClick={() => void refreshLocalAgents()}>
+                          Try again
+                        </NoticeButton>
+                      }
+                    >
+                      Couldn't load your agents.
+                    </Notice>
+                  )}
+
+                  {/* The parent keeps this 16px under the page search row. */}
+                  <Stack gap="section">
+                    <div>
+                      <ErrorBanner error={skillUpdates.error} />
+                      <ErrorBanner
+                        error={collectionActionError}
+                        blockMessageFromReplay
+                      />
+                      <div
+                        title={mcpConnectErrorCodeTitle(mcpBannerErrorCode)}
+                        data-mcp-error-code={mcpBannerErrorCode ?? undefined}
+                      >
+                        <ErrorBanner
+                          error={mcpBannerError}
+                          blockMessageFromReplay
+                        />
+                      </div>
+                      <CustomizeTabSections
+                        tab={activeCatalogTab}
+                        entries={entries}
+                        query={deferredQuery}
+                        onClearSearch={() => {
+                          setQuery('');
+                          setFocusSection(null);
+                          searchInputRef.current?.focus();
+                        }}
+                        installedInventory={
+                          error ||
+                          skillsError ||
+                          mcpError ||
+                          capabilityInventory.installedInventory === 'error'
+                            ? 'error'
+                            : loading ||
+                                skillsLoading ||
+                                mcpLoading ||
+                                capabilityInventory.installedInventory ===
+                                  'loading'
+                              ? 'loading'
+                              : 'ready'
+                        }
+                        loading={
+                          showLoading ||
+                          (kindFilter === 'agent' && localAgentsLoading)
+                        }
+                        ownershipAvailable={
+                          ownershipAvailable && !!capabilityInventory.viewerId
+                        }
+                        supportedUpdateKinds={[
+                          'skill',
+                          'automation',
+                          'collection',
+                        ]}
+                        pipelineFilters={pipelineFilters}
+                        pipelineCategory={category}
+                        suggestedNames={suggestedNames}
+                        agentsAvailable={sharedCustomAgentsEnabled}
+                        projectTemplatesAvailable
+                        mcpSharedEntryIds={mcpSharedEntryIds}
+                        McpServerLogoComponent={McpServerLogo}
+                        contextKey={JSON.stringify([
+                          shareScopingContext,
+                          capabilityInventory.viewerId,
+                        ])}
+                        selectedEntryId={selectedEntryId}
+                        onSelectEntry={handleSelectEntry}
+                        onEditEntry={handleEditEntry}
+                        onAddEntry={handleAddEntry}
+                        onConnectEntry={handleAddEntry}
+                        onOpenEntryId={handleOpenEntryId}
+                        entryShareStates={entryShareStates}
+                        onShareEntry={handleShareEntry}
+                        onExpandBrowseGroup={(id) =>
+                          openBrowseGroup(
+                            id.startsWith('category-')
+                              ? `category-${id.slice(9)}`
+                              : 'suggested',
+                          )
+                        }
+                        collectionUpdateSummaries={collectionSummaries}
+                        onCreateCollection={
+                          canCreateCollection ? openCollectionCreate : undefined
+                        }
+                        onEditCollection={
+                          pendingCollectionScope === collectionScope
+                            ? undefined
+                            : editCollection
+                        }
+                        onDuplicateCollection={
+                          pendingCollectionScope === collectionScope
+                            ? undefined
+                            : duplicateCollection
+                        }
+                        onUpdateEntry={handleUpdateEntry}
+                        onUpdateFailures={skillUpdates.reportFailures}
+                        workflowActions={workflowActions}
+                        mcpRowActions={mcpRowActions}
+                        onRetryInventory={() => {
+                          void useAutomationsStore.getState().hydrate();
+                          void reloadMarketplaces();
+                          void refreshSkills();
+                          void refreshServers();
+                          void capabilityInventory.refreshPipelines();
+                          void refreshCollectionList().catch(() => {
+                            setCollectionActionError(
+                              'Could not refresh the collection inventory.',
+                            );
+                          });
+                          capabilityInventory.refreshOwnedShares();
+                        }}
+                        entryStatus={entryStatus}
+                        renderSharedActions={renderRowUnshare}
+                        installedStatusFilter={
+                          installedStatusFilter ?? undefined
+                        }
+                        installedStatusInventory={
+                          installedStatuses.state.kind === 'unsupported'
+                            ? 'unavailable'
+                            : installedStatuses.state.kind
+                        }
+                        installedStatusSnapshot={installedStatusSnapshot}
+                        onInstalledStatusSnapshotChange={
+                          setInstalledStatusSnapshot
+                        }
+                        installedExpanded={installedExpanded}
+                        onInstalledExpandedChange={setInstalledExpanded}
+                        focusSection={focusSection}
+                        focusPending={
+                          capabilityInventory.ownedSharesLoading ||
+                          capabilityInventory.loading
+                        }
+                        onFocusSectionSettled={() => setFocusSection(null)}
+                        browseActions={
+                          <div className="flex flex-wrap items-center gap-3">
+                            <PluginsPipelineFilters
+                              values={pipelineFilterValues}
+                              onChange={setPipelineFilterValues}
+                            />
+                            <RefreshButton
+                              dataTestId="plugins-pipelines-refresh"
+                              ariaLabel="Refresh workflows"
+                              busy={pipelinesRefreshBusy}
+                              onClick={handleRefreshPipelines}
+                            />
+                          </div>
+                        }
+                        emptyMessage="Nothing here yet. Use Add custom to bring in your own."
+                        emptyState={
+                          kindFilter === 'collection' ? (
+                            <EmptyState
+                              title="No collections yet"
+                              subtitle="Group skills, plugins, and MCP servers so a chat or workflow can pick them up together."
+                              action={
+                                <Button
+                                  size="compact"
+                                  data-testid="plugins-collections-empty-create"
+                                  disabled={!canCreateCollection}
+                                  onClick={openCollectionCreate}
+                                >
+                                  Add collection
+                                </Button>
+                              }
+                            />
+                          ) : kindFilter === 'agent' &&
+                            !showLocalAgentsError ? (
+                            <EmptyState
+                              title="No agents yet"
+                              subtitle="Create an agent to reuse instructions and plugins from model pickers and workflows."
+                              action={
+                                <Button
+                                  size="compact"
+                                  data-testid="plugins-agents-empty-create"
+                                  onClick={() =>
+                                    openAgentDialog({ mode: 'create' })
+                                  }
+                                >
+                                  New agent
+                                </Button>
+                              }
+                            />
+                          ) : kindFilter === 'workflow' && !inventoryError ? (
+                            <EmptyState
+                              title="No workflows yet"
+                              subtitle="Run an agent or a workflow on a schedule. Workflows you create or add show up here."
+                              action={
+                                <Button
+                                  size="compact"
+                                  data-testid="plugins-automations-empty-open"
+                                  onClick={() =>
+                                    useNavigationStore
+                                      .getState()
+                                      .navigate('automations')
+                                  }
+                                >
+                                  Open Workflows
+                                </Button>
+                              }
+                            />
+                          ) : undefined
+                        }
+                      />
+                    </div>
+                    {kindFilter === 'workflow' && (
+                      <PipelineCatalogStatus
+                        curated={
+                          curatedEnabled
+                            ? capabilityInventory.curated
+                            : undefined
+                        }
+                        sharedNextCursor={
+                          pipelineFilters.source === 'all' ||
+                          pipelineFilters.source === 'shared'
+                            ? capabilityInventory.sharedPipelineNextCursor
+                            : null
+                        }
+                        sharedLoadingMore={
+                          capabilityInventory.sharedPipelinesLoadingMore
+                        }
+                        onLoadMoreShared={() =>
+                          void capabilityInventory.loadMoreSharedPipelines()
+                        }
+                      />
+                    )}
+                    {kindFilter === 'workflow' && (
+                      <AutomationCatalogStatus
+                        curated={capabilityInventory.curatedAutomations}
+                        sharedNextCursor={
+                          capabilityInventory.sharedAutomationNextCursor
+                        }
+                        sharedLoadingMore={
+                          capabilityInventory.sharedAutomationsLoadingMore
+                        }
+                        onLoadMoreShared={() =>
+                          void capabilityInventory.loadMoreSharedAutomations()
+                        }
+                      />
+                    )}
+                  </Stack>
+                </Stack>
+              )}
+            </div>
+          </Stack>
         )}
       </PageContent>
       {capabilityInventory.curated && (
         <CuratedPipelinePreview
+          breadcrumbsGap="group"
           breadcrumbs={
             curatedPipelineBreadcrumbTitle ? (
-              <div className="mb-4 min-w-0">
+              <div className="min-w-0">
                 <CustomizeBreadcrumbs
                   testId="plugins-curated-pipeline-breadcrumbs"
                   items={[

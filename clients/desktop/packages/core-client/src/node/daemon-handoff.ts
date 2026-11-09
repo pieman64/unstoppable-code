@@ -116,6 +116,7 @@ export type CanopyDaemonProbe<T> =
     };
 
 export interface CanopyDaemonProbeOptions<T> {
+  readonly secureStorageLayout?: string;
   /** 64 lowercase hex characters, echoed by the transport handshake. */
   readonly dataRootHash: string;
   readonly ports: DiscoveryPorts;
@@ -170,6 +171,7 @@ export async function probeCanopyDaemon<T>(
           source,
           supervisor,
           protocolVersions,
+          secureStorageLayout: options.secureStorageLayout,
           signal,
         }),
       typed('Core discovery failed.'),

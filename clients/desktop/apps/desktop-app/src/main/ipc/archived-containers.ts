@@ -44,7 +44,7 @@ import {
   listExecutionSummariesWithStates,
   loadExecutionState,
 } from '@canopy/desktop-shared/node/pipelines/executor';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import { validatePipelineRuntimeIdentifier } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
 import {
   listArchivedContainers,

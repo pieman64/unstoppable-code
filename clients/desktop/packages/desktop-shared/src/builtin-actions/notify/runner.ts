@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { brandEnvName } from '@canopy/desktop-shared/brand/env';
+import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import { setOutput } from '../_lib/output';
 import { runWithActionEnvironment } from '../_lib/action-env';
 

@@ -2,7 +2,7 @@ import type { ChatModel } from '@canopy/desktop-shared/types';
 import {
   resolveGatewayModelEntry,
   resolveModelIdForGatewayId,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { resolveGuestAllowedModelForGatewayId } from '@canopy/protocol/models';
 import type { ModelRecovery, VisibleModelRowGate } from './modelPickerRowGate';
 

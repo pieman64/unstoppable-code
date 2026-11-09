@@ -1,5 +1,5 @@
 import type { AccountProxyQuotaWait } from '../../account-proxy/quota-wait';
-import { classifyAgentFailure } from '@canopy/desktop-shared/agent-failures';
+import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import { BRAND } from '@canopy/brand/current';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -20,8 +20,8 @@ import {
 import {
   codexServiceTierForModelConfig,
   type CodexConfig,
-} from '@canopy/desktop-shared/lib/codex-model-config';
-import { applyCodexMultiAgentConfig } from '@canopy/desktop-shared/lib/codex-multi-agent';
+} from '@canopy/execution-engine/lib/codex-model-config';
+import { applyCodexMultiAgentConfig } from '@canopy/execution-engine/lib/codex-multi-agent';
 import type { CodexSelectedCapabilityRoot } from '@canopy/desktop-shared/types';
 import {
   DELEGATION_STREAM_PREVIEW_LIMITS,
@@ -53,7 +53,7 @@ import type {
   AgentDelegationError,
   AgentDelegationUsage,
 } from '@canopy/protocol/delegation';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
 import type { UserInput } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/UserInput';
@@ -75,7 +75,7 @@ import {
 } from './codex-sandbox-profile';
 import { recordDelegationModelRejection } from './model-rejections';
 import type { CodexErrorInfo } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/CodexErrorInfo';
-import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import type {
   DelegationCapabilityReloadController,
   DelegationCapabilityReloadHost,

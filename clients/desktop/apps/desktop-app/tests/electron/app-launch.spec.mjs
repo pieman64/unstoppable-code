@@ -207,6 +207,51 @@ test('launches the built Electron shell', async ({}, testInfo) => {
         linked: { ok: false, code: 'unavailable' },
       });
       expect(await cloudProjectRequests()).toBe(0);
+      // Main startup has also called startCloudProjectSetupSweep. Signed out,
+      // cloud-projects:setup-catalog, cloud-projects:setup-options and
+      // cloud-projects:start-setup answer unavailable without a Cloud request
+      // and nothing arrives on cloud-projects:setup-progress; an invalid
+      // project ID is refused at the handler.
+      const setup = await window.evaluate(
+        async ({ projectId, destinationRoot }) => {
+          const pushed = [];
+          const stop = window.api.cloudProjects.onSetupProgress((progress) =>
+            pushed.push(progress),
+          );
+          try {
+            return {
+              invalid: await window.api.cloudProjects
+                .setupOptions('../project')
+                .then(
+                  () => 'resolved',
+                  () => 'rejected',
+                ),
+              catalog: await window.api.cloudProjects.setupCatalog(),
+              options: await window.api.cloudProjects.setupOptions(projectId),
+              started: await window.api.cloudProjects.startSetup({
+                projectId,
+                repositoryIds: [projectId],
+                destinationRoot,
+              }),
+              pushed: pushed.length,
+            };
+          } finally {
+            stop();
+          }
+        },
+        {
+          projectId: '00000000-0000-4000-8000-000000000001',
+          destinationRoot: userDataDir,
+        },
+      );
+      expect(setup).toEqual({
+        invalid: 'rejected',
+        catalog: { status: 'unavailable', reason: 'signed-out' },
+        options: { status: 'unavailable', reason: 'unavailable' },
+        started: { ok: false, code: 'unavailable' },
+        pushed: 0,
+      });
+      expect(await cloudProjectRequests()).toBe(0);
     } finally {
       await electronApp.evaluate(() => globalThis.__restoreCloudProjectFetch());
     }
@@ -232,10 +277,11 @@ test('launches the built Electron shell', async ({}, testInfo) => {
     const heading = homePage.getByTestId('home-heading');
     await expect(heading).toBeVisible();
     await expect(heading).not.toHaveText('');
-    // Main startup has called setMemorySyncEnabled with sync off, so no
-    // engine made a replica. The memory merge runner's Worker entry, built
-    // beside main, merges disjoint edits in Electron's runtime and answers a
-    // malformed request with a too_costly conflict.
+    // Main startup has called startMemorySync. Signed out, no account
+    // carries memory-sync-v1, so no engine made a replica. The memory merge
+    // runner's Worker entry, built beside main, merges disjoint edits in
+    // Electron's runtime and answers a malformed request with a too_costly
+    // conflict.
     expect(existsSync(path.join(userDataDir, 'memory-replicas'))).toBe(false);
     const memoryMerges = await electronApp.evaluate(
       async (_electron, workerPath) => {

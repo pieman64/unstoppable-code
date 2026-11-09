@@ -32,7 +32,7 @@ import {
   validateSplitPlan,
 } from '@canopy/desktop-shared/lib/pr-split-plan';
 import { getEnhancedEnv } from '@canopy/desktop-shared/pipelines/config-paths';
-import { findExecutableOnPath } from '@canopy/desktop-shared/node/lib/path-lookup';
+import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import {
   addDetachedWorktree,
   applyIndexPatch,
@@ -331,7 +331,7 @@ export function buildVerifyEnv(): Record<string, string> {
  *    strings containing quotes, so callers MUST pass `windowsVerbatimArguments:
  *    true` to `execFile`/`spawn` when using this cmd branch. `%VAR%` and
  *    embedded newlines are rejected up front (mirroring
- *    `quoteCmdArgument` in `packages/desktop-shared/src/node/lib/windows-process.ts`)
+ *    `quoteCmdArgument` in `packages/execution-engine/src/node/lib/windows-process.ts`)
  *    because cmd.exe silently expands `%VAR%` references and cannot represent
  *    a literal newline inside a single command line — both would otherwise run
  *    something other than what the user authored without any error.

@@ -1,4 +1,5 @@
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { classifyWorktreeAddFailure } from '@canopy/core-runtime/node/git';
 import { getCanopyDataDir } from '../../canopy-paths';
 import { APP_ADVISOR_PROJECT_ID, APP_ADVISOR_WORKTREE_ID } from '../../types';
 import {
@@ -36,7 +37,7 @@ import {
   pathExists,
   runGit,
 } from './worktree-cli-reads';
-import { isErrnoException } from './type-guards';
+import { isErrnoException } from '@canopy/execution-engine/node/lib/type-guards';
 import { settleAll } from './detached-work';
 
 export function normalizeBranchName(value: string | undefined): string | null {
@@ -74,11 +75,23 @@ async function addGitWorktree(
   await mkdir(path.dirname(worktreePath), { recursive: true });
   signal?.throwIfAborted();
   const startPoint = baseBranch ?? 'HEAD';
-  await runGit(
-    ['worktree', 'add', '-b', branchName, worktreePath, startPoint],
-    repoPath,
-    signal,
-  );
+  try {
+    await runGit(
+      ['worktree', 'add', '-b', branchName, worktreePath, startPoint],
+      repoPath,
+      signal,
+    );
+  } catch (error) {
+    await classifyWorktreeAddFailure(error, repoPath, startPoint, () =>
+      runGit(
+        ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'],
+        repoPath,
+        signal,
+        2000,
+      ),
+    );
+    throw error;
+  }
 }
 
 async function gitignoreContainsReposEntry(

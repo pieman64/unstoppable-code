@@ -9,7 +9,7 @@ import { isConclusiveAccountRead } from '@canopy/desktop-shared/lib/canopy-cloud
 import { brandText } from '@/lib/brand';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import {
   getSecureStorageNotice,
   unavailableSecureStorageFailure,

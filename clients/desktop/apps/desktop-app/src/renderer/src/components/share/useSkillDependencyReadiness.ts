@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PipelinePackageReadiness } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageReadiness } from '@canopy/execution-engine/types/pipeline';
 import type { SkillDependencyRef } from '@canopy/desktop-shared/types/skills';
 import { skillDependenciesToEnvironmentRequirements } from '@canopy/protocol/skills';
 

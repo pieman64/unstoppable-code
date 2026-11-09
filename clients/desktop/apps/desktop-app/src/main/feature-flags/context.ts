@@ -1,6 +1,7 @@
 import { app as electronApp } from 'electron';
 import type { LDContext } from 'launchdarkly-node-client-sdk';
 import { getStableAnonymousKey } from '../lib/anonymous-id';
+import { getEffectiveUsageDataPolicy } from '../lib/usage-data-policy';
 import {
   readCanopyServerTargetingInfo,
   readClaudeTargetingInfo,
@@ -21,13 +22,14 @@ export interface DesktopFeatureFlagContext {
   operatingSystem: NodeJS.Platform;
   architecture: NodeJS.Architecture;
   appVersion: string;
-  githubUserId: string | null;
-  githubUsername: string | null;
-  githubEmail: string | null;
-  claudeEmail: string | null;
-  codexEmail: string | null;
-  canopyUserIds: string[];
-  canopyUserEmails: string[];
+  // Identity fields are omitted in the reduced (anonymous) context.
+  githubUserId?: string | null;
+  githubUsername?: string | null;
+  githubEmail?: string | null;
+  claudeEmail?: string | null;
+  codexEmail?: string | null;
+  canopyUserIds?: string[];
+  canopyUserEmails?: string[];
   canopyOrganizationIds: string[];
   canopyTeamIds: string[];
 }
@@ -42,18 +44,25 @@ function normalizeFeatureFlagEmail(value: string): string {
   return value.trim().toLowerCase();
 }
 
-export function buildDesktopFeatureFlagContextFromTargeting(input: {
+type FeatureFlagIdentity = Omit<
+  DesktopFeatureFlagContext,
+  | 'kind'
+  | 'operatingSystem'
+  | 'architecture'
+  | 'appVersion'
+  | 'canopyOrganizationIds'
+  | 'canopyTeamIds'
+>;
+
+function personFeatureFlagIdentity(input: {
   anonymousKey: string;
-  appVersion?: string;
   github: GitHubTargetingInfo;
   claude: ProviderTargetingInfo;
   codex: ProviderTargetingInfo;
   canopy: CanopyServerTargetingInfo;
-}): DesktopFeatureFlagContext & LDContext {
+}): FeatureFlagIdentity {
   const canopyUserIds = sortUnique(input.canopy.userIds);
   const canopyUserEmails = sortUnique(input.canopy.emails);
-  const canopyOrganizationIds = sortUnique(input.canopy.organizationIds);
-  const canopyTeamIds = sortUnique(input.canopy.teamIds);
   // The signed-in account only: provider emails are unverified against it.
   const email = sortUnique(
     input.canopy.emails
@@ -66,15 +75,10 @@ export function buildDesktopFeatureFlagContextFromTargeting(input: {
     input.claude.email ??
     input.codex.email ??
     input.anonymousKey;
-
   return {
-    kind: 'user',
     key,
     anonymous: key === input.anonymousKey,
     ...(email !== undefined ? { email } : {}),
-    operatingSystem: process.platform,
-    architecture: process.arch,
-    appVersion: input.appVersion ?? '0.0.0',
     githubUserId: input.github.id,
     githubUsername: input.github.username,
     githubEmail: input.github.email,
@@ -82,9 +86,45 @@ export function buildDesktopFeatureFlagContextFromTargeting(input: {
     codexEmail: input.codex.email,
     canopyUserIds,
     canopyUserEmails,
-    canopyOrganizationIds,
-    canopyTeamIds,
   };
+}
+
+/**
+ * `reduced` is the anonymous mode behind Personalized feature rollouts: the
+ * install's flag key, platform facts, and organization and team ids (so
+ * org-targeted rollouts keep working), with every person identifier omitted.
+ */
+export function buildDesktopFeatureFlagContextFromTargeting(input: {
+  anonymousKey: string;
+  appVersion?: string;
+  github: GitHubTargetingInfo;
+  claude: ProviderTargetingInfo;
+  codex: ProviderTargetingInfo;
+  canopy: CanopyServerTargetingInfo;
+  reduced?: boolean;
+}): DesktopFeatureFlagContext & LDContext {
+  return {
+    kind: 'user',
+    ...(input.reduced === true
+      ? { key: input.anonymousKey, anonymous: true }
+      : personFeatureFlagIdentity(input)),
+    operatingSystem: process.platform,
+    architecture: process.arch,
+    appVersion: input.appVersion ?? '0.0.0',
+    canopyOrganizationIds: sortUnique(input.canopy.organizationIds),
+    canopyTeamIds: sortUnique(input.canopy.teamIds),
+  };
+}
+
+let lastBuiltFeatureFlagIdentity: boolean | null = null;
+
+/**
+ * The Personalized feature rollouts choice the latest context was built with,
+ * or null before the first build. Built, not necessarily identified: a failed
+ * identify is retried with a fresh build.
+ */
+export function getLastBuiltFeatureFlagIdentity(): boolean | null {
+  return lastBuiltFeatureFlagIdentity;
 }
 
 export async function buildDesktopFeatureFlagContext(): Promise<
@@ -97,6 +137,8 @@ export async function buildDesktopFeatureFlagContext(): Promise<
     readCodexTargetingInfo(),
     readCanopyServerTargetingInfo(),
   ]);
+  const identity = getEffectiveUsageDataPolicy().featureFlagIdentity;
+  lastBuiltFeatureFlagIdentity = identity;
 
   return buildDesktopFeatureFlagContextFromTargeting({
     anonymousKey,
@@ -105,5 +147,8 @@ export async function buildDesktopFeatureFlagContext(): Promise<
     claude,
     codex,
     canopy,
+    // The flag key comes from `feature-flags-context.json`, never the PostHog
+    // identity file, so anonymous mode works with PostHog fully off.
+    reduced: !identity,
   });
 }

@@ -21,7 +21,7 @@ import { isoDay, writeJsonl } from './fsHelpers.mjs';
  * retention window.
  *
  * `UsageMetricEvent` shapes live in
- * `packages/desktop-shared/src/types/observability.ts` (discriminated on
+ * `packages/execution-engine/src/types/observability.ts` (discriminated on
  * `type`): `worktree_created`, `worktree_pr_merged`, `worktree_deleted`,
  * `chat_turn_started`/`chat_turn_completed`, `plan_*`,
  * `pipeline_run_started`/`pipeline_run_completed`. Every event shares
@@ -29,10 +29,10 @@ import { isoDay, writeJsonl } from './fsHelpers.mjs';
  *
  * @param {object} options
  * @param {string} options.userDataDir absolute CANOPY_DATA_DIR
- * @param {import('@canopy/desktop-shared/types/observability').UsageMetricEvent[]} options.events
+ * @param {import('@canopy/execution-engine/types/observability').UsageMetricEvent[]} options.events
  * @param {string} [options.day] override the `YYYY-MM-DD` bucket filename;
  *   defaults to the latest event timestamp (or today)
- * @returns {{ filePath: string, day: string, events: import('@canopy/desktop-shared/types/observability').UsageMetricEvent[] }}
+ * @returns {{ filePath: string, day: string, events: import('@canopy/execution-engine/types/observability').UsageMetricEvent[] }}
  */
 export function seedUsageEvents(options) {
   const { userDataDir, events, day } = options ?? {};

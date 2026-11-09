@@ -14,7 +14,10 @@ import {
   POSTHOG_PROPERTY_DENYLIST,
   sanitizePostHogEvent,
 } from '../posthog-privacy';
-import { createPostHogRuntimeController } from './posthog-runtime';
+import {
+  createPostHogRuntimeController,
+  isPostHogErrorEvent,
+} from './posthog-runtime';
 import { buildPostHogSessionRecordingOptions } from './posthog-replay-options';
 import { POSTHOG_CLICK_INIT_OPTIONS } from './posthog-autocapture-options';
 import { createPostHogScreenTracker } from './posthog-screen-tracking';
@@ -31,6 +34,8 @@ import {
 } from '../posthog-routes';
 import {
   APP_ERROR_POSTHOG_EVENT,
+  APP_ERROR_VIEW_POSTHOG_EVENT,
+  buildAppErrorViewPostHogProperties,
   buildFeedbackReportTelemetry,
   type AppErrorTelemetrySessions,
   buildAppErrorPostHogProperties,
@@ -38,6 +43,7 @@ import {
 import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
 import {
   createAppErrorHandler,
+  type AppError,
   type AppErrorHandler,
   type AppErrorReport,
   type AppErrorReportOptions,
@@ -62,7 +68,7 @@ type FeatureFlagValue = Exclude<
 type FeatureFlagReporter = (key: string, value: FeatureFlagValue) => void;
 type OperationReporter = (operation: PostHogOperationEvent) => void;
 type AppErrorPostHogEvent = {
-  event: typeof APP_ERROR_POSTHOG_EVENT;
+  event: typeof APP_ERROR_POSTHOG_EVENT | typeof APP_ERROR_VIEW_POSTHOG_EVENT;
   properties: ReturnType<typeof buildAppErrorPostHogProperties>;
 };
 type AppErrorReporter = (event: AppErrorPostHogEvent) => void;
@@ -124,15 +130,23 @@ async function initializePostHogClient(
   let appErrorSession: AppErrorTelemetrySessions['posthog'];
   let posthog: PostHog | undefined;
   let account: PostHogAccountTracker | undefined;
-  const eligibleStart = (): boolean =>
-    !disposed && (waitingForFlags || flags?.captureEnabled === true);
+  let releaseIdentityWait: (() => void) | undefined;
+  // Before the first snapshot, buffer; afterwards each category follows the
+  // LaunchDarkly capture flag and the member's effective usage-data choice.
+  const eventsPermitted = (): boolean =>
+    waitingForFlags ||
+    (flags?.captureEnabled === true && flags.productAnalytics === true);
+  const errorsPermitted = (): boolean =>
+    waitingForFlags ||
+    (flags?.captureEnabled === true && flags.errorReports === true);
+  const eligibleStart = (): boolean => !disposed && eventsPermitted();
   isPostHogOperationStartEligible = eligibleStart;
   const pendingEvaluations = new Map<string, FeatureFlagValue>();
   const reportedEvaluations = new Map<string, FeatureFlagValue>();
   const reportEvaluation: FeatureFlagReporter = (key, value) => {
     if (disposed) return;
     if (!posthog || !controller) {
-      if (!waitingForFlags && flags?.captureEnabled !== true) return;
+      if (!eventsPermitted()) return;
       // Flag-store hydration need not wait for the SDK or its host identity.
       // Retain current state, not an unbounded history of startup snapshots.
       pendingEvaluations.set(key, value);
@@ -158,7 +172,12 @@ async function initializePostHogClient(
   ): void => {
     if (disposed) return;
     if (!posthog || !controller) {
-      if (!waitingForFlags && flags?.captureEnabled !== true) return;
+      if (
+        !(isPostHogErrorEvent(operation.event)
+          ? errorsPermitted()
+          : eventsPermitted())
+      )
+        return;
       pendingOperations.push(operation);
       if (pendingOperations.length > MAX_PENDING_POSTHOG_OPERATIONS)
         pendingOperations.shift();
@@ -180,7 +199,7 @@ async function initializePostHogClient(
   const reportException: ExceptionReporter = (error, properties) => {
     if (disposed) return;
     if (!posthog || !controller) {
-      if (!waitingForFlags && flags?.captureEnabled !== true) return;
+      if (!errorsPermitted()) return;
       pendingExceptions.push({ error, properties });
       if (pendingExceptions.length > MAX_PENDING_POSTHOG_EXCEPTIONS)
         pendingExceptions.shift();
@@ -223,6 +242,21 @@ async function initializePostHogClient(
     unsubscribe?.();
     session?.dispose();
     controller?.dispose();
+    releaseIdentityWait?.();
+  };
+  const discardRefusedPending = (): void => {
+    if (!eventsPermitted()) {
+      posthogOperations.discardAcquisitionStarts();
+      pendingEvaluations.clear();
+    }
+    const keepEvents = eventsPermitted();
+    const keepErrors = errorsPermitted();
+    const kept = pendingOperations.filter((operation) =>
+      isPostHogErrorEvent(operation.event) ? keepErrors : keepEvents,
+    );
+    pendingOperations.length = 0;
+    pendingOperations.push(...kept);
+    if (!keepErrors) pendingExceptions.length = 0;
   };
   disposePostHog = dispose;
   try {
@@ -236,12 +270,8 @@ async function initializePostHogClient(
       revision++;
       flags = next;
       waitingForFlags = false;
-      if (next.captureEnabled !== true) {
-        posthogOperations.discardAcquisitionStarts();
-        pendingEvaluations.clear();
-        pendingOperations.length = 0;
-        pendingExceptions.length = 0;
-      }
+      discardRefusedPending();
+      if (eventsPermitted() || errorsPermitted()) releaseIdentityWait?.();
       safelyInvoke(() => {
         controller?.update(next);
         screenTracker?.setCaptureEnabled(
@@ -258,12 +288,17 @@ async function initializePostHogClient(
       // Remain closed; a later authoritative push can recover capture.
     }
     waitingForFlags = false;
-    if (flags?.captureEnabled !== true) {
-      posthogOperations.discardAcquisitionStarts();
-      pendingEvaluations.clear();
-      pendingOperations.length = 0;
-      pendingExceptions.length = 0;
+    discardRefusedPending();
+    // Asking the host for the identity creates `posthog-context.json`, so
+    // wait while both categories are closed; a later push or dispose ends it.
+    if (!disposed && !eventsPermitted() && !errorsPermitted()) {
+      await new Promise<void>((resolve) => {
+        releaseIdentityWait = resolve;
+      });
+      releaseIdentityWait = undefined;
     }
+    if (disposed)
+      return { enabled: false, provider: 'posthog', reason: 'disabled' };
     // The host owns this provider-specific UUID. Neither the SDK's own random
     // identity nor the account identity may be used as a fallback.
     const [module, anonymousId] = await Promise.all([
@@ -337,6 +372,9 @@ async function initializePostHogClient(
           const envelope = { ...event };
           delete envelope.$set;
           delete envelope.$set_once;
+          // The account domain and person profile follow Usage analytics,
+          // not Error reports, as they do in main.
+          const domain = eventsPermitted() ? account?.domain : undefined;
           return (
             session?.filter(
               sanitizePostHogEvent(
@@ -346,9 +384,9 @@ async function initializePostHogClient(
                     ...properties,
                     surface: options.surface,
                     $is_identified: false,
-                    $process_person_profile: account?.domain !== undefined,
-                    ...(account?.domain !== undefined && {
-                      email_domain: account.domain,
+                    $process_person_profile: domain !== undefined,
+                    ...(domain !== undefined && {
+                      email_domain: domain,
                     }),
                   },
                 },
@@ -572,12 +610,79 @@ export function getClientAppErrorHandler(): AppErrorHandler {
   return appErrorHandler;
 }
 
+type ClientAppErrorResolver = (value: unknown) => AppError | undefined;
+
+let appErrorResolverRegistration: {
+  readonly resolver: ClientAppErrorResolver;
+} | null = null;
+
+/**
+ * Lets the host swap a caught value for the shape its origin already built, so
+ * a failure another process recorded is not recorded again. The returned
+ * uninstaller only removes its own registration, so a stale one cannot remove a
+ * newer install.
+ */
+export function setClientAppErrorResolver(
+  resolver: ClientAppErrorResolver,
+): () => void {
+  const own = { resolver };
+  appErrorResolverRegistration = own;
+  return (): void => {
+    if (appErrorResolverRegistration === own)
+      appErrorResolverRegistration = null;
+  };
+}
+
+const MAX_VIEWED_APP_ERROR_REFERENCES = 128;
+const viewedAppErrorReferences = new Set<string>();
+
+/**
+ * `recordedBy` keeps this renderer from recording a second failure, which would
+ * also lose its link to this session's replay. This marker keeps the link.
+ */
+function linkRecordedAppErrorToSession(error: AppError): void {
+  if (
+    error.recordedBy === undefined ||
+    !reportPostHogAppError ||
+    viewedAppErrorReferences.has(error.referenceId)
+  )
+    return;
+  if (viewedAppErrorReferences.size >= MAX_VIEWED_APP_ERROR_REFERENCES) {
+    const oldest = viewedAppErrorReferences.values().next();
+    if (!oldest.done) viewedAppErrorReferences.delete(oldest.value);
+  }
+  viewedAppErrorReferences.add(error.referenceId);
+  reportPostHogAppError({
+    event: APP_ERROR_VIEW_POSTHOG_EVENT,
+    properties: buildAppErrorViewPostHogProperties(
+      error,
+      getDesktopInstrumentationConfig().appVersion ?? 'unknown',
+    ),
+  });
+}
+
+/** Never throws: a failed lookup keeps the caught value. */
+export function resolveClientAppError(value: unknown): unknown {
+  try {
+    const resolved = appErrorResolverRegistration?.resolver(value);
+    if (!resolved) return value;
+    safelyInvoke(() => linkRecordedAppErrorToSession(resolved));
+    return resolved;
+  } catch {
+    // The caught value still reaches the existing classification.
+    return value;
+  }
+}
+
 export function reportClientAppError(
   value: unknown,
   options?: AppErrorReportOptions,
 ): AppErrorReport | undefined {
   try {
-    return getClientAppErrorHandler().report(value, options);
+    return getClientAppErrorHandler().report(
+      resolveClientAppError(value),
+      options,
+    );
   } catch (error) {
     // Recovery must survive unavailable configuration, clocks or randomness.
     // Do not recursively report a failure of the reporting infrastructure.
@@ -595,4 +700,5 @@ export function readClientErrorTelemetry(): FeedbackReportTelemetry {
 export function disposeClientAppErrorHandler(): void {
   appErrorHandler?.dispose();
   appErrorHandler = undefined;
+  viewedAppErrorReferences.clear();
 }

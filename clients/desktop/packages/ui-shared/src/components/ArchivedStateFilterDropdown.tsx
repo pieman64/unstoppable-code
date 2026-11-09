@@ -1,5 +1,6 @@
 'use client';
 
+import { Dot } from './Badge';
 import { useCallback, useMemo, useRef, useState, type JSX } from 'react';
 import { ArchiveIcon, FilterIcon, TrashIcon } from '../icons/AppIcons';
 import {
@@ -11,7 +12,6 @@ import {
   PickerMenuOptionLeading,
 } from './PickerMenu';
 import { RailIconButton } from './RailIconButton';
-import { SIDEBAR_INDICATOR_BLUE } from '../lib/operational-status-colors';
 import {
   getArchivedContainerStateLabel,
   type ArchivedContainerState,
@@ -84,10 +84,10 @@ export function ArchivedStateFilterDropdown({
         hoverSurface
       />
       {isActive && (
-        <span
-          aria-hidden="true"
+        <Dot
+          tone="filter"
           data-testid={`${testIdPrefix}-active-dot`}
-          className={`pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full ${SIDEBAR_INDICATOR_BLUE.background}`}
+          className="pointer-events-none absolute right-0.5 top-0.5"
         />
       )}
 

@@ -194,6 +194,7 @@ export function createDaemonGitRoute(
       const selected: WorkerGitBranchListParams = {
         repository: params.repository,
         scope,
+        ...(params.includeHeadState ? { includeHeadState: true } : {}),
       };
       const now = Date.now();
       const owner = options.lifetime.ownerFor(request.sender);

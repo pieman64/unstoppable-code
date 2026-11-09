@@ -72,82 +72,89 @@ export function McpWorkspaceDefaultsSection({
   };
   return (
     <section
-      className="flex flex-col gap-2"
+      className="grid grid-cols-[9rem_minmax(0,1fr)] items-start gap-x-4"
       aria-label={`${WORKSPACE_LABEL} defaults`}
       data-testid={testId}
     >
-      <p className="text-s" data-testid={`${testId}-status`}>
-        {loading ? (
-          <span className="fg-secondary">
-            {`Checking ${WORKSPACE_LABEL_PLURAL.toLowerCase()}…`}
-          </span>
-        ) : inNoProject ? (
-          <>
-            <span className="font-medium fg-primary">
-              {mcpWorkspaceDefaultsStatus([])}
-            </span>{' '}
-            <span className="fg-tertiary">{MCP_WORKSPACE_DEFAULTS_HINT}</span>
-          </>
-        ) : enabledNames.length > 0 ? (
-          // Names user-authored projects, so session replay masks it.
-          <span className={`${REPLAY_MASK_CLASS} font-medium fg-primary`}>
-            {mcpWorkspaceDefaultsStatus(enabledNames)}
-          </span>
-        ) : null}
-      </p>
-      <div className="flex flex-wrap items-center gap-2">
-        {workspaces.length > 1 && (
-          <SettingsSelect
-            aria-label={WORKSPACE_LABEL}
-            value={target.id}
-            width="fit"
-            disabled={pending !== null}
-            onValueChange={(value): void => {
-              setTargetId(value);
-              setError(null);
-            }}
-            // Project names are user-authored: session replay masks them.
-            replayPrivacy={{ maskClassName: REPLAY_MASK_CLASS }}
-            data-testid={`${testId}-select`}
-            options={workspaces.map((workspace) => ({
-              value: workspace.id,
-              label: workspace.name,
-            }))}
-          />
-        )}
-        {target.enabled === true ? (
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={pending !== null}
-            aria-label={`Remove from ${target.name}`}
-            onClick={(): void => void run('remove')}
-            data-testid={`${testId}-remove`}
-          >
-            {pending === 'remove' ? 'Removing…' : 'Remove'}
-          </Button>
-        ) : (
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={pending !== null || loading}
-            onClick={(): void => void run('add')}
-            data-testid={`${testId}-add`}
-          >
-            {pending === 'add' ? (
-              'Adding…'
-            ) : target.name.trim() ? (
-              <>
-                Add to{' '}
-                <span className={REPLAY_MASK_CLASS}>{target.name.trim()}</span>
-              </>
-            ) : (
-              workspaceDefaultMcpLabel()
-            )}
-          </Button>
-        )}
+      <span className="flex min-h-7 items-center text-s fg-secondary">
+        {WORKSPACE_LABEL_PLURAL}
+      </span>
+      <div className="flex min-w-0 flex-col gap-2 pt-1">
+        <p className="text-s" data-testid={`${testId}-status`}>
+          {loading ? (
+            <span className="fg-secondary">
+              {`Checking ${WORKSPACE_LABEL_PLURAL.toLowerCase()}…`}
+            </span>
+          ) : inNoProject ? (
+            <>
+              <span className="font-medium fg-primary">
+                {mcpWorkspaceDefaultsStatus([])}
+              </span>{' '}
+              <span className="fg-tertiary">{MCP_WORKSPACE_DEFAULTS_HINT}</span>
+            </>
+          ) : enabledNames.length > 0 ? (
+            // Names user-authored projects, so session replay masks it.
+            <span className={`${REPLAY_MASK_CLASS} font-medium fg-primary`}>
+              {mcpWorkspaceDefaultsStatus(enabledNames)}
+            </span>
+          ) : null}
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {workspaces.length > 1 && (
+            <SettingsSelect
+              aria-label={WORKSPACE_LABEL}
+              value={target.id}
+              width="fit"
+              disabled={pending !== null}
+              onValueChange={(value): void => {
+                setTargetId(value);
+                setError(null);
+              }}
+              // Project names are user-authored: session replay masks them.
+              replayPrivacy={{ maskClassName: REPLAY_MASK_CLASS }}
+              data-testid={`${testId}-select`}
+              options={workspaces.map((workspace) => ({
+                value: workspace.id,
+                label: workspace.name,
+              }))}
+            />
+          )}
+          {target.enabled === true ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={pending !== null}
+              aria-label={`Remove from ${target.name}`}
+              onClick={(): void => void run('remove')}
+              data-testid={`${testId}-remove`}
+            >
+              {pending === 'remove' ? 'Removing…' : 'Remove'}
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={pending !== null || loading}
+              onClick={(): void => void run('add')}
+              data-testid={`${testId}-add`}
+            >
+              {pending === 'add' ? (
+                'Adding…'
+              ) : target.name.trim() ? (
+                <>
+                  Add to{' '}
+                  <span className={REPLAY_MASK_CLASS}>
+                    {target.name.trim()}
+                  </span>
+                </>
+              ) : (
+                workspaceDefaultMcpLabel()
+              )}
+            </Button>
+          )}
+        </div>
+        <ErrorBanner className="" error={error} testId={`${testId}-error`} />
       </div>
-      <ErrorBanner className="" error={error} testId={`${testId}-error`} />
     </section>
   );
 }

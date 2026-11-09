@@ -1,5 +1,5 @@
 import { isPlanFileWrite } from '@canopy/agent-transcript/lib/plan-tool-input';
-import { isHistoricalDelegateWatchToolName } from './canopy-injected-tools';
+import { isHistoricalDelegateWatchToolName } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { ApprovalSafetyDeniedInfo } from '@canopy/protocol/approvals';
 import type { TurnSummaryCounts } from '@canopy/agent-transcript/transcript-storage';
 
@@ -21,6 +21,7 @@ import type {
   ChatWatcherFiredInfo,
   CodexAgentState,
   AccountProxySwitchBlock,
+  ClaudeModsSkippedBlock,
   CompactionInfoBlock,
   ClaudeTerminalSyncWarningBlock,
   FileReference,
@@ -36,7 +37,7 @@ import {
   getCanonicalCanopyToolKey,
   isCanopyImmediateTurnRestartToolName,
   isManagedDelegationAppToolKey,
-} from './canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { getCanonicalPipelineEditorToolKey } from './pipeline-editor-tools';
 
 const LEGACY_TOOL_NAMESPACE = ['cano', 'py'].join('');
@@ -135,6 +136,7 @@ export type TurnBlock =
   | ClaudeTerminalSyncWarningBlock
   // Where the account proxy moved the chat to another account (CAN-4021).
   | AccountProxySwitchBlock
+  | ClaudeModsSkippedBlock
   | {
       type: 'rebase_resolution_info';
       kind: 'rebase_conflict' | 'stash_pop_conflict';
@@ -986,14 +988,16 @@ export function computeTurnSummary(
 
 /**
  * A host notice that stays beside the final answer when a turn collapses: a
- * system text message, or the line where the account proxy moved the chat to
- * another account.
+ * system text message, an account proxy switch, or skipped Claude Mods.
  */
 function isSystemTextMessage(message: TurnMessage): boolean {
   return (
     message.role === 'system' &&
     message.blocks.some(
-      (block) => block.type === 'text' || block.type === 'account_proxy_switch',
+      (block) =>
+        block.type === 'text' ||
+        block.type === 'account_proxy_switch' ||
+        block.type === 'claude_mods_skipped',
     )
   );
 }

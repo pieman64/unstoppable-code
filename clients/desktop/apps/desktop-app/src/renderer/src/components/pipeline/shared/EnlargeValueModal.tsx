@@ -7,7 +7,7 @@ import {
   type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
 import { DialogModal } from '../../shared/DialogModal';
-import type { PipelineScalar } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineScalar } from '@canopy/execution-engine/types/pipeline';
 
 type ValueType = 'string' | 'number' | 'boolean';
 

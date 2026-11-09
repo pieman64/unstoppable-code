@@ -7,8 +7,10 @@
  * overlay slot. Wiring only: the list is the shared display component, and
  * every row action runs through the same store paths as the sidebar.
  */
+import { Count } from '@canopy/ui-shared/components/Badge';
 import { useEffect, type JSX } from 'react';
 import {
+  Surface,
   HeaderActionButton,
   SharedContainerPastSharesList,
 } from '@canopy/ui-shared/components';
@@ -52,7 +54,12 @@ export function SharedContainerPastSharesPage({
   const totalCount = acceptedEntries.length + removedEntries.length;
 
   return (
-    <div data-testid={TEST_ID} className="flex h-full min-h-0 flex-col bg-base">
+    <Surface
+      data-testid={TEST_ID}
+      variant="pane"
+      extent="parent"
+      className="flex min-h-0 flex-col"
+    >
       {/* Sized by its header row and kept out of the window drag region, like
           the "Archived and deleted" overview this page shares a slot with. */}
       <PageTitlebar
@@ -79,9 +86,9 @@ export function SharedContainerPastSharesPage({
           </span>
           <span
             data-testid={`${TEST_ID}-count`}
-            className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary"
+            className="text-xs fg-secondary"
           >
-            {totalCount} {totalCount === 1 ? 'share' : 'shares'}
+            <Count value={totalCount} /> {totalCount === 1 ? 'share' : 'shares'}
           </span>
         </div>
       </PageTitlebar>
@@ -133,6 +140,6 @@ export function SharedContainerPastSharesPage({
           );
         }}
       />
-    </div>
+    </Surface>
   );
 }

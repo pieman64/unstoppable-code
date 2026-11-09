@@ -85,6 +85,8 @@ export const CoreWorkspaceSchema = z
     workspaceId: id,
     name: z.string().min(1),
     kind: z.enum(['git', 'cowork']),
+    /** Owning organization; null is Personal. Absent when the authority does not scope by organization. */
+    ownerOrganizationId: id.nullable().optional(),
     revision: z.number().int().nonnegative().optional(),
     createdAt: timestamp.optional(),
     updatedAt: timestamp.optional(),

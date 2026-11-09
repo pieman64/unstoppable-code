@@ -11,14 +11,28 @@ export interface PrepareBranchFromWorktreeOptions {
   uncommittedChanges?: 'prompt' | 'leave-in-source';
 }
 
-async function showStatusUnavailableToast(): Promise<void> {
-  const { useGitHubStore } = await import('@/stores/githubStore');
-  useGitHubStore
+/**
+ * Refreshes the source worktree's status. When that fails, says so under its
+ * top bar, where branching started, unless a git action started meanwhile.
+ */
+async function refreshSourceStatus(
+  projectId: string,
+  worktreeId: string,
+  showFailure: boolean,
+): Promise<boolean> {
+  // Load lazily: see the commit below.
+  const { gitActionFailureRaiser } = await import('@/stores/githubStore');
+  const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
+  const refreshed = await useProjectsStore
     .getState()
-    .addToast(
-      'Unable to verify the source worktree status. Try branching again.',
-      'error',
-    );
+    .refreshWorktreeDiffStatsVerified(projectId, worktreeId);
+  if (!refreshed && showFailure) {
+    raiseFailure({
+      error:
+        "Couldn't verify the source worktree's status. Try branching again.",
+    });
+  }
+  return refreshed;
 }
 
 /**
@@ -31,15 +45,12 @@ export async function prepareBranchFromWorktree(
   options: PrepareBranchFromWorktreeOptions = {},
 ): Promise<BranchFromWorktreePreparation> {
   const key = createDiffStatsKey(projectId, worktreeId);
-  const refreshed = await useProjectsStore
-    .getState()
-    .refreshWorktreeDiffStatsVerified(projectId, worktreeId);
-  if (!refreshed) {
-    if (options.uncommittedChanges !== 'leave-in-source') {
-      await showStatusUnavailableToast();
-    }
-    return { status: 'failed', retryable: true };
-  }
+  const refreshed = await refreshSourceStatus(
+    projectId,
+    worktreeId,
+    options.uncommittedChanges !== 'leave-in-source',
+  );
+  if (!refreshed) return { status: 'failed', retryable: true };
   if (useProjectsStore.getState().uncommittedChanges[key] !== true) {
     return { status: 'ready' };
   }
@@ -73,13 +84,12 @@ export async function prepareBranchFromWorktree(
   // commitOnly resolves for cancellation and handled failures too. Re-read
   // local Git state so branching proceeds only when every source repo is now
   // clean.
-  const refreshedAfterCommit = await useProjectsStore
-    .getState()
-    .refreshWorktreeDiffStatsVerified(projectId, worktreeId);
-  if (!refreshedAfterCommit) {
-    await showStatusUnavailableToast();
-    return { status: 'failed', retryable: true };
-  }
+  const refreshedAfterCommit = await refreshSourceStatus(
+    projectId,
+    worktreeId,
+    true,
+  );
+  if (!refreshedAfterCommit) return { status: 'failed', retryable: true };
   return useProjectsStore.getState().uncommittedChanges[key] !== true
     ? { status: 'ready' }
     : { status: 'failed', retryable: true };

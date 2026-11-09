@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 import { getSecureStorageNotice } from '@/lib/secureStorageNotice';
 

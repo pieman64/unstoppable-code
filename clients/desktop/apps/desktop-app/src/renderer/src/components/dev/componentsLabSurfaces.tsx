@@ -7,6 +7,7 @@ import {
   Stack,
   Surface,
   type SurfaceBoundary,
+  type SurfaceExtent,
   type SurfacePadding,
   type SurfaceVariant,
 } from '@canopy/ui-shared/components';
@@ -38,7 +39,9 @@ const BOUNDARIES: readonly SurfaceBoundary[] = [
   'top',
   'bottom',
   'start',
+  'left',
   'end',
+  'right',
   'block',
   'frame',
 ];
@@ -230,6 +233,36 @@ export function SurfacesSpecimen(): JSX.Element {
               </Button>
             </Surface>
           </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
+
+      <SpecimenPanel title="Pane fills and extent">
+        <SpecimenGrid min={180}>
+          {(['pane', 'panel', 'rail', 'well'] as const).map((variant) => (
+            <SpecimenCell key={variant} label={variant}>
+              <div className="h-24 w-full overflow-hidden">
+                <Surface variant={variant} extent="parent" padding="compact">
+                  <Sample title="Full-height region" />
+                </Surface>
+              </div>
+            </SpecimenCell>
+          ))}
+          {(
+            ['content', 'parent', 'viewport'] satisfies readonly SurfaceExtent[]
+          ).map((extent) => (
+            <SpecimenCell
+              key={extent}
+              label={
+                extent === 'viewport' ? 'viewport (clipped preview)' : extent
+              }
+            >
+              <div className="h-24 w-full overflow-hidden">
+                <Surface variant="panel" extent={extent} padding="compact">
+                  <Sample title="Pane extent" />
+                </Surface>
+              </div>
+            </SpecimenCell>
+          ))}
         </SpecimenGrid>
       </SpecimenPanel>
       <SpecimenPanel title="Pane boundaries, including the selected frame">

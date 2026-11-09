@@ -3,6 +3,7 @@
 import { EventEmitter } from 'node:events';
 import {
   WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
+  WORKER_PIPELINE_STREAM_DEFINITIONS,
   type CanopyErrorPayload,
   type CanopyHostExecution,
   type WorkerPipelineExecution,
@@ -487,6 +488,280 @@ describe('PipelineHostSupervisor', () => {
     await expect(started).rejects.toMatchObject({
       payload: { code: 'worker.pipeline.hostLost' },
     });
+    await dispatcher.shutdown();
+  });
+
+  // CAN-5868: a step can notify before main's stream follows the run.
+  it('a notification sent before any stream opens reaches the first stream, even after the run ended', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    host.reply(host.last('start').id, projection('running'));
+    await result;
+    host.send({
+      kind: 'notification',
+      executionId: 'run',
+      stepId: 'notify',
+      title: 'Daemon run',
+      body: 'It finished.',
+    });
+    host.send({
+      kind: 'execution',
+      executionId: 'run',
+      event: 'execution.completed',
+      execution: projection('success'),
+    });
+    await settle();
+    const handlers = createWorkerPipelineHandlers(h.supervisor, {
+      secrets: refusingExecutionSecretSource,
+    });
+    const open = async (): Promise<{
+      items: WorkerPipelineExecutionEventsItem[];
+      ends: string[];
+    }> => {
+      const items: WorkerPipelineExecutionEventsItem[] = [];
+      const ends: string[] = [];
+      const opened = handlers.streams['worker.pipeline.execution.events'](
+        { executionId: 'run' },
+        {
+          requestId: 'events',
+          caller: {
+            principalId: 'client',
+            clientInstanceId: 'client',
+            authorityId: 'authority',
+            interfaceKind: 'daemon',
+            grants: ['worker.pipeline.read'],
+          },
+          metadata: {},
+          signal: new AbortController().signal,
+        },
+        {
+          emit: (item) => {
+            items.push(item);
+            return { daemonEpoch: 'e', sequence: items.length };
+          },
+          end: (outcome) => {
+            ends.push(outcome);
+          },
+        },
+      );
+      await settle();
+      host.reply(host.last('get').id, projection('success'));
+      await opened;
+      return { items, ends };
+    };
+    const first = await open();
+    expect(first.items.map((item) => item.kind)).toEqual([
+      'notification',
+      'execution',
+    ]);
+    expect(first.items[0]).toEqual({
+      kind: 'notification',
+      stepId: 'notify',
+      title: 'Daemon run',
+      body: 'It finished.',
+    });
+    expect(first.ends).toEqual(['completed']);
+    // A later stream does not show it again.
+    const second = await open();
+    expect(second.items.map((item) => item.kind)).toEqual(['execution']);
+  });
+
+  // CAN-5868 review fix: a stream cancelled during its snapshot leaves them.
+  it('a stream cancelled before its snapshot leaves the kept notifications for the next one', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    host.reply(host.last('start').id, projection('running'));
+    await result;
+    host.send({
+      kind: 'notification',
+      executionId: 'run',
+      stepId: 'notify',
+      title: 'Daemon run',
+      body: 'It finished.',
+    });
+    await settle();
+    const handlers = createWorkerPipelineHandlers(h.supervisor, {
+      secrets: refusingExecutionSecretSource,
+    });
+    const open = (
+      signal: AbortSignal,
+    ): {
+      items: WorkerPipelineExecutionEventsItem[];
+      opened: Promise<unknown>;
+    } => {
+      const items: WorkerPipelineExecutionEventsItem[] = [];
+      const opened = handlers.streams['worker.pipeline.execution.events'](
+        { executionId: 'run' },
+        {
+          requestId: 'events',
+          caller: {
+            principalId: 'client',
+            clientInstanceId: 'client',
+            authorityId: 'authority',
+            interfaceKind: 'daemon',
+            grants: ['worker.pipeline.read'],
+          },
+          metadata: {},
+          signal,
+        },
+        {
+          emit: (item) => {
+            if (signal.aborted) return null;
+            items.push(item);
+            return { daemonEpoch: 'e', sequence: items.length };
+          },
+          end: () => undefined,
+        },
+      );
+      return { items, opened };
+    };
+    const cancelled = new AbortController();
+    const first = open(cancelled.signal);
+    await settle();
+    cancelled.abort();
+    host.reply(host.last('get').id, projection('running'));
+    await first.opened;
+    const second = open(new AbortController().signal);
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await second.opened;
+    expect(second.items.map((item) => item.kind)).toEqual([
+      'notification',
+      'execution',
+    ]);
+  });
+
+  // CAN-5868 review fix: a stream aborted while it is still being set up.
+  it('a notification an aborted stream could not take is kept for the next one', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    host.reply(host.last('start').id, projection('running'));
+    await result;
+    const handlers = createWorkerPipelineHandlers(h.supervisor, {
+      secrets: refusingExecutionSecretSource,
+    });
+    const open = (
+      signal: AbortSignal,
+    ): {
+      items: WorkerPipelineExecutionEventsItem[];
+      opened: Promise<unknown>;
+    } => {
+      const items: WorkerPipelineExecutionEventsItem[] = [];
+      const opened = handlers.streams['worker.pipeline.execution.events'](
+        { executionId: 'run' },
+        {
+          requestId: 'events',
+          caller: {
+            principalId: 'client',
+            clientInstanceId: 'client',
+            authorityId: 'authority',
+            interfaceKind: 'daemon',
+            grants: ['worker.pipeline.read'],
+          },
+          metadata: {},
+          signal,
+        },
+        {
+          emit: (item) => {
+            if (signal.aborted) return null;
+            items.push(item);
+            return { daemonEpoch: 'e', sequence: items.length };
+          },
+          end: () => undefined,
+        },
+      );
+      return { items, opened };
+    };
+    const aborted = new AbortController();
+    const first = open(aborted.signal);
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await settle();
+    // Its observer is registered and its second snapshot is pending.
+    aborted.abort();
+    host.send({
+      kind: 'notification',
+      executionId: 'run',
+      stepId: 'notify',
+      title: 'Daemon run',
+      body: 'It finished.',
+    });
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await first.opened;
+    const second = open(new AbortController().signal);
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await second.opened;
+    expect(second.items.map((item) => item.kind)).toEqual([
+      'notification',
+      'execution',
+    ]);
+  });
+
+  // CAN-5856: a stream whose snapshot `get` is in flight when its host exits.
+  it('an events stream opened while its host exits ends with hostLost', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    host.reply(host.last('start').id, projection('running'));
+    await result;
+    const handlers = createWorkerPipelineHandlers(h.supervisor, {
+      secrets: refusingExecutionSecretSource,
+    });
+    const dispatcher = createCanopyDispatcher({
+      profile: 'worker',
+      definitions: {
+        queries: {},
+        instructions: {},
+        streams: {
+          'worker.pipeline.execution.events':
+            WORKER_PIPELINE_STREAM_DEFINITIONS[
+              'worker.pipeline.execution.events'
+            ],
+        },
+      },
+      handlers: {
+        queries: {},
+        instructions: {},
+        streams: {
+          'worker.pipeline.execution.events':
+            handlers.streams['worker.pipeline.execution.events'],
+        },
+      },
+    });
+    const stream = await dispatcher.openStream(
+      'worker.pipeline.execution.events',
+      { executionId: 'run' },
+      {
+        caller: {
+          principalId: 'client',
+          clientInstanceId: 'client',
+          authorityId: 'authority',
+          interfaceKind: 'daemon',
+          grants: ['worker.pipeline.read'],
+        },
+        metadata: {},
+      },
+    );
+    const frames: Array<{
+      kind: string;
+      outcome?: string;
+      error?: CanopyErrorPayload | null;
+    }> = [];
+    stream.onFrame((frame) => {
+      frames.push(frame);
+    });
+    await settle();
+    expect(host.last('get')).toBeDefined();
+    host.exit(1);
+    await settle();
+    expect(frames.map((frame) => frame.kind)).toEqual(['end']);
+    expect(frames[0].outcome).toBe('error');
+    expect(frames[0].error?.code).toBe('worker.pipeline.hostLost');
     await dispatcher.shutdown();
   });
 });

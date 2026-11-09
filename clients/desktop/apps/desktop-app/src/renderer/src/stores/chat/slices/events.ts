@@ -44,19 +44,14 @@ import {
 } from '../activity-dispatch';
 import { scheduleStreamingVerification } from '../persistence';
 import {
-  deferLegacyAutoArchiveUntilDelegatesFinish,
   isScopeRevisionedLive,
   persistUnreadWhenScopeLive,
-  recordCanonicalTerminalPresentation,
 } from './revisioned';
-import { chatHasLiveDelegates } from '../../delegationActivityStore';
 import {
   showCompletionNotice,
   takeCompletionNotice,
 } from '../held-completion-notices';
 import {
-  chatProviderBlocksClose,
-  isWorktreeLiveTasksHydrated,
   selectChildToolLiveness,
   useLiveBackgroundTaskStore,
 } from '../../liveBackgroundTaskStore';
@@ -770,7 +765,9 @@ export const createEventsSlice: StateCreator<
       return;
     }
 
+    // A late failure for a closed chat has no tab left to clear it.
     if (
+      currentTabForTurnEvent &&
       data.type === 'error' &&
       data.error_code === OLLAMA_SERVER_UNAVAILABLE_ERROR_CODE &&
       data.provider === 'ollama'
@@ -1032,40 +1029,6 @@ export const createEventsSlice: StateCreator<
         useProjectsStore
           .getState()
           .fastRefreshWorktreeDiffStats(event.projectId, event.worktreeId);
-      }
-      const terminalChatState = get().worktreeChats[key];
-      const terminalTab = terminalChatState?.tabs.find(
-        (tab) => tab.id === chatId,
-      );
-      if (revisionedScopeKnown && terminalTab?.autoArchive === true) {
-        const isAppAdvisorTarget = isAppAdvisorChatTarget(
-          event.projectId,
-          event.worktreeId,
-        );
-        const activeChatHidden = get().hiddenChatTabIds.has(chatId);
-        const planExploreActiveChatVisible =
-          !isAppAdvisorTarget &&
-          isVisiblePlanExploreChat(event.projectId, event.worktreeId) &&
-          terminalChatState?.activeTabId === chatId &&
-          !activeChatHidden;
-        const codeReviewActiveChatVisible =
-          !isAppAdvisorTarget &&
-          isVisibleCodeReviewChat(event.projectId, event.worktreeId) &&
-          terminalChatState?.activeTabId === chatId &&
-          !activeChatHidden;
-        const completedOffscreen = isAppAdvisorTarget
-          ? !isAppAdvisorWindowFocused()
-          : !planExploreActiveChatVisible &&
-            !codeReviewActiveChatVisible &&
-            (terminalChatState?.activeTabId !== chatId ||
-              activeChatHidden ||
-              key !== getVisibleWorktreeKey(get().selectedWorktree));
-        recordCanonicalTerminalPresentation(
-          event.projectId,
-          event.worktreeId,
-          chatId,
-          terminalTab.unread === true || completedOffscreen,
-        );
       }
       return;
     }
@@ -1617,50 +1580,8 @@ export const createEventsSlice: StateCreator<
     // referenced file paths can be matched against detection rules. Additive;
     // dedup inside scanDetectedPlans makes repeated calls safe.
     const isCompletedResult = isCompletedPresentationBoundary;
-    const shouldAutoArchiveCompletedResult =
-      isCompletedResult &&
-      updatedTab?.autoArchive === true &&
-      updatedTab.status !== 'streaming' &&
-      updatedTab.queuedMessages.length === 0 &&
-      !updatedTab.pendingPlanExit;
-    if (revisionedScopeKnown && isCompletedResult) {
-      recordCanonicalTerminalPresentation(
-        event.projectId,
-        event.worktreeId,
-        chatId,
-        updatedTab?.unread === true,
-      );
-    }
     if (isCompletedResult && updatedTab) {
       triggerPlanDetectionScan(updatedTab, event.projectId, event.worktreeId);
-    }
-
-    // Auto-archive: a chat marked `autoArchive` is archived as soon as its turn
-    // truly finishes, but only once it is idle with nothing queued so a
-    // pending follow-up turn is not stranded. `unread` is inherited from the
-    // unread state computed above (set when the chat finished off-screen), so
-    // an unseen result archives as unread.
-    if (!revisionedScopeKnown && shouldAutoArchiveCompletedResult) {
-      // Delegates keep priority; provider agents and workflows use the same
-      // deferral. Unknown worktree task state also waits for its first snapshot.
-      if (
-        chatHasLiveDelegates(event.projectId, event.worktreeId, chatId) ||
-        !isWorktreeLiveTasksHydrated(event.projectId, event.worktreeId) ||
-        chatProviderBlocksClose(event.projectId, event.worktreeId, chatId)
-      ) {
-        deferLegacyAutoArchiveUntilDelegatesFinish(
-          event.projectId,
-          event.worktreeId,
-          chatId,
-        );
-      } else {
-        void get().autoArchiveChatTab(
-          event.projectId,
-          event.worktreeId,
-          chatId,
-          updatedTab?.unread === true,
-        );
-      }
     }
 
     // Detect stale session resume: the SDK tried to resume an expired session

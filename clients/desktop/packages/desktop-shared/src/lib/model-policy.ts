@@ -1,7 +1,7 @@
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import type { CanopyCloudAccountPublicState } from '../types';
-import { resolveOrgGatewayOrganizationId } from './gateway-model-availability';
-import { normalizeUuid } from './workspace-owner';
+import { resolveOrgGatewayOrganizationId } from '@canopy/execution-engine/lib/gateway-model-availability';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import {
   getGatewayModelEntry,
   getCursorModelPolicyIdentity,

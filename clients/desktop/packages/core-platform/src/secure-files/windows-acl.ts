@@ -1,5 +1,7 @@
-import { execFile } from 'node:child_process';
-import { lstat } from 'node:fs/promises';
+import { execFile, execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { lstat, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { observeWindowsClosure } from '../supervision/windows-closure';
@@ -39,41 +41,80 @@ const ACL_SCRIPT = [
   `'{"user":' + (q ([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) + ',"owner":' + (q $(if ($null -ne $sd.Owner) { $sd.Owner.Value } else { $null })) + ',"reparse":' + (b (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) + ',"directory":' + (b $directory) + ',"dacl":' + (b ($null -ne $sd.DiscretionaryAcl)) + ',"aces":[' + ($aces -join ',') + ']}'`,
 ].join('\n');
 
-// Inherited PowerShell 7 module paths break 5.1's Get-Acl autoload. Pinning the
-// admin-owned System32 module dir also keeps resolution off user-writable paths.
+// -NoProfile still permits PowerShell startup caches. Confine those to a
+// disposable child profile without changing the parent's paths or token user.
 export function windowsAclEnvironment(
   env: NodeJS.ProcessEnv,
   systemRoot: string,
   target: string,
+  profile: string,
 ): NodeJS.ProcessEnv {
   const inherited = Object.entries(env).filter(
-    ([key]) => !/^psmodulepath$/i.test(key),
+    ([key]) =>
+      !/^(psmodulepath|psmoduleanalysiscachepath|home|userprofile|appdata|localappdata)$/i.test(
+        key,
+      ),
   );
   return {
     ...Object.fromEntries(inherited),
+    HOME: profile,
+    USERPROFILE: profile,
+    APPDATA: path.win32.join(profile, 'AppData', 'Roaming'),
+    LOCALAPPDATA: path.win32.join(profile, 'AppData', 'Local'),
     PSModulePath: path.win32.join(systemRoot, 'System32', MODULES),
+    PSModuleAnalysisCachePath: 'NUL',
     [PATH_VARIABLE]: target,
   };
 }
 
-export const readWindowsAcl: WindowsAclReader = async (target) => {
+interface WindowsAclInvocation {
+  readonly profile: string;
+  readonly file: string;
+  readonly args: string[];
+  readonly options: {
+    readonly env: NodeJS.ProcessEnv;
+    readonly encoding: 'utf8';
+    readonly maxBuffer: number;
+    readonly timeout: number;
+    readonly windowsHide: boolean;
+  };
+}
+
+function windowsAclInvocation(target: string): WindowsAclInvocation {
   const root = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? '';
   if (!/^[A-Za-z]:\\/.test(root)) throw new Error('SystemRoot is not absolute');
+  const profile = mkdtempSync(path.join(tmpdir(), 'canopy-acl-'));
+  return {
+    profile,
+    file: path.win32.join(
+      root,
+      'System32/WindowsPowerShell/v1.0/powershell.exe',
+    ),
+    args: [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      Buffer.from(ACL_SCRIPT, 'utf16le').toString('base64'),
+    ],
+    options: {
+      env: windowsAclEnvironment(process.env, root, target, profile),
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024,
+      timeout: 15_000,
+      windowsHide: true,
+    },
+  };
+}
+
+export const readWindowsAcl: WindowsAclReader = async (target) => {
+  const command = windowsAclInvocation(target);
   const closure = observeWindowsClosure('acl');
   try {
     const execution = promisify(execFile)(
-      path.win32.join(root, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
-      [
-        ...['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand'],
-        Buffer.from(ACL_SCRIPT, 'utf16le').toString('base64'),
-      ],
-      {
-        env: windowsAclEnvironment(process.env, root, target),
-        encoding: 'utf8',
-        maxBuffer: 64 * 1024,
-        timeout: 15_000,
-        windowsHide: true,
-      },
+      command.file,
+      command.args,
+      command.options,
     );
     execution.child.once('close', (code, signal) => {
       if (code !== 0 || signal !== null) closure?.unsafe();
@@ -84,8 +125,25 @@ export const readWindowsAcl: WindowsAclReader = async (target) => {
   } catch (error) {
     closure?.unsafe();
     throw error;
+  } finally {
+    await rm(command.profile, { recursive: true, force: true });
   }
 };
+
+/** Import-time startup admission uses the same bounded, read-only ACL receipt. */
+export function readWindowsAclSync(target: string): string {
+  const command = windowsAclInvocation(target);
+  const closure = observeWindowsClosure('acl');
+  try {
+    return execFileSync(command.file, command.args, command.options);
+  } catch (error) {
+    closure?.unsafe();
+    throw error;
+  } finally {
+    closure?.close();
+    rmSync(command.profile, { recursive: true, force: true });
+  }
+}
 
 // LocalSystem and BUILTIN\Administrators can take ownership of any file, so
 // their grants do not widen access. No other trustee is accepted.

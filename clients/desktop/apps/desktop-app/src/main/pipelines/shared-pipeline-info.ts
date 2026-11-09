@@ -6,7 +6,7 @@ import { buildSharedPipelineId } from '@canopy/desktop-shared/pipelines/shared-p
 import type {
   PipelineInfo,
   SharedPipelineSummary,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 /** The desktop's row for a Canopy Cloud share. */
 export function buildSharedPipelineInfo(args: {

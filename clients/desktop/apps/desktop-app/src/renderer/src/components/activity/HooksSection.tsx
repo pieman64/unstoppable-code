@@ -215,7 +215,7 @@ function HookActionDetails({
   }
 
   return (
-    <div className="mt-1 space-y-1">
+    <div className="flex flex-col gap-1">
       {items.map((item) => (
         <div
           key={item.label}
@@ -249,9 +249,9 @@ export function HookActionList({
   actions: readonly HookAction[];
 }): JSX.Element {
   return (
-    <div className="mt-1.5 space-y-2">
+    <div className="flex flex-col gap-2">
       {actions.map((action, ai) => (
-        <div key={`${ai}:${action.type}`}>
+        <div key={`${ai}:${action.type}`} className="flex flex-col gap-1">
           <pre
             className={`${action.type === 'pipeline' ? '' : POSTHOG_REPLAY_BLOCK_CLASS} max-h-16 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1 font-mono text-2xs fg-secondary`}
           >

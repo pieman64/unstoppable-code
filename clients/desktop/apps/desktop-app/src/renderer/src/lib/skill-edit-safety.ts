@@ -1,4 +1,4 @@
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { SkillFilesResponse } from '@canopy/desktop-shared/types/skills';
 
 type SupportingFilePathsResult =

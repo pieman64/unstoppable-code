@@ -9,6 +9,7 @@ import type {
   SkillRiskLevel,
 } from '@canopy/desktop-shared/types/skills';
 import { httpsGet } from '../lib/http';
+import { getEffectiveUsageDataPolicy } from '../lib/usage-data-policy';
 
 const AUDIT_URL =
   process.env.SKILL_AUDIT_URL || 'https://add-skill.vercel.sh/audit';
@@ -49,13 +50,15 @@ function highestRisk(a: SkillRiskLevel, b: SkillRiskLevel): SkillRiskLevel {
 
 /**
  * Fetch risk assessment data from the skills audit API.
- * Returns an empty object on any error (non-blocking).
+ * Returns an empty object on any error (non-blocking), and without a request
+ * when the member turned the Skill safety check off.
  */
 export async function fetchRiskAssessment(
   source: string,
   skillNames: string[],
 ): Promise<Record<string, SkillRiskInfo>> {
   if (skillNames.length === 0) return {};
+  if (!getEffectiveUsageDataPolicy().skillSafetyCheck) return {};
 
   try {
     const params = new URLSearchParams({

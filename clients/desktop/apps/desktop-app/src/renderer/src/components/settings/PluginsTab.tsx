@@ -1,12 +1,19 @@
 import { type JSX, useCallback, useEffect, useState } from 'react';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
 import { useChatStore } from '@/stores/chatStore';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import {
   DEFERRED_TOOLS_ROW_DESCRIPTORS,
   buildDeferredToolsPreferencePatch,
   type DeferredToolsPreferenceField,
 } from './pluginsTabHelpers';
-import { ErrorState, Notice, ToggleSwitch } from '@canopy/ui-shared/components';
+import { ErrorState, ToggleSwitch } from '@canopy/ui-shared/components';
 import { DesktopPluginsSettingsSection } from './hosted/DesktopPluginsSettingsSection';
 import { SkillSuggestionsSettingsSection } from './SkillSuggestionsSettingsSection';
 import {
@@ -67,7 +74,7 @@ export function DeferredToolsSettings({
 export function PluginsTab(): JSX.Element {
   const [preferences, setPreferences] = useState<PreferencesData | null>(null);
   const [loadError, setLoadError] = useState(false);
-  const [saveError, setSaveError] = useState(false);
+  const [saveError, setSaveError] = useState<InlineFailure | null>(null);
 
   const loadPreferences = useCallback((): void => {
     setLoadError(false);
@@ -77,7 +84,8 @@ export function PluginsTab(): JSX.Element {
         setPreferences(loaded);
         setLoadError(false);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        reportClientAppError(error);
         setPreferences(null);
         setLoadError(true);
       });
@@ -102,7 +110,7 @@ export function PluginsTab(): JSX.Element {
       const previous = preferences;
       const optimistic = { ...preferences, [field]: enabled };
       setPreferences(optimistic);
-      setSaveError(false);
+      setSaveError(null);
       useChatStore.getState().applyDeferredToolsDefaults(optimistic);
       void window.api
         .savePreferences(buildDeferredToolsPreferencePatch(field, enabled))
@@ -110,10 +118,14 @@ export function PluginsTab(): JSX.Element {
           setPreferences(saved);
           useChatStore.getState().applyDeferredToolsDefaults(saved);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           setPreferences(previous);
           useChatStore.getState().applyDeferredToolsDefaults(previous);
-          setSaveError(true);
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(appError, 'Could not save plugin settings.'),
+            );
         });
     },
     [preferences],
@@ -151,9 +163,14 @@ export function PluginsTab(): JSX.Element {
       <SkillSuggestionsSettingsSection />
 
       {/* Last, so a failed save never shifts the switch the user just used. */}
-      {saveError && (
-        <Notice intent="destructive">Could not save plugin settings.</Notice>
-      )}
+      <DesktopErrorBanner
+        className=""
+        error={saveError?.error}
+        {...(saveError?.details === undefined
+          ? {}
+          : { details: saveError.details })}
+        testId="settings-plugins-save-error"
+      />
     </SettingsPage>
   );
 }

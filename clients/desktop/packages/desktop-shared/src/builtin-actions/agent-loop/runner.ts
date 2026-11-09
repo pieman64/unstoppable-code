@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { withoutAgentSecretValues } from '@canopy/desktop-shared/lib/agent-secret-values-env';
+import { withoutAgentSecretValues } from '@canopy/execution-engine/lib/agent-secret-values-env';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
 import { withClaudeSessionStartupTimeout } from '../_lib/agent-session-startup';
 import {
@@ -9,7 +9,7 @@ import {
 } from '../_lib/agent-transcript';
 import { runWithActionEnvironment } from '../_lib/action-env';
 import { setOutput, writeOutputFile } from '../_lib/output';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import {
   redactNormalizedPreservingFormat,
   buildQueryOptions,

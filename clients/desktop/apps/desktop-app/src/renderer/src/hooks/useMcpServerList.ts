@@ -4,7 +4,7 @@ import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import type {
   McpServerIndexEntry,
   McpServersIndexFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 
 interface UseMcpServerListReturn {
   servers: McpServerIndexEntry[];

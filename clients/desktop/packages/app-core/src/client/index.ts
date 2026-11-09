@@ -1,5 +1,6 @@
 export * from './capabilities';
 export * from './canopy-client';
+export * from './shell-commands';
 export * from './terminal-client';
 export * from './billing-client';
 export * from './external-agents-client';

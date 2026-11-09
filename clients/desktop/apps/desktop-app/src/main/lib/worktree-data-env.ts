@@ -1,5 +1,5 @@
 import type { EnvironmentRuntime } from '@canopy/desktop-shared/types';
-import { getBrandEnv, setBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv, setBrandEnv } from '@canopy/execution-engine/brand/env';
 import { getWorktreeDataDir } from './paths';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 

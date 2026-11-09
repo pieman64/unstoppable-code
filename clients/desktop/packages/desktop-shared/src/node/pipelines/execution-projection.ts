@@ -3,7 +3,7 @@ import {
   type WorkerPipelineExecution,
 } from '@canopy/protocol/canopy-core';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 
 /** Where a run's definition came from, by its preference locator. */
 export function definitionSourceOf(

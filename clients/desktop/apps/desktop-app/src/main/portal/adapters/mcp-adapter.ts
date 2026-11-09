@@ -8,7 +8,7 @@ import {
   chatInheritsProjectDefaults,
   chatSurfaceUsesGlobalPluginDefaults,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import type { DetectedMcpServerInfo } from '@canopy/desktop-shared/types/mcp-servers';
+import type { DetectedMcpServerInfo } from '@canopy/execution-engine/types/mcp-servers';
 import {
   type PortalMcpServerEntity,
   worktreeScopedParentLocalId,

@@ -12,7 +12,7 @@ import type {
 import type {
   IPCResult,
   PipelineTriggerType,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { ExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import { getExecutionRunDurationMs } from '@canopy/desktop-shared/node/pipelines/executor';
 

@@ -1,5 +1,5 @@
-import type { HelperUsage } from '../../lib/helper-usage';
-import { extractProposedPlan } from '../../codex-plan-mode';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
+import { extractProposedPlan } from '@canopy/execution-engine/codex-plan-mode';
 import type { ThreadItem } from './generated/v2/ThreadItem';
 import type { ThreadTokenUsage } from './generated/v2/ThreadTokenUsage';
 

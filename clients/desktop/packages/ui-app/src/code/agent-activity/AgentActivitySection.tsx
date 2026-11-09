@@ -1,5 +1,6 @@
 'use client';
 
+import { Stack } from '@canopy/ui-shared/components';
 import {
   memo,
   useEffect,
@@ -80,7 +81,7 @@ export const AgentActivitySection = memo(function AgentActivitySection({
         // The items are conversation content (artifacts, runs): blocked from
         // session replay. The header stays recorded.
         <div
-          className={`${REPLAY_BLOCK_CLASS} mt-2 space-y-2 ${variant === 'active' ? 'max-h-[min(240px,35vh)]' : 'max-h-80'} overflow-y-auto`}
+          className={`${REPLAY_BLOCK_CLASS} mt-2 grid grid-cols-1 content-start gap-2 ${variant === 'active' ? 'max-h-[min(240px,35vh)]' : 'max-h-80'} overflow-y-auto`}
           data-testid="agent-activity-items"
         >
           {artifactItems.length > 0 ? (
@@ -92,20 +93,14 @@ export const AgentActivitySection = memo(function AgentActivitySection({
             </div>
           ) : null}
           {pipelineRunItems.length > 0 ? (
-            <div
-              className="space-y-2"
-              data-testid="agent-activity-pipeline-run-items"
-            >
+            <Stack gap="inline" data-testid="agent-activity-pipeline-run-items">
               {pipelineRunItems}
-            </div>
+            </Stack>
           ) : null}
           {githubRunItems.length > 0 ? (
-            <div
-              className="space-y-2"
-              data-testid="agent-activity-github-run-items"
-            >
+            <Stack gap="inline" data-testid="agent-activity-github-run-items">
               {githubRunItems}
-            </div>
+            </Stack>
           ) : null}
         </div>
       ) : null}

@@ -47,6 +47,12 @@ export interface PostHogRuntimeFlags {
   captureEnabled: unknown;
   sessionReplaySampleRate: unknown;
   autocaptureEnabled?: unknown;
+  /** The member's effective Usage analytics choice (user and org policy). */
+  productAnalytics?: unknown;
+  /** The member's effective Error reports choice (user and org policy). */
+  errorReports?: unknown;
+  /** The member's effective Session recordings choice (user and org policy). */
+  sessionReplay?: unknown;
 }
 
 /**

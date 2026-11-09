@@ -1,4 +1,4 @@
-import type { BrowserRectangle } from '@canopy/desktop-shared/types/browser';
+import type { BrowserRectangle } from '@canopy/execution-engine/types/browser';
 import {
   decodeBoxModel,
   decodeFrameOwnerBackendNodeId,

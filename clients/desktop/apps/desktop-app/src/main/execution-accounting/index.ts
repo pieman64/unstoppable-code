@@ -7,6 +7,7 @@ import {
 import {
   ExecutionAccounting,
   type ExecutionAccountingLimits,
+  type ExecutionAccountingSnapshot,
   type ExecutionLease,
   type ExecutionWakeLock,
   type ExecutionResourceGroupId,
@@ -26,12 +27,14 @@ import type {
   ResourceProcessKind,
   ResourceProcessSnapshot,
 } from '@canopy/desktop-shared/types';
+import { getDaemonExecutionStatus } from '../canopy-runtime/daemon-execution-status';
 import type { AppDiagnosticRecord } from '../observability/service';
 import {
   getPerformanceLimits,
   getPerformanceLimitsVersion,
 } from '../lib/performance-limits';
 import { isRecord } from '../lib/type-guards';
+import { mergeDaemonExecutionStatus } from '../resource-monitor/daemon-status';
 import type { ResourceRegistrationHandle } from '../resource-monitor/service';
 
 /*
@@ -308,6 +311,25 @@ function readHostProcessTable(
   return reader(request);
 }
 
+/**
+ * Memory admission counts the daemon whose status this app follows, whoever
+ * launched it (CAN-5695), merged as the resource monitor shows it so each
+ * process counts once. With no current status (unreachable, older, dropped
+ * or idle daemon) it counts this app's own tree, which holds a daemon it
+ * launched.
+ */
+function guardMemoryBytes(
+  snapshot: ExecutionAccountingSnapshot<ResourceMetadata>,
+): number {
+  const status = getDaemonExecutionStatus().current();
+  return status
+    ? mergeDaemonExecutionStatus(snapshot, status, {
+        productName: BRAND.displayName,
+        now: Date.now(),
+      }).memoryRssBytes
+    : snapshot.memoryRssBytes;
+}
+
 let accounting: DesktopExecutionAccounting | null = null;
 
 export function getExecutionAccounting(): DesktopExecutionAccounting {
@@ -316,6 +338,7 @@ export function getExecutionAccounting(): DesktopExecutionAccounting {
     readProcessTable: readHostProcessTable,
     hostProcesses: electronProcessRows,
     limits: desktopLimits,
+    guardMemoryBytes,
     productName: BRAND.displayName,
     groupLabel: (id): string => GROUP_LABELS[id],
     executionIdOf: (metadata): string | undefined =>

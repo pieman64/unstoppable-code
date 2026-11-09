@@ -3,17 +3,27 @@ import { openAuthenticatedCloudUrl } from '@/lib/openAuthenticatedCloudPage';
 import { toastCategoryLabel } from '@/lib/osNotifications';
 import { toastMessageReplayClass } from '@/lib/replayPrivacy';
 import { openInWorkspaceContext } from '@/lib/contextScope';
-import { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
-import { useChatStore } from '@/stores/chatStore';
-import type { Toast, ToastLink, ToastMeta } from '@/stores/githubStore';
+import { brandText } from '@/lib/brand';
 import {
-  TOAST_STACK_INTENT,
+  canNavigateToToastWorktree,
+  navigateToToastWorktree,
+} from '@/lib/toastWorktreeNavigation';
+import { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
+import type { Toast, ToastLink, ToastMeta } from '@/stores/toastStore';
+import {
   toastLifetimeMs,
-  useGitHubStore,
-} from '@/stores/githubStore';
-import { useNavigationStore } from '@/stores/navigationStore';
+  toastStack,
+  useToastStore,
+} from '@/stores/toastStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import {
+  ReportActionBoundary,
+  ReportThisDialog,
+  ToastFailureReference,
+  ToastFailureReportButton,
+  type ToastFailureReport,
+} from '@canopy/ui-app/feedback';
 import {
   Notice,
   NoticeButton,
@@ -29,9 +39,10 @@ import {
 } from '@canopy/ui-shared';
 import { Button, CopyLinkButton } from '@canopy/ui-shared/components';
 import { ExternalIcon } from '@canopy/ui-shared/icons/AppIcons';
-import type { JSX, MouseEvent } from 'react';
-import { useState } from 'react';
-import { dismissPageLikeViewers } from '@/lib/dismissPageLikeViewers';
+import { TOAST_INTENT } from '@canopy/ui-shared/lib';
+import type { JSX, MouseEvent, ReactNode } from 'react';
+import { useState, useSyncExternalStore } from 'react';
+import { DesktopReportEligibility } from './DesktopReportThisAction';
 import { ProjectIcon } from './ProjectIcon';
 import { toastTrackpadSwipe } from './toastTrackpadSwipe';
 import { useCoworkEntryLabel } from './useCoworkEntryLabel';
@@ -103,34 +114,40 @@ function modalTitle(type: Toast['type']): string {
   }
 }
 
-function navigateToToastWorktree(
-  projectId: string,
-  worktreeId: string,
-  openChat?: () => void,
-): boolean {
-  if (
-    !canNavigateToWorktreeFromSidebarItems(
-      useProjectsStore.getState().projects,
-      projectId,
-      worktreeId,
-      useProjectsStore.getState().hasHydratedProjects,
-    )
-  ) {
-    return false;
+/**
+ * Opens where a background failure happened. A failure naming a worktree stays
+ * up unless that worktree's context opens, so a refused switch loses nothing.
+ */
+function openToastFailureOrigin(toast: Toast, onOpened: () => void): void {
+  const origin = toast.failure?.origin;
+  if (origin === undefined) return;
+  const projectId = toast.meta?.projectId;
+  const worktreeId = toast.meta?.worktreeId;
+  if (projectId === undefined || worktreeId === undefined) {
+    origin.open();
+    onOpened();
+    return;
   }
+  if (!canNavigateToToastWorktree(projectId, worktreeId)) return;
+  openInWorkspaceContext(projectId, (): void => {
+    origin.open();
+    onOpened();
+  });
+}
 
-  // Chat actions already route Work Entries and synthetic chat scopes.
-  // Use that same destination for both the header and the toast body.
-  if (openChat) {
-    openChat();
-    return true;
-  }
-
-  // An archive or shared-container viewer would stay on top of the worktree.
-  dismissPageLikeViewers();
-  useNavigationStore.getState().navigate('main');
-  useChatStore.getState().selectWorktree(projectId, worktreeId);
-  return true;
+/** Runs a defect's card or details under the account's report capability. */
+function WithToastReportEligibility({
+  toast,
+  children,
+}: {
+  toast: Toast;
+  children: (eligible: boolean) => ReactNode;
+}): ReactNode {
+  return toast.failure?.error.kind === 'defect' ? (
+    <DesktopReportEligibility>{children}</DesktopReportEligibility>
+  ) : (
+    children(false)
+  );
 }
 
 function ModalMetaDetails({
@@ -145,7 +162,7 @@ function ModalMetaDetails({
   if (!hasContent) return null;
 
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs fg-secondary">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs fg-secondary">
       {meta.title && (
         <span>
           <span className="fg-secondary/60">Title</span>{' '}
@@ -200,10 +217,12 @@ function ToastDetailModal({
   toast,
   onClose,
   onActionDone,
+  onReport,
 }: {
   toast: Toast;
   onClose: () => void;
   onActionDone: () => void;
+  onReport: (report: ToastFailureReport) => void;
 }): JSX.Element {
   const projects = useProjectsStore((state) => state.projects);
   const hasHydratedProjects = useProjectsStore(
@@ -247,6 +266,7 @@ function ToastDetailModal({
         </span>
       }
       titleId="toast-detail-modal-title"
+      slotGap="item"
       // Error, chat, and hook messages can quote output or replies, so their
       // detail body is blocked; the card around it is recorded.
       blockFromReplay={
@@ -266,7 +286,7 @@ function ToastDetailModal({
       trailing={
         <>
           {toast.meta?.link && (
-            <div className="mt-3 flex flex-col gap-2">
+            <div className="flex flex-col gap-2">
               <span className="break-all text-xs fg-secondary">
                 {toast.meta.link.url}
               </span>
@@ -274,7 +294,7 @@ function ToastDetailModal({
             </div>
           )}
           {toast.meta?.action && (
-            <div className="mt-3 flex justify-end">
+            <div className="flex justify-end">
               <ToastActionButton
                 data-testid="toast-action"
                 label={toast.meta.action.label}
@@ -283,6 +303,38 @@ function ToastDetailModal({
                 run={toast.meta.action.onClick}
                 onDone={onActionDone}
               />
+            </div>
+          )}
+          {toast.failure && (
+            <div className="flex flex-col gap-3">
+              <ToastFailureReference error={toast.failure.error} />
+              <div className="flex flex-wrap justify-end gap-2">
+                <WithToastReportEligibility toast={toast}>
+                  {(eligible): ReactNode =>
+                    eligible && toast.failure ? (
+                      <ToastFailureReportButton
+                        error={toast.failure.error}
+                        {...(toast.failure.telemetry
+                          ? { telemetry: toast.failure.telemetry }
+                          : {})}
+                        onReport={onReport}
+                      />
+                    ) : null
+                  }
+                </WithToastReportEligibility>
+                {(projectId === undefined ||
+                  worktreeId === undefined ||
+                  canNavigateToWorktree) && (
+                  <NoticeButton
+                    data-testid="toast-failure-origin"
+                    onClick={(): void =>
+                      openToastFailureOrigin(toast, onActionDone)
+                    }
+                  >
+                    {toast.failure.origin.label}
+                  </NoticeButton>
+                )}
+              </div>
             </div>
           )}
         </>
@@ -304,7 +356,7 @@ function stacked(toast: Toast): StackedToast {
   if (cached !== undefined) return cached;
   const item: StackedToast = {
     id: toast.id,
-    intent: TOAST_STACK_INTENT[toast.type],
+    intent: TOAST_INTENT[toast.type],
     timeoutMs: toastLifetimeMs(toast),
     toast,
   };
@@ -318,14 +370,33 @@ function stacked(toast: Toast): StackedToast {
  * destination when the card itself is clicked; its buttons do only their own
  * job.
  */
-function StackToastCard({
+function StackToastCard(props: {
+  toast: Toast;
+  onExpand: () => void;
+  onDismiss: () => void;
+  onReport: (report: ToastFailureReport) => void;
+}): ReactNode {
+  return (
+    <WithToastReportEligibility toast={props.toast}>
+      {(eligible): ReactNode => (
+        <StackToastCardBody {...props} canReport={eligible} />
+      )}
+    </WithToastReportEligibility>
+  );
+}
+
+function StackToastCardBody({
   toast,
   onExpand,
   onDismiss,
+  onReport,
+  canReport,
 }: {
   toast: Toast;
   onExpand: () => void;
   onDismiss: () => void;
+  onReport: (report: ToastFailureReport) => void;
+  canReport: boolean;
 }): JSX.Element {
   const projects = useProjectsStore((state) => state.projects);
   const hasHydratedProjects = useProjectsStore(
@@ -361,6 +432,10 @@ function StackToastCard({
         useProjectsStore.getState().hasHydratedProjects,
       )
     ) {
+      return;
+    }
+    if (toast.failure) {
+      openToastFailureOrigin(toast, onDismiss);
       return;
     }
     if (toast.onClick) {
@@ -410,16 +485,26 @@ function StackToastCard({
     meta?.title && headline !== meta.title
       ? `${meta.title}${/[.:!?…]$/.test(meta.title) ? '' : '.'} ${toast.message}`
       : toast.message;
-  const preview = previewToastMessage(message);
+  const messageContext = meta?.messageContext;
+  const preview = previewToastMessage(
+    messageContext !== undefined && message.endsWith(messageContext)
+      ? message.slice(0, message.length - messageContext.length).trimEnd()
+      : message,
+  );
   // The text preview can keep a message that still wraps past the three-line
   // clamp; the clamp reports that, and the card then opens the full message.
   const [clampOverflow, setClampOverflow] = useState(false);
-  const truncated = preview.truncated || clampOverflow;
+  const truncated =
+    preview.truncated || clampOverflow || preview.text !== message;
   // The card opens the destination the toast names. A cut-off toast that only
   // has its worktree opens its message in full instead (the dialog links the
   // worktree), so a click never discards text the card could not show.
+  // A failure's message always wins: its details link the origin too.
   const activate =
-    hasDestination && (toast.onClick !== undefined || !truncated)
+    hasDestination &&
+    (toast.failure === undefined
+      ? toast.onClick !== undefined || !truncated
+      : !truncated)
       ? openDestination
       : truncated
         ? onExpand
@@ -427,10 +512,18 @@ function StackToastCard({
   const opensDestination = activate === openDestination;
   const link = meta?.link;
   const action = meta?.action;
+  const failure = toast.failure;
   const actions =
-    link === undefined && action === undefined ? undefined : (
+    link === undefined && action === undefined && !canReport ? undefined : (
       <>
         {link !== undefined && <ToastLinkActions link={link} />}
+        {canReport && failure !== undefined && (
+          <ToastFailureReportButton
+            error={failure.error}
+            {...(failure.telemetry ? { telemetry: failure.telemetry } : {})}
+            onReport={onReport}
+          />
+        )}
         {action !== undefined && (
           <ToastActionButton
             data-testid="toast-action"
@@ -454,7 +547,7 @@ function StackToastCard({
       toastType={toast.type}
     >
       <Notice
-        intent={TOAST_STACK_INTENT[toast.type]}
+        intent={TOAST_INTENT[toast.type]}
         icon={
           project === undefined ? undefined : (
             <span data-testid="toast-project-icon" className="inline-flex">
@@ -524,9 +617,23 @@ function StackToastCard({
           <span
             className={`${toastMessageReplayClass(toast.type, meta?.category, meta?.blockMessageFromReplay)} whitespace-pre-wrap break-words`}
           >
-            {preview.text}
+            {messageContext === undefined ? (
+              preview.text
+            ) : (
+              <>
+                {/* Reserve the last line for context within the card's
+                    three-line budget. Details retain the full message. */}
+                <span className="line-clamp-2">{preview.text}</span>
+                <span data-testid="toast-message-context" className="block">
+                  {messageContext}
+                </span>
+              </>
+            )}
           </span>
         </ToastStackDescription>
+        {failure !== undefined && (
+          <ToastFailureReference error={failure.error} />
+        )}
       </Notice>
     </ToastStackActivatableCard>
   );
@@ -542,10 +649,20 @@ function ToastStackHost({
 }: {
   placement: InAppNotificationPlacement;
 }): JSX.Element {
-  const toasts = useGitHubStore((state) => state.toasts);
-  const dismissToast = useGitHubStore((state) => state.dismissToast);
-  const expireToast = useGitHubStore((state) => state.expireToast);
+  const toasts = useSyncExternalStore(
+    toastStack.subscribe,
+    toastStack.getSnapshot,
+  );
+  const dismissToast = useToastStore((state) => state.dismissToast);
+  const expireToast = useToastStore((state) => state.expireToast);
   const [expandedToast, setExpandedToast] = useState<Toast | null>(null);
+  // Here, not on the card: the form outlives a toast that is cleared, replaced
+  // or dismissed while it is open.
+  const [report, setReport] = useState<ToastFailureReport | null>(null);
+  const openReport = (next: ToastFailureReport): void => {
+    setExpandedToast(null);
+    setReport(next);
+  };
 
   return (
     <>
@@ -573,6 +690,7 @@ function ToastStackHost({
                 toast={item.toast}
                 onExpand={(): void => setExpandedToast(item.toast)}
                 onDismiss={(): void => dismissToast(item.toast.id)}
+                onReport={openReport}
               />
             </div>
           )}
@@ -591,7 +709,24 @@ function ToastStackHost({
               current?.id === id ? null : current,
             );
           }}
+          onReport={openReport}
         />
+      )}
+      {report && (
+        <ReportActionBoundary key={report.error.referenceId}>
+          <DesktopReportEligibility>
+            {(eligible): ReactNode =>
+              eligible ? (
+                <ReportThisDialog
+                  error={report.error}
+                  appName={brandText.appName}
+                  {...(report.telemetry ? { telemetry: report.telemetry } : {})}
+                  onClose={(): void => setReport(null)}
+                />
+              ) : null
+            }
+          </DesktopReportEligibility>
+        </ReportActionBoundary>
       )}
     </>
   );

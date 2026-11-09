@@ -8,7 +8,7 @@ import type {
   PipelinePluginCollectionPreference,
   PipelinePluginDefaultPreviewItem,
   ResolvedPipelinePluginCollectionSnapshot,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   buildPipelineDefaultDisplay,
   getPipelinePluginDefaultKey,

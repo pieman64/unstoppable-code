@@ -37,10 +37,12 @@ function MemoryUsedButtonImpl({ memory }: MemoryUsedButtonProps): JSX.Element {
   const count = memory.facts.length;
   return (
     <>
-      <Tooltip label="Show organization memories used for this message">
+      <Tooltip
+        className="self-start"
+        label="Show organization memories used for this message"
+      >
         <Button
           size="compact"
-          className="mt-1"
           aria-label="Show organization memories used for this message"
           data-testid="memory-used-button"
           onClick={(): void => setOpen(true)}
@@ -145,7 +147,7 @@ function FactFeedbackControls({
 
   if (status === 'loading') {
     return (
-      <div className="mt-2 flex items-center gap-1.5 text-2xs fg-secondary">
+      <div className="flex items-center gap-1.5 text-2xs fg-secondary">
         <LoadingSpinner sizePx={12} />
         Checking feedback…
       </div>
@@ -155,7 +157,7 @@ function FactFeedbackControls({
   if (status === 'submitted') {
     return (
       <div
-        className="mt-2 flex items-center gap-1.5 text-2xs fg-success animate-fade-in"
+        className="flex items-center gap-1.5 text-2xs fg-success animate-fade-in"
         role="status"
         data-testid="memory-feedback-submitted"
       >
@@ -169,7 +171,7 @@ function FactFeedbackControls({
 
   const submitting = status === 'submitting';
   return (
-    <div className="mt-2 flex flex-col gap-2">
+    <div className="flex flex-col gap-2">
       <div className="flex items-center gap-1.5 text-2xs">
         <Tooltip label="This memory was helpful">
           <Button
@@ -354,6 +356,7 @@ function MemoryUsedDialogImpl({
           <Surface
             key={`${fact.factId ?? fact.sourceTurnIds.join(':')}:${index}`}
             as="section"
+            gap="inline"
             variant="group"
             padding="compact"
           >
@@ -362,7 +365,7 @@ function MemoryUsedDialogImpl({
             >
               {fact.factText}
             </p>
-            <div className="mt-2 flex flex-wrap gap-2 text-2xs fg-secondary">
+            <div className="flex flex-wrap gap-2 text-2xs fg-secondary">
               {fact.validAt ? <span>As of {fact.validAt}</span> : null}
               <span data-testid="memory-used-fact-organization">
                 {organizationName ?? 'Organization'}

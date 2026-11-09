@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react';
+import { useLayoutEffect, useMemo, useState, type JSX } from 'react';
 import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
@@ -6,8 +6,10 @@ import {
 import { workflowEditBackLabel } from '@/lib/workflows/edit-back';
 import {
   workflowEditKey,
+  workflowEditTargetForActivity,
   type WorkflowEditTarget,
 } from '@/lib/workflows/edit-target';
+import { useNavigationStore } from '@/stores/navigationStore';
 import type { AutomationsPageBodyApi } from '../../pages/AutomationsPage';
 import type { PipelinesPageListApi } from '../../pages/PipelinesPage';
 import { PageContent } from '../../shared/PageContent';
@@ -39,6 +41,42 @@ export function WorkflowEditHost({
   // The pipeline that has opened. A later worktree change re-resolves the
   // checkout, but must not unmount an open editor and drop its edits.
   const [openedKey, setOpenedKey] = useState<string | null>(null);
+  // CAN-5782: a workflow schedule is edited on its Workflow page, however
+  // it was opened (a link, a restored history entry, an agent), so its
+  // automation target is replaced there before the Automation page shows.
+  const redirect = useMemo(() => {
+    if (target.kind !== 'automation') return undefined;
+    const activity = automations.activities.find(
+      (entry) => entry.id === target.activityId,
+    );
+    return activity
+      ? workflowEditTargetForActivity(activity, {
+          ...(target.section !== undefined ? { section: target.section } : {}),
+          ...(target.returnTo !== undefined
+            ? { returnTo: target.returnTo }
+            : {}),
+        })
+      : undefined;
+  }, [automations.activities, target]);
+  useLayoutEffect(() => {
+    if (redirect) useNavigationStore.getState().replaceWorkflowEdit(redirect);
+  }, [redirect]);
+
+  if (redirect) {
+    return (
+      <div
+        className="page-scroll-gutter h-full overflow-auto"
+        data-testid="workflow-edit-host"
+      >
+        <PageTitlebar />
+        <DelayedLoadingPlaceholder>
+          <div className="py-8">
+            <CenteredLoadingSpinner />
+          </div>
+        </DelayedLoadingPlaceholder>
+      </div>
+    );
+  }
 
   if (target.kind === 'pipeline') {
     // A project pipeline opens once the selected worktree's checkout is known.
@@ -61,8 +99,10 @@ export function WorkflowEditHost({
           className="flex min-h-0 flex-1 flex-col"
         >
           {waiting ? (
-            <DelayedLoadingPlaceholder>
-              <CenteredLoadingSpinner className="my-8" />
+            <DelayedLoadingPlaceholder className="">
+              <div className="box-content flex min-h-full flex-1 py-8">
+                <CenteredLoadingSpinner className="" />
+              </div>
             </DelayedLoadingPlaceholder>
           ) : (
             <PipelineEditAdapter

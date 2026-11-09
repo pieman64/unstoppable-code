@@ -146,6 +146,7 @@ const TABLE: Record<'darwin' | 'linux' | 'win32', Row[]> = {
     [{ kind: 'git-ls-files-ignored', executable: 'git.exe', version: AUDITED }, 'git.exe', ['-c', 'core.fsmonitor=false', ...['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z']], 64 * MiB, undefined, 'graceful', WIN_CHILD_ENV], // prettier-ignore
     // The runner resolves a bare name through the supplied PATH alone (D2).
     [{ kind: 'where-git' }, 'where.exe', ['git'], MiB, 5000, 'graceful', WIN_CHILD_ENV], // prettier-ignore
+    [{ kind: 'where-winget' }, 'where.exe', ['winget'], MiB, 5000, 'graceful', WIN_CHILD_ENV], // prettier-ignore
   ],
 };
 

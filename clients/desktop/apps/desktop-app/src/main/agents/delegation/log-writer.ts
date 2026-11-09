@@ -1,3 +1,6 @@
+/// <reference lib="es2021.weakref" />
+
+import { createHash } from 'node:crypto';
 import type {
   AgentDelegationTranscript,
   AgentDelegationTranscriptItem,
@@ -21,7 +24,7 @@ export const DELEGATION_LOG_FLUSH_INTERVAL_MS = 250;
  * Settled runs whose written items are kept, most recent last. A settled run
  * still reports (for example when its result reaches the parent), and those
  * reports must not write its items again; the oldest are forgotten first.
- * The kept items share their strings with the broker's retained record.
+ * Fingerprints keep duplicate detection without retaining transcript bodies.
  */
 const SETTLED_RUN_MEMORY = 64;
 
@@ -32,6 +35,30 @@ function runKey(run: DelegationRun): string {
 interface PendingRun {
   readonly run: DelegationRun;
   readonly items: Map<string, AgentDelegationTranscriptItem>;
+}
+
+interface WrittenItem {
+  readonly fingerprint: string;
+  readonly item: WeakRef<AgentDelegationTranscriptItem>;
+}
+
+/** Hash the same fields that sameDelegationItem compares, including full content. */
+function itemFingerprint(item: AgentDelegationTranscriptItem): string {
+  const content =
+    item.type === 'tool'
+      ? [item.toolName, item.input, item.output, item.isError]
+      : [item.text];
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        item.id,
+        item.type,
+        item.sequence,
+        item.occurredAt,
+        ...content,
+      ]),
+    )
+    .digest('hex');
 }
 
 export interface DelegationLogWriterOptions {
@@ -53,10 +80,7 @@ export interface DelegationLogWriterOptions {
  */
 export class DelegationLogWriter {
   /** The last version of each item a run already has in the log, by id. */
-  private readonly written = new Map<
-    string,
-    Map<string, AgentDelegationTranscriptItem>
-  >();
+  private readonly written = new Map<string, Map<string, WrittenItem>>();
   private readonly pending = new Map<string, PendingRun>();
   private readonly settled: string[] = [];
   private readonly intervalMs: number;
@@ -98,12 +122,17 @@ export class DelegationLogWriter {
       runGeneration: transcript.runGeneration,
     };
     const key = runKey(run);
-    const written =
-      this.written.get(key) ?? new Map<string, AgentDelegationTranscriptItem>();
+    const written = this.written.get(key) ?? new Map<string, WrittenItem>();
     this.written.set(key, written);
     for (const item of transcript.transcript) {
-      if (sameDelegationItem(written.get(item.id), item)) continue;
-      written.set(item.id, item);
+      const previous = written.get(item.id);
+      // A weak view keeps unchanged snapshots cheap without retaining their bodies.
+      const fingerprint =
+        previous && sameDelegationItem(previous.item.deref(), item)
+          ? previous.fingerprint
+          : itemFingerprint(item);
+      written.set(item.id, { fingerprint, item: new WeakRef(item) });
+      if (previous?.fingerprint === fingerprint) continue;
       let pending = this.pending.get(key);
       if (!pending) {
         pending = { run, items: new Map() };

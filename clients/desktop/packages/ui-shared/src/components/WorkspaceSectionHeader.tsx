@@ -1,3 +1,4 @@
+import { Dot } from './Badge';
 import {
   useCallback,
   useRef,
@@ -34,7 +35,6 @@ import { RichHoverTooltip } from './RichHoverTooltip';
 import { useMediaQuery } from './useMediaQuery';
 import { ProjectAvatarBadge } from './ProjectAvatarBadge';
 import { WorkspaceIconDisclosureSwap } from './WorkspaceIconDisclosureSwap';
-import { SIDEBAR_INDICATOR_BLUE } from '../lib/operational-status-colors';
 import { SIDEBAR_ROW_TRAILING_CELL_CLASSNAME } from './sidebar-item-classes';
 import { SidebarPinnedBadge, SIDEBAR_PINNED_LABEL } from './SidebarPinnedBadge';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
@@ -305,11 +305,11 @@ export interface WorkspaceSectionHeaderProps {
  */
 const DEFERRED_ACTION_PADDING: readonly string[] = [
   '',
-  'pointer-fine:group-hover/sidebar-item:pr-8 pointer-fine:group-focus-within/sidebar-item:pr-8 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-8',
-  'pointer-fine:group-hover/sidebar-item:pr-15 pointer-fine:group-focus-within/sidebar-item:pr-15 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-15',
-  'pointer-fine:group-hover/sidebar-item:pr-22 pointer-fine:group-focus-within/sidebar-item:pr-22 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-22',
-  'pointer-fine:group-hover/sidebar-item:pr-29 pointer-fine:group-focus-within/sidebar-item:pr-29 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-29',
-  'pointer-fine:group-hover/sidebar-item:pr-36 pointer-fine:group-focus-within/sidebar-item:pr-36 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-36',
+  'pointer-fine:group-hover/sidebar-item:pr-8 pointer-fine:group-focus-within/sidebar-item:pr-8 pointer-fine:workspace-header-actions-focused:pr-8',
+  'pointer-fine:group-hover/sidebar-item:pr-15 pointer-fine:group-focus-within/sidebar-item:pr-15 pointer-fine:workspace-header-actions-focused:pr-15',
+  'pointer-fine:group-hover/sidebar-item:pr-22 pointer-fine:group-focus-within/sidebar-item:pr-22 pointer-fine:workspace-header-actions-focused:pr-22',
+  'pointer-fine:group-hover/sidebar-item:pr-29 pointer-fine:group-focus-within/sidebar-item:pr-29 pointer-fine:workspace-header-actions-focused:pr-29',
+  'pointer-fine:group-hover/sidebar-item:pr-36 pointer-fine:group-focus-within/sidebar-item:pr-36 pointer-fine:workspace-header-actions-focused:pr-36',
 ];
 
 export function WorkspaceSectionHeader({
@@ -666,7 +666,7 @@ export function WorkspaceSectionHeader({
   // Slot focus can outlive collapse; its visibility must also retire the
   // counter and pin independently of the hover-reveal group.
   const atRestTrailingClassName = defersPointerHoverActions
-    ? 'pointer-fine:group-hover/sidebar-item:hidden pointer-fine:group-focus-within/sidebar-item:hidden pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:hidden'
+    ? 'pointer-fine:group-hover/sidebar-item:hidden pointer-fine:group-focus-within/sidebar-item:hidden pointer-fine:workspace-header-actions-focused:hidden'
     : onDelete || onSettings || onOptions || onAdd || showCollapseChevron
       ? 'group-hover/sidebar-item:hidden group-focus-within/sidebar-item:hidden pointer-coarse:hidden'
       : '';
@@ -695,7 +695,7 @@ export function WorkspaceSectionHeader({
         data-backend={backend}
         className={`inline-flex shrink-0 items-center fg-tertiary ${
           defersPointerHoverActions
-            ? 'pointer-fine:group-hover/sidebar-item:hidden pointer-fine:group-focus-within/sidebar-item:hidden pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:hidden'
+            ? 'pointer-fine:group-hover/sidebar-item:hidden pointer-fine:group-focus-within/sidebar-item:hidden pointer-fine:workspace-header-actions-focused:hidden'
             : onDelete || onSettings || onAdd || showCollapseChevron
               ? 'group-hover/sidebar-item:hidden group-focus-within/sidebar-item:hidden'
               : ''
@@ -898,10 +898,10 @@ export function WorkspaceSectionHeader({
                 tooltipLabel="Settings"
               />
               {hasSettingsWarning && (
-                <span
-                  aria-hidden="true"
+                <Dot
+                  tone="unread"
                   data-testid={`workspace-settings-warning-dot${testIdSuffix}`}
-                  className={`pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full ${SIDEBAR_INDICATOR_BLUE.background}`}
+                  className="pointer-events-none absolute right-0.5 top-0.5"
                 />
               )}
             </span>
@@ -1087,13 +1087,13 @@ function RepoTooltipTrigger({
       surfacePadding="relaxed"
       surfaceClassName="min-w-35 max-w-65"
       content={
-        <div className="text-xs">
+        <div className="flex flex-col text-xs gap-1">
           <span
             className={`block ${textScale === 'sidebar' ? 'text-xs' : 'text-3xs'} font-normal fg-secondary`}
           >
             Repositories
           </span>
-          <ul className="mt-1 space-y-0.5">
+          <ul className="flex flex-col gap-0.5">
             {visibleNames.map((repoName, index) => (
               <li key={`${repoName}-${index}`} className="truncate">
                 {repoName}

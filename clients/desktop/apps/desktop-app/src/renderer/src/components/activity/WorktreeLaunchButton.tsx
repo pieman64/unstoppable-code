@@ -269,10 +269,10 @@ export function WorktreeLaunchButton({
               // (rose-500) and a bordered/filled body.
               aria-label={isStopping ? 'Stopping scripts' : 'Stop scripts'}
             >
-              {/* mr-1 + the shell's 6px gap = the header's 10px spinner-to-label
-                  rhythm. */}
-              <LoadingSpinner className="mr-1" />
-              {isStopping ? 'Stopping' : 'Stop'}
+              <span className="inline-flex items-center gap-2.5">
+                <LoadingSpinner />
+                {isStopping ? 'Stopping' : 'Stop'}
+              </span>
             </HeaderActionButton>
           </Tooltip>
         ) : (

@@ -4,7 +4,7 @@ import {
   type SecretValueInput,
   type StoredSecretErrorCode,
   type StoredSecretValue,
-} from '@canopy/desktop-shared/types/stored-secrets';
+} from '@canopy/execution-engine/types/stored-secrets';
 
 /**
  * Stored-secret references for the CAN-4411 replies. A reference names the

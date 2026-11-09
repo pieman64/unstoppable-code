@@ -5,6 +5,8 @@ import {
   type RedeemedExecutionSecrets,
 } from '../../execution-secrets';
 import {
+  WORKER_PIPELINE_NOTIFICATION_BODY_MAX_LENGTH,
+  WORKER_PIPELINE_NOTIFICATION_TITLE_MAX_LENGTH,
   WORKER_PIPELINE_OUTPUT_ITEM_MAX_LENGTH,
   WORKER_PIPELINE_TERMINAL_STATUSES,
   type CanopyInstructionHandler,
@@ -30,15 +32,28 @@ import {
 import { CanopyOperationError } from '../../../runtime/errors';
 import type { CanopyHandlerContext } from '../../../runtime/types';
 
+/** A desktop notification a step asked for (CAN-5868). */
+export interface PipelineExecutionNotification {
+  readonly stepId: string;
+  readonly title: string;
+  readonly body: string;
+}
+
 /** What a worker reports while one of its executions runs. */
 export interface PipelineExecutionObserver {
   onExecution(event: string, execution: WorkerPipelineExecution): void;
   onOutput(output: {
     jobId: string;
     stepId: string;
+    /** The retry attempt and job iteration that printed it, when known. */
+    attempt?: number;
+    iteration?: number;
     stream: 'stdout' | 'stderr';
     text: string;
   }): void;
+  /** A desktop notification a step asked for (CAN-5868). */
+  /** Whether this observer delivered it; one nobody delivers is kept for the next stream. */
+  onNotification?(notification: PipelineExecutionNotification): boolean;
   /** The worker can no longer follow this execution, such as when its host process ended. */
   onEnd?(error: CanopyErrorPayload): void;
 }
@@ -124,6 +139,10 @@ export interface PipelineExecutionWorker {
     executionId: string,
     observer: PipelineExecutionObserver,
   ): (() => void) | null;
+  /** Notifications the run sent before any stream followed it (CAN-5868). */
+  takeNotifications?(
+    executionId: string,
+  ): readonly PipelineExecutionNotification[];
 }
 
 export function pipelineExecutionNotFoundError(): CanopyOperationError {
@@ -149,6 +168,16 @@ export function pipelineLaunchRefusedError(): CanopyOperationError {
     kind: 'invalid_argument',
     code: 'worker.pipeline.launchRefused',
     message: 'This workflow run cannot run in the background service.',
+    retry: { kind: 'never' },
+  });
+}
+
+/** An owner-bound start while no owner is subscribed (CAN-5771); nothing ran. */
+export function pipelineOwnerUnavailableError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'unavailable',
+    code: 'worker.pipeline.ownerUnavailable',
+    message: 'The app is not connected to the background workflow service.',
     retry: { kind: 'never' },
   });
 }
@@ -443,11 +472,12 @@ export function createWorkerPipelineHandlers(
           stop?.();
           sink.end('completed');
         };
-        const emit = (item: WorkerPipelineExecutionEventsItem): void => {
-          if (!ended && sink.emit(item) === null) {
-            ended = true;
-            stop?.();
-          }
+        const emit = (item: WorkerPipelineExecutionEventsItem): boolean => {
+          if (ended) return false;
+          if (sink.emit(item) !== null) return true;
+          ended = true;
+          stop?.();
+          return false;
         };
         let windowStart = now();
         let windowItems = 0;
@@ -506,12 +536,36 @@ export function createWorkerPipelineHandlers(
           cancelRetry();
           deliver(event, execution);
         };
+        // Never budgeted or dropped, like a lifecycle item.
+        const emitNotification = ({
+          stepId,
+          title,
+          body,
+        }: PipelineExecutionNotification): boolean => {
+          if (ended || context.signal.aborted) return false;
+          flushGap();
+          return emit({
+            kind: 'notification',
+            stepId,
+            title: title.slice(
+              0,
+              WORKER_PIPELINE_NOTIFICATION_TITLE_MAX_LENGTH,
+            ),
+            body: body.slice(0, WORKER_PIPELINE_NOTIFICATION_BODY_MAX_LENGTH),
+          });
+        };
         let observed = false;
         const current = await worker.get(executionId);
         if (!current) {
           sink.end('error', pipelineExecutionNotFoundError().payload);
           return;
         }
+        // A stream cancelled meanwhile leaves them for the next one.
+        if (context.signal.aborted) return;
+        // What the run sent before this stream, ahead of a terminal snapshot.
+        for (const notification of worker.takeNotifications?.(executionId) ??
+          [])
+          emitNotification(notification);
         onExecution('snapshot', current);
         if (ended) return;
         stop = worker.observe(executionId, {
@@ -519,7 +573,7 @@ export function createWorkerPipelineHandlers(
             observed = true;
             onExecution(event, execution);
           },
-          onOutput: ({ jobId, stepId, stream, text }) => {
+          onOutput: ({ jobId, stepId, attempt, iteration, stream, text }) => {
             if (ended) return;
             flushHeld();
             const at = now();
@@ -542,12 +596,19 @@ export function createWorkerPipelineHandlers(
               kind: 'output',
               jobId,
               stepId,
+              ...(attempt !== undefined && { attempt }),
+              ...(iteration !== undefined && { iteration }),
               stream,
               text: truncated
                 ? text.slice(0, WORKER_PIPELINE_OUTPUT_ITEM_MAX_LENGTH)
                 : text,
               truncated,
             });
+          },
+          onNotification: (notification) => {
+            if (ended) return false;
+            flushHeld();
+            return emitNotification(notification);
           },
           onEnd: (error) => {
             if (ended) return;

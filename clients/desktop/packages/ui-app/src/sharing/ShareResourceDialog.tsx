@@ -26,6 +26,7 @@ import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import type { PersonalOrganizationUpgradePort } from '@canopy/app-state/personal-organization-upgrade';
 import { orgsWithoutActivePlanClause } from '@canopy/ui-shared/lib/org-lapse-sentence';
 import {
+  Stack,
   Button,
   ErrorBanner,
   Notice,
@@ -2206,9 +2207,14 @@ export function ShareResourceDialog({
     />
   );
   const organizationSetup = (
-    <div className="mt-2 space-y-2" data-testid={`${p}-organization-setup`}>
+    <Stack
+      gap="inline"
+      className="mt-2"
+      data-testid={`${p}-organization-setup`}
+    >
       {(onSetUpOrganization || canCreateTeam) && (
         <Button
+          className="self-start"
           type="button"
           variant="secondary"
           size="compact"
@@ -2220,7 +2226,7 @@ export function ShareResourceDialog({
         </Button>
       )}
       {organizationSetupFailed && organizationSetupError}
-    </div>
+    </Stack>
   );
   // The setup step offered under a disabled Team or Organization pill.
   const organizationSetupAction =
@@ -2274,10 +2280,11 @@ export function ShareResourceDialog({
     }
     if (isGuest) {
       return (
-        <div className="space-y-3" data-testid={`${p}-guest-cta`}>
+        <Stack gap="item" data-testid={`${p}-guest-cta`}>
           <p className="text-s fg-secondary">{copy.guestState}</p>
           {onConnect && (
             <Button
+              className="self-start"
               type="button"
               variant="secondary"
               size="compact"
@@ -2287,15 +2294,16 @@ export function ShareResourceDialog({
               {copy.guestAction}
             </Button>
           )}
-        </div>
+        </Stack>
       );
     }
     if (!accountReady) {
       return (
-        <div className="space-y-3" data-testid={`${p}-account-unavailable`}>
+        <Stack gap="item" data-testid={`${p}-account-unavailable`}>
           <p className="text-s fg-secondary">{accountUnavailableLabel}</p>
           {onOpenAccountSettings && (
             <Button
+              className="self-start"
               type="button"
               variant="secondary"
               size="compact"
@@ -2305,7 +2313,7 @@ export function ShareResourceDialog({
               {copy.emptyAction}
             </Button>
           )}
-        </div>
+        </Stack>
       );
     }
     if (preflightState.status === 'checking') {
@@ -2317,10 +2325,11 @@ export function ShareResourceDialog({
     }
     if (preflightState.status === 'blocked') {
       return (
-        <div className="space-y-3">
+        <Stack gap="item">
           {preflightState.body}
           {preflightState.action && (
             <Button
+              className="self-start"
               type="button"
               variant="secondary"
               size="compact"
@@ -2336,15 +2345,15 @@ export function ShareResourceDialog({
               {preflightState.action.label}
             </Button>
           )}
-        </div>
+        </Stack>
       );
     }
     if (needsSetupGate) {
       return (
-        <div className="space-y-1" data-testid={`${p}-organization-required`}>
+        <Stack gap="tight" data-testid={`${p}-organization-required`}>
           <p className="text-s fg-secondary">{copy.organizationRequired}</p>
           {organizationSetup}
-        </div>
+        </Stack>
       );
     }
     return null;
@@ -2547,13 +2556,11 @@ export function ShareResourceDialog({
           </Notice>
         )}
       {validationError && state.status !== 'error' && (
-        <p
-          className="text-s fg-destructive"
-          role="alert"
-          data-testid={`${p}-validation-error`}
-        >
-          {validationError}
-        </p>
+        <ErrorBanner
+          className=""
+          error={validationError}
+          testId={`${p}-validation-error`}
+        />
       )}
     </>
   );

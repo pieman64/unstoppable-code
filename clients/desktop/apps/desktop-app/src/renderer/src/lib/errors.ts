@@ -12,23 +12,18 @@
  * Use {@link extractIpcErrorMessage} on every renderer code path that takes a
  * caught IPC rejection and renders it to the user, so the message is shown
  * verbatim with no `Error invoking remote method '…':` wrapper, no class-name
- * prefix, and no `Error:` prefix.
+ * prefix, and no `Error:` prefix. {@link extractIpcErrorName} returns the
+ * error class name Electron keeps in front of a wrapped IPC message
+ * (`CopilotPolicyError: …`), or undefined for a plain `Error`. Both live in
+ * `@canopy/protocol/app-errors/ipc-rejection`, shared with the portable
+ * CanopyClient adapter.
  */
-const IPC_INVOKE_WRAPPER_REGEX = /^Error invoking remote method '[^']*':\s*/;
-const ERROR_CLASS_PREFIX_REGEX = /^(?:Error|[A-Z][A-Za-z0-9_]*Error):\s*/;
+import { extractIpcErrorMessage } from '@canopy/protocol/app-errors/ipc-rejection';
 
-export function extractIpcErrorMessage(err: unknown): string {
-  const raw =
-    err instanceof Error && err.message
-      ? err.message
-      : typeof err === 'string'
-        ? err
-        : '';
-  if (!raw) return 'Unknown error';
-  let message = raw.replace(IPC_INVOKE_WRAPPER_REGEX, '');
-  message = message.replace(ERROR_CLASS_PREFIX_REGEX, '');
-  return message.length > 0 ? message : 'Unknown error';
-}
+export {
+  extractIpcErrorMessage,
+  extractIpcErrorName,
+} from '@canopy/protocol/app-errors/ipc-rejection';
 
 /**
  * Our sentence for a failure, paired with the raw reason behind it. Settings
@@ -55,23 +50,4 @@ export function detailsFor(
   failure: FailureDetails | null,
 ): string | undefined {
   return shown && failure?.shown === shown ? failure.details : undefined;
-}
-
-const IPC_ERROR_NAME_REGEX =
-  /^(?:Error invoking remote method '[^']*':\s*)?([A-Z][A-Za-z0-9_]*Error):\s/;
-
-/**
- * The error class name Electron keeps in front of a wrapped IPC message
- * (`CopilotPolicyError: …`), or undefined for a plain `Error`. Lets a
- * renderer show a main-process message verbatim only when main named it.
- */
-export function extractIpcErrorName(err: unknown): string | undefined {
-  const raw =
-    err instanceof Error && err.message
-      ? err.message
-      : typeof err === 'string'
-        ? err
-        : '';
-  const name = IPC_ERROR_NAME_REGEX.exec(raw)?.[1];
-  return name && name !== 'Error' ? name : undefined;
 }

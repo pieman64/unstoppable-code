@@ -4,7 +4,7 @@ import {
   getAgentModelAvailability,
   getModelDisplayName,
 } from '@canopy/desktop-shared/types';
-import type { AgentModelDefinition } from '@canopy/desktop-shared/types/agent-models';
+import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
 import type { AgentDefinitionSummaryPlugin } from '@canopy/ui-shared/components';
 
 /** Capabilities an agent selects: collections, skills, plugins and servers. */

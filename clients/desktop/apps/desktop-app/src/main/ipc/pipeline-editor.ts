@@ -1,50 +1,49 @@
-import type { BrowserWindow } from 'electron';
+import type { WebContents } from 'electron';
 import { BRAND } from '@canopy/brand/current';
+import type { InterfaceToolOutcome } from '@canopy/core-runtime/node/client';
 import {
   IPC_CHANNELS,
-  getRendererToolRequestScopeKey,
   type PipelineEditorRendererToolRequest,
   type PipelineEditorRendererToolResponse,
+  type PipelineEditorSaveSnapshot,
+  type PipelineEditorSaveTarget,
 } from '@canopy/desktop-shared/types';
-import { sendToWindowDetailed } from '../lib/window-send';
+import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { validateId } from '../lib/validation';
 import { registerIpcHandler } from './register';
 
-const TOOL_REQUEST_TIMEOUT_MS = 30_000;
-const COMPLETED_RESPONSE_CACHE_LIMIT = 100;
+/*
+ * The Pipeline Editor's renderer tools reach the main window only through its
+ * interface lease (CAN-5822): calls go out on `pipeline-editor:tool-request`
+ * and replies come back on `pipeline-editor:tool-response`, where the lease
+ * claims them before anything else sees them.
+ */
 
-type PendingRequest = {
-  request: PipelineEditorRendererToolRequest;
-  resolve: (response: PipelineEditorRendererToolResponse) => void;
-  timer: ReturnType<typeof setTimeout> | null;
-};
+let interfaceToolReplyHandler:
+  | ((
+      senderWebContentsId: number,
+      response: unknown,
+    ) => 'claimed' | 'not_claimed')
+  | null = null;
 
-// Keyed by origin chat plus request ID: request IDs are only unique within a
-// chat, so another chat's response must never settle or replay this one.
-const pending = new Map<string, PendingRequest>();
-const completed = new Map<string, PipelineEditorRendererToolResponse>();
-
-function scopeKey(value: { requestId: string; originChatId?: string }): string {
-  return getRendererToolRequestScopeKey(value.requestId, value.originChatId);
-}
-
-export interface PipelineEditorRendererToolSurfaces {
-  getMainWindow: () => BrowserWindow | null;
-}
-
-function rememberCompletedResponse(
-  key: string,
-  response: PipelineEditorRendererToolResponse,
+/** Replies to lease-delivered calls are claimed before they are ignored. */
+export function setPipelineEditorInterfaceToolReplyHandler(
+  handler: typeof interfaceToolReplyHandler,
 ): void {
-  completed.set(key, response);
-  if (completed.size > COMPLETED_RESPONSE_CACHE_LIMIT) {
-    const firstKey = completed.keys().next().value;
-    if (firstKey !== undefined) {
-      completed.delete(firstKey);
-    }
-  }
+  interfaceToolReplyHandler = handler;
 }
 
-function timeoutResponse(
+/** Deliver one lease-bound call to its renderer. */
+export function sendPipelineEditorInterfaceToolRequest(
+  webContents: WebContents,
+  request: PipelineEditorRendererToolRequest,
+): boolean {
+  if (webContents.isDestroyed()) return false;
+  webContents.send(IPC_CHANNELS.pipelineEditorToolRequest, request);
+  return true;
+}
+
+export function pipelineEditorTimeoutResponse(
   requestId: string,
 ): PipelineEditorRendererToolResponse {
   return {
@@ -54,137 +53,158 @@ function timeoutResponse(
   };
 }
 
-function surfaceUnavailableResponse(
-  request: PipelineEditorRendererToolRequest,
+export function pipelineEditorSurfaceUnavailableResponse(
+  requestId: string,
 ): PipelineEditorRendererToolResponse {
   return {
-    requestId: request.requestId,
+    requestId,
     ok: false,
     error: `The main ${BRAND.displayName} window Pipeline Editor renderer bridge is unavailable.`,
   };
 }
 
-function validateRendererToolResponse(
-  value: unknown,
-): PipelineEditorRendererToolResponse {
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const PIPELINE_SOURCES: ReadonlySet<string> = new Set([
+  'bundled',
+  'user',
+  'curated',
+  'project',
+  'shared',
+]);
+
+function isValidId(value: unknown): value is string {
+  try {
+    validateId(value, 'id');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseTarget(value: unknown): PipelineEditorSaveTarget | null {
+  if (!isRecord(value)) return null;
+  const { persistedId, source, revision, sharedRemoteId } = value;
   if (
-    typeof value !== 'object' ||
-    value === null ||
-    !('requestId' in value) ||
+    (persistedId !== undefined && typeof persistedId !== 'string') ||
+    (revision !== undefined &&
+      (!Number.isSafeInteger(revision) ||
+        typeof revision !== 'number' ||
+        revision < 0)) ||
+    (sharedRemoteId !== undefined && !isValidId(sharedRemoteId)) ||
+    // The ids a save writes under: a stored user pipeline's, or a share's.
+    (persistedId !== undefined &&
+      (source === 'user' || source === undefined) &&
+      !isValidId(persistedId))
+  )
+    return null;
+  const target: PipelineEditorSaveTarget = {};
+  if (persistedId !== undefined) target.persistedId = persistedId;
+  if (source !== undefined) {
+    if (!isPipelineSource(source)) return null;
+    target.source = source;
+  }
+  if (revision !== undefined) target.revision = revision;
+  if (sharedRemoteId !== undefined) target.sharedRemoteId = sharedRemoteId;
+  return target;
+}
+
+function isPipelineSource(
+  value: unknown,
+): value is NonNullable<PipelineEditorSaveTarget['source']> {
+  return typeof value === 'string' && PIPELINE_SOURCES.has(value);
+}
+
+function parseSnapshot(value: unknown): PipelineEditorSaveSnapshot | null {
+  if (!isRecord(value) || !isValidId(value.id)) return null;
+  const target = parseTarget(value.target);
+  if (!target) return null;
+  try {
+    // The same shape check every stored pipeline document passes.
+    const pipeline = parsePipelineText(
+      JSON.stringify({ pipeline: value.pipeline }),
+    );
+    return { id: value.id, target, pipeline };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The fields of a renderer reply the tool results carry, in the order they
+ * always have. Null for a reply that is not one.
+ */
+export function parsePipelineEditorRendererToolResponse(
+  value: unknown,
+): PipelineEditorRendererToolResponse | null {
+  if (
+    !isRecord(value) ||
     typeof value.requestId !== 'string' ||
     value.requestId.length === 0 ||
-    !('ok' in value) ||
     typeof value.ok !== 'boolean'
-  ) {
-    throw new Error('Invalid pipeline editor renderer tool response.');
-  }
+  )
+    return null;
   const response: PipelineEditorRendererToolResponse = {
     requestId: value.requestId,
     ok: value.ok,
   };
-  if ('originChatId' in value && typeof value.originChatId === 'string') {
+  if (typeof value.originChatId === 'string')
     response.originChatId = value.originChatId;
-  }
-  if ('error' in value && typeof value.error === 'string') {
-    response.error = value.error;
-  }
-  if ('pipelineYaml' in value && typeof value.pipelineYaml === 'string') {
+  if (typeof value.error === 'string') response.error = value.error;
+  if (typeof value.pipelineYaml === 'string')
     response.pipelineYaml = value.pipelineYaml;
-  }
-  if ('isDirty' in value && typeof value.isDirty === 'boolean') {
-    response.isDirty = value.isDirty;
-  }
-  if ('validation' in value && Array.isArray(value.validation)) {
-    response.validation = value.validation;
-  }
-  if ('readonly' in value && typeof value.readonly === 'boolean') {
-    response.readonly = value.readonly;
-  }
-  if ('pipelines' in value && Array.isArray(value.pipelines)) {
-    response.pipelines = value.pipelines;
+  if (typeof value.isDirty === 'boolean') response.isDirty = value.isDirty;
+  if (Array.isArray(value.validation)) response.validation = value.validation;
+  if (typeof value.readonly === 'boolean') response.readonly = value.readonly;
+  if (Array.isArray(value.pipelines)) response.pipelines = value.pipelines;
+  if (value.snapshot !== undefined) {
+    const snapshot = parseSnapshot(value.snapshot);
+    if (!snapshot) return null;
+    response.snapshot = snapshot;
   }
   return response;
 }
 
-function sendRendererToolRequest(
-  request: PipelineEditorRendererToolRequest,
-  surfaces: PipelineEditorRendererToolSurfaces,
-): boolean {
-  return sendToWindowDetailed(
-    surfaces.getMainWindow(),
-    IPC_CHANNELS.pipelineEditorToolRequest,
-    request,
-  ).delivered;
-}
-
-function settlePendingRequest(
-  key: string,
-  response: PipelineEditorRendererToolResponse,
-): void {
-  const request = pending.get(key);
-  if (!request) {
-    rememberCompletedResponse(key, response);
-    return;
+/** Today's response shapes for a lease-bound call's outcome (CAN-5822 D9). */
+export function pipelineEditorOutcomeToResponse(
+  outcome: InterfaceToolOutcome,
+  requestId: string,
+): PipelineEditorRendererToolResponse {
+  if (outcome.ok) {
+    const response = parsePipelineEditorRendererToolResponse(outcome.reply);
+    return response
+      ? { ...response, requestId }
+      : {
+          requestId,
+          ok: false,
+          error: 'The window returned an invalid result.',
+        };
   }
-  if (request.timer !== null) {
-    clearTimeout(request.timer);
-  }
-  pending.delete(key);
-  rememberCompletedResponse(key, response);
-  request.resolve(response);
-}
-
-export function requestPipelineEditorRendererTool(
-  request: PipelineEditorRendererToolRequest,
-  surfaces: PipelineEditorRendererToolSurfaces,
-): Promise<PipelineEditorRendererToolResponse> {
-  const key = scopeKey(request);
-  const cached = completed.get(key);
-  if (cached) {
-    return Promise.resolve(cached);
-  }
-
-  const existing = pending.get(key);
-  if (existing) {
-    return new Promise((resolve) => {
-      const previousResolve = existing.resolve;
-      existing.resolve = (response): void => {
-        previousResolve(response);
-        resolve(response);
+  switch (outcome.error.kind) {
+    case 'capability_unavailable':
+    case 'unavailable':
+    case 'resource_exhausted':
+      return pipelineEditorSurfaceUnavailableResponse(requestId);
+    case 'deadline_exceeded':
+      return pipelineEditorTimeoutResponse(requestId);
+    case 'cancelled':
+      return { requestId, ok: false, error: 'The tool call was cancelled.' };
+    default:
+      return {
+        requestId,
+        ok: false,
+        error: 'The window returned an invalid result.',
       };
-    });
   }
-
-  return new Promise<PipelineEditorRendererToolResponse>((resolve) => {
-    const timer = setTimeout(() => {
-      settlePendingRequest(key, timeoutResponse(request.requestId));
-    }, TOOL_REQUEST_TIMEOUT_MS);
-
-    pending.set(key, { request, resolve, timer });
-    try {
-      if (!sendRendererToolRequest(request, surfaces)) {
-        settlePendingRequest(key, surfaceUnavailableResponse(request));
-      }
-    } catch {
-      settlePendingRequest(key, surfaceUnavailableResponse(request));
-    }
-  });
 }
 
 export function registerPipelineEditorHandlers(): void {
   registerIpcHandler<[unknown], void>(
     IPC_CHANNELS.pipelineEditorToolResponse,
-    (_event, value) => {
-      const response = validateRendererToolResponse(value);
-      const key = scopeKey(response);
-      const request = pending.get(key);
-      if (!request) {
-        if (completed.has(key)) {
-          return;
-        }
-        return;
-      }
-      settlePendingRequest(key, response);
+    (event, value) => {
+      // Nothing else waits on these replies: an unclaimed one is late or stray.
+      interfaceToolReplyHandler?.(event.sender.id, value);
     },
   );
 }

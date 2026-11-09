@@ -10,6 +10,7 @@ import {
   makeRuleId,
 } from '@/components/settings/planDetectionTabState';
 import {
+  Stack,
   LoadingIndicator,
   type SettingsSaveState,
 } from '@canopy/ui-shared/components';
@@ -99,7 +100,7 @@ export function WorkspacePlanDetectionSection({
   const customRules = data.local.customRules ?? [];
 
   return (
-    <div className="space-y-4" data-testid="workspace-plan-detection">
+    <Stack gap="group" data-testid="workspace-plan-detection">
       {showIntro && (
         <p className="text-s fg-secondary">
           Detect plan documents in agent chats. Inherited rules come from your
@@ -138,6 +139,6 @@ export function WorkspacePlanDetectionSection({
           });
         }}
       />
-    </div>
+    </Stack>
   );
 }

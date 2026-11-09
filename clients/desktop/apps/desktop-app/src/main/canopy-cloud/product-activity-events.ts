@@ -132,13 +132,19 @@ export async function reportDesktopChatTurnActivity(
         ? { turnKey: input.turnKey }
         : { turnKey: input.turnKey, organizationExternalId };
     const credentialContext = await resolveCanopyCloudCredentialContext();
+    // Cleared while the credentials resolved (Active use count turned off,
+    // or the reporter was disposed): nothing is sent.
+    if (generation !== retryGeneration) return;
     await send(JSON.stringify(request), credentialContext, true, generation);
   } catch {
     // Dropped: ambient telemetry ingest remains the fallback count.
   }
 }
 
-/** Cancels every scheduled retry. Called when the reporter is disposed. */
+/**
+ * Cancels every scheduled retry and any report still resolving credentials.
+ * Called when the reporter is disposed or Active use count turns off.
+ */
 export function clearProductActivityRetryTimers(): void {
   retryGeneration += 1;
   retryTimers.forEach((timer) => clearTimeout(timer));

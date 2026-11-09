@@ -47,6 +47,10 @@ import {
   readPluginCacheIndex,
 } from '@canopy/desktop-shared/node/plugins/catalog-read-health';
 import { relayAllows } from '../renderer-relay/surface-allowlist';
+import {
+  mcpServerConfigRevision,
+  type DescribedMcpServer,
+} from '../../mcp/mcp-materialization';
 
 jest.mock('../../lib/main-process-logging', () => ({
   logMainProcessWarn: jest.fn(),
@@ -223,6 +227,7 @@ function fakes(root: string): Fakes {
       Promise.resolve(join(root, 'skills', item.sourceId, item.skillName)),
     canonicalSkillDirectory: (item) =>
       Promise.resolve(join(root, 'skills', item.sourceId, item.skillName)),
+    describeMcpServer: () => Promise.resolve(null),
   };
   return Object.assign(state, { deps });
 }
@@ -394,16 +399,37 @@ describe('desktop catalog materialization (CAN-4123)', () => {
     ).toBe(false);
   });
 
-  it('defers MCP servers to their ticket and materializes skills', async () => {
+  it('materializes skills and MCP servers', async () => {
     const f = fakes(root);
     mkdirSync(join(root, 'skills', 's', 'sk'), { recursive: true });
     writeFileSync(join(root, 'skills', 's', 'sk', 'SKILL.md'), '# sk\n');
+    const mcpServer = { serverId: 'srv', configId: 'cfg' };
+    const described: DescribedMcpServer = {
+      descriptor: {
+        kind: 'mcp_server',
+        entryId: mcpServerEntryId(mcpServer),
+        ...mcpServer,
+        transport: 'http',
+        binding: 'account',
+        configRevision: mcpServerConfigRevision({
+          binding: 'account',
+          index: { id: 'srv' },
+          server: null,
+        }),
+        secretRefs: [],
+      },
+      displayName: 'Server',
+      enabled: true,
+      pinned: { binding: 'account', index: { id: 'srv' }, server: null },
+    };
+    f.deps.describeMcpServer = (): Promise<DescribedMcpServer> =>
+      Promise.resolve(described);
     const tabs = JSON.parse(f.stores.tabs) as ChatTabsFile;
     const [tab] = tabs.tabs;
     if (!tab) throw new Error('No chat tab');
     tab.pluginSelections = selections({
       skillRefs: [{ sourceId: 's', skillName: 'sk' }],
-      mcpServerRefs: [{ serverId: 'srv', configId: 'cfg' }],
+      mcpServerRefs: [mcpServer],
     });
     f.stores.tabs = JSON.stringify(tabs);
     const outcome = await start(f).catalogMaterializations.materialize({
@@ -412,16 +438,17 @@ describe('desktop catalog materialization (CAN-4123)', () => {
       owner,
     });
 
-    expect(outcome.deferred).toEqual([
-      {
-        entryId: mcpServerEntryId({ serverId: 'srv', configId: 'cfg' }),
-        entryKind: 'mcp_server',
-      },
-    ]);
+    expect(outcome.deferred).toEqual([]);
     expect(outcome.effectiveItems).toContainEqual({
       entryId: skillEntryId({ sourceId: 's', skillName: 'sk' }),
       kind: 'skill',
     });
+    expect(outcome.effectiveItems).toContainEqual(
+      expect.objectContaining({
+        entryId: mcpServerEntryId(mcpServer),
+        kind: 'mcp_server',
+      }),
+    );
     expect(outcome.effectiveItems.map((item) => item.entryId)).toContain(
       pluginEntryId(ref('g')),
     );

@@ -6,7 +6,7 @@ import type { ThreadActiveFlag } from '../codex-runtime/generated/v2/ThreadActiv
 import type { ThreadItem } from '../codex-runtime/generated/v2/ThreadItem';
 import type { ThreadStatus } from '../codex-runtime/generated/v2/ThreadStatus';
 import type { TurnStatus } from '../codex-runtime/generated/v2/TurnStatus';
-import type { LifecycleRole } from './lifecycle-role';
+import type { LifecycleRole } from '@canopy/execution-engine/node/harness-contract/lifecycle-role';
 
 export const CODEX_LIFECYCLE = {
   notificationMethods: {

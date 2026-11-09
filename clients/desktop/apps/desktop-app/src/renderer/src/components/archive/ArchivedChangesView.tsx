@@ -36,6 +36,7 @@ import type {
   ChangedFileInfo,
 } from '@canopy/desktop-shared/types';
 import {
+  Surface,
   Button,
   DiffViewModeToggle,
   Notice,
@@ -316,92 +317,102 @@ export function ArchivedChangesView({
       className="flex min-h-0 flex-1 flex-col"
     >
       {/* Summary bar */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2">
-        {summaryCount !== null && (
-          <span
-            data-testid="archived-changes-summary-count"
-            className="text-xs font-medium fg-primary"
-          >
-            {changedFilesText(summaryCount)}
-          </span>
-        )}
-        {gitChanges?.status === 'complete' ? (
-          <DiffBadge
-            stats={{
-              insertions: gitChanges.insertions,
-              deletions: gitChanges.deletions,
-            }}
-          />
-        ) : (
-          <span
-            data-testid="archived-changes-totals-unavailable"
-            className="text-xs fg-secondary"
-          >
-            Change totals unavailable
-          </span>
-        )}
-        <div className="ml-auto shrink-0">
-          <DiffViewModeToggle
-            value={viewMode}
-            onChange={setViewMode}
-            dataTestId="archived-changes-view-mode"
-          />
+      <Surface variant="section" boundary="bottom" className="shrink-0">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
+          {summaryCount !== null && (
+            <span
+              data-testid="archived-changes-summary-count"
+              className="text-xs font-medium fg-primary"
+            >
+              {changedFilesText(summaryCount)}
+            </span>
+          )}
+          {gitChanges?.status === 'complete' ? (
+            <DiffBadge
+              stats={{
+                insertions: gitChanges.insertions,
+                deletions: gitChanges.deletions,
+              }}
+            />
+          ) : (
+            <span
+              data-testid="archived-changes-totals-unavailable"
+              className="text-xs fg-secondary"
+            >
+              Change totals unavailable
+            </span>
+          )}
+          <div className="ml-auto shrink-0">
+            <DiffViewModeToggle
+              value={viewMode}
+              onChange={setViewMode}
+              dataTestId="archived-changes-view-mode"
+            />
+          </div>
         </div>
-      </div>
+      </Surface>
 
       {changes !== null && changes.status === 'success' && (
         <>
           {changes.truncated && (
-            <Notice
-              intent="attention"
-              role="none"
-              title="List truncated"
-              data-testid="archived-changes-truncation"
-              className="mx-4 my-2 shrink-0"
-            >
-              Showing the first 50,000 of{' '}
-              {changes.totalCount.toLocaleString('en-US')} changed files.
-            </Notice>
+            <div className="shrink-0 px-4 py-2">
+              <Notice
+                intent="attention"
+                role="none"
+                title="List truncated"
+                data-testid="archived-changes-truncation"
+                className="shrink-0"
+              >
+                Showing the first 50,000 of{' '}
+                {changes.totalCount.toLocaleString('en-US')} changed files.
+              </Notice>
+            </div>
           )}
           {changes.loadMoreError ? (
-            <div
-              data-testid="archived-changes-page-error"
-              className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5 text-2xs fg-secondary"
-            >
-              Changed files couldn’t be loaded for this archive.
-              <Button
-                size="compact"
-                data-testid="archived-changes-page-retry"
-                onClick={retryChanges}
+            <Surface variant="section" boundary="bottom" className="shrink-0">
+              <div
+                data-testid="archived-changes-page-error"
+                className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-1.5 text-2xs fg-secondary"
               >
-                Try again
-              </Button>
-            </div>
+                Changed files couldn’t be loaded for this archive.
+                <Button
+                  size="compact"
+                  data-testid="archived-changes-page-retry"
+                  onClick={retryChanges}
+                >
+                  Try again
+                </Button>
+              </div>
+            </Surface>
           ) : manualPagingRequired ? (
-            <div
-              data-testid="archived-changes-load-more"
-              className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5 text-2xs fg-secondary"
-            >
-              Showing {loadedFileCount.toLocaleString('en-US')} of{' '}
-              {(knownTotal ?? loadedFileCount).toLocaleString('en-US')} changed
-              files.
-              <Button
-                size="compact"
-                data-testid="archived-changes-load-more-button"
-                onClick={loadMoreChanges}
+            <Surface variant="section" boundary="bottom" className="shrink-0">
+              <div
+                data-testid="archived-changes-load-more"
+                className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-1.5 text-2xs fg-secondary"
               >
-                Load more
-              </Button>
-            </div>
+                Showing {loadedFileCount.toLocaleString('en-US')} of{' '}
+                {(knownTotal ?? loadedFileCount).toLocaleString('en-US')}{' '}
+                changed files.
+                <Button
+                  size="compact"
+                  data-testid="archived-changes-load-more-button"
+                  onClick={loadMoreChanges}
+                >
+                  Load more
+                </Button>
+              </div>
+            </Surface>
           ) : (
             changes.loadingMore && (
-              <div
-                data-testid="archived-changes-page-loading"
-                className="flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-2xs fg-secondary"
-              >
-                <LoadingSpinner tone="secondary" />
-                Loading more files…
-              </div>
+              <Surface variant="section" boundary="bottom" className="shrink-0">
+                <div
+                  data-testid="archived-changes-page-loading"
+                  className="flex shrink-0 items-center gap-2 px-4 py-1.5 text-2xs fg-secondary"
+                >
+                  <LoadingSpinner tone="secondary" />
+                  Loading more files…
+                </div>
+              </Surface>
             )
           )}
         </>
@@ -488,24 +499,30 @@ export function ArchivedChangesView({
             ) : (
               <>
                 {selectedFile !== null && (
-                  <div className="flex shrink-0 items-center gap-2 border-b px-4 py-1.5">
-                    <span
-                      className="min-w-0 truncate text-xs font-medium fg-primary/85"
-                      title={fileRowTitle(selectedFile)}
-                    >
-                      {selectedFile.previousPath !== undefined
-                        ? `${selectedFile.previousPath} → ${selectedFile.path}`
-                        : selectedFile.path}
-                    </span>
-                    <span className="ml-auto flex shrink-0 items-center gap-1.5 text-2xs">
-                      <span className="fg-success">
-                        +{selectedFile.insertions}
+                  <Surface
+                    variant="section"
+                    boundary="bottom"
+                    className="shrink-0"
+                  >
+                    <div className="flex shrink-0 items-center gap-2 px-4 py-1.5">
+                      <span
+                        className="min-w-0 truncate text-xs font-medium fg-primary/85"
+                        title={fileRowTitle(selectedFile)}
+                      >
+                        {selectedFile.previousPath !== undefined
+                          ? `${selectedFile.previousPath} → ${selectedFile.path}`
+                          : selectedFile.path}
                       </span>
-                      <span className="fg-destructive">
-                        −{selectedFile.deletions}
+                      <span className="ml-auto flex shrink-0 items-center gap-1.5 text-2xs">
+                        <span className="fg-success">
+                          +{selectedFile.insertions}
+                        </span>
+                        <span className="fg-destructive">
+                          −{selectedFile.deletions}
+                        </span>
                       </span>
-                    </span>
-                  </div>
+                    </div>
+                  </Surface>
                 )}
                 <DiffContentView
                   oldValue={selectedDiff.response.oldValue}

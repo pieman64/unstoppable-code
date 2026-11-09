@@ -1,4 +1,4 @@
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import type { PipelineStatusReason } from '@canopy/ui-shared/lib';
 
 export type PipelineRunRowState = {

@@ -6,7 +6,7 @@ import type {
   SpawnedProcess,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { ExecutionHostProcess } from '@canopy/desktop-shared/node/execution-host/port';
-import { killProcessGroupByPid } from '@canopy/desktop-shared/node/lib/process-kill';
+import { killProcessGroupByPid } from '@canopy/execution-engine/node/lib/process-kill';
 import { getExecutionHostPort } from '../execution-host/utility-process-host';
 import type {
   ClaudeProcessHostRequest,

@@ -1,4 +1,4 @@
-import { execFile, type ChildProcess } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 
 // x64 PowerShell under Windows-on-ARM emulation took up to 4.6 s to query CIM.
@@ -64,47 +64,6 @@ export function describeCopilotProcessFailure(
       ? errno(error.cause)
       : undefined)
   );
-}
-
-/** Signal only a live owned child; never fall back from a missing group to a bare PID. */
-export async function killCopilotProcess(
-  child: ChildProcess,
-  signal: NodeJS.Signals,
-): Promise<void> {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null)
-    return;
-  const pid = child.pid;
-  if (hostOperatingSystem() === 'win32') {
-    await new Promise<void>((resolve, reject) => {
-      const settle = (error: Error | null): void => {
-        if (error && child.exitCode === null && child.signalCode === null)
-          reject(failure('Copilot process termination failed.', error));
-        else resolve();
-      };
-      startCommand(
-        () =>
-          execFile(
-            'taskkill',
-            ['/pid', String(pid), '/t', '/f'],
-            { windowsHide: true, timeout: WINDOWS_PROCESS_KILL_TIMEOUT_MS },
-            settle,
-          ),
-        settle,
-      );
-    });
-    return;
-  }
-  try {
-    process.kill(-pid, signal);
-  } catch (error) {
-    if (
-      !error ||
-      typeof error !== 'object' ||
-      !('code' in error) ||
-      error.code !== 'ESRCH'
-    )
-      throw error;
-  }
 }
 
 /** A failed OS kill or disconnected SDK must not leave its owner waiting forever. */

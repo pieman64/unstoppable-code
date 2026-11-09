@@ -19,7 +19,7 @@ import type {
   ChatTabPluginSelections,
   PluginSelectionTombstones,
 } from '../types';
-import type { IPCResult } from './pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 
 /**
  * Provider universe for the invocable inventory. Ollama reuses the Claude

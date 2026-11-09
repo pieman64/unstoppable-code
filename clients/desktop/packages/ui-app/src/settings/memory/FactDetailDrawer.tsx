@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX, ReactNode } from 'react';
-import { Button, Heading } from '@canopy/ui-shared/components';
+import { Stack, Button, Heading } from '@canopy/ui-shared/components';
 import { X } from '@canopy/ui-shared/icons/AppIcons';
 import type { ExplorerFactDetail } from '@canopy/protocol/settings/organization-memory';
 import { withPrivacyClass } from '../account/privacy-class';
@@ -79,14 +79,14 @@ export function FactDetailDrawer({
           </section>
         )}
 
-        <section className="mt-6">
+        <Stack as="section" gap="inline" className="mt-6">
           <Heading level={3} variant="title">
             Provenance
           </Heading>
           {detail.sources.length === 0 ? (
-            <p className="mt-2 text-s fg-secondary">No source rows recorded.</p>
+            <p className="text-s fg-secondary">No source rows recorded.</p>
           ) : (
-            <ul className="mt-2 space-y-2">
+            <Stack as="ul" gap="inline">
               {detail.sources.map((source) => (
                 <Surface
                   as="li"
@@ -117,16 +117,16 @@ export function FactDetailDrawer({
                   </div>
                 </Surface>
               ))}
-            </ul>
+            </Stack>
           )}
-        </section>
+        </Stack>
 
         {detail.supersessionChain.length > 1 && (
-          <section className="mt-6">
+          <Stack as="section" gap="inline" className="mt-6">
             <Heading level={3} variant="title">
               Supersession chain
             </Heading>
-            <ol className="mt-2 space-y-2 border-l pl-4">
+            <ol className="border-l pl-4 flex flex-col gap-2">
               {detail.supersessionChain.map((fact) => (
                 <li key={fact.id} className="relative text-xs fg-secondary">
                   <span className="absolute -left-4.75 top-1 h-2 w-2 rounded-full bg-fg-tertiary" />
@@ -142,7 +142,7 @@ export function FactDetailDrawer({
                 </li>
               ))}
             </ol>
-          </section>
+          </Stack>
         )}
       </aside>
     </CardIfEmbedded>

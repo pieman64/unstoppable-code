@@ -12,6 +12,11 @@ import { parseGitHubRepo } from '@/lib/format';
 export interface ImportedSharedPluginRef {
   marketplaceId: string;
   pluginName: string;
+  /**
+   * Whether this import made the plugin available: it added the marketplace
+   * or ran the plugin's install. False when both were already in place.
+   */
+  installed: boolean;
 }
 
 function isAlreadyAddedError(message: string | undefined): boolean {
@@ -135,6 +140,8 @@ async function importBuiltInMarketplacePlugin(
   return {
     marketplaceId: marketplace.id,
     pluginName: plugin.name,
+    // The built-in marketplace is bundled; matching it installs nothing.
+    installed: false,
   };
 }
 
@@ -150,9 +157,13 @@ async function importGitHubMarketplacePlugin(
 
   let marketplace = findMarketplaceByRepo(initial.data, repo);
   let cache = initial.data;
+  let installed = false;
   if (!marketplace) {
     options.onProgress?.('Adding marketplace…');
     const addResult = await window.plugins.addMarketplace(repo);
+    // A plugin hosted in the marketplace itself is available once it is added.
+    // Adding counts even if the plugin was installed under another marketplace.
+    installed = addResult.success;
     if (!addResult.success && !isAlreadyAddedError(addResult.error)) {
       throw new Error(
         addResult.error ?? `Failed to add marketplace "${repo}".`,
@@ -204,10 +215,12 @@ async function importGitHubMarketplacePlugin(
         installResult.error ?? `Failed to install plugin "${plugin.name}".`,
       );
     }
+    installed = true;
   }
 
   return {
     marketplaceId: marketplace.id,
     pluginName: plugin.name,
+    installed,
   };
 }

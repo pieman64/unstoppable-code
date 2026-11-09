@@ -1,4 +1,5 @@
 import {
+  CATALOG_SKILL_UPDATES_MAX_COUNT,
   CORE_CATALOG_SKILL_CODES,
   type CORE_CATALOG_SKILL_INSTRUCTION_DEFINITIONS,
   type CORE_CATALOG_SKILL_QUERY_DEFINITIONS,
@@ -209,6 +210,39 @@ function installResult(
   return result;
 }
 
+type UpdatesCheckRow = {
+  sourceId: string;
+  skillName: string;
+  updateAvailable: boolean;
+};
+
+/**
+ * The compact update-check result (CAN-5898): counts for every checked skill,
+ * and the skills with an update only as far as a ledger outcome can hold
+ * them. The full map stays with the skill service.
+ */
+function updatesCheckResult(rows: readonly UpdatesCheckRow[]): {
+  updates: (UpdatesCheckRow & { entryId: string })[];
+  checkedCount: number;
+  updateCount: number;
+} {
+  const available = rows.filter((row) => row.updateAvailable);
+  const updates: (UpdatesCheckRow & { entryId: string })[] = [];
+  const result = {
+    updates,
+    checkedCount: Math.min(rows.length, CATALOG_SKILL_UPDATES_MAX_COUNT),
+    updateCount: Math.min(available.length, CATALOG_SKILL_UPDATES_MAX_COUNT),
+  };
+  for (const row of available) {
+    updates.push({ entryId: skillEntryId(row), ...row });
+    if (!isBoundedCanopyJsonValue(result)) {
+      updates.pop();
+      break;
+    }
+  }
+  return result;
+}
+
 const decodeWith =
   <Result extends CanopyJsonValue>(schema: {
     safeParse: (value: unknown) => { data?: Result };
@@ -344,12 +378,7 @@ export function createCoreSkillCatalogHandlers(options: {
           context,
           params,
           decode: decodeWith(CatalogSkillUpdatesCheckResultSchema),
-          effect: async () => ({
-            updates: (await host.checkUpdates()).map((row) => ({
-              entryId: skillEntryId(row),
-              ...row,
-            })),
-          }),
+          effect: async () => updatesCheckResult(await host.checkUpdates()),
         }),
     },
   };

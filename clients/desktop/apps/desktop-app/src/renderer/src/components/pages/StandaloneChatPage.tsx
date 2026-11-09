@@ -1,3 +1,4 @@
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 /**
  * The Cowork page — the Cowork workspace UX aligned onto the Code-workspace
  * panel grid. Renders {@link CoworkTopBar} (New chat / archived chats / Open
@@ -40,12 +41,13 @@ import { useCoworkArchiveOverlayOpen } from '@/components/standalone-chat/cowork
 import { useNavigationStore } from '@/stores/navigationStore';
 import { CoworkTopBar } from '@/components/panels/CoworkTopBar';
 import { PanelGridSurface } from '@/components/panels/PanelGridSurface';
+import { WorktreeGitActionError } from '@/components/github/WorktreeGitActionError';
 import type { PanelHostState } from '@/lib/panels/panel-host-context';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import type { WorktreeSelection } from '@canopy/desktop-shared/types';
 import { ForkedContainerNotice } from '@/components/shared-containers/ForkedContainerNotice';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import { NoticeButton } from '@canopy/ui-shared/components';
 import { draftHasContent } from '@/lib/chat-draft-content';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -403,6 +405,13 @@ export function StandaloneChatPage(): JSX.Element {
       {ready && !containerViewerOpen && (
         <>
           <CoworkTopBar workspaceId={activeChatProjectId} />
+          {/* A failed git or GitHub action from this work entry's chats (a
+              watched pull request that couldn't open), under the bar as on
+              the worktree page. */}
+          <WorktreeGitActionError
+            projectId={activeChatProjectId}
+            worktreeId={activeWorkEntryId}
+          />
           <ForkedContainerNotice
             projectId={activeChatProjectId}
             worktreeId={activeWorkEntryId}
@@ -413,10 +422,11 @@ export function StandaloneChatPage(): JSX.Element {
       <section className="relative flex min-h-55 min-w-0 flex-1 flex-col overflow-hidden bg-card/50">
         {orgDefaultChatsError?.projectId === activeChatProjectId && (
           <div className="px-4 pt-4">
-            <Notice
-              intent="destructive"
-              data-testid="org-default-chats-provision-error"
-              actions={
+            <DesktopErrorBanner
+              className=""
+              error={orgDefaultChatsError.message}
+              testId="org-default-chats-provision-error"
+              secondaryAction={
                 <NoticeButton
                   variant="primary"
                   data-testid="org-default-chats-provision-retry"
@@ -429,9 +439,7 @@ export function StandaloneChatPage(): JSX.Element {
                   Try again
                 </NoticeButton>
               }
-            >
-              {orgDefaultChatsError.message}
-            </Notice>
+            />
           </div>
         )}
         {ready ? (

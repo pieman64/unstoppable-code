@@ -51,7 +51,7 @@ export function TerminalStatusPopover({
       {rows.length === 0 ? (
         <div className="text-xs fg-secondary">No terminal details</div>
       ) : (
-        <div className="space-y-1.5">
+        <div className="flex flex-col gap-1.5">
           {rows.map((row) => (
             <div
               key={row.terminalId}

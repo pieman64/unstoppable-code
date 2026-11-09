@@ -14,10 +14,10 @@ import {
   type PersistedChatTab,
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
-import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { normalizeAgentArtifactCarryByTurn } from '@canopy/desktop-shared/lib/agent-artifacts';
-import { readCodexSpeedRecord } from '@canopy/desktop-shared/lib/codex-speed';
+import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 import { normalizePersistedUsage } from '@/lib/chatUsageNormalization';
 import { sanitizePersistedChatMessages } from '@/lib/chatMessageSanitization';
 import type { ChatTab } from '@/stores/chatStore';

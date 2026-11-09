@@ -5,7 +5,7 @@ import type {
   McpServerRef,
   RewriteMcpServerRefsRequest,
   RewriteMcpServerRefsResponse,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { bumpGlobalPluginDefaultsRevision } from '../agents/session-manager';
 import {
   chatStorageScopeIds,

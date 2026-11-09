@@ -11,7 +11,7 @@ import {
   type CodeGraphPreferenceMode,
   type CodeGraphPreferences,
 } from '@canopy/desktop-shared/types';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { ErrorBanner, FieldError } from '@canopy/ui-shared/components';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import {
@@ -354,14 +354,13 @@ export function CodeGraphTab(): JSX.Element {
             }
           >
             {timeoutError && (
-              <p
+              <FieldError
                 id="code-graph-generation-timeout-error"
-                role="alert"
-                className="text-xs fg-destructive"
+                announce
                 data-testid="code-graph-generation-timeout-error"
               >
                 {timeoutError}
-              </p>
+              </FieldError>
             )}
           </SettingsRow>
         </SettingsGroup>

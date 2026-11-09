@@ -1,4 +1,4 @@
-import type { UsageFetchErrorKind } from '../types/observability';
+import type { UsageFetchErrorKind } from '@canopy/execution-engine/types/observability';
 
 /**
  * Classify a raw provider usage-fetch failure message into a broad

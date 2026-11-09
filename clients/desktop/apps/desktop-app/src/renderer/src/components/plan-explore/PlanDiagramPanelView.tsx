@@ -1,15 +1,12 @@
 import { memo, Suspense, useCallback, useRef, type JSX } from 'react';
 import type { TrackedPlanData } from '@canopy/desktop-shared/types';
 import { useDiagramFind, type DiagramSearchHandle } from '@canopy/ui-app/find';
-import { HeaderActionButton } from '@canopy/ui-shared';
+import { LoadingRegion, HeaderActionButton } from '@canopy/ui-shared';
 import { LazyPlanVisualizerPanel } from '@/components/plan-explore/lazyPlanVisualizer';
 import { usePlanComments } from '@/components/plan-explore/usePlanComments';
 import { usePlanDiagramRevealRequest } from '@/components/plan-explore/usePlanDiagramRevealRequest';
 import { useSharedPlanCommentPull } from '@/components/plan-explore/usePlanViewData';
-import {
-  CenteredLoadingSpinner,
-  DelayedLoadingPlaceholder,
-} from '@canopy/ui-shared/components';
+import {} from '@canopy/ui-shared/components';
 import {
   planDiagramPanelTitle,
   useIsPlanPanelOnScreen,
@@ -102,12 +99,7 @@ export const PlanDiagramPanelView = memo(function PlanDiagramPanelView({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Suspense
           fallback={
-            <DelayedLoadingPlaceholder
-              className="flex-1"
-              slowNote="Still loading diagram…"
-            >
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
+            <LoadingRegion layout="fill" slowNote="Still loading diagram…" />
           }
         >
           <LazyPlanVisualizerPanel

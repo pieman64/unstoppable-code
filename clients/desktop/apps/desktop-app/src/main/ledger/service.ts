@@ -47,7 +47,7 @@ import type { CanopyHandlerContext } from '@canopy/core-runtime';
 import {
   redactSecrets,
   redactValues,
-} from '@canopy/desktop-shared/lib/redaction';
+} from '@canopy/execution-engine/lib/redaction';
 import {
   LedgerActorDirectory,
   type LedgerChatLivenessSource,

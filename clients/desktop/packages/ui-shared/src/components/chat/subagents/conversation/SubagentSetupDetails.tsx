@@ -1,3 +1,4 @@
+import { Button } from '../../../Button';
 import { useId, useState, type JSX } from 'react';
 import type { SubagentNode } from '@canopy/agent-transcript';
 import { REPLAY_BLOCK_CLASS } from '../../../../lib/replay-privacy';
@@ -62,9 +63,6 @@ const COLLAPSED_WRITE_PATHS = 5;
 /** Characters of a long error shown before Show full error. */
 const COLLAPSED_ERROR_CHARACTERS = 240;
 
-const TOGGLE_CLASSNAME =
-  'self-start fg-secondary underline hover:fg-primary focus-visible:outline focus-visible:ring-1 focus-visible:ring-line-accent';
-
 function PermissionsDetail({
   writePaths,
 }: {
@@ -98,8 +96,9 @@ function PermissionsDetail({
         ))}
       </ul>
       {collapsible ? (
-        <button
-          type="button"
+        <Button
+          variant="link"
+          className="self-start"
           data-testid="subagent-chat-permissions-toggle"
           aria-expanded={expanded}
           aria-controls={listId}
@@ -108,13 +107,12 @@ function PermissionsDetail({
               ? SUBAGENT_SHOW_FEWER_PATHS_LABEL
               : subagentShowMorePathsAccessibleLabel(remaining)
           }
-          className={TOGGLE_CLASSNAME}
           onClick={(): void => setExpanded((current): boolean => !current)}
         >
           {expanded
             ? SUBAGENT_SHOW_LESS_LABEL
             : subagentShowMorePathsLabel(remaining)}
-        </button>
+        </Button>
       ) : null}
       <span className="fg-tertiary">{SUBAGENT_PERMISSIONS_APPROVALS_NOTE}</span>
     </div>
@@ -139,8 +137,9 @@ function ErrorDetail({ error }: { readonly error: string }): JSX.Element {
         <StatusLabel>{shown}</StatusLabel>
       </span>
       {collapsible ? (
-        <button
-          type="button"
+        <Button
+          variant="link"
+          className="self-start"
           data-testid="subagent-chat-setup-error-toggle"
           aria-expanded={expanded}
           aria-controls={textId}
@@ -149,11 +148,10 @@ function ErrorDetail({ error }: { readonly error: string }): JSX.Element {
               ? SUBAGENT_SHOW_LESS_ERROR_LABEL
               : SUBAGENT_SHOW_FULL_ERROR_LABEL
           }
-          className={TOGGLE_CLASSNAME}
           onClick={(): void => setExpanded((current): boolean => !current)}
         >
           {expanded ? SUBAGENT_SHOW_LESS_LABEL : SUBAGENT_SHOW_MORE_LABEL}
-        </button>
+        </Button>
       ) : null}
     </div>
   );

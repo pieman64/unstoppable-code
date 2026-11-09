@@ -5,7 +5,7 @@ import {
   NOTICE_GALLERY_SECTIONS,
   type NoticeGalleryEntry,
 } from './noticeStateGalleryData';
-import { Chip, Heading, Surface } from '@canopy/ui-shared/components';
+import { Stack, Chip, Heading, Surface } from '@canopy/ui-shared/components';
 
 /**
  * The composer preview at the top of the Notice States gallery: the real
@@ -103,20 +103,22 @@ export function NoticeComposerPreview({
 
   return (
     <section
-      className="mb-12"
+      className="flex flex-col gap-3"
       data-testid="notice-gallery-section-composer-preview"
     >
-      <Heading level={2} variant="title" className="mb-1">
-        In the composer
-      </Heading>
-      <p className="mb-3 max-w-3xl text-xs fg-secondary">
-        The shipping composer at its real width, on the chat surface. Pick a
-        notice to raise it where the live stack sits, directly above the input.
-        Typing and sending do nothing.
-      </p>
+      <Stack gap="tight">
+        <Heading className="" level={2} variant="title">
+          In the composer
+        </Heading>
+        <p className="max-w-3xl text-xs fg-secondary">
+          The shipping composer at its real width, on the chat surface. Pick a
+          notice to raise it where the live stack sits, directly above the
+          input. Typing and sending do nothing.
+        </p>
+      </Stack>
 
       <div
-        className="mb-3 flex flex-wrap gap-1.5"
+        className="flex flex-wrap gap-1.5"
         role="group"
         aria-label="Composer notices"
         data-testid="notice-preview-picker"

@@ -1,3 +1,4 @@
+import { prepareCanopySecureStorage } from '@canopy/desktop-shared/node/build-storage-startup';
 import {
   ELECTRON_MIGRATION_ROLE,
   createElectronMigrationLaunch,
@@ -14,6 +15,7 @@ import {
 import {
   connectCanopyClient,
   createCanopyDaemonHostLaunch,
+  createDaemonOwnerCredential,
   createRecoverableCanopyStartupClaim,
   type CanopyConnectOptions,
   type CanopyDaemonBeforeSpawn,
@@ -34,6 +36,7 @@ import {
 } from '@canopy/core-transport/node';
 import { daemonName, type CanopyRuntimeMode } from '@canopy/protocol/brand';
 import {
+  CanopyRuntimeDescriptorSchema,
   CORE_EXECUTION_STREAMS,
   CORE_INTEGRATION_CREDENTIAL_INSTRUCTIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
@@ -43,11 +46,17 @@ import {
   CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
   WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
   WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS,
+  WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
+  WORKER_PIPELINE_QUERY_DEFINITIONS,
+  WORKER_PIPELINE_STREAM_DEFINITIONS,
   WORKER_CODE_GRAPH_STREAM_DEFINITIONS,
   WORKER_QUERY_DEFINITIONS,
+  WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
+  WORKER_STREAM_DEFINITIONS,
   WORKER_SCRIPT_INSTRUCTION_DEFINITIONS,
   WORKER_SCRIPT_STREAM_DEFINITIONS,
   WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
+  WORKER_TERMINAL_QUERY_DEFINITIONS,
   WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_STREAM_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
@@ -59,6 +68,10 @@ import {
   getBundledBinDir,
   getEnhancedEnv,
 } from '@canopy/desktop-shared/pipelines/config-paths';
+import type {
+  ElectronDaemonOwnerClient,
+  ELECTRON_DAEMON_OWNER_DEFINITIONS,
+} from './electron-daemon-owner';
 
 declare const __CANOPY_WINDOWS_PROCESS_SOURCE_PATH__: string | undefined;
 
@@ -86,8 +99,16 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // Default eligible local renderer summary reads (CAN-5719).
     'worker.codeGraph.query':
       WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS['worker.codeGraph.query'],
+    // Orphaned Claude terminals after a main crash (CAN-5097).
+    'worker.terminal.list':
+      WORKER_TERMINAL_QUERY_DEFINITIONS['worker.terminal.list'],
+    // Eligible local window workflows without model steps (CAN-5086).
+    'worker.pipeline.execution.get':
+      WORKER_PIPELINE_QUERY_DEFINITIONS['worker.pipeline.execution.get'],
   },
   instructions: {
+    // CAN-5908: typing only; no production entry route is selected.
+    ...WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
     ...CORE_INTEGRATION_CREDENTIAL_INSTRUCTIONS,
     ...CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
     ...CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
@@ -101,6 +122,15 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     'worker.codeGraph.builds.cancel':
       WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS[
         'worker.codeGraph.builds.cancel'
+      ],
+    // Eligible local window workflows without model steps (CAN-5086).
+    'worker.pipeline.execution.start':
+      WORKER_PIPELINE_INSTRUCTION_DEFINITIONS[
+        'worker.pipeline.execution.start'
+      ],
+    'worker.pipeline.execution.cancel':
+      WORKER_PIPELINE_INSTRUCTION_DEFINITIONS[
+        'worker.pipeline.execution.cancel'
       ],
     // The merged generation queue (CAN-5628).
     'worker.codeGraph.buildQueue.update':
@@ -119,6 +149,9 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
       WORKER_SCRIPT_INSTRUCTION_DEFINITIONS['worker.script.execution.cancel'],
   },
   streams: {
+    // CAN-5908: typing only; CAN-4730 owns watch route selection.
+    'worker.filesystem.watch':
+      WORKER_STREAM_DEFINITIONS['worker.filesystem.watch'],
     'core.runtime.events':
       CORE_TRANSPORT_STREAM_DEFINITIONS['core.runtime.events'],
     // W5e: served only by a W5 qualification daemon; production's manifest
@@ -131,6 +164,9 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // a daemon without it refuses the stream and the monitor goes on alone.
     'core.execution.status.events':
       CORE_EXECUTION_STREAMS['core.execution.status.events'],
+    // Eligible local window workflows without model steps (CAN-5086).
+    'worker.pipeline.execution.events':
+      WORKER_PIPELINE_STREAM_DEFINITIONS['worker.pipeline.execution.events'],
     // The merged generation queue (CAN-5628).
     'worker.codeGraph.buildQueue.events':
       WORKER_CODE_GRAPH_STREAM_DEFINITIONS[
@@ -148,6 +184,13 @@ type ConnectOptions = CanopyConnectOptions &
   Omit<
     CanopyClientOptions<D['queries'], D['instructions'], D['streams']>,
     'connection'
+  >;
+type O = typeof ELECTRON_DAEMON_OWNER_DEFINITIONS;
+/** The owner session's connect options; the proof comes from this launch's credential. */
+export type OwnerConnectOptions = CanopyConnectOptions &
+  Omit<
+    CanopyClientOptions<O['queries'], O['instructions'], O['streams']>,
+    'connection' | 'ownerProof'
   >;
 export interface ElectronDaemonHostInputs {
   /** Trusted main composition only; no renderer fields. */
@@ -190,6 +233,15 @@ export async function createElectronDaemonHost(
   canonicalDataRoot: string;
   launch: ReturnType<typeof createCanopyDaemonHostLaunch>;
   connect: (options: ConnectOptions) => Promise<ElectronDaemonClient>;
+  /** CAN-5771: the daemon owner credential and its checks. Trusted main only. */
+  owner: {
+    /** Whether the published daemon is the one this launch spawned last. */
+    isSpawnedDaemon(signal: AbortSignal): Promise<boolean>;
+    /** Whether this launch has spawned a daemon at all. */
+    hasSpawned(): boolean;
+    /** `connect` with `ownerProof` over this launch's credential. */
+    connect(options: OwnerConnectOptions): Promise<ElectronDaemonOwnerClient>;
+  };
 }> {
   const os = hostPlatformOperatingSystem();
   // One selection serves both process inspection and the authority principal.
@@ -203,6 +255,7 @@ export async function createElectronDaemonHost(
   const requestedRoot = resolve(
     inputs.dataRoot ?? getResolvedCanopyDataDir(runtimeMode).path,
   );
+  if (inputs.dataRoot === undefined) await prepareCanopySecureStorage();
   await mkdir(requestedRoot, { recursive: true, mode: 0o700 });
   const { authorityId, canonicalDataRoot: dataRoot } =
     await deriveLocalAuthorityIdentity(
@@ -257,7 +310,18 @@ export async function createElectronDaemonHost(
     if ((await realpath(runtimeDirectory)) !== runtimeDirectory)
       throw unavailable('Core runtime directory is not canonical.');
     await privatePath(runtimeDirectory, 'directory');
+    await prepareEndpoint();
     signal.throwIfAborted();
+  };
+  /** A long data root's socket alias, checked before every connect (CAN-5694). */
+  const prepareEndpoint = async (): Promise<void> => {
+    if (platform.endpoints.semantics !== 'filesystem-socket') return;
+    const endpoints = platform.endpoints;
+    await endpoints
+      .prepare(endpoints.address({ dataRoot, endpointName: 'core' }))
+      .catch(() => {
+        throw unavailable('Core endpoint alias is not private.');
+      });
   };
   let claims: Promise<CanopyStartupClaimPort> | undefined;
   const claimPort = (): Promise<CanopyStartupClaimPort> => {
@@ -290,10 +354,15 @@ export async function createElectronDaemonHost(
     dataRoot,
     endpointName: 'core',
   });
+  // CAN-5771 D19: every macOS and Linux spawn gets a fresh owner secret;
+  // Windows spawns keep today's handoff.
+  const ownerCredential =
+    os !== 'win32' ? createDaemonOwnerCredential() : undefined;
   const migration = createElectronMigrationLaunch({
     enabled: ELECTRON_MIGRATION_ROLE.enabled,
   });
   const launch = createCanopyDaemonHostLaunch({
+    secureStorageLayout: 'nested-v1',
     ...(migration && { migration }),
     dataRoot,
     runtimeMode,
@@ -331,22 +400,68 @@ export async function createElectronDaemonHost(
     ...(os !== 'win32' && {
       claim: createRecoverableCanopyStartupClaim(claimPort),
     }),
+    ...(ownerCredential && { ownerCredential }),
   });
+  /** Verifies the runtime around one connection; closes it when the second check fails. */
+  async function verifiedConnect<
+    C extends { readonly signal: AbortSignal; close(): Promise<void> },
+  >(signal: AbortSignal, open: () => Promise<C>): Promise<C> {
+    await launch.verifyRuntime(signal);
+    const client = await open();
+    try {
+      await launch.verifyRuntime(signal);
+      return client;
+    } catch (error) {
+      await client.close();
+      throw error;
+    }
+  }
   return {
     authorityId,
     canonicalDataRoot: dataRoot,
     launch,
-    async connect(options): Promise<ElectronDaemonClient> {
-      const signal = options.signal ?? new AbortController().signal;
-      await launch.verifyRuntime(signal);
-      const client = await connectCanopyClient(options);
-      try {
-        await launch.verifyRuntime(signal);
-        return client;
-      } catch (error) {
-        await client.close();
-        throw error;
-      }
+    connect(options): Promise<ElectronDaemonClient> {
+      return verifiedConnect(
+        options.signal ?? new AbortController().signal,
+        () => connectCanopyClient(options),
+      );
+    },
+    owner: {
+      async isSpawnedDaemon(signal): Promise<boolean> {
+        const spawned = ownerCredential?.spawnedPid() ?? null;
+        if (spawned === null) return false;
+        const parsed = CanopyRuntimeDescriptorSchema.safeParse(
+          await launch.ports.descriptor.read(signal),
+        );
+        if (!parsed.success || parsed.data.pid !== spawned) return false;
+        const observed = await platform.supervision.inspectProcess({
+          pid: spawned,
+          signal,
+        });
+        return (
+          observed.state === 'running' &&
+          observed.startIdentity === parsed.data.startIdentity
+        );
+      },
+      hasSpawned(): boolean {
+        return (ownerCredential?.spawnedPid() ?? null) !== null;
+      },
+      connect(options): Promise<ElectronDaemonOwnerClient> {
+        const credential = ownerCredential;
+        if (!credential)
+          return Promise.reject(
+            unavailable("This app is not the background service's owner."),
+          );
+        return verifiedConnect(
+          options.signal ?? new AbortController().signal,
+          () =>
+            connectCanopyClient({
+              ...options,
+              ownerProof: (connectionId) =>
+                credential.prove(connectionId, launch.dataRootHash),
+            }),
+        );
+      },
     },
   };
 }

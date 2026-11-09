@@ -1,6 +1,5 @@
 import { useCallback, useRef, useState, type JSX } from 'react';
 import {
-  ChevronDownMediumIcon,
   DownloadIcon,
   MoreHorizontalIcon,
   PlusMediumIcon,
@@ -13,6 +12,7 @@ import {
   FloatingMenu,
   RailIconButton,
   SidebarFadePresence,
+  SidebarSectionToggle,
 } from '@canopy/ui-shared/components';
 import { CHAT_UNIT_LABEL_PLURAL } from '@canopy/protocol';
 import { isDefaultCoworkWorkspaceName } from '@/lib/defaultCoworkWorkspaceName';
@@ -140,17 +140,18 @@ export function SidebarChatsSection(): JSX.Element | null {
         data-sidebar-chats-header=""
         data-testid="sidebar-section-chats"
       >
-        <button
-          type="button"
-          data-testid="sidebar-section-chats-toggle"
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        <SidebarSectionToggle
+          section="chats"
+          label={sectionLabel}
+          open={!collapsed}
+          testId="sidebar-section-chats-toggle"
+          chevronTestId="sidebar-chats-chevron"
           // Stuck, this control is not a disclosure: activating it returns to
-          // the rows rather than changing whether they are shown. Announcing
-          // `aria-expanded` there would promise a state change that never
-          // comes, so the button drops the disclosure role and says what it
-          // actually does instead.
-          aria-expanded={stuck ? undefined : !collapsed}
-          aria-label={stuck ? `Back to ${sectionLabel}` : undefined}
+          // the rows rather than changing whether they are shown, so the
+          // toggle drops the disclosure role and says what it actually does
+          // instead.
+          stuck={stuck}
+          ariaLabel={stuck ? `Back to ${sectionLabel}` : undefined}
           onClick={(event): void => {
             // While the header is stuck over its own occluded rows it is the
             // way back to them, not a collapse — the inverse of the Projects
@@ -161,27 +162,7 @@ export function SidebarChatsSection(): JSX.Element | null {
             if (header !== null && revealOccludedChats(header)) return;
             setCollapsed(!collapsed);
           }}
-        >
-          <div className="flex h-8 min-w-0 items-center gap-1 px-1 text-s font-normal">
-            <span className="min-w-0 truncate fg-quaternary transition-colors group-hover/chats:fg-secondary group-focus-within/chats:fg-secondary">
-              {sectionLabel}
-            </span>
-            <ChevronDownMediumIcon
-              size="sm"
-              data-testid="sidebar-chats-chevron"
-              className={`shrink-0 fg-quaternary transition-[color,opacity] group-hover/chats:fg-secondary group-hover/chats:opacity-100 group-focus-within/chats:fg-secondary group-focus-within/chats:opacity-100 ${
-                stuck
-                  ? // Pointing back up at its own rows — the mirror of the
-                    // Projects stand-in's chevron at the foot of the rail.
-                    // Collapsed or not: stuck, a click goes back either way.
-                    'rotate-180 opacity-100'
-                  : collapsed
-                    ? '-rotate-90 opacity-100'
-                    : 'opacity-0'
-              }`}
-            />
-          </div>
-        </button>
+        />
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <RailIconButton
             icon={SettingsIcon}

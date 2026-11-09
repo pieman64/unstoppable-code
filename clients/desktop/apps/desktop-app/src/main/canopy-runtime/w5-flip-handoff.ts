@@ -1,4 +1,4 @@
-import { routeStorageAdmissionToAuthority } from '@canopy/desktop-shared/node/lib/storage-admission';
+import { routeStorageAdmissionToAuthority } from '@canopy/execution-engine/node/lib/storage-admission';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { installDesktopW5FileStore } from '../lib/w5-commit-log-file-store';
 import {

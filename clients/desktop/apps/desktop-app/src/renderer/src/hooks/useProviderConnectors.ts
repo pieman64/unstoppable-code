@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ProviderConnectorListResult } from '@canopy/desktop-shared/types/mcp-servers';
+import type { ProviderConnectorListResult } from '@canopy/execution-engine/types/mcp-servers';
 
 interface UseProviderConnectorsReturn {
   /**

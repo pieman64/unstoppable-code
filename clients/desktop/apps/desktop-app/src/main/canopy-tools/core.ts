@@ -1,22 +1,27 @@
 import { executeShowCapabilities } from './show-capabilities';
+import { setAutoArchiveThroughCore } from './auto-archive-core-client';
 import { randomUUID } from 'node:crypto';
+import {
+  createWatcherReportThroughCore,
+  createWatcherThroughCore,
+  watcherRequestJson,
+} from './watcher-core-client';
 import {
   scheduleWakeupSchema,
   watchCommandSchema,
 } from './local-watcher-definitions';
-import type { LocalWatcherTarget } from '@canopy/desktop-shared/types/local-watchers';
 import type {
   McpQuestion,
   McpQuestionAnswer,
   ShowFileRequest,
   ShowFilesRendererResult,
 } from '@canopy/desktop-shared/types';
-import type { CanopyInjectedToolKey } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import type { CanopyInjectedToolKey } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   ASK_USER_TIMEOUT_ERROR,
   ASK_USER_TIMEOUT_MESSAGE,
   isCodeGraphInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   CODE_GRAPH_UNAVAILABLE_MESSAGE,
   isCodeGraphAvailableForWorkspace,
@@ -50,11 +55,11 @@ import {
 } from './definitions';
 import { executePreviewVisual } from './preview-visual-runtime';
 import { VISUAL_PREVIEW_BUDGETS } from '../browser/visual-preview-types';
+import type { DeferredToolsExecutorRuntime } from '../deferred-tools/executor';
 import {
-  executeLoadDeferredTools,
-  executeSearchDeferredTools,
-  type DeferredToolsExecutorRuntime,
-} from '../deferred-tools/executor';
+  loadDeferredToolsThroughCore,
+  searchDeferredToolsThroughCore,
+} from './deferred-tools-core-client';
 import type {
   PipelineYamlReadRequest,
   PipelineYamlReadResult,
@@ -85,8 +90,7 @@ import {
   executeLedgerInjectedTool,
   type LedgerToolsRuntime,
 } from './ledger-tools-runtime';
-import { resolveGitHubRepositoryCandidates } from '../lib/github-repository-context';
-import { classifyGitHubIntegrationAuthFailure } from '@canopy/desktop-shared/agent-failures';
+import { classifyGitHubIntegrationAuthFailure } from '@canopy/execution-engine/agent-failures';
 import { buildChatSessionKey } from '../agents/session-key';
 import { recordPendingInjectedToolAuthFailure } from '../mcp/pending-auth-failures';
 import { invalidAgentActionArguments as invalidArguments } from '@canopy/agent-actions';
@@ -114,6 +118,8 @@ export interface GetGitPreferencesInput {
 export interface SaveLocalMemoryInput {
   text: string;
   scope: 'user' | 'workspace';
+  /** The provider's call identity; the save's idempotency key derives from it. */
+  invocationId?: string;
 }
 
 export interface SearchLocalMemoryInput {
@@ -219,7 +225,8 @@ export interface CanopyInjectedToolRuntime {
    * which re-check the flag and setting on every call.
    */
   ledgerRuntime?: LedgerToolsRuntime;
-  setAutoArchiveForCurrentChat?: (enabled: boolean) => Promise<void> | void;
+  /** The session's own chat, whose marker SetAutoArchive sets through `core.chat.update` (CAN-6014). */
+  autoArchiveChat?: { projectId: string; worktreeId: string; chatId: string };
   deferredToolsRuntime?: DeferredToolsExecutorRuntime;
   /**
    * Bespoke code-review comment-reply hook. Present only for code-review
@@ -318,7 +325,7 @@ export async function executeCanopyInjectedTool(
     case 'get_git_preferences':
       return executeGetGitPreferences(rawArgs, runtime);
     case 'save_memory':
-      return executeSaveMemory(rawArgs, runtime);
+      return executeSaveMemory(rawArgs, runtime, context);
     case 'search_memory':
       return executeSearchMemory(rawArgs, runtime);
     case 'read_memory':
@@ -396,7 +403,7 @@ export async function executeCanopyInjectedTool(
     case 'schedule_wakeup':
       return executeLocalWatcher(canonicalKey, rawArgs, runtime, context);
     case 'set_auto_archive':
-      return executeSetAutoArchive(rawArgs, runtime);
+      return executeSetAutoArchive(rawArgs, runtime, context);
     case 'set_base_branch':
       return executeSetBaseBranch(rawArgs, runtime, context);
     case 'get_code_graph_context':
@@ -424,7 +431,11 @@ export async function executeCanopyInjectedTool(
           isError: true,
         };
       }
-      return executeSearchDeferredTools(rawArgs, runtime.deferredToolsRuntime);
+      return searchDeferredToolsThroughCore(
+        rawArgs,
+        runtime.deferredToolsRuntime,
+        context?.signal ? { signal: context.signal } : {},
+      );
     case 'load_deferred_tools':
       if (!runtime.deferredToolsRuntime) {
         return {
@@ -432,10 +443,16 @@ export async function executeCanopyInjectedTool(
           isError: true,
         };
       }
-      return executeLoadDeferredTools(
+      return loadDeferredToolsThroughCore(
         rawArgs,
         runtime.deferredToolsRuntime,
-        context,
+        {
+          ...(context?.toolUseId ? { toolUseId: context.toolUseId } : {}),
+          ...(context?.invocationId
+            ? { invocationId: context.invocationId }
+            : {}),
+          ...(context?.signal ? { signal: context.signal } : {}),
+        },
       );
     case 'add_ledger_entry':
     case 'search_ledger_entries':
@@ -601,6 +618,7 @@ async function executeGetGitPreferences(
 async function executeSaveMemory(
   rawArgs: unknown,
   runtime: CanopyInjectedToolRuntime,
+  context?: CanopyInjectedToolContext,
 ): Promise<CanopyInjectedToolTextResult> {
   const parsed = saveMemorySchema.safeParse(rawArgs);
   if (!parsed.success) {
@@ -615,7 +633,12 @@ async function executeSaveMemory(
 
   try {
     return {
-      text: await runtime.saveLocalMemory(parsed.data),
+      text: await runtime.saveLocalMemory({
+        ...parsed.data,
+        ...(context?.invocationId !== undefined
+          ? { invocationId: context.invocationId }
+          : {}),
+      }),
     };
   } catch (error) {
     return {
@@ -823,50 +846,34 @@ async function executeLocalWatcher(
       !(await runtime.authorizeWatchCommand(input))
     )
       return { text: 'WatchCommand registration was denied.', isError: true };
-    // Defer the scheduler-backed service because most injected tool calls do
-    // not need its persistence and process-lifecycle initialization graph.
-    const { getAppAdvisorWatcherService } =
-      await import('../app-advisor/watchers');
-    const target: LocalWatcherTarget =
+    return await createWatcherThroughCore(
+      destination,
       'command' in input
         ? {
-            kind: 'command_watch',
+            kind: 'command',
             command: input.command,
             intervalSeconds: input.intervalSeconds,
             maxAttempts: input.maxAttempts,
             cwd: cwd ?? '',
+            ...(input.followUpInstruction !== undefined
+              ? { followUpInstruction: input.followUpInstruction }
+              : {}),
           }
         : {
-            kind: 'scheduled_wakeup',
+            kind: 'wakeup',
             delaySeconds: input.delaySeconds,
-            scheduledFor: '',
-          };
-    const toolUseId = context?.toolUseId ?? randomUUID();
-    const service = getAppAdvisorWatcherService();
-    const watcher = context?.signal
-      ? await service.createLocalWatcher(
-          target,
-          destination,
-          toolUseId,
-          input.followUpInstruction,
-          undefined,
-          { signal: context.signal },
-        )
-      : await service.createLocalWatcher(
-          target,
-          destination,
-          toolUseId,
-          input.followUpInstruction,
-        );
-    return {
-      text: JSON.stringify({
-        ok: true,
-        watcher,
-        note: destination.delegationId
-          ? 'Watcher registered. End this run when ready; the notification resumes this delegated task.'
-          : 'Watcher registered. End this turn when ready; notification resumes this same chat.',
-      }),
-    };
+            ...(input.followUpInstruction !== undefined
+              ? { followUpInstruction: input.followUpInstruction }
+              : {}),
+          },
+      {
+        toolUseId: context?.toolUseId ?? randomUUID(),
+        ...(context?.invocationId
+          ? { invocationId: context.invocationId }
+          : {}),
+        ...(context?.signal ? { signal: context.signal } : {}),
+      },
+    );
   } catch (error) {
     return {
       text: error instanceof Error ? error.message : String(error),
@@ -945,60 +952,58 @@ async function executeWatchGitHubItems(
       isError: true,
     };
   }
-  // Keep the main-only watcher service lazy so unrelated injected tools do not
-  // initialize observer state; the static path remains packageable by Electron.
-  const { getAppAdvisorWatcherService } =
-    await import('../app-advisor/watchers');
   const repositoryCwd =
     watcherRuntime.cwd ?? runtime.worktreeActionRuntime?.cwd;
-  const repositoryCandidates = await resolveGitHubRepositoryCandidates({
-    projectId: watcherRuntime.projectId,
-    worktreeId: watcherRuntime.worktreeId,
-    ...(repositoryCwd ? { cwd: repositoryCwd } : {}),
-  });
-  const result = await getAppAdvisorWatcherService().watchGitHubItems(
-    parsed.data,
+  const report = await createWatcherReportThroughCore(
     destination,
     {
-      toolUseId: context?.toolUseId,
+      kind: 'github',
+      input: watcherRequestJson(parsed.data),
+      ...(repositoryCwd ? { repositoryCwd } : {}),
+    },
+    {
+      ...(context?.toolUseId ? { toolUseId: context.toolUseId } : {}),
+      ...(context?.invocationId ? { invocationId: context.invocationId } : {}),
       ...(context?.signal ? { signal: context.signal } : {}),
-      repositoryCandidates,
     },
   );
   // A delegate's failure is reported in its own tool result. Publishing it
   // under the root chat's session key would fail the root chat's turn.
-  if (result.ok !== true && !watcherRuntime.delegationId) {
+  if (report.failure && !watcherRuntime.delegationId) {
     publishGitHubIntegrationAuthFailure(
       watcherRuntime,
-      result.code,
-      result.message,
+      report.failure.code,
+      report.failure.message,
     );
   }
   return {
-    text: JSON.stringify(result),
-    isError: result.ok !== true,
+    text: report.report,
+    isError: !report.accepted,
   };
 }
 
 async function executeSetAutoArchive(
   rawArgs: unknown,
   runtime: CanopyInjectedToolRuntime,
+  context?: CanopyInjectedToolContext,
 ): Promise<CanopyInjectedToolTextResult> {
   const parsed = setAutoArchiveSchema.safeParse(rawArgs);
   if (!parsed.success) {
     return invalidArguments('SetAutoArchive');
   }
-  if (!runtime.setAutoArchiveForCurrentChat) {
+  const chat = runtime.autoArchiveChat;
+  if (!chat) {
     return {
       text: 'SetAutoArchive is only available for chats.',
       isError: true,
     };
   }
 
-  await runtime.setAutoArchiveForCurrentChat(parsed.data.enabled);
+  await setAutoArchiveThroughCore(chat, parsed.data.enabled, {
+    ...(context?.invocationId ? { invocationId: context.invocationId } : {}),
+  });
   // The flag stays set; the archive waits until close-blocking work finishes.
-  const chat = runtime.worktreeWatcherRuntime;
-  if (parsed.data.enabled && chat !== undefined) {
+  if (parsed.data.enabled) {
     const { chatCloseBlockReason } = await import('../agents/background-work');
     const reason = chatCloseBlockReason(
       chat.projectId,
@@ -1040,6 +1045,16 @@ async function executeSetBaseBranch(
   const response = await setCurrentWorktreeBaseBranch(
     parsed.data,
     worktreeRuntime,
+    (questions) =>
+      runtime.requestUserAnswers(
+        questions,
+        context?.toolUseId || context?.signal
+          ? {
+              ...(context.toolUseId ? { toolUseId: context.toolUseId } : {}),
+              ...(context.signal ? { signal: context.signal } : {}),
+            }
+          : undefined,
+      ),
     context,
   );
   return {

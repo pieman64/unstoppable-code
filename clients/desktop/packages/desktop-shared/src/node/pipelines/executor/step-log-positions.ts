@@ -4,7 +4,7 @@ import type {
   StepLogReadOptions,
   StepLogReadResult,
   StepOutputLogPosition,
-} from '../../../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 /**
  * Byte positions for step output, so a persisted snapshot and live output

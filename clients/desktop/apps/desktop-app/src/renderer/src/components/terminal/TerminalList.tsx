@@ -1,3 +1,4 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import {
   useCallback,
   useEffect,
@@ -111,7 +112,7 @@ export function TerminalList({
         />
         <div
           ref={tabScrollRef}
-          className="canopy-hide-scrollbar flex min-w-0 flex-1 items-end overflow-x-auto overflow-y-hidden px-1 pt-1"
+          className={`canopy-hide-scrollbar flex min-w-0 flex-1 items-end gap-1 overflow-x-auto overflow-y-hidden pl-1 pt-1 ${bucket.groups.length > 0 ? 'pr-2' : 'pr-1'}`}
         >
           {bucket.groups.length === 0 ? (
             <div className="px-3 py-2 fg-secondary">No terminals</div>
@@ -265,7 +266,7 @@ function GroupRow({
     return (
       <div
         data-testid={`terminal-group-tab-${group.id}`}
-        className={`group mr-1 flex h-9 min-w-32 max-w-56 shrink-0 items-center gap-1 rounded-t-md border px-2 ${
+        className={`group flex h-9 min-w-32 max-w-56 shrink-0 items-center gap-1 rounded-t-md border px-2 ${
           isActive
             ? 'border-b-base bg-base fg-primary'
             : 'border-transparent bg-muted/25 fg-secondary hover:bg-muted/40 hover:fg-primary'
@@ -327,7 +328,7 @@ function GroupRow({
   return (
     <div
       data-testid={`terminal-group-tab-${group.id}`}
-      className={`mr-1 flex h-9 shrink-0 items-center gap-1 rounded-t-md border px-1 ${
+      className={`flex h-9 shrink-0 items-center gap-1 rounded-t-md border px-1 ${
         isActive
           ? 'border-sky-500/50 border-b-base bg-sky-500/10'
           : 'border-sky-500/25 bg-sky-500/5'
@@ -565,11 +566,7 @@ interface RowStateProps {
 }
 
 function RowState({ label }: RowStateProps): JSX.Element {
-  return (
-    <span className="shrink-0 rounded border px-1 py-px text-3xs fg-secondary">
-      {label}
-    </span>
-  );
+  return <Badge>{label}</Badge>;
 }
 
 function RunningDot(): JSX.Element {

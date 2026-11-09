@@ -49,6 +49,7 @@ import {
   ScriptRunLogStore,
   toWorkerScriptExecution,
   type ScriptRunLogPaths,
+  type RunLogProcessLock,
   type ScriptRunLogRef,
   type ScriptRunWriterFence,
 } from './script-run-log';
@@ -72,6 +73,8 @@ export interface ScriptExecutionWorkerHost
   readonly logPaths: ScriptRunLogPaths;
   readonly logFiles: RunLogFiles;
   readonly writerFence?: ScriptRunWriterFence;
+  /** Serializes this host's run-log writes with other processes' (CAN-5839). */
+  readonly logLock?: RunLogProcessLock;
   /**
    * The checkout and environment a context names. Throws
    * {@link scriptContextUnavailableError} when it does not exist here.
@@ -227,6 +230,7 @@ export class ScriptExecutionWorker {
       files: host.logFiles,
       ...(host.warn ? { warn: host.warn.bind(host) } : {}),
       ...(host.writerFence ? { writerFence: host.writerFence } : {}),
+      ...(host.logLock ? { processLock: host.logLock } : {}),
     });
   }
 
@@ -609,11 +613,35 @@ export class ScriptExecutionWorker {
     );
     starting.forEach(([, run]) => run.stop.abort());
     const [stopped, started] = await Promise.all([
-      params.executionId === undefined
-        ? this.registry.stopEach(target)
-        : this.registry
-            .stopRun({ ...target, runId: params.executionId })
-            .then((run): StoppedScriptRun[] => (run ? [run] : [])),
+      params.drain === true
+        ? // Ends each run's whole process tree and settles once it has exited
+          // (CAN-5839): a stop settles when the shell does.
+          this.registry
+            .drainMatchingConfirmed(
+              target,
+              (tracking) =>
+                tracking.scriptKey === target.scriptKey &&
+                (tracking.kind ?? 'script') === 'script' &&
+                (params.executionId === undefined ||
+                  (tracking.runId ?? tracking.logRef?.runId) ===
+                    params.executionId),
+            )
+            .catch((error: unknown): never => {
+              throw new CanopyOperationError(
+                {
+                  kind: 'internal',
+                  message:
+                    "A script run's processes could not be confirmed ended.",
+                  retry: { kind: 'never' },
+                },
+                error,
+              );
+            })
+        : params.executionId === undefined
+          ? this.registry.stopEach(target)
+          : this.registry
+              .stopRun({ ...target, runId: params.executionId })
+              .then((run): StoppedScriptRun[] => (run ? [run] : [])),
       Promise.all(starting.map(([, run]) => run.settled)),
     ]);
     const reported = new Set<string>();

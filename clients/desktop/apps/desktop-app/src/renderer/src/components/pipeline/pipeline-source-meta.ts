@@ -1,4 +1,4 @@
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import {
   PIPELINE_FILTER_SOURCES,
   PIPELINE_SOURCE_LABELS,

@@ -58,6 +58,7 @@ import {
   archiveMultiRepoWorktree,
   archiveSingleRepoWorktree,
 } from './worktree-service';
+import { workflowScheduleDestination } from '@canopy/desktop-shared/lib/workflow-schedule-destination';
 import { readAllSidebarItems } from './sidebar-items';
 import { resolveCoworkWorkspaceId } from './cowork-migration-map';
 import {
@@ -329,7 +330,25 @@ export function collectScheduledAutomationTargetKeys(
     if (!activity.enabled && !runningActivityIds.has(activity.id)) continue;
     // A converted chat automation stores a global pipeline whose inputs name
     // its destination; read it as the chat action it stands for (CAN-5479).
-    addAutomationTarget(keys, projectOwnedChatAutomation(activity).action);
+    const projected = projectOwnedChatAutomation(activity, activities);
+    // CAN-5782: every workflow schedule, owner or not, keeps the task its
+    // run values name.
+    const destination = workflowScheduleDestination(projected);
+    if (destination?.kind === 'chat_action')
+      addAutomationTarget(keys, destination.action);
+    else if (destination?.kind === 'inputs') {
+      // An Orchestrator schedule's task is a Work Entry of the Orchestrator.
+      const projectId =
+        destination.projectId ??
+        (destination.orchestrator ? APP_ADVISOR_PROJECT_ID : undefined);
+      if (projectId && destination.taskId)
+        keys.add(targetKey(projectId, destination.taskId));
+      // And what its action reserves itself, such as a new worktree's base.
+      addAutomationTarget(
+        keys,
+        projected.ownedPipeline?.storedAction ?? projected.action,
+      );
+    } else addAutomationTarget(keys, projected.action);
   }
   return keys;
 }

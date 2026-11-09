@@ -5,6 +5,7 @@ import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
   SETTINGS_CARD_ROW_CLASS,
+  SETTINGS_CARD_SUBTITLE_CLASS,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 import {
   Button,
@@ -183,9 +184,19 @@ export function CloudChatsKeySection({
 
   return (
     <section className={SETTINGS_CARD_CLASS} data-testid="ai-gateway-cloud-key">
-      <Heading level={2} variant="section">
-        Cloud chats
-      </Heading>
+      <div className="flex min-w-0 flex-col gap-1">
+        <Heading level={2} variant="section">
+          Cloud chats
+        </Heading>
+        {/* Your provider bills the model; the cloud machine is still ours. */}
+        <p
+          className={SETTINGS_CARD_SUBTITLE_CLASS}
+          data-testid="ai-gateway-cloud-key-credits"
+        >
+          Cloud chats on your gateway&apos;s models still use AI Credits for the
+          cloud machine they run on.
+        </p>
+      </div>
       <ErrorBanner
         error={(loadError ?? error)?.copy}
         details={(loadError ?? error)?.details}

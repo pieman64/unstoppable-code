@@ -67,12 +67,12 @@ import type {
 import type {
   AgentModelDefinition,
   SaveAgentModelRequest,
-} from '@canopy/desktop-shared/types/agent-models';
+} from '@canopy/execution-engine/types/agent-models';
 import type {
   CapabilityPackageInstallOwner,
   CapabilityPackageInstallRecordV1,
   Pipeline,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { PipelinePackageDownload } from '../../pipelines/canopy-server-client';
 import type {
   InstallSubjectCapabilityPackageRequest,

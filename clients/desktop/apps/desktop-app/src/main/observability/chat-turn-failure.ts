@@ -2,7 +2,7 @@ import { BRAND } from '@canopy/brand/current';
 import {
   classifyAgentFailure,
   hasDefinitiveTerminalFailureSignal,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 import {
   AI_CREDITS_NO_BILLING_SOURCE_EVENT_TYPE,
   AI_CREDITS_USAGE_LIMIT_EVENT_TYPE,

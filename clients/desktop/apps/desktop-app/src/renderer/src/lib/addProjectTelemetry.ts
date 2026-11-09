@@ -13,7 +13,12 @@ import {
  */
 
 /** The way to add a project the dialog is showing. */
-export type AddProjectMethod = 'catalog' | 'remote' | 'existing' | 'create';
+export type AddProjectMethod =
+  | 'catalog'
+  | 'cloud'
+  | 'remote'
+  | 'existing'
+  | 'create';
 
 const DIALOG_OPERATION = 'canopy.add_project_dialog';
 const METHOD_OPERATION = 'canopy.add_project_method';

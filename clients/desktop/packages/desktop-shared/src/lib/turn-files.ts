@@ -10,7 +10,7 @@ export {
   turnFileWritePaths,
 } from '@canopy/agent-transcript/lib/turn-files';
 import type { TurnMessage } from './turn-utils';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from './canopy-injected-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { getCanonicalAppAdvisorToolKey } from './app-advisor-tools';
 
 const SHOW_FILES_NAMES = new Set([

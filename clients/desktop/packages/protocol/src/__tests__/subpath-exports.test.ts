@@ -202,33 +202,65 @@ describe('@canopy/protocol subpath exports', () => {
   });
 });
 
-it.each(['app-errors', 'feedback-report'])(
-  'bundles %s using only protocol and Zod',
-  async (subpath) => {
-    const result = await build({
-      absWorkingDir: REPO_ROOT,
-      stdin: {
-        resolveDir: REPO_ROOT,
-        contents: `export * from '@canopy/protocol/${subpath}';`,
-      },
-      tsconfigRaw: { compilerOptions: {} },
-      bundle: true,
-      platform: 'browser',
-      format: 'esm',
-      write: false,
-      metafile: true,
-    });
-    const forbidden = Object.keys(result.metafile.inputs).filter(
-      (input) =>
-        input !== '<stdin>' &&
-        !input.startsWith('packages/protocol/src/') &&
-        !/^node_modules\/(?:\.pnpm\/zod@[^/]+\/node_modules\/)?zod\//.test(
-          input,
-        ),
-    );
-    expect(forbidden).toEqual([]);
-  },
-);
+it.each([
+  'app-errors',
+  'feedback-report',
+  'remote-control',
+  'remote-control/channels',
+  'device-relay',
+])('bundles %s using only protocol and Zod', async (subpath) => {
+  const result = await build({
+    absWorkingDir: REPO_ROOT,
+    stdin: {
+      resolveDir: REPO_ROOT,
+      contents: `export * from '@canopy/protocol/${subpath}';`,
+    },
+    tsconfigRaw: { compilerOptions: {} },
+    bundle: true,
+    platform: 'browser',
+    format: 'esm',
+    write: false,
+    metafile: true,
+  });
+  const forbidden = Object.keys(result.metafile.inputs).filter(
+    (input) =>
+      input !== '<stdin>' &&
+      !input.startsWith('packages/protocol/src/') &&
+      !/^node_modules\/(?:\.pnpm\/zod@[^/]+\/node_modules\/)?zod\//.test(input),
+  );
+  expect(forbidden).toEqual([]);
+});
+
+it('bundles @canopy/remote-session for browser workers from protocol and Zod only', async () => {
+  // The browser SharedWorker and the hosted Node service both load this
+  // package; it may use only WebCrypto, streams and injected sockets.
+  const result = await build({
+    absWorkingDir: REPO_ROOT,
+    stdin: {
+      resolveDir: REPO_ROOT,
+      contents: `export * from '@canopy/remote-session';`,
+    },
+    tsconfigRaw: { compilerOptions: {} },
+    bundle: true,
+    platform: 'browser',
+    format: 'esm',
+    write: false,
+    metafile: true,
+  });
+  const inputs = Object.keys(result.metafile.inputs);
+  expect(inputs).toContain('packages/remote-session/src/index.ts');
+  const forbidden = inputs.filter(
+    (input) =>
+      input !== '<stdin>' &&
+      !input.startsWith('packages/remote-session/src/') &&
+      !input.startsWith('packages/protocol/src/') &&
+      !/^node_modules\/(?:\.pnpm\/zod@[^/]+\/node_modules\/)?zod\//.test(input),
+  );
+  expect(forbidden).toEqual([]);
+  const text = result.outputFiles.map((file) => file.text).join('\n');
+  expect(text).not.toMatch(/\bfrom\s+["']node:|require\(["']node:/);
+  expect(text).not.toMatch(/\b(?:window|document|localStorage|indexedDB)\./);
+});
 
 it('bundles published file-indexing and desktop compatibility exports for browsers without Node', async () => {
   const result = await build({

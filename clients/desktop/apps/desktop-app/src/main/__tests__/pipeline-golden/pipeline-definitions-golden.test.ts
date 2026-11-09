@@ -30,11 +30,18 @@ import * as pipelineInstallContext from '../../pipelines/pipeline-install-contex
 import * as resourceLanes from '../../pipelines/resource-lanes';
 import { PIPELINE_GRANTS } from '@canopy/protocol/canopy-core';
 import { readPreferencesFile } from '../../lib/preferences-store';
-import type {
-  IPCResult,
-  PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
-import { readPipelineLocalMetadata } from '../../pipelines/pipeline-local-metadata-store';
+import {
+  getTriggerInputDefs,
+  setTriggerInputDefs,
+  setTriggerTypes,
+  type IPCResult,
+  type PipelineInfo,
+} from '@canopy/execution-engine/types/pipeline';
+import {
+  readPipelineLocalMetadata,
+  setUserPipelineOwnerAutomation,
+} from '../../pipelines/pipeline-local-metadata-store';
+import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import {
@@ -1009,5 +1016,507 @@ describe('installs from the curated catalog and shares', () => {
     const added = (listStoredPipelines().data ?? []).length - before;
     for (const id of Object.values(ids)) deleteStoredPipeline(id);
     expect({ ...results, added }).toMatchSnapshot();
+  });
+});
+
+describe('workflow trigger (CAN-5782)', () => {
+  const WORKFLOW_ONLY_YAML = [
+    'pipeline:',
+    '  name: Golden workflow only',
+    '  on:',
+    '    workflow:',
+    '      inputs:',
+    '        topic:',
+    '          type: string',
+    '          default: news',
+    '  jobs:',
+    '    run:',
+    '      steps:',
+    '        - run: echo workflow',
+    '',
+  ].join('\n');
+  const WORKFLOW_AND_DISPATCH_YAML = [
+    'pipeline:',
+    '  name: Golden workflow and dispatch',
+    '  on:',
+    '    dispatch: {}',
+    '    workflow: {}',
+    '  jobs:',
+    '    run:',
+    '      steps:',
+    '        - run: echo both',
+    '',
+  ].join('\n');
+
+  it('reads and lists a workflow pipeline and keeps it off the Portal', async () => {
+    const save = (yaml: string): Promise<unknown> => {
+      const content = parsePipelineText(yaml);
+      return invokeIpc(PIPELINE_CHANNELS.SAVE, {
+        name: content.name,
+        description: '',
+        icon: '',
+        content,
+      });
+    };
+    const ids: string[] = [];
+    const saved = async (yaml: string): Promise<string> => {
+      const result = await save(yaml);
+      const id =
+        typeof result === 'object' &&
+        result !== null &&
+        'data' in result &&
+        typeof result.data === 'object' &&
+        result.data !== null &&
+        'id' in result.data &&
+        typeof result.data.id === 'string'
+          ? result.data.id
+          : '';
+      ids.push(id);
+      return id;
+    };
+    const workflowOnlyId = await saved(WORKFLOW_ONLY_YAML);
+    const mixedId = await saved(WORKFLOW_AND_DISPATCH_YAML);
+    const rows = async (): Promise<unknown> => {
+      const listed = await invokeIpc(PIPELINE_CHANNELS.LIST);
+      const data =
+        typeof listed === 'object' &&
+        listed !== null &&
+        'data' in listed &&
+        Array.isArray(listed.data)
+          ? listed.data
+          : [];
+      return data
+        .filter(
+          (row: PipelineInfo) =>
+            row.id === workflowOnlyId || row.id === mixedId,
+        )
+        .map((row: PipelineInfo) => ({
+          name: row.name,
+          triggerTypes: row.triggerTypes,
+        }));
+    };
+    // Only this test's rows, with the triggers the Portal reports for them.
+    const portalRows = async (): Promise<unknown> => {
+      const listed: unknown = await runPortalCommand('portal.pipeline.list', {
+        projectId: GOLDEN_WORKSPACE_ID,
+        worktreeId: GOLDEN_WORKTREE_ID,
+      });
+      const pipelines: unknown[] = [];
+      const collect = (value: unknown): void => {
+        if (Array.isArray(value)) value.forEach(collect);
+        else if (typeof value === 'object' && value !== null) {
+          if ('pipelineId' in value && 'name' in value) pipelines.push(value);
+          else Object.values(value).forEach(collect);
+        }
+      };
+      collect(listed);
+      return pipelines.flatMap((row) =>
+        typeof row === 'object' &&
+        row !== null &&
+        'pipelineId' in row &&
+        (row.pipelineId === workflowOnlyId || row.pipelineId === mixedId) &&
+        'name' in row
+          ? [
+              {
+                name: row.name,
+                triggerTypes:
+                  'triggerTypes' in row ? row.triggerTypes : undefined,
+              },
+            ]
+          : [],
+      );
+    };
+    // Warm the curated catalog cache, so the captured list makes the same
+    // cloud requests whether this test runs alone or after the others.
+    await invokeIpc(PIPELINE_CHANNELS.LIST);
+    const content = parsePipelineText(WORKFLOW_ONLY_YAML);
+    const withDispatch = setTriggerTypes(content.on, ['workflow', 'dispatch']);
+    try {
+      expect(
+        await captureAll({
+          list: rows,
+          get: () => invokeIpc(PIPELINE_CHANNELS.GET, workflowOnlyId),
+          // Refused before any cloud request: web can't store the trigger.
+          // Without resource contexts, so the refusal isn't a context check.
+          shareCreate: async () => {
+            const contexts = jest
+              .spyOn(resourceLanes, 'pipelineResourceContextEnabled')
+              .mockReturnValue(false);
+            try {
+              return await invokeIpc(PIPELINE_CHANNELS.SHARED_CREATE, {
+                rawPipeline: WORKFLOW_AND_DISPATCH_YAML,
+                shareScope: 'private',
+              });
+            } finally {
+              contexts.mockRestore();
+            }
+          },
+          // The share dialog's review blocks a workflow pipeline, and the
+          // packaged share refuses it before any upload.
+          packagedShare: async () => {
+            const contexts = jest
+              .spyOn(resourceLanes, 'pipelineResourceContextEnabled')
+              .mockReturnValue(false);
+            try {
+              const analysis = await invokeIpc(
+                PIPELINE_CHANNELS.ANALYZE_PACKAGE,
+                { rawPipeline: WORKFLOW_AND_DISPATCH_YAML },
+              );
+              const summary =
+                typeof analysis === 'object' &&
+                analysis !== null &&
+                'data' in analysis &&
+                typeof analysis.data === 'object' &&
+                analysis.data !== null
+                  ? analysis.data
+                  : {};
+              const analysisId =
+                'analysisId' in summary &&
+                typeof summary.analysisId === 'string'
+                  ? summary.analysisId
+                  : '';
+              return {
+                state: 'state' in summary ? summary.state : undefined,
+                blockers:
+                  'blockers' in summary && Array.isArray(summary.blockers)
+                    ? summary.blockers.map((blocker: unknown) =>
+                        typeof blocker === 'object' &&
+                        blocker !== null &&
+                        'code' in blocker
+                          ? blocker.code
+                          : blocker,
+                      )
+                    : [],
+                create: await invokeIpc(
+                  PIPELINE_CHANNELS.SHARED_CREATE_PACKAGED,
+                  {
+                    analysisId,
+                    rawPipeline: WORKFLOW_AND_DISPATCH_YAML,
+                    shareScope: 'private',
+                  },
+                ),
+              };
+            } finally {
+              contexts.mockRestore();
+            }
+          },
+          portalList: portalRows,
+          // A workflow-only pipeline reads as missing on the Portal; a mixed
+          // one is described by its portable triggers.
+          portalGetWorkflowOnly: () =>
+            runPortalCommand('portal.pipeline.get', {
+              pipelineId: workflowOnlyId,
+              projectId: GOLDEN_WORKSPACE_ID,
+              worktreeId: GOLDEN_WORKTREE_ID,
+            }),
+          portalGetMixedTriggers: async () => {
+            const got: unknown = await runPortalCommand('portal.pipeline.get', {
+              pipelineId: mixedId,
+              projectId: GOLDEN_WORKSPACE_ID,
+              worktreeId: GOLDEN_WORKTREE_ID,
+            });
+            // Only the trigger summary: the rest is the usual definition view.
+            return /"triggerSummary":"([^"]*)"/.exec(JSON.stringify(got))?.[1];
+          },
+          // The trigger setters keep the `workflow:` block and its inputs.
+          setTriggerTypes: () => Promise.resolve(withDispatch),
+          backToWorkflowOnly: () =>
+            Promise.resolve(setTriggerTypes(withDispatch, ['workflow'])),
+          setWorkflowInputs: () =>
+            Promise.resolve(
+              getTriggerInputDefs(
+                setTriggerInputDefs(content.on, 'workflow', {
+                  topic: { type: 'string', default: 'sports' },
+                }),
+                'workflow',
+              ),
+            ),
+        }),
+      ).toMatchSnapshot();
+    } finally {
+      for (const id of ids) if (id) deleteStoredPipeline(id);
+    }
+  });
+});
+
+describe('workflow schedules (CAN-5782)', () => {
+  const SCHEDULED_YAML = [
+    'pipeline:',
+    '  name: Golden workflow page',
+    '  scope: global',
+    '  on:',
+    '    dispatch:',
+    '      inputs:',
+    '        topic:',
+    '          type: string',
+    '  jobs:',
+    '    run:',
+    '      steps:',
+    '        - run: echo scheduled',
+    '',
+  ].join('\n');
+  const savedId = async (): Promise<string> => {
+    const content = parsePipelineText(SCHEDULED_YAML);
+    const result = await invokeIpc(PIPELINE_CHANNELS.SAVE, {
+      name: content.name,
+      description: '',
+      icon: '',
+      content,
+    });
+    return typeof result === 'object' &&
+      result !== null &&
+      'data' in result &&
+      typeof result.data === 'object' &&
+      result.data !== null &&
+      'id' in result.data &&
+      typeof result.data.id === 'string'
+      ? result.data.id
+      : '';
+  };
+  const schedule = (
+    pipelineId: string,
+    inputs: Record<string, string>,
+  ): Record<string, unknown> => ({
+    name: 'Golden schedule',
+    schedule: { kind: 'cron', expression: '0 9 * * 1-5', timezone: 'local' },
+    action: {
+      type: 'worktree_pipeline',
+      target: { kind: 'global' },
+      pipelineId,
+      pipelineSource: 'user',
+      pipelineName: 'Golden workflow page',
+      inputs,
+    },
+    // Off: the schedule never runs here, and turning it on is not under test.
+    enabled: false,
+    executionContext: 'personal',
+  });
+  const createdId = (response: unknown): string =>
+    typeof response === 'object' &&
+    response !== null &&
+    'activity' in response &&
+    typeof response.activity === 'object' &&
+    response.activity !== null &&
+    'id' in response.activity &&
+    typeof response.activity.id === 'string'
+      ? response.activity.id
+      : '';
+  const workflowPage = async (pipelineId: string): Promise<unknown> => {
+    const listed = (await invokeIpc(PIPELINE_CHANNELS.LIST)) as IPCResult<
+      PipelineInfo[]
+    >;
+    const rows = listed.success ? (listed.data ?? []) : [];
+    return rows.find((row) => row.id === pipelineId)?.workflowPage ?? null;
+  };
+
+  beforeAll(async () => {
+    const { registerAutomationsHandlers } =
+      await import('../../ipc/automations');
+    registerAutomationsHandlers({
+      getMainWindow: () => null,
+      getAppAdvisorWindow: () => null,
+      // No schedule runs here, so nothing opens a window.
+      openAppAdvisorWindow: () =>
+        Promise.reject(new Error('No window in this golden.')),
+      ensureAppAdvisorWindow: () =>
+        Promise.reject(new Error('No window in this golden.')),
+      sendAppAdvisorWindowCommand: () => undefined,
+    });
+  });
+
+  it('keeps a pipeline its other schedules run and refuses a second Orchestrator schedule', async () => {
+    const pipelineId = await savedId();
+    const orchestratorId = await savedId();
+    try {
+      // A converted chat automation owns its pipeline (CAN-4551).
+      const owner = createdId(
+        await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          schedule(pipelineId, { topic: 'first' }),
+        ),
+      );
+      setUserPipelineOwnerAutomation(pipelineId, owner);
+      const second = createdId(
+        await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          schedule(pipelineId, { topic: 'second' }),
+        ),
+      );
+      const orchestratorOwner = createdId(
+        await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          schedule(orchestratorId, { bot_id: 'app_advisor', prompt: 'Hi' }),
+        ),
+      );
+      setUserPipelineOwnerAutomation(orchestratorId, orchestratorOwner);
+      expect({
+        created: [owner, second, orchestratorOwner].every(Boolean),
+        sharedPage: await workflowPage(pipelineId),
+        orchestratorPage: await workflowPage(orchestratorId),
+        orchestratorSecond: await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          schedule(orchestratorId, { bot_id: 'app_advisor', prompt: 'Hi' }),
+        ),
+        // Deleting the owner keeps the pipeline its other schedule runs.
+        ownerDeleted: (
+          (await invokeIpc(IPC_CHANNELS.automationsDelete, {
+            id: owner,
+          })) as { ok?: unknown }
+        ).ok,
+        keptAfterOwner: getStoredPipeline(pipelineId).success,
+        markerAfterOwner:
+          readPipelineLocalMetadata({
+            type: 'stored',
+            source: 'user',
+            value: pipelineId,
+          }).ownerAutomationId ?? null,
+        // Remove on the last schedule may keep the workflow with its values.
+        lastDeleted: (
+          (await invokeIpc(IPC_CHANNELS.automationsDelete, {
+            id: second,
+            keepPipeline: true,
+          })) as { ok?: unknown }
+        ).ok,
+        keptAfterLast: getStoredPipeline(pipelineId).success,
+        emptyPage: await workflowPage(pipelineId),
+        // Without keepPipeline, the last schedule takes its pipeline along.
+        orchestratorDeleted: (
+          (await invokeIpc(IPC_CHANNELS.automationsDelete, {
+            id: orchestratorOwner,
+          })) as { ok?: unknown }
+        ).ok,
+        orchestratorKept: getStoredPipeline(orchestratorId).success,
+      }).toEqual({
+        created: true,
+        sharedPage: {},
+        orchestratorPage: { singleSchedule: { reason: 'orchestrator_prompt' } },
+        orchestratorSecond: {
+          ok: false,
+          error: 'Orchestrator workflows can have one schedule.',
+        },
+        ownerDeleted: true,
+        keptAfterOwner: true,
+        markerAfterOwner: null,
+        lastDeleted: true,
+        keptAfterLast: true,
+        emptyPage: {
+          lastScheduleValues: {
+            inputs: { topic: 'second' },
+            target: { kind: 'global' },
+          },
+        },
+        orchestratorDeleted: true,
+        orchestratorKept: false,
+      });
+    } finally {
+      for (const id of [pipelineId, orchestratorId])
+        if (id && getStoredPipeline(id).success) deleteStoredPipeline(id);
+    }
+  });
+
+  it('deletes a whole workflow page in one request from any of its schedules', async () => {
+    const pipelineId = await savedId();
+    try {
+      const owner = createdId(
+        await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          schedule(pipelineId, { topic: 'first' }),
+        ),
+      );
+      setUserPipelineOwnerAutomation(pipelineId, owner);
+      const second = createdId(
+        await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          schedule(pipelineId, { topic: 'second' }),
+        ),
+      );
+      const deleted = (await invokeIpc(IPC_CHANNELS.automationsDelete, {
+        id: second,
+        workflow: true,
+      })) as { ok?: unknown };
+      const listed = (await invokeIpc(IPC_CHANNELS.automationsList)) as {
+        activities?: readonly { id: string }[];
+      };
+      expect({
+        created: [owner, second].every(Boolean),
+        deleted: deleted.ok,
+        schedulesLeft: (listed.activities ?? []).filter(
+          (activity) => activity.id === owner || activity.id === second,
+        ).length,
+        pipelineKept: getStoredPipeline(pipelineId).success,
+      }).toEqual({
+        created: true,
+        deleted: true,
+        schedulesLeft: 0,
+        pipelineKept: false,
+      });
+    } finally {
+      if (pipelineId && getStoredPipeline(pipelineId).success)
+        deleteStoredPipeline(pipelineId);
+    }
+  });
+
+  it('counts the workflow pages that call a pipeline through run-pipeline', async () => {
+    const saveYaml = async (yaml: string): Promise<string> => {
+      const content = parsePipelineText(yaml);
+      const result = await invokeIpc(PIPELINE_CHANNELS.SAVE, {
+        name: content.name,
+        description: '',
+        icon: '',
+        content,
+      });
+      return typeof result === 'object' &&
+        result !== null &&
+        'data' in result &&
+        typeof result.data === 'object' &&
+        result.data !== null &&
+        'id' in result.data &&
+        typeof result.data.id === 'string'
+        ? result.data.id
+        : '';
+    };
+    const callerYaml = (name: string, childId: string): string =>
+      [
+        'pipeline:',
+        `  name: ${name}`,
+        '  scope: global',
+        '  on: dispatch',
+        '  env:',
+        `    CHILD: ${childId}`,
+        '  jobs:',
+        '    run:',
+        '      steps:',
+        '        - uses: builtin/run-pipeline',
+        '          with:',
+        '            pipeline: ${{ env.CHILD }}',
+        '',
+      ].join('\n');
+    const childId = await savedId();
+    const pageId = await saveYaml(callerYaml('Golden caller page', childId));
+    const plainId = await saveYaml(callerYaml('Golden plain caller', childId));
+    try {
+      const owner = createdId(
+        await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          schedule(pageId, { topic: 'first' }),
+        ),
+      );
+      setUserPipelineOwnerAutomation(pageId, owner);
+      const listed = (await invokeIpc(PIPELINE_CHANNELS.LIST)) as IPCResult<
+        PipelineInfo[]
+      >;
+      const rows = listed.success ? (listed.data ?? []) : [];
+      const callers = (id: string): number | null =>
+        rows.find((row) => row.id === id)?.workflowCallers ?? null;
+      expect({
+        saved: [childId, pageId, plainId, owner].every(Boolean),
+        child: callers(childId),
+        page: callers(pageId),
+        plain: callers(plainId),
+      }).toEqual({ saved: true, child: 1, page: null, plain: null });
+    } finally {
+      for (const id of [childId, pageId, plainId])
+        if (id && getStoredPipeline(id).success) deleteStoredPipeline(id);
+    }
   });
 });

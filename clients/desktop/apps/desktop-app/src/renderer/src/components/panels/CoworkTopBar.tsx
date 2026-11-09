@@ -12,15 +12,15 @@
  *   segment;
  * - under the Subagents view, the same "N running" control as the worktree
  *   header, for the active entry;
- * - the "Open in" dropdown (resolves the cowork root, honoring an attached
- *   external folder — cwd resolution is entry-agnostic, so passing the entry
- *   id as worktreeId is fine) and the layout dropdown (saves the
- *   Cowork-surface default) pinned right.
+ * - pinned right: the archived-chats control for the active entry (where
+ *   the worktree header keeps it), the "Open in" dropdown (resolves the
+ *   cowork root, honoring an attached external folder — cwd resolution is
+ *   entry-agnostic, so passing the entry id as worktreeId is fine) and the
+ *   layout dropdown (saves the Cowork-surface default).
  *
- * New Chat and the archived-chats control moved to the chat tab strip (the
- * panel add-tab menu and the per-group archived accessory), matching the
- * worktree header. No PrStatusBar / WorktreeLaunchButton: cowork workspaces
- * have no git branches, PRs, or worktree scripts.
+ * New Chat lives in the chat tab strip's add-tab menu, matching the worktree
+ * header. No PrStatusBar / WorktreeLaunchButton: cowork workspaces have no
+ * git branches, PRs, or worktree scripts.
  */
 import { memo, useState, type JSX, type ReactNode } from 'react';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -28,6 +28,7 @@ import { useShallow } from 'zustand/shallow';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { CollapsedTitlebarToggle } from '@/components/sidebar/CollapsedTitlebarToggle';
 import { OpenDropdown } from '@/components/worktree/OpenDropdown';
+import { ArchivedChatsControl } from '@/components/chat/ArchivedChatsControl';
 import { WorkspaceLayoutControls } from '@/components/panels/WorkspaceLayoutControls';
 import { ProjectIcon } from '@/components/shared/ProjectIcon';
 
@@ -138,6 +139,11 @@ export const CoworkTopBar = memo(function CoworkTopBar({
         </button>
       </div>
       <div className="electron-drag flex shrink-0 items-center gap-2 pr-2.25">
+        {/* Scoped, never primary: only the worktree header's instance owns
+            the global open-archives events. */}
+        <ArchivedChatsControl
+          scope={{ projectId: workspaceId, worktreeId: activeWorkEntryId }}
+        />
         <OpenDropdown projectId={workspaceId} worktreeId={activeWorkEntryId} />
         <WorkspaceLayoutControls
           projectId={workspaceId}

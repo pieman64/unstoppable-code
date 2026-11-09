@@ -2,7 +2,7 @@ import {
   getGitExecutablePlatformStatus,
   getResolvedGitExecutableForSpawn,
 } from '../lib/git-executable';
-import { brandEnvName } from '@canopy/desktop-shared/brand/env';
+import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
 
 export async function buildPipelinePreferenceEnv(

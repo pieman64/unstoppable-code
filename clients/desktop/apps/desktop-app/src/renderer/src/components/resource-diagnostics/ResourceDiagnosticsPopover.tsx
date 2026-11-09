@@ -1,13 +1,11 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { Heading } from '@canopy/ui-shared/components';
 import {
   useEffect,
-  useLayoutEffect,
   useMemo,
-  useRef,
   useState,
   type ComponentType,
   type JSX,
-  type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import type {
   ResourceGroupId,
@@ -28,18 +26,24 @@ import {
   type ResourceDiagnosticsSortColumn,
   type ResourceDiagnosticsSortState,
 } from './sortState';
-import { OverlayScrollArea, RailIconButton } from '@canopy/ui-shared';
+import { RailIconButton } from '@canopy/ui-shared';
 import {
   Button,
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
   ErrorBanner,
   EmptyStateRow,
   Tooltip,
+  DisclosureChevron,
+  DisclosureToggle,
 } from '@canopy/ui-shared/components';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import {
   ChatIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
   ChipSimpleIcon,
   GlobeIcon,
   PlayIcon,
@@ -580,8 +584,6 @@ export function ResourceDiagnosticsPopover({
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  const headerRef = useRef<HTMLTableSectionElement | null>(null);
-  const [headerHeight, setHeaderHeight] = useState(0);
 
   function toggleExpanded(rowId: string): void {
     setExpanded((current) => {
@@ -634,11 +636,6 @@ export function ResourceDiagnosticsPopover({
     [roots, sort, diagnosticsContext, expanded],
   );
   const appManagedTotals = useMemo(() => getAppManagedTotals(roots), [roots]);
-  const hasRows = rows.length > 0;
-
-  useLayoutEffect(() => {
-    setHeaderHeight(headerRef.current?.offsetHeight ?? 0);
-  }, [hasRows]);
 
   // Portaled over titlebar/sidebar drag rects; app-region ignores z-order,
   // so the controls' container opts out.
@@ -672,16 +669,7 @@ export function ResourceDiagnosticsPopover({
         />
       </div>
 
-      <OverlayScrollArea
-        className="min-h-0"
-        viewportClassName="max-h-80 overflow-x-hidden"
-        viewportProps={{
-          'data-testid': 'resource-diagnostics-popover-scroll',
-        }}
-        edgeFadeSize={16}
-        // Rows fade as they pass under the sticky header, not the header.
-        edgeFadeTopInset={headerHeight}
-      >
+      <div className="min-h-0">
         {loading && <p className="text-xs fg-tertiary">Measuring resources…</p>}
 
         {!loading && !snapshot && error && (
@@ -693,10 +681,10 @@ export function ResourceDiagnosticsPopover({
         )}
 
         {snapshot && (
-          <>
+          <Stack gap="inline">
             {error && (
               <ErrorBanner
-                className="mb-2"
+                className=""
                 error="Resource metrics unavailable"
                 testId="resource-diagnostics-popover-error"
               />
@@ -705,43 +693,40 @@ export function ResourceDiagnosticsPopover({
             {rows.length === 0 ? (
               <EmptyStateRow title="No resource samples yet." />
             ) : (
-              <table className="w-full table-fixed text-xs">
-                <colgroup>
-                  <col className="w-5" />
-                  <col />
-                  <col className="w-12" />
-                  <col className="w-20" />
-                </colgroup>
-                <thead
-                  ref={headerRef}
-                  className="sticky top-0 z-1 bg-quaternary"
-                >
-                  <tr>
-                    <th aria-hidden="true" className="pb-1" />
-                    <SortHeader
-                      label="Name"
-                      column="name"
-                      sort={sort}
-                      onClick={handleHeaderClick}
-                      align="start"
-                    />
-                    <SortHeader
-                      label="CPU"
-                      column="cpu"
-                      sort={sort}
-                      onClick={handleHeaderClick}
-                      align="end"
-                    />
-                    <SortHeader
-                      label="Memory"
-                      column="memory"
-                      sort={sort}
-                      onClick={handleHeaderClick}
-                      align="end"
-                    />
-                  </tr>
-                </thead>
-                <tbody>
+              <DataTableFrame
+                caption="Resource usage"
+                layout="fixed"
+                maxHeight="20rem"
+              >
+                <DataTableHead sticky>
+                  <DataTableHeaderCell width="3.5rem" labelHidden>
+                    Source
+                  </DataTableHeaderCell>
+                  <SortHeader
+                    label="Name"
+                    column="name"
+                    sort={sort}
+                    onClick={handleHeaderClick}
+                    align="start"
+                  />
+                  <SortHeader
+                    label="CPU"
+                    column="cpu"
+                    sort={sort}
+                    onClick={handleHeaderClick}
+                    align="end"
+                    width="5rem"
+                  />
+                  <SortHeader
+                    label="Memory"
+                    column="memory"
+                    sort={sort}
+                    onClick={handleHeaderClick}
+                    align="end"
+                    width="6.5rem"
+                  />
+                </DataTableHead>
+                <DataTableBody>
                   {rows.map((row) => (
                     <ResourceRow
                       key={row.id}
@@ -751,12 +736,12 @@ export function ResourceDiagnosticsPopover({
                       onNavigate={handleNavigateToWorktree}
                     />
                   ))}
-                </tbody>
-              </table>
+                </DataTableBody>
+              </DataTableFrame>
             )}
-          </>
+          </Stack>
         )}
-      </OverlayScrollArea>
+      </div>
 
       {snapshot && (
         <div
@@ -871,6 +856,7 @@ interface SortHeaderProps {
   onClick: (column: ResourceDiagnosticsSortColumn) => void;
   /** Numbers right-align so their digits line up. */
   align: 'start' | 'end';
+  width?: string;
 }
 
 function SortHeader({
@@ -879,46 +865,20 @@ function SortHeader({
   sort,
   onClick,
   align,
+  width,
 }: SortHeaderProps): JSX.Element {
-  const isActive = sort.column === column;
-  const ariaSort: 'ascending' | 'descending' | 'none' = isActive
-    ? sort.direction === 'asc'
-      ? 'ascending'
-      : 'descending'
-    : 'none';
-  // The slot is kept on every header so a label never moves when its
-  // column becomes the sort.
-  const indicator = (
-    <ChevronDownIcon
-      aria-hidden="true"
-      className={`transition-transform motion-reduce:transition-none ${
-        isActive ? '' : 'invisible'
-      } ${isActive && sort.direction === 'asc' ? 'rotate-180' : ''}`}
-    />
-  );
   return (
-    <th
-      className={`pb-1 font-normal ${
-        align === 'end' ? 'pl-3 text-right' : 'text-left'
-      }`}
-      aria-sort={ariaSort}
-      data-testid={`resource-diagnostics-popover-sort-${column}`}
+    <DataTableHeaderCell
+      align={align === 'end' ? 'right' : 'left'}
+      width={width}
+      testId={`resource-diagnostics-popover-sort-${column}`}
+      sort={{
+        direction: sort.column === column ? sort.direction : null,
+        onToggle: (): void => onClick(column),
+      }}
     >
-      <button
-        type="button"
-        onClick={(): void => onClick(column)}
-        className={`focus-ring inline-flex items-center gap-0.5 rounded-sm transition-colors hover:fg-primary ${
-          isActive ? 'fg-secondary' : 'fg-tertiary'
-        }`}
-        data-active={isActive ? 'true' : 'false'}
-      >
-        {/* A number column's label ends flush with its digits, so its
-            indicator leads; the name column's trails. */}
-        {align === 'end' ? indicator : null}
-        <span>{label}</span>
-        {align === 'start' ? indicator : null}
-      </button>
-    </th>
+      {label}
+    </DataTableHeaderCell>
   );
 }
 
@@ -945,65 +905,48 @@ function ResourceRow({
       onNavigate(navigationTarget);
     }
   };
-  const handleKeyDown = (
-    event: ReactKeyboardEvent<HTMLTableRowElement>,
-  ): void => {
-    if (!navigationTarget || event.target !== event.currentTarget) return;
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      onNavigate(navigationTarget);
-    }
-  };
   const sourceIcon = (
     <span className="flex h-3 w-3 items-center justify-center fg-tertiary">
       <SourceIcon width={SOURCE_ICON_SIZE} height={SOURCE_ICON_SIZE} />
     </span>
   );
   return (
-    <tr
+    <DataTableRow
       data-testid={`resource-row-${process.id}`}
-      className={`group ${
-        clickable
-          ? 'cursor-pointer outline-none transition-colors hover:bg-subtle focus-visible:bg-subtle'
-          : ''
-      }`}
-      onClick={clickable ? handleClick : undefined}
-      onKeyDown={clickable ? handleKeyDown : undefined}
-      tabIndex={clickable ? 0 : undefined}
-      role={clickable ? 'button' : undefined}
+      onActivate={clickable ? handleClick : undefined}
+      activateOnSpace
     >
-      <td className="py-1 align-middle">
+      <DataTableCell>
         {row.hasChildren ? (
           // The source icon turns into the disclosure toggle on hover.
-          <button
-            type="button"
-            aria-expanded={expanded}
+          <DisclosureToggle
+            variant="tree-icon"
+            open={expanded}
             aria-label={`${expanded ? 'Collapse' : 'Expand'} ${displayLabel}`}
             data-testid={`resource-row-toggle-${process.id}`}
-            className="focus-ring flex rounded-sm fg-tertiary hover:fg-primary"
             onClick={(event): void => {
               event.stopPropagation();
               onToggle(row.id);
             }}
           >
-            <span className="group-hover:hidden group-focus-visible:hidden group-has-[:focus-visible]:hidden">
+            <span className="group-hover:hidden group-focus-visible:hidden group-focus-visible-inside:hidden">
               {sourceIcon}
             </span>
-            <ChevronRightIcon
-              aria-hidden="true"
-              size="sm"
-              className={`hidden group-hover:block group-focus-visible:block group-has-[:focus-visible]:block transition-transform motion-reduce:transition-none ${
-                expanded ? 'rotate-90' : ''
-              }`}
-            />
-          </button>
+            <span className="hidden group-hover:flex group-focus-visible:flex group-focus-visible-inside:flex">
+              <DisclosureChevron
+                direction={expanded ? 'down' : 'right'}
+                size="xs"
+                animated
+              />
+            </span>
+          </DisclosureToggle>
         ) : (
           <span aria-hidden="true" className="flex">
             {sourceIcon}
           </span>
         )}
-      </td>
-      <td className="py-1">
+      </DataTableCell>
+      <DataTableCell overflow="truncate">
         <Tooltip
           label={
             <span className="flex flex-col">
@@ -1024,13 +967,13 @@ function ResourceRow({
             <span className="sr-only">, {details}</span>
           </div>
         </Tooltip>
-      </td>
-      <td className="whitespace-nowrap py-1 pl-3 text-right tabular-nums fg-secondary">
+      </DataTableCell>
+      <DataTableCell align="right">
         {formatCpuPercent(process.cpuPercent)}%
-      </td>
-      <td className="whitespace-nowrap py-1 pl-3 text-right tabular-nums fg-secondary">
+      </DataTableCell>
+      <DataTableCell align="right">
         {formatMemoryBytes(process.memoryRssBytes)}
-      </td>
-    </tr>
+      </DataTableCell>
+    </DataTableRow>
   );
 }

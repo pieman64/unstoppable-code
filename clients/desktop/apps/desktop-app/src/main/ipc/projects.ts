@@ -1,3 +1,4 @@
+import { sourceChangeGit } from '../canopy-runtime/worker-git-worktree-adapter';
 import {
   W5_PROJECTION_ONLY_READ,
   withW5ProjectionOnlyRead,
@@ -752,6 +753,11 @@ export function registerProjectHandlers(
       }).applySourceChanges(request.projectId, request, () =>
         applySourceChanges({
           kind: 'project',
+          git: sourceChangeGit(
+            request.projectId,
+            dispatcher,
+            resolveCaller(event),
+          ),
           source: 'project_settings',
           request,
           getWindow,

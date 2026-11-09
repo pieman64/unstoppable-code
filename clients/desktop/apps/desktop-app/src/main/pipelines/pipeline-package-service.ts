@@ -1,4 +1,8 @@
 import {
+  LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
+  pipelineDeclaresLocalOnlyTrigger,
+} from '@canopy/pipeline-interop/portability';
+import {
   authorizeProjectPipelineRequest,
   assertStoredPipelineContext,
   assertPipelineShareSourceContext,
@@ -85,7 +89,7 @@ import type {
   PipelinePackageReadinessRequest,
   PipelineInfo,
   SharedPipelineDetail,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   AutomationPipelineDependency,
   ChatTabPluginSelections,
@@ -151,8 +155,8 @@ import {
 import {
   getTriggerInputDefs,
   getTriggerTypes,
-} from '@canopy/desktop-shared/types/pipeline';
-import { findExecutableOnPath } from '@canopy/desktop-shared/node/lib/path-lookup';
+} from '@canopy/execution-engine/types/pipeline';
+import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import { loadPipelinePackageInventorySources } from '../plugins/invocable-inventory-service';
 import {
@@ -203,6 +207,7 @@ import {
   getSharedPipeline,
   PACKAGE_REQUEST_TIMEOUT_MS,
   preparePipelinePackageUpload,
+  refuseLocalOnlyTrigger,
   updateSharedPipeline,
   uploadPipelinePackageBlob,
 } from './canopy-server-client';
@@ -229,7 +234,7 @@ import {
   getMcpServerStatusByName,
 } from '../mcp/connection-status';
 import { mcpSelectionToEnvironmentRequirement } from '../mcp/share-requirement';
-import type { McpServerStatusEntry } from '@canopy/desktop-shared/types/mcp-servers';
+import type { McpServerStatusEntry } from '@canopy/execution-engine/types/mcp-servers';
 import { getOllamaService } from '../ollama/service';
 import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
 import {
@@ -238,7 +243,7 @@ import {
 } from '../auth/provider-auth-state';
 import { getAiCreditsRoutingContextWithStatus } from '../agents/ai-credits-routing';
 import { resolveNavigationWorkOwner } from '../agents/work-owner';
-import { resolveGatewayModelEntry } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { resolveGatewayModelEntry } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { AUTOMATION_SHARE_BLOCK_MESSAGES } from '@canopy/desktop-shared/lib/automation-sharing';
 import {
   getEnhancedEnv,
@@ -843,6 +848,22 @@ export interface PortablePipelineDiscovery {
   childrenWithAssets: string[];
 }
 
+/**
+ * A shared or packaged pipeline that declares `workflow` can't leave this
+ * machine yet (CAN-5782); web never parses packaged pipelines, so the share
+ * is blocked here.
+ */
+function localOnlyTriggerBlocker(
+  subject: string,
+): PipelinePackageAnalysisBlocker {
+  return {
+    code: 'LOCAL_ONLY_PIPELINE_TRIGGER',
+    subject,
+    message: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
+    occurrences: [],
+  };
+}
+
 function emptyPortablePipelineDiscovery(): PortablePipelineDiscovery {
   return {
     resources: [],
@@ -1068,6 +1089,20 @@ export async function buildPortablePipelineResources(input: {
         const childPipeline = parsePipelineText(
           await readFile(childPath, 'utf8'),
         );
+        // Web never parses a `child_pipeline` resource, so a child that
+        // declares `workflow` would reach it unchecked (CAN-5782).
+        if (pipelineDeclaresLocalOnlyTrigger(childPipeline)) {
+          discovered.blockers.push({
+            code: 'LOCAL_ONLY_PIPELINE_TRIGGER',
+            subject: displayName,
+            origin: input.bindingKey ? 'transitive' : 'direct',
+            message: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
+            ...(parentJobId && parentStepId
+              ? { jobId: parentJobId, stepId: parentStepId }
+              : {}),
+            occurrences: [],
+          });
+        }
         if (declaresAssets(childPipeline))
           discovered.childrenWithAssets.push(displayName);
         const providerByStep =
@@ -1216,6 +1251,10 @@ export async function analyzePackageRequest(
       repoPath,
       dismissedReferences: input.dismissedReferences,
     });
+    // The share dialog shows this during review, so nothing is uploaded for
+    // a pipeline that declares `workflow` (CAN-5782).
+    if (pipelineDeclaresLocalOnlyTrigger(pipeline))
+      portable.blockers.push(localOnlyTriggerBlocker(pipeline.name));
     const rootInventoryEntryIds = await capabilityInventoryEntryIdsByKey(
       pipeline,
       inventory,
@@ -1488,10 +1527,13 @@ export async function analyzeAutomationCapabilityPackage(
       // Unselected suggestions only feed the summary.
       if (!resolved.selected) continue;
       try {
+        const selected = parsePipelineText(rawPipeline);
+        if (pipelineDeclaresLocalOnlyTrigger(selected))
+          hostBlockers.push(localOnlyTriggerBlocker(resolved.name));
         packagedPipelines.push({
           key: resolved.key,
           name: resolved.name,
-          pipeline: parsePipelineText(rawPipeline),
+          pipeline: selected,
           fileDir: pipelineFileDir(resolved.path),
         });
       } catch (error) {
@@ -1507,6 +1549,8 @@ export async function analyzeAutomationCapabilityPackage(
     }
     if (input.pipelineContent !== undefined) {
       const pipeline = parsePipelineText(input.pipelineContent);
+      if (pipelineDeclaresLocalOnlyTrigger(pipeline))
+        hostBlockers.push(localOnlyTriggerBlocker(pipeline.name));
       const actionPipeline = packagePipelines
         ? options.actionPipeline
         : undefined;
@@ -2411,6 +2455,8 @@ export async function createPackagedSharedPipeline(
   const rawPipeline = source ? analysis?.shareBytes : request.rawPipeline;
   if (rawPipeline === undefined)
     throw new Error('Workflow unavailable (unknown-provenance)');
+  // Refused before anything is uploaded, not at publication.
+  refuseLocalOnlyTrigger(rawPipeline);
   const authorize = async (): Promise<void> => {
     if (source)
       await authorizeSharedPipelineCreate(
@@ -2512,6 +2558,7 @@ export async function updateSharedPipelinePreservingPackage(
   current?: SharedPipelineDetail,
   options: Parameters<typeof updateSharedPipeline>[2] = {},
 ): Promise<SharedPipelineDetail> {
+  refuseLocalOnlyTrigger(rawPipeline);
   const scoped = pipelineResourceContextEnabled();
   const contextSnapshot = scoped ? await pipelineContextSnapshot() : undefined;
   const currentDetail = current ?? (await getSharedPipeline(remoteId));

@@ -1,3 +1,4 @@
+import { Badge } from '../Badge';
 import {
   THINKING_LEVEL_LABELS,
   isThinkingLevel,
@@ -299,11 +300,8 @@ export function AgentBlockCard({
         Agent
         {shouldShowSubagentType ? <> &middot; {subagentType}</> : ' '}
         {runInBackground && (
-          <span
-            data-testid="agent-block-background-badge"
-            className="ml-1.5 rounded bg-fg-primary/[0.06] px-1 py-0.5 text-3xs fg-secondary"
-          >
-            background
+          <span className="inline-flex pl-1.5 align-middle">
+            <Badge data-testid="agent-block-background-badge">background</Badge>
           </span>
         )}
         {(!isExpanded || !prompt) && preview && (
@@ -370,7 +368,7 @@ export function AgentBlockCard({
           )}
 
           {subBlocks != null ? (
-            <div className="max-h-125 space-y-1 overflow-auto px-2.5 py-2">
+            <div className="grid grid-cols-1 content-start max-h-125 overflow-auto px-2.5 py-2 gap-1">
               {subBlocks}
             </div>
           ) : isRunning && description ? (

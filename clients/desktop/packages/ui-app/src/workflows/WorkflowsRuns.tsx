@@ -28,6 +28,7 @@ import {
   MessageIcon,
   RerunIcon,
   StopIcon,
+  WorkflowIcon,
   WorkflowsIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -78,6 +79,7 @@ const RUN_MENU_ROWS: Readonly<
 > = {
   inspect: { icon: <DocumentSearchIcon />, group: 'open' },
   'open-library': { icon: <WorkflowsIcon />, group: 'open' },
+  'open-workflow': { icon: <WorkflowIcon />, group: 'open' },
   rerun: { icon: <RerunIcon />, group: 'run' },
   retry: { icon: <RerunIcon />, group: 'run' },
   respond: { icon: <MessageIcon />, group: 'chat' },

@@ -24,7 +24,6 @@ import {
   PluginInstallStatusCell,
   SearchField,
   SettingsSelect,
-  StatusLabel,
   Heading,
 } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
@@ -307,20 +306,18 @@ function MarketplaceSourceDetailBody({
           />
         )}
         {state.pluginErrors[errorKey] && (
-          <div>
-            <p role="alert" className={REPLAY_MASK_CLASS}>
-              <StatusLabel size="xs">
-                {state.pluginErrors[errorKey]}
-              </StatusLabel>
-            </p>
-            <Button
-              size="compact"
-              variant="secondary"
-              onClick={() => void state.reload()}
-            >
-              Refresh status
-            </Button>
-          </div>
+          <Notice
+            intent="destructive"
+            actions={
+              <NoticeButton onClick={() => void state.reload()}>
+                Refresh status
+              </NoticeButton>
+            }
+          >
+            <span className={REPLAY_MASK_CLASS}>
+              {state.pluginErrors[errorKey]}
+            </span>
+          </Notice>
         )}
       </li>
     );

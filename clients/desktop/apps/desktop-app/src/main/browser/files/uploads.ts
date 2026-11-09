@@ -12,7 +12,7 @@ import {
 } from 'node:fs';
 import { open, rm, type FileHandle } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep, win32 } from 'node:path';
-import type { BrowserTransferErrorCode } from '@canopy/desktop-shared/types/browser';
+import type { BrowserTransferErrorCode } from '@canopy/execution-engine/types/browser';
 
 /**
  * Files an agent names for `browser.upload_files`: checked to be inside the

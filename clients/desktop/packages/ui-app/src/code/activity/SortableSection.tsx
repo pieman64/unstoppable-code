@@ -13,6 +13,7 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   PanelSection,
   type CollapsedIconColor,
+  type SpaceRole,
 } from '@canopy/ui-shared/components';
 
 /**
@@ -29,6 +30,7 @@ export interface SortableSectionProps {
   readonly icon: ReactNode;
   readonly subtitle?: ReactNode;
   readonly subtitleInline?: boolean;
+  readonly subtitleGap?: SpaceRole;
   readonly headerAction?: ReactNode;
   readonly collapsedIconColor?: CollapsedIconColor;
   readonly defaultCollapsed?: boolean;
@@ -60,6 +62,7 @@ export function SortableSection({
   icon,
   subtitle,
   subtitleInline,
+  subtitleGap,
   headerAction,
   collapsedIconColor,
   defaultCollapsed,
@@ -142,6 +145,7 @@ export function SortableSection({
           title={title}
           subtitle={subtitle}
           subtitleInline={subtitleInline}
+          subtitleGap={subtitleGap}
           headerAction={headerAction}
           collapsedIconColor={collapsedIconColor}
           defaultCollapsed={defaultCollapsed}

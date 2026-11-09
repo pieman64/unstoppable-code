@@ -23,6 +23,7 @@ import {
   type ProviderProcessHostHandle,
 } from '../agent-runs/provider-process-host/host';
 import {
+  isProviderProcessHostRequest,
   isProviderProcessHostResponse,
   PROVIDER_PROCESS_STDERR_LIMIT_BYTES,
   PROVIDER_PROCESS_STDOUT_WINDOW_BYTES,
@@ -113,6 +114,15 @@ const WAITING_WITH_GRANDCHILD = [
    grandchild.stdout.once('data', () => process.stdout.write(grandchild.pid + '\\n'));
    process.on('SIGTERM', () => process.exit(0));
    setInterval(() => undefined, 1 << 30);`,
+];
+
+/** A child that leaves a descendant holding its stdout, prints its pid and exits. */
+const EXITS_WHILE_DESCENDANT_HOLDS_STDOUT = [
+  '-e',
+  `const { spawn } = require('node:child_process');
+   const descendant = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 1 << 30)'],
+     { stdio: ['ignore', 'inherit', 'ignore'] });
+   process.stdout.write(descendant.pid + '\\n', () => process.exit(0));`,
 ];
 
 interface Observed {
@@ -365,11 +375,72 @@ describe.each(MODES)('provider process host (%s)', (mode) => {
     );
     const observed = observe(child);
     const output = readAll(child);
-    child.stdin.write('hello ');
-    child.stdin.end('host');
+    const { stdin } = child;
+    if (!stdin) throw new Error('A default request pipes stdin.');
+    stdin.write('hello ');
+    stdin.end('host');
     expect(await output).toBe('hello host');
     await observed.closed;
     expect(observed.closes).toEqual([[0, null]]);
+  });
+
+  it('reports exit before close while a descendant holds stdout', async () => {
+    const child = harness.client.spawn(
+      request(EXITS_WHILE_DESCENDANT_HOLDS_STDOUT),
+    );
+    const observed = observe(child);
+    const events: string[] = [];
+    const exited = new Promise<[number | null, NodeJS.Signals | null]>(
+      (resolve) => {
+        child.once('exit', (code, signal) => {
+          events.push('exit');
+          resolve([code, signal]);
+        });
+      },
+    );
+    child.once('close', () => events.push('close'));
+    const descendant = Number(await firstLine(child));
+    strays.add(descendant);
+    expect(await exited).toEqual([0, null]);
+    expect(present(descendant)).toBe(true);
+    expect(observed.closes).toEqual([]);
+    process.kill(descendant, 'SIGKILL');
+    await observed.closed;
+    expect(events).toEqual(['exit', 'close']);
+    expect(observed.closes).toEqual([[0, null]]);
+  });
+
+  it('a request with stdin ignored gives the hosted child no input', async () => {
+    const child = harness.client.spawn(
+      request(
+        [
+          '-e',
+          "process.stdout.write(String(require('fs').readFileSync(0).length))",
+        ],
+        { stdin: 'ignore' },
+      ),
+    );
+    const observed = observe(child);
+    const output = readAll(child);
+    expect(child.stdin).toBeNull();
+    expect(await output).toBe('0');
+    await observed.closed;
+    expect(observed.closes).toEqual([[0, null]]);
+    const frame = {
+      type: 'spawn',
+      requestId: 'stdin-mode',
+      command: process.execPath,
+      args: [],
+      cwd: dir,
+      env: {},
+      owner: OWNER,
+    };
+    expect(isProviderProcessHostRequest({ ...frame, stdin: 'ignore' })).toBe(
+      true,
+    );
+    expect(isProviderProcessHostRequest({ ...frame, stdin: 'inherit' })).toBe(
+      false,
+    );
   });
 
   it("stop ends the child's whole group", async () => {
@@ -667,6 +738,116 @@ describePosix('provider process host stop races', () => {
   });
 });
 
+// Host and launcher share this process, so one spy sees every signal either
+// sends. Once the child has exited its pid may be reused: only its group may
+// be signalled.
+describePosix('provider process host signals after exit', () => {
+  let current: InProcessHost | undefined;
+  let harness: ReturnType<typeof inProcessHarness>;
+
+  beforeEach(() => {
+    current = undefined;
+    harness = inProcessHarness((host) => {
+      current = host;
+    });
+  });
+
+  afterEach(async () => {
+    await harness.dispose();
+  });
+
+  const bareSignals = (
+    kill: jest.SpyInstance<true, Parameters<typeof process.kill>>,
+    pid: number,
+  ): unknown[] => kill.mock.calls.filter(([target]) => target === pid);
+
+  it('a child that exits inside the TERM window gets no bare-pid signal', async () => {
+    const child = harness.client.spawn(
+      request([
+        '-e',
+        `process.on('SIGTERM', () => process.exit(0));
+         process.stdout.write('ready\\n');
+         setInterval(() => undefined, 1 << 30);`,
+      ]),
+    );
+    const observed = observe(child);
+    await firstLine(child);
+    const pid = child.pid;
+    if (pid === undefined) throw new Error('no pid');
+    const kill = jest.spyOn(process, 'kill');
+    await within(child.stop({ graceMs: 5_000 }), 4_000);
+    expect(observed.closes).toEqual([[0, null]]);
+    expect(kill).toHaveBeenCalledWith(-pid, 'SIGKILL');
+    expect(bareSignals(kill, pid)).toEqual([]);
+  });
+
+  it('a stop after the child closed signals only its group', async () => {
+    const child = harness.client.spawn(
+      request(['-e', "process.stdout.write('ready\\n')"]),
+    );
+    const observed = observe(child);
+    await firstLine(child);
+    await observed.closed;
+    const pid = child.pid;
+    if (pid === undefined) throw new Error('no pid');
+    const kill = jest.spyOn(process, 'kill');
+    await child.stop();
+    expect(kill.mock.calls).toEqual([[-pid, 'SIGKILL']]);
+  });
+
+  it('a stop that crosses a childless close signals only its group', async () => {
+    const child = harness.client.spawn(
+      request([
+        '-e',
+        "process.stdout.write('ready\\n'); setTimeout(() => process.exit(0), 200);",
+      ]),
+    );
+    const observed = observe(child);
+    await firstLine(child);
+    const pid = child.pid;
+    if (pid === undefined) throw new Error('no pid');
+    const host = current;
+    if (!host) throw new Error('no host');
+    host.holdFrames = true;
+    // The host has seen the close; the launcher has not.
+    await until(() => host.handle.liveChildren().length === 0);
+    const kill = jest.spyOn(process, 'kill');
+    const stopped = child.stop();
+    host.releaseFrames();
+    await stopped;
+    expect(observed.closes).toEqual([[0, null]]);
+    expect(kill.mock.calls).toEqual([[-pid, 'SIGKILL']]);
+  });
+
+  it('shutdown after a child exited signals only its group', async () => {
+    // The descendant leads its own group and holds stdout: the child has
+    // exited, its group is gone, and its close has not come.
+    const child = harness.client.spawn(
+      request([
+        '-e',
+        `const { spawn } = require('node:child_process');
+         const descendant = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 1 << 30)'],
+           { detached: true, stdio: ['ignore', 'inherit', 'ignore'] });
+         process.stdout.write(descendant.pid + '\\n', () => process.exit(0));`,
+      ]),
+    );
+    const observed = observe(child);
+    const exited = new Promise<void>((resolve) => {
+      child.once('exit', () => resolve());
+    });
+    const descendant = Number(await firstLine(child));
+    strays.add(descendant);
+    await exited;
+    const pid = child.pid;
+    if (pid === undefined) throw new Error('no pid');
+    const kill = jest.spyOn(process, 'kill');
+    await within(harness.client.shutdown(), 8_000);
+    expect(observed.closes).toEqual([[null, 'SIGKILL']]);
+    expect(kill).toHaveBeenCalledWith(-pid, 'SIGKILL');
+    expect(bareSignals(kill, pid)).toEqual([]);
+  });
+});
+
 /** A child the host spawns through an in-test spawner, fed by the test. */
 class ScriptedChild extends EventEmitter implements ProviderProcess {
   readonly pid = 4343;
@@ -697,6 +878,67 @@ class StoppingChild extends ScriptedChild {
     this.emit('close', null, 'SIGKILL');
   }
 }
+
+describe('provider process host exit frames', () => {
+  it('posts exit before close while a descendant holds stdout', async () => {
+    const posted: unknown[] = [];
+    const listeners = new Set<(event: { data: unknown }) => void>();
+    let disconnect: (() => void) | undefined;
+    const exit = jest.fn();
+    const channel: ConnectedExecutionHostChannel = {
+      postMessage: (message) => posted.push(message),
+      on: (_event, listener) => listeners.add(listener),
+      once: (_event, listener) => listeners.add(listener),
+      exit,
+      congested: () => false,
+      onceDrained: (listener) => listener(),
+      onDisconnect: (handler) => {
+        disconnect = handler;
+      },
+    };
+    serveProviderProcessHost(channel);
+    const spawn: ProviderProcessHostRequest = {
+      type: 'spawn',
+      requestId: 'exit-before-close',
+      command: process.execPath,
+      args: EXITS_WHILE_DESCENDANT_HOLDS_STDOUT,
+      cwd: dir,
+      env: { PATH: process.env.PATH ?? '' },
+      owner: OWNER,
+    };
+    for (const listener of listeners) listener({ data: spawn });
+    const frames = (): string[] =>
+      posted.filter(isProviderProcessHostResponse).map((frame) => frame.type);
+    let descendant: number | undefined;
+    await until(() => {
+      let stdout = '';
+      for (const frame of posted.filter(isProviderProcessHostResponse))
+        if (frame.type === 'stdout')
+          stdout += Buffer.from(frame.dataBase64, 'base64').toString('utf8');
+      if (stdout.includes('\n')) descendant = Number(stdout.split('\n')[0]);
+      return descendant !== undefined && frames().includes('exit');
+    });
+    if (descendant === undefined) throw new Error('child did not start');
+    strays.add(descendant);
+    expect(present(descendant)).toBe(true);
+    expect(frames()).not.toContain('close');
+    expect(posted).toContainEqual({
+      type: 'exit',
+      requestId: 'exit-before-close',
+      code: 0,
+      signal: null,
+    });
+    process.kill(descendant, 'SIGKILL');
+    await until(() => frames().includes('close'));
+    expect(frames().indexOf('exit')).toBeLessThan(frames().indexOf('close'));
+    const frame = { type: 'exit', requestId: 'exit-frame', signal: null };
+    expect(isProviderProcessHostResponse({ ...frame, code: 0 })).toBe(true);
+    expect(isProviderProcessHostResponse({ ...frame, code: '0' })).toBe(false);
+    if (!disconnect) throw new Error('no disconnect handler');
+    disconnect();
+    await until(() => exit.mock.calls.length > 0, 8_000);
+  });
+});
 
 describe('provider process host stdout while stopping', () => {
   it('relayed stdout stays a prefix once a stopping child exceeds its credit', async () => {

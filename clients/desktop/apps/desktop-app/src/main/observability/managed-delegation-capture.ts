@@ -13,12 +13,12 @@ import type {
   AgentAuditStatus,
   AgentAuditTokenTotals,
   AgentAuditToolCounts,
-} from '@canopy/desktop-shared/types/observability';
+} from '@canopy/execution-engine/types/observability';
 import type {
   ModelHarness,
   ModelHarnessSource,
-} from '@canopy/desktop-shared/types/model-harnesses';
-import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+} from '@canopy/execution-engine/types/model-harnesses';
+import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { computeCodexObservedCost } from '../openai-pricing/cost-calculator';
 import {
   getOpenAiPricingForCostingSync,

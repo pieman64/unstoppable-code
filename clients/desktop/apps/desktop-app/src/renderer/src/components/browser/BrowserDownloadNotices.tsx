@@ -1,6 +1,7 @@
 import { useEffect, type JSX } from 'react';
 import { Notice, NoticeButton } from '@canopy/ui-shared';
 import { useBrowserStore } from '@/stores/browserStore';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface BrowserDownloadNoticesProps {
   browserId: string;
@@ -44,52 +45,54 @@ export function BrowserDownloadNotices({
   }
 
   return (
-    <div className="flex flex-col gap-2 border-b px-2 py-2">
-      {blocked && (
-        <Notice
-          intent="attention"
-          title="Downloads blocked"
-          actions={
-            <NoticeButton
-              data-testid="browser-files-allow-more"
-              onClick={(): void => {
-                void allowMoreDownloads(browserId).catch(() => undefined);
-              }}
-            >
-              Allow more downloads
-            </NoticeButton>
-          }
-          onDismiss={(): void => dismissDownloadsBlocked(browserId)}
-          dismissLabel="Dismiss blocked downloads notice"
-        >
-          This page tried to start too many downloads at once.
-        </Notice>
-      )}
-      {toast !== undefined && (
-        <Notice
-          data-testid="browser-download-toast"
-          intent="positive"
-          actions={
-            <NoticeButton
-              onClick={(): void => {
-                void runTransferCommand({
-                  kind: 'show',
-                  browserId,
-                  transferId: toast.id,
-                }).catch(() => undefined);
-              }}
-            >
-              Show
-            </NoticeButton>
-          }
-          onDismiss={(): void => dismissDownloadToast(browserId, toast.id)}
-          dismissLabel="Dismiss download notice"
-        >
-          <span className="block truncate" title={toast.fileName}>
-            Downloaded {toast.fileName}
-          </span>
-        </Notice>
-      )}
-    </div>
+    <Surface variant="section" boundary="bottom">
+      <div className="flex flex-col gap-2 px-2 py-2">
+        {blocked && (
+          <Notice
+            intent="attention"
+            title="Downloads blocked"
+            actions={
+              <NoticeButton
+                data-testid="browser-files-allow-more"
+                onClick={(): void => {
+                  void allowMoreDownloads(browserId).catch(() => undefined);
+                }}
+              >
+                Allow more downloads
+              </NoticeButton>
+            }
+            onDismiss={(): void => dismissDownloadsBlocked(browserId)}
+            dismissLabel="Dismiss blocked downloads notice"
+          >
+            This page tried to start too many downloads at once.
+          </Notice>
+        )}
+        {toast !== undefined && (
+          <Notice
+            data-testid="browser-download-toast"
+            intent="positive"
+            actions={
+              <NoticeButton
+                onClick={(): void => {
+                  void runTransferCommand({
+                    kind: 'show',
+                    browserId,
+                    transferId: toast.id,
+                  }).catch(() => undefined);
+                }}
+              >
+                Show
+              </NoticeButton>
+            }
+            onDismiss={(): void => dismissDownloadToast(browserId, toast.id)}
+            dismissLabel="Dismiss download notice"
+          >
+            <span className="block truncate" title={toast.fileName}>
+              Downloaded {toast.fileName}
+            </span>
+          </Notice>
+        )}
+      </div>
+    </Surface>
   );
 }

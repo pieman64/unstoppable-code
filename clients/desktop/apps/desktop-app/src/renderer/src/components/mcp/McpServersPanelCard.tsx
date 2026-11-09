@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useState, type JSX } from 'react';
-import type { DetectedMcpServerInfo } from '@canopy/desktop-shared/types/mcp-servers';
+import type { DetectedMcpServerInfo } from '@canopy/execution-engine/types/mcp-servers';
 import {
   McpServersSectionBody,
   type McpServersSectionBodyProps,
@@ -33,6 +33,7 @@ interface McpServersPanelCardProps {
   getRowNavigation?: McpServersSectionBodyProps['getRowNavigation'];
   getRowSettings?: McpServersSectionBodyProps['getRowSettings'];
   renderRowExtra?: McpServersSectionBodyProps['renderRowExtra'];
+  rowExtraLayout?: McpServersSectionBodyProps['rowExtraLayout'];
   onCancelSignIn?: (server: McpServersSectionItem) => void;
   warnings: string[];
   loading: boolean;
@@ -78,6 +79,7 @@ export function McpServersPanelCard({
   getRowNavigation,
   getRowSettings,
   renderRowExtra,
+  rowExtraLayout,
   onCancelSignIn,
 }: McpServersPanelCardProps): JSX.Element {
   const chrome = useActivitySectionChrome();
@@ -122,6 +124,7 @@ export function McpServersPanelCard({
           getRowNavigation={getRowNavigation}
           getRowSettings={getRowSettings}
           renderRowExtra={renderRowExtra}
+          rowExtraLayout={rowExtraLayout}
           onCancelSignIn={onCancelSignIn}
           warnings={warnings}
           loading={loading}

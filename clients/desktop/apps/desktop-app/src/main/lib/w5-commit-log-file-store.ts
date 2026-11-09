@@ -22,7 +22,7 @@ import { admitW5Storage } from './w5-storage';
 import { currentW5CommitScope, type W5CommitOptions } from './w5-commit-scope';
 import { logMainProcessWarn } from './main-process-logging';
 import { markE2eStartup } from './e2e-startup-marks';
-import { admitStorageWrite } from '@canopy/desktop-shared/node/lib/storage-admission';
+import { admitStorageWrite } from '@canopy/execution-engine/node/lib/storage-admission';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { readWorkspaceIndex } from '@canopy/core-runtime/node';
 import { countingW5HostPort, w5RecordFileClass } from './w5-work-counters';

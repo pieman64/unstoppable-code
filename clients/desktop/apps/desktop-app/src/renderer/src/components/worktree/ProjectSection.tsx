@@ -799,7 +799,7 @@ export function ProjectSection({
       return renderWorktreeRow(entry.worktree);
     }
     return (
-      <div key={entry.worktree.id} className="space-y-px">
+      <div key={entry.worktree.id} className="flex flex-col gap-px">
         {renderWorktreeRow(entry.worktree)}
         <div
           // Stacked children sit flush (no vertical gap); the outer wrapper

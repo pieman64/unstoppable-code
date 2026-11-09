@@ -1,7 +1,7 @@
 import type {
   McpServerConfigData,
   McpServerDefinitionData,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   buildPluginHttpMcpServerForAuth,
   hasPluginManagedAuth,

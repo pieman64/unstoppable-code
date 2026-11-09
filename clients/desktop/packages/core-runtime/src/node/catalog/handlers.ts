@@ -10,6 +10,7 @@ import {
   CatalogSourceDeleteResultSchema,
   CatalogSourceRefreshResultSchema,
   CatalogSourceUpsertResultSchema,
+  isBoundedCanopyJsonValue,
   resolveCatalogEntryIds,
   selectionEntryIds,
   type CanopyErrorKind,
@@ -427,6 +428,18 @@ export function createCoreCatalogHandlers(options: {
               snapshot: await readSnapshot(host),
             };
             const refs = resolveIds(params.selectedItemIds, snapshot, current);
+            // CAN-5898: refuse before writing what the ledger cannot record.
+            if (
+              !isBoundedCanopyJsonValue({
+                revision: Number.MAX_SAFE_INTEGER,
+                selectedItemIds: selectionEntryIds(refs),
+                materializationOperation: null,
+              })
+            )
+              throw fail(
+                'resource_exhausted',
+                'This selection is too large to record.',
+              );
             const change = await host.replaceGlobalSelection(
               params.expectedRevision,
               refs,
@@ -614,16 +627,27 @@ export function createCoreCatalogHandlers(options: {
             : requested.filter((id) => !isGit(id));
         const updateSourceIds =
           params.mode === 'update_then_scan' ? requested.filter(isGit) : [];
+        const acknowledgement = {
+          acceptedSources: [...requested],
+          scanOnlySources: scanOnlySourceIds,
+        };
+        // CAN-5898: the acknowledgement records at admission, and the
+        // outcome names no more than it, so both fit the ledger. A recorded
+        // request replays what it recorded, so only a new one is checked.
+        if (recorded === null && !isBoundedCanopyJsonValue(acknowledgement))
+          throw fail(
+            'resource_exhausted',
+            'These sources are too many to record in one refresh.',
+            { code: 'core.catalog.refreshTooLarge' },
+          );
+        const accepted = new Set(requested);
         return runs.start({
           kind: 'core.catalog.source.refresh',
           context,
           params,
           codes: CORE_CATALOG_SOURCE_CODES.refresh,
           keyReused: keyReusedConflict,
-          acknowledgement: {
-            acceptedSources: [...requested],
-            scanOnlySources: scanOnlySourceIds,
-          },
+          acknowledgement,
           acknowledge: (operationId, recorded) => {
             const parsed =
               RecordedRefreshAcknowledgementSchema.safeParse(recorded);
@@ -653,7 +677,10 @@ export function createCoreCatalogHandlers(options: {
               throw fail('unavailable', 'No source could be refreshed.', {
                 code: 'core.catalog.refreshUnavailable',
               });
-            return { refreshed: outcome.refreshed, failed: outcome.failed };
+            return {
+              refreshed: outcome.refreshed.filter((id) => accepted.has(id)),
+              failed: outcome.failed.filter((id) => accepted.has(id)),
+            };
           },
         });
       },

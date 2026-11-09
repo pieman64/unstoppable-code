@@ -8,7 +8,7 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import {
   loadDisabledPipelineIdsBestEffort,
   setPipelineDisabled,

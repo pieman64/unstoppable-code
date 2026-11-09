@@ -23,10 +23,10 @@ import {
   type FileViewMode,
 } from '@canopy/app-state';
 import {
+  LoadingRegion,
   Button,
+  Stack,
   ConfirmDialog,
-  CenteredLoadingSpinner,
-  DelayedLoadingPlaceholder,
   ErrorState,
   Notice,
   NoticeButton,
@@ -232,6 +232,8 @@ export interface FileViewerProps {
   readonly trailingHeaderActions?: ReactNode;
   /** Optional host-owned action shown after the unsupported-file explanation. */
   readonly unsupportedFileAction?: ReactNode;
+  /** Gap before a margin-free fallback action. Omitted keeps the legacy layout. */
+  readonly unsupportedFileActionGap?: 'item';
   /**
    * Byte budget the host's file read is capped at, used to state the real
    * limit in the truncation banner. Defaults to desktop's 5 MiB
@@ -660,8 +662,7 @@ function FileSaveConflictNotice({
     <Surface variant="section" boundary="bottom">
       <div ref={noticeRef} className="px-3 py-2">
         <Notice
-          intent="attention"
-          role="alert"
+          intent="destructive"
           title="Not saved"
           data-testid="file-save-conflict-notice"
           detail={detail}
@@ -1131,9 +1132,7 @@ function FileImagePreview({
       className="flex min-h-0 flex-1 items-center justify-center overflow-auto"
     >
       {state.status === 'loading' ? (
-        <DelayedLoadingPlaceholder>
-          <CenteredLoadingSpinner className="my-12" />
-        </DelayedLoadingPlaceholder>
+        <LoadingRegion layout="fill" />
       ) : state.status === 'unavailable' ? (
         <span className="text-s fg-secondary">Image unavailable</span>
       ) : (
@@ -1209,6 +1208,45 @@ type FileDocumentPreviewState =
   | { readonly status: 'corrupt' }
   | { readonly status: 'parse-failed' };
 
+function FilePreviewMessage({
+  title,
+  description,
+  action,
+  actionGap,
+  testId,
+  errorKind,
+}: {
+  readonly title: ReactNode;
+  readonly description: ReactNode;
+  readonly action?: ReactNode;
+  readonly actionGap?: 'item';
+  readonly testId: string;
+  readonly errorKind?: string;
+}): JSX.Element {
+  const text = (
+    <>
+      <p className="text-s font-medium fg-primary">{title}</p>
+      <p className="text-xs fg-secondary">{description}</p>
+    </>
+  );
+  return (
+    <div
+      className={`flex min-h-0 flex-1 flex-col items-center justify-center ${actionGap === 'item' ? 'gap-3' : 'gap-2'} p-6 text-center`}
+      data-testid={testId}
+      data-error-kind={errorKind}
+    >
+      {actionGap === 'item' ? (
+        <Stack gap="inline" align="center">
+          {text}
+        </Stack>
+      ) : (
+        text
+      )}
+      {action}
+    </div>
+  );
+}
+
 interface FileDocumentPreviewProps {
   readonly request: PortalFileReadPayload;
   readonly renderKind: RichDocumentRenderKind | 'image';
@@ -1222,6 +1260,8 @@ interface FileDocumentPreviewProps {
   readonly documentRecoveryHint: string;
   readonly headerActions?: ReactNode;
   readonly unsupportedFileAction?: ReactNode;
+  /** Gap before a margin-free fallback action. Omitted keeps the legacy layout. */
+  readonly unsupportedFileActionGap?: 'item';
   readonly renderPathBreadcrumb?: FileViewerProps['renderPathBreadcrumb'];
   readonly trailingHeaderActions?: ReactNode;
   readonly documentRetryGeneration: number;
@@ -1237,6 +1277,7 @@ function FileDocumentPreview({
   documentRecoveryHint,
   headerActions,
   unsupportedFileAction,
+  unsupportedFileActionGap,
   renderPathBreadcrumb,
   trailingHeaderActions,
   documentRetryGeneration,
@@ -1320,17 +1361,16 @@ function FileDocumentPreview({
                 : `${displayName} could not be converted for preview. ${documentRecoveryHint}`
               : `${displayName} is damaged or invalid and cannot be previewed.`;
     body = (
-      <div
-        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center"
-        data-testid="file-viewer-document-error"
-        data-error-kind={state.status}
-      >
-        <p className="text-s font-medium fg-primary">
-          {video ? 'Video preview unavailable' : 'Document preview unavailable'}
-        </p>
-        <p className="text-xs fg-secondary">{copy}</p>
-        {unsupportedFileAction}
-      </div>
+      <FilePreviewMessage
+        title={
+          video ? 'Video preview unavailable' : 'Document preview unavailable'
+        }
+        description={copy}
+        action={unsupportedFileAction}
+        actionGap={unsupportedFileActionGap}
+        testId="file-viewer-document-error"
+        errorKind={state.status}
+      />
     );
   } else {
     body = (
@@ -1346,9 +1386,7 @@ function FileDocumentPreview({
           />
         ) : state.status !== 'ready' ? (
           <div className="flex min-h-0 flex-1 items-center justify-center">
-            <DelayedLoadingPlaceholder>
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
+            <LoadingRegion layout="fill" />
           </div>
         ) : (
           renderRichDocument({
@@ -1747,6 +1785,7 @@ function FileViewerBody({
   renderPathBreadcrumb,
   trailingHeaderActions,
   unsupportedFileAction,
+  unsupportedFileActionGap,
   previewByteBudget = DEFAULT_PREVIEW_BYTE_BUDGET,
   deferMissing = false,
   contentScrollBinding,
@@ -1962,6 +2001,7 @@ function FileViewerBody({
         deferMissing={deferMissing}
         headerActions={headerActions}
         unsupportedFileAction={unsupportedFileAction}
+        unsupportedFileActionGap={unsupportedFileActionGap}
       />
     );
   }
@@ -1969,9 +2009,7 @@ function FileViewerBody({
   if (!session || (session.status === 'loading' && session.preview === null)) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
-        <DelayedLoadingPlaceholder>
-          <CenteredLoadingSpinner className="my-12" />
-        </DelayedLoadingPlaceholder>
+        <LoadingRegion layout="fill" />
       </div>
     );
   }
@@ -1983,9 +2021,7 @@ function FileViewerBody({
       if (deferMissing) {
         return (
           <div className="flex min-h-0 flex-1 items-center justify-center">
-            <DelayedLoadingPlaceholder>
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
+            <LoadingRegion layout="fill" />
           </div>
         );
       }
@@ -2020,18 +2056,13 @@ function FileViewerBody({
               {trailingHeaderActions}
             </div>
           </Surface>
-          <div
-            className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center"
-            data-testid="file-viewer-unsupported"
-          >
-            <p className="text-s font-medium fg-primary">
-              Unsupported file type
-            </p>
-            <p className="text-xs fg-secondary">
-              {request.relativePath} cannot be previewed.
-            </p>
-            {unsupportedFileAction}
-          </div>
+          <FilePreviewMessage
+            title="Unsupported file type"
+            description={<>{request.relativePath} cannot be previewed.</>}
+            action={unsupportedFileAction}
+            actionGap={unsupportedFileActionGap}
+            testId="file-viewer-unsupported"
+          />
         </div>
       );
     }
@@ -2050,9 +2081,7 @@ function FileViewerBody({
   if (!preview) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
-        <DelayedLoadingPlaceholder>
-          <CenteredLoadingSpinner className="my-12" />
-        </DelayedLoadingPlaceholder>
+        <LoadingRegion layout="fill" />
       </div>
     );
   }

@@ -22,7 +22,7 @@ import type {
   ResolveInvocableSelectionRequest,
   ResolveInvocableSelectionResponse,
 } from '@canopy/desktop-shared/types';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type {
   MarketplaceInfo,
   PluginCommandInfo,

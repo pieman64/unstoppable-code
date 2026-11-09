@@ -1,5 +1,6 @@
 'use client';
 
+import { Stack } from './Stack';
 import type { JSX } from 'react';
 import type {
   CuratedPipelineDetail,
@@ -88,20 +89,22 @@ export function CuratedPipelineCatalog(
   const filter = (next: Partial<CuratedPipelineListQuery>): void =>
     props.onQueryChange({ ...query, ...next, cursor: undefined });
   return (
-    <section
-      className="min-w-0 space-y-4"
+    <Stack
+      as="section"
+      gap="group"
+      className="min-w-0"
       data-testid="curated-pipeline-catalog"
       aria-label="Workflow templates"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
+        <Stack gap="tight" className="min-w-0">
           <Heading level={2} variant="section">
             Workflow templates
           </Heading>
-          <p className="mt-1 text-s fg-secondary">
+          <p className="text-s fg-secondary">
             Ready-made workflows you can add and customize.
           </p>
-        </div>
+        </Stack>
         <Button
           disabled={props.loading}
           onClick={props.onRefresh}
@@ -118,10 +121,12 @@ export function CuratedPipelineCatalog(
       <ErrorBanner className="" error={props.error} />
       {selectedKey ? (
         <div
-          className="min-w-0 space-y-4 rounded-lg ring-1 ring-inset ring-line-base bg-base p-4"
+          className="min-w-0 flex flex-col gap-4 rounded-lg ring-1 ring-inset ring-line-base bg-base p-4"
           data-testid="curated-pipeline-detail"
         >
-          <Button onClick={props.onBack}>Back to workflow templates</Button>
+          <Button className="self-start" onClick={props.onBack}>
+            Back to workflow templates
+          </Button>
           {props.launchAvailability && (
             <LaunchAvailabilityControl {...props.launchAvailability} />
           )}
@@ -133,7 +138,7 @@ export function CuratedPipelineCatalog(
           <ErrorBanner className="" error={props.detailError} />
           {detail && (
             <>
-              <div className="min-w-0 space-y-2">
+              <Stack gap="inline" className="min-w-0">
                 <Heading level={3} variant="section" className="break-words">
                   {detail.name}
                 </Heading>
@@ -152,7 +157,7 @@ export function CuratedPipelineCatalog(
                 )}
                 {detail.docsUrl && /^https?:\/\//.test(detail.docsUrl) && (
                   <a
-                    className="text-s fg-accent underline"
+                    className="self-start text-s fg-accent underline"
                     href={detail.docsUrl}
                     target="_blank"
                     rel="noreferrer"
@@ -160,9 +165,10 @@ export function CuratedPipelineCatalog(
                     Documentation
                   </a>
                 )}
-              </div>
+              </Stack>
               {props.onDownload && (
                 <Button
+                  className="self-start"
                   onClick={() => props.onDownload?.(detail)}
                   data-testid="curated-pipeline-download"
                 >
@@ -181,7 +187,7 @@ export function CuratedPipelineCatalog(
                   dataTestId="curated-pipeline-package-summary"
                 >
                   {detail.package.resources.length > 0 && (
-                    <ul className="space-y-2">
+                    <Stack as="ul" gap="inline">
                       {detail.package.resources.map((resource) => (
                         <li key={resource.id} className="text-s fg-primary">
                           {resource.displayName}
@@ -190,14 +196,14 @@ export function CuratedPipelineCatalog(
                           </span>
                         </li>
                       ))}
-                    </ul>
+                    </Stack>
                   )}
                   {detail.package.environmentRequirements.length > 0 && (
-                    <div>
+                    <Stack gap="tight">
                       <p className="text-xs font-medium fg-secondary">
                         Setup required
                       </p>
-                      <ul className="mt-1 space-y-1">
+                      <Stack as="ul" gap="tight">
                         {detail.package.environmentRequirements.map(
                           (requirement) => (
                             <li
@@ -211,8 +217,8 @@ export function CuratedPipelineCatalog(
                             </li>
                           ),
                         )}
-                      </ul>
-                    </div>
+                      </Stack>
+                    </Stack>
                   )}
                 </Disclosure>
               )}
@@ -256,6 +262,7 @@ export function CuratedPipelineCatalog(
                 </div>
               ) : (
                 <Button
+                  className="self-start"
                   variant="primary"
                   disabled={props.importing || !!props.importDisabledReason}
                   onClick={() => props.onImport(detail)}
@@ -326,14 +333,18 @@ export function CuratedPipelineCatalog(
           >
             {props.rows.map((row) => (
               <li key={row.key} className="flex min-w-0 items-center gap-4 p-4">
-                <div className="min-w-0 flex-1">
-                  <Heading level={3} variant="title" className="break-words">
-                    {row.name}
-                  </Heading>
-                  <p className="mt-1 break-words text-s fg-secondary">
-                    {row.shortDescription}
-                  </p>
-                  <p className="mt-2 break-words text-xs fg-secondary">
+                <div className="min-w-0 flex-1 flex flex-col gap-2">
+                  <Stack gap="tight">
+                    <Heading level={3} variant="title" className="break-words">
+                      {row.name}
+                    </Heading>
+
+                    <p className="break-words text-s fg-secondary">
+                      {row.shortDescription}
+                    </p>
+                  </Stack>
+
+                  <p className="break-words text-xs fg-secondary">
                     {row.jobCount} jobs · {row.stepCount} steps ·{' '}
                     {row.categories.join(', ') || 'General'} ·{' '}
                     {row.scopes.join(', ')}
@@ -351,6 +362,7 @@ export function CuratedPipelineCatalog(
           </ul>
           {props.nextCursor && (
             <Button
+              className="self-start"
               disabled={props.loading}
               onClick={props.onLoadMore}
               data-testid="curated-pipeline-load-more"
@@ -360,7 +372,7 @@ export function CuratedPipelineCatalog(
           )}
         </>
       )}
-    </section>
+    </Stack>
   );
 }
 

@@ -1,3 +1,7 @@
+import {
+  classifyError,
+  readErrorClassification,
+} from '@canopy/protocol/app-errors/classification';
 import type {
   CorePullRequest,
   CorePullRequestMergeQueueGetParams,
@@ -147,6 +151,25 @@ export class GitHubRequestError extends Error {
     super(message);
     this.name = 'GitHubRequestError';
     this.code = code;
+    if (readErrorClassification(options.cause)) {
+      // The more specific adapter evidence wins over this wrapper's category.
+    } else if (code === 'not_authenticated')
+      classifyError(this, 'external.sign_in_required');
+    else if (code === 'timeout' || code === 'unavailable')
+      classifyError(this, 'external.service_unavailable');
+    else if (code === 'rate_limited') {
+      const delay = options.retryAfterMs;
+      const retryAt =
+        typeof delay === 'number' && Number.isFinite(delay) && delay >= 0
+          ? Math.round(Date.now() + delay)
+          : undefined;
+      classifyError(this, 'external.rate_limited', {
+        retryAt:
+          retryAt !== undefined && Number.isSafeInteger(retryAt)
+            ? retryAt
+            : undefined,
+      });
+    }
     if (options.cause !== undefined) this.cause = options.cause;
     if (options.retryAfterMs !== undefined)
       this.retryAfterMs = options.retryAfterMs;

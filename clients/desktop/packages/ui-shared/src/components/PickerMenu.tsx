@@ -7,6 +7,7 @@ import {
   type HTMLAttributes,
   type InputHTMLAttributes,
   type JSX,
+  type ReactNode,
 } from 'react';
 import {
   CheckIcon,
@@ -617,19 +618,28 @@ export interface PickerMenuOptionLabelProps extends HTMLAttributes<HTMLSpanEleme
    * lets the selected mark and the extra-charge marker stand out.
    */
   tone?: 'inherit' | 'quiet';
+  /** Inline reference text that shares the label's native truncation, rather than a trailing rail. */
+  readonly meta?: ReactNode;
 }
 
 export function PickerMenuOptionLabel({
   className = '',
   tone = 'inherit',
+  meta,
   ...props
 }: PickerMenuOptionLabelProps): JSX.Element {
   const textClassName = usePickerMenuTextClassName();
+  const labelClassName = `canopy-picker-menu-option-label block truncate ${textClassName} leading-4${tone === 'quiet' ? ' fg-primary/80' : ''} ${className}`;
+  if (meta == null || typeof meta === 'boolean' || meta === '') {
+    return <span {...props} className={labelClassName} />;
+  }
   return (
-    <span
-      {...props}
-      className={`canopy-picker-menu-option-label block truncate ${textClassName} leading-4${tone === 'quiet' ? ' fg-primary/80' : ''} ${className}`}
-    />
+    <span {...props} className={labelClassName}>
+      {props.children}
+      {/* Keep references in the native inline run: a flex rail changes which
+          text gets the browser's ellipsis. This inset belongs to the label. */}
+      <span className="pl-2 fg-secondary empty:pl-0">{meta}</span>
+    </span>
   );
 }
 

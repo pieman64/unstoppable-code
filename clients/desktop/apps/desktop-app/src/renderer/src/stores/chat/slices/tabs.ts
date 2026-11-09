@@ -1,3 +1,4 @@
+import { inlineFailureText } from '@/lib/inline-app-error';
 import { prepareOpenCodeVisibleFork } from '@canopy/desktop-shared/lib/opencode-fork-context';
 import { chatStoreApi } from '../store-ref';
 import { announceFilePanelOpen } from '@/lib/panels/file-panel-open-intent';
@@ -105,7 +106,7 @@ import { sanitizePersistedChatMessages } from '@/lib/chatMessageSanitization';
 import {
   DEFAULT_CODEX_SPEED,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   codexSpeedFields,
   retainedCodexSpeedFields,
@@ -168,6 +169,7 @@ import {
   type ChatCloseBlocker,
 } from '../close-guard';
 import { useActivityStore } from '../../activityStore';
+import { useOllamaConnectionBannerStore } from '../../ollamaConnectionBannerStore';
 import { markWorktreeDiffStatsActivity } from '../../projectsStore.diffStatsRuntime';
 import {
   requestTabDiscovery,
@@ -248,7 +250,6 @@ import {
   confirmOptimisticActiveTabSelection,
   confirmOptimisticTabClose,
   isScopeRevisionedLive,
-  scheduleCanonicalAutoArchives,
   revisionedChatStateSupported,
   rollbackOptimisticActiveTabSelection,
   rollbackOptimisticTabClose,
@@ -670,10 +671,9 @@ async function finishRevisionedHydration(
 ): Promise<void> {
   const key = worktreeKey({ projectId, worktreeId });
   revisionedSetupPendingKeys.delete(key);
-  // A real load: a prefetched scope gets its starter chat and auto-archives now.
-  const speculative = speculativeHydrationKeys.delete(key);
+  // A real load: a prefetched scope gets its starter chat now.
+  speculativeHydrationKeys.delete(key);
   await runRevisionedPostHydration(get, projectId, worktreeId);
-  if (speculative) scheduleCanonicalAutoArchives(projectId, worktreeId);
   const activeApprovalRequests = await approvals;
   set((state) =>
     recoverRevisionedPendingApprovals(
@@ -3881,7 +3881,7 @@ ${summary}
       return {
         status: 'failed',
         message:
-          useProjectsStore.getState().worktreeError ??
+          inlineFailureText(useProjectsStore.getState().worktreeError) ??
           'Failed to create the branched worktree.',
         retryable: true,
       };
@@ -4952,6 +4952,10 @@ ${summary}
         worktreeId,
         chatId: tabId,
       });
+      // A closed chat can't send again to clear its app-level Ollama failure.
+      useOllamaConnectionBannerStore
+        .getState()
+        .clearChat({ projectId, worktreeId, chatId: tabId });
       // Release the shared file session for the closed tab (no-op for chat
       // tabs). Releasing the last tab reference drops `files[key]` so a reopen
       // reads disk; scroll positions are UI-local and cleared here.
@@ -5372,6 +5376,11 @@ ${summary}
         get().clearPendingEditorSelections(id);
         clearChatScrollPosition(id);
         useIngestionLagStore.getState().clearForChat({
+          projectId: sel.projectId,
+          worktreeId: sel.worktreeId,
+          chatId: id,
+        });
+        useOllamaConnectionBannerStore.getState().clearChat({
           projectId: sel.projectId,
           worktreeId: sel.worktreeId,
           chatId: id,
@@ -6129,6 +6138,9 @@ ${summary}
 
   cleanupWorktree: (projectId, worktreeId): void => {
     const key = `${projectId}/${worktreeId}`;
+    useOllamaConnectionBannerStore
+      .getState()
+      .clearWorktree(projectId, worktreeId);
     useActivityStore.getState().cleanupWorktree(projectId, worktreeId);
 
     useFileListStore.getState().invalidate(projectId, worktreeId);

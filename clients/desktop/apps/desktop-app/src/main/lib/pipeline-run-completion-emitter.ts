@@ -1,4 +1,4 @@
-import type { PipelineRunUsageEvent } from '@canopy/desktop-shared/types/observability';
+import type { PipelineRunUsageEvent } from '@canopy/execution-engine/types/observability';
 
 /**
  * Dependency-inverted hook fired whenever a pipeline execution reaches a

@@ -28,6 +28,7 @@ import {
 } from '@/lib/scriptConfigTimeout';
 import { brandText } from '@/lib/brand';
 import {
+  Stack,
   Button,
   FormField,
   SegmentedControl,
@@ -383,7 +384,7 @@ export function ScriptConfigEditor({
 
   if (layout === 'settings') {
     return (
-      <div className="space-y-2">
+      <Stack gap="inline">
         <SettingsTextArea
           ref={textareaRef}
           mono
@@ -448,12 +449,12 @@ export function ScriptConfigEditor({
             validityScopeKey={devServerPatternsValidityScopeKey}
           />
         )}
-      </div>
+      </Stack>
     );
   }
 
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       <FormField label={label}>
         {(control) => (
           <TextArea
@@ -479,7 +480,7 @@ export function ScriptConfigEditor({
       {showRuntimePicker && runtimePicker(true)}
 
       {showTimeoutControl && (
-        <div className="space-y-1.5 pt-1">
+        <div className="flex flex-col pt-1 gap-1.5">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-2xs font-medium fg-secondary">Timeout</span>
             <TimeoutSegmentedControl
@@ -514,7 +515,7 @@ export function ScriptConfigEditor({
           validityScopeKey={devServerPatternsValidityScopeKey}
         />
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -645,7 +646,7 @@ function ShellSelectionSection({
   }
 
   return (
-    <div className="space-y-1.5 pt-1">
+    <div className="flex flex-col pt-1 gap-1.5">
       <span className="text-2xs font-medium fg-secondary">Shell</span>
       <div className="grid gap-2 sm:grid-cols-2">
         {STACK_SHELL_PLATFORM_ORDER.map((platform) => {
@@ -757,26 +758,26 @@ function DevServerPatternsSection({
 
   return (
     <Surface variant="outline" padding="compact">
-      <div className="space-y-2">
-        <div>
+      <div className="flex flex-col gap-2">
+        <Stack gap="tight">
           <p className="text-xs font-medium fg-primary">Dev server patterns</p>
-          <p className="mt-1 text-2xs fg-secondary">
+          <p className="text-2xs fg-secondary">
             Optional regex patterns. The first capture group, or the full match,
             must be an http(s) URL. Patterns are checked in order, and the first
             match labels the detected URL.
           </p>
-          <p className="mt-1 text-2xs fg-secondary">
+          <p className="text-2xs fg-secondary">
             In {brandText.shortName} opens links in the Browser tab. URLs
             blocked by the Browser settings open externally.
           </p>
-          <p className="mt-1 text-2xs fg-secondary">
+          <p className="text-2xs fg-secondary">
             Auto open opens each detected URL once per script run.
           </p>
-        </div>
+        </Stack>
         {list.length === 0 ? (
           <p className="text-2xs fg-secondary">No dev server patterns</p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="flex flex-col gap-2">
             {list.map((row, index) => {
               const trimmed = row.pattern.trim();
               const regexInvalid =
@@ -803,7 +804,7 @@ function DevServerPatternsSection({
                   padding="tight"
                   key={row.id}
                 >
-                  <div className="space-y-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
                       <FormField label="Pattern" error={patternError}>
                         {(control) => (

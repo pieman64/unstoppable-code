@@ -1,5 +1,10 @@
 import type { ExecutionSecretGrantHandle } from '@canopy/core-runtime/node/execution-secrets';
 import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
+import {
+  DAEMON_PIPELINE_CONTROL_REFUSED_MESSAGE,
+  getDaemonPipelineExecutionHandle,
+} from './daemon-pipeline-execution';
+import { claimDaemonPipelineRoute } from './daemon-pipeline-route-context';
 import { randomUUID } from 'node:crypto';
 import type { PipelineControlRequest } from '@canopy/core-runtime/node/pipeline';
 import {
@@ -18,7 +23,7 @@ import type {
 import type {
   ExecutionState,
   Pipeline,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   getDesktopCanopyRuntime,
   peekDesktopCanopyRuntime,
@@ -96,7 +101,18 @@ export async function startPipelineThroughLocalWorker(
     { operation: 'worker.pipeline.execution.start', key: executionId },
     secretBindings,
   );
-  const staged = stagePipelineLaunch(executionId, { pipeline, options });
+  // CAN-5086: only a start the `pipelines:execute` handler routed may go to the daemon.
+  const built = claimDaemonPipelineRoute()
+    ? (await import('./daemon-pipeline-route')).buildDaemonPipelineLaunch(
+        pipeline,
+        options,
+      )
+    : null;
+  const staged = stagePipelineLaunch(executionId, {
+    pipeline,
+    options,
+    ...(built?.ok && { daemon: built.launch }),
+  });
   let result: Awaited<
     ReturnType<
       ReturnType<typeof getDesktopCanopyRuntime>['pipelineRuns']['start']
@@ -209,6 +225,9 @@ export async function controlPipelineThroughLocalWorker(
   origin: 'client' | 'automation',
   secretBindings: readonly ExecutionSecretBinding[],
 ): Promise<PipelineControlSettlement> {
+  // A run the daemon executes takes no recovery control until it settles (D10).
+  if (getDaemonPipelineExecutionHandle(control.params.executionId))
+    throw new Error(DAEMON_PIPELINE_CONTROL_REFUSED_MESSAGE);
   const { executionId, requestId } = control.params;
   const stored = await readStoredPipelineExecution(executionId).catch(
     () => null,

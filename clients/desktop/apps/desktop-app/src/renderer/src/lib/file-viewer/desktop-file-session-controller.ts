@@ -39,6 +39,8 @@ export interface DesktopFileSessionController {
   getSession(tabId: string): FileViewerSession | undefined;
   hasSession(tabId: string): boolean;
   isDirty(tabId: string): boolean;
+  /** Ids of the registered tabs with unsaved edits; never their content. */
+  dirtyTabIds(): string[];
   matches(tabId: string, key: string): boolean;
 
   saveTab(tabId: string): Promise<boolean>;
@@ -257,6 +259,12 @@ export function createDesktopFileSessionController(): DesktopFileSessionControll
 
     isDirty(tabId): boolean {
       return getSession(tabId)?.dirty === true;
+    },
+
+    dirtyTabIds(): string[] {
+      return Array.from(registry.keys()).filter(
+        (tabId) => getSession(tabId)?.dirty === true,
+      );
     },
 
     matches(tabId, key): boolean {

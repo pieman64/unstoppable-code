@@ -1,5 +1,5 @@
 import type { ChatTabUsage, WakeLockState } from '@canopy/desktop-shared/types';
-import type { PipelineAdvisorSnapshot } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineAdvisorSnapshot } from '@canopy/execution-engine/types/pipeline';
 import type {
   ChatPreviewRow,
   WorktreeRowProps,

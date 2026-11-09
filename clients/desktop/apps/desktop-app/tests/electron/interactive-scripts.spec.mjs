@@ -113,8 +113,11 @@ for (const mode of ['cooperative', 'ignore-term']) {
       expect(readOwnedPids(dir).every(processExists)).toBe(true);
       await entry.getByTestId('activity-scripts-stop').click();
       await expect
-        .poll(async () => (await persistedRun(window, workspace))?.status)
-        .toBe('cancelled');
+        .poll(async () => persistedRun(window, workspace))
+        .toMatchObject({
+          status: 'cancelled',
+          completedAt: expect.any(String),
+        });
       const run = await persistedRun(window, workspace);
       expect(run).toMatchObject({ status: 'cancelled', timedOut: false });
       expect(run.completedAt).toBeTruthy();

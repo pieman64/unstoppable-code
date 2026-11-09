@@ -16,6 +16,7 @@ import type {
   PersonalProjectOperation,
 } from '@canopy/protocol/organizations';
 import {
+  Stack,
   Button,
   EmailRecipientInput,
   isEmailRecipientValid,
@@ -249,15 +250,16 @@ function projectsStartStep(
     label: projectsStepLabel(count, team, 'attention'),
     status: 'error',
     detail: (
-      <div className="space-y-2" data-testid={`${P}-projects-failed`}>
+      <Stack gap="inline" data-testid={`${P}-projects-failed`}>
         <p className="text-xs fg-secondary">{conversionFailureMessage()}</p>
         <NoticeButton
+          className="self-start"
           data-testid={`${P}-retry-projects`}
           onClick={() => void state.retryProjects(state.selection)}
         >
           {COPY.retryProjects}
         </NoticeButton>
-      </div>
+      </Stack>
     ),
   };
 }
@@ -305,8 +307,8 @@ function projectsStep(
     label: projectsStepLabel(total, team, 'attention'),
     status: 'error',
     detail: (
-      <div className="space-y-2">
-        <ul className="space-y-1" aria-live="polite">
+      <Stack gap="inline">
+        <Stack as="ul" gap="tight" aria-live="polite">
           {problems.map((project) => (
             <ProjectProblemRow
               key={project.workspaceId}
@@ -319,9 +321,9 @@ function projectsStep(
               team={team}
             />
           ))}
-        </ul>
+        </Stack>
         {actions}
-      </div>
+      </Stack>
     ),
   };
 }
@@ -495,12 +497,12 @@ function UpgradeChecklist({
       ...(contextNote
         ? {
             detail: (
-              <div className="space-y-2">
+              <Stack gap="inline">
                 <p className="text-xs fg-secondary">{contextNote}</p>
-                <NoticeButton onClick={onCheckContext}>
+                <NoticeButton className="self-start" onClick={onCheckContext}>
                   {COPY.checkAgain}
                 </NoticeButton>
-              </div>
+              </Stack>
             ),
           }
         : {}),
@@ -516,12 +518,12 @@ function UpgradeChecklist({
   steps.push(...additionalInviteSteps(state));
 
   return (
-    <div className="space-y-5" data-testid={`${P}-outcome`}>
+    <Stack gap="block" data-testid={`${P}-outcome`}>
       <ProgressChecklist steps={steps} size="comfortable" />
       {created && canInvite && (
         <InviteMoreField state={state} label={COPY.inviteMoreLabel} />
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -669,7 +671,7 @@ function TeamInviteFrame({
         committed: invited && onManage === undefined,
       }}
       content={
-        <div className="space-y-5" data-testid={`${P}-outcome`}>
+        <Stack gap="block" data-testid={`${P}-outcome`}>
           {steps.length > 0 && (
             <ProgressChecklist steps={steps} size="comfortable" />
           )}
@@ -678,7 +680,7 @@ function TeamInviteFrame({
             label={steps.length > 0 ? COPY.inviteMoreLabel : COPY.inviteLabel}
             disabled={!port.canInvite}
           />
-        </div>
+        </Stack>
       }
       showSubmit={onManage !== undefined}
       submitLabel={COPY.manage}
@@ -740,7 +742,7 @@ function PersonalFormFrame({
         committed: state.invite.status === 'done',
       }}
       content={
-        <div className="space-y-4">
+        <Stack gap="group">
           <CreateTeamStep
             name={state.name}
             onNameChange={state.setName}
@@ -763,7 +765,7 @@ function PersonalFormFrame({
               dataTestId={`${P}-email`}
             />
           )}
-        </div>
+        </Stack>
       }
       {...(state.promotionFailure !== null
         ? { errorMessage: promotionFailureMessage(state.promotionFailure) }

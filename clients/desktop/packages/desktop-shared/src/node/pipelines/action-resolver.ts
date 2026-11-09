@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { isPathInside } from '../lib/path-safety';
+import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 import type { ExecutionRuntime } from './executor/types';
 import type {
   ActionDefinition,
@@ -11,8 +11,8 @@ import type {
   HostActionNodeFallback,
   Step,
   PipelinePackageCapabilityOverlay,
-} from '@canopy/desktop-shared/types/pipeline';
-import { parseLogFormatHint } from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
+import { parseLogFormatHint } from '@canopy/execution-engine/types/pipeline';
 import { normalizeActionScopes } from '@canopy/desktop-shared/pipelines/scope';
 import {
   getBundledActionsDir,

@@ -5,8 +5,8 @@ import type {
   ExecutionState,
   JobGroupResult,
   Step,
-} from '@canopy/desktop-shared/types/pipeline';
-import { normalizeNeeds } from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
+import { normalizeNeeds } from '@canopy/execution-engine/types/pipeline';
 
 export type PipelineFlowStatus =
   | 'success'

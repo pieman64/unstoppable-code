@@ -199,6 +199,33 @@ export class ScriptRunRegistry {
     target: { projectId: string; worktreeId: string },
     shouldDrain: (tracking: ScriptRunTracking) => boolean,
   ): Promise<StoppedScriptRun[]> {
+    const results = await this.settleDrains(target, shouldDrain);
+    return results.flatMap((result) =>
+      result.status === 'fulfilled' ? [result.value] : [],
+    );
+  }
+
+  /**
+   * {@link drainMatching} for a caller that must know each tree exited
+   * (CAN-5839): once every drain settles, rejects with the first drain that
+   * could not confirm its tree ended.
+   */
+  async drainMatchingConfirmed(
+    target: { projectId: string; worktreeId: string },
+    shouldDrain: (tracking: ScriptRunTracking) => boolean,
+  ): Promise<StoppedScriptRun[]> {
+    const results = await this.settleDrains(target, shouldDrain);
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
+    return results.flatMap((result) =>
+      result.status === 'fulfilled' ? [result.value] : [],
+    );
+  }
+
+  private settleDrains(
+    target: { projectId: string; worktreeId: string },
+    shouldDrain: (tracking: ScriptRunTracking) => boolean,
+  ): Promise<PromiseSettledResult<StoppedScriptRun>[]> {
     const runs = Array.from(this.runs).filter(
       ({ tracking }) =>
         tracking !== undefined &&
@@ -207,14 +234,11 @@ export class ScriptRunRegistry {
         tracking.worktreeId === target.worktreeId &&
         shouldDrain(tracking),
     );
-    const results = await Promise.allSettled(
+    return Promise.allSettled(
       runs.map(async (run) => {
         await run.drain();
         return { response: await run.waitForExit, tracking: run.tracking };
       }),
-    );
-    return results.flatMap((result) =>
-      result.status === 'fulfilled' ? [result.value] : [],
     );
   }
 

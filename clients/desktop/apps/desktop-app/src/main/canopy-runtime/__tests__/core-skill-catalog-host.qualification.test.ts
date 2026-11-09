@@ -437,16 +437,7 @@ describe('desktop skill catalog host (CAN-4124)', () => {
         { _meta: keyed('check') },
         { caller: writer, metadata: keyed('check') },
       ),
-    ).resolves.toEqual({
-      updates: [
-        {
-          entryId: 'skill:github:o:r/x',
-          sourceId: 'github:o:r',
-          skillName: 'x',
-          updateAvailable: false,
-        },
-      ],
-    });
+    ).resolves.toEqual({ updates: [], checkedCount: 1, updateCount: 0 });
   });
 
   it('discovery returns the audit result and an audit failure stays non-blocking', async () => {

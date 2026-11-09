@@ -1,5 +1,5 @@
 import { type JSX, type ReactNode, useEffect } from 'react';
-import { TabBar } from '@canopy/ui-shared/components';
+import { Surface, TabBar } from '@canopy/ui-shared/components';
 import type { NavigationPage } from '@/stores/navigationStore';
 import { enabledDevPages, rememberDevPage } from './dev-pages';
 
@@ -19,7 +19,12 @@ export function DevPagesShell({
     rememberDevPage(page);
   }, [page]);
   return (
-    <div className="flex h-full flex-col bg-base" data-testid="dev-pages">
+    <Surface
+      variant="pane"
+      extent="parent"
+      className="flex flex-col"
+      data-testid="dev-pages"
+    >
       <div className="shrink-0 px-8 pt-6">
         <TabBar
           items={enabledDevPages().map((def) => ({
@@ -36,6 +41,6 @@ export function DevPagesShell({
         />
       </div>
       <div className="min-h-0 flex-1">{children}</div>
-    </div>
+    </Surface>
   );
 }

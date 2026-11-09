@@ -31,3 +31,30 @@
 
 @import './generated-theme-tokens.css';
 @import './canopy-tokens-core.css';
+
+/* Desktop action controls use the native app arrow; web keeps the hand on
+ * links and enabled buttons (see apps/web/src/app/globals.css). UI mocks
+ * follow desktop because they import the desktop globals.css. Base rules
+ * leave text, resize, drag, and disabled utilities free to express their
+ * functional cursors. */
+@layer base {
+  a[href],
+  button,
+  summary,
+  [role='button'],
+  [role='link'],
+  [role='checkbox'],
+  [role='radio'],
+  [role='switch'],
+  [role='tab'],
+  [role='menuitem'] {
+    cursor: default;
+  }
+}
+
+/* Existing and third-party controls still request this Tailwind utility.
+ * Map its hand cursor to the arrow on desktop, including its hover/state
+ * variants. */
+@utility cursor-pointer {
+  cursor: default;
+}

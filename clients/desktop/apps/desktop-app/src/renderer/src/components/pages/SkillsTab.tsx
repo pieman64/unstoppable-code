@@ -1,6 +1,8 @@
+import { Count } from '@canopy/ui-shared/components/Badge';
 import { SharedByYou } from '../plugins/SharedByYou';
 import { useCloudOrigin } from '@/lib/cloud-origin';
 import {
+  Stack,
   Heading,
   SegmentedControl,
   type SegmentedControlOption,
@@ -119,8 +121,9 @@ import {
   type DetailMoreMenuItem,
   type DetailPageActionsProps,
 } from '@canopy/ui-shared/components';
-import { ErrorBanner, LoadingPlaceholder } from '../shared';
+import { ErrorBanner } from '../shared';
 import {
+  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   Notice,
   NoticeButton,
@@ -330,9 +333,9 @@ export function AddSkillsModal({
       titleId="add-skills-modal-title"
       headerBorder={false}
     >
-      <div className="space-y-4">
+      <Stack gap="group">
         {/* Error */}
-        <ErrorBanner error={error} />
+        <ErrorBanner error={error} className="" />
 
         {/* Source input step */}
         {modalStep.step === 'source' && (
@@ -358,6 +361,7 @@ export function AddSkillsModal({
               />
             </DialogFormField>
             <Button
+              className="self-start"
               variant="primary"
               size="compact"
               onClick={handleFindSkills}
@@ -370,10 +374,14 @@ export function AddSkillsModal({
 
         {/* Loading step */}
         {modalStep.step === 'loading' && (
-          <LoadingPlaceholder
-            label={`Fetching skills from ${modalStep.source}\u2026`}
-            space="section"
-          />
+          <div className="py-8">
+            <DelayedLoadingPlaceholder
+              slowNote={`Still fetching skills from ${modalStep.source}…`}
+            >
+              {/* Repository contents have not arrived; the result shape is unknown. */}
+              <CenteredLoadingSpinner />
+            </DelayedLoadingPlaceholder>
+          </div>
         )}
 
         {/* Select step */}
@@ -477,12 +485,16 @@ export function AddSkillsModal({
 
         {/* Installing step */}
         {modalStep.step === 'installing' && (
-          <LoadingPlaceholder
-            label={`Installing ${modalStep.skillNames.length} skill${modalStep.skillNames.length !== 1 ? 's' : ''}\u2026`}
-            space="section"
-          />
+          <div className="py-8">
+            <DelayedLoadingPlaceholder
+              slowNote={`Still installing ${modalStep.skillNames.length} skill${modalStep.skillNames.length !== 1 ? 's' : ''}…`}
+            >
+              {/* Completion closes this dialog, so no next content can be measured. */}
+              <CenteredLoadingSpinner />
+            </DelayedLoadingPlaceholder>
+          </div>
         )}
-      </div>
+      </Stack>
     </DialogModal>
   );
 }
@@ -1314,7 +1326,7 @@ function SkillEditorBody({
     : null;
 
   const filePane = activeFile ? (
-    <div className="space-y-3">
+    <Stack gap="item">
       <div className="flex items-end gap-2">
         <div className="min-w-0 flex-1">
           <FormField label="File path">
@@ -1386,7 +1398,7 @@ function SkillEditorBody({
           </p>
         </Surface>
       )}
-    </div>
+    </Stack>
   ) : null;
 
   const mainPane = state.showPreview ? (
@@ -1397,7 +1409,7 @@ function SkillEditorBody({
       emptyText="Nothing to preview yet."
     />
   ) : (
-    <div className="space-y-4">
+    <Stack gap="group">
       <FormField
         label="Name"
         id="skill-name-input"
@@ -1437,8 +1449,9 @@ function SkillEditorBody({
         )}
       </FormField>
 
-      <div>
+      <Stack gap="inline">
         <Button
+          className="self-start"
           variant="ghost"
           size="compact"
           onClick={() => state.setShowAdvanced(!state.showAdvanced)}
@@ -1447,17 +1460,17 @@ function SkillEditorBody({
             size="sm"
             className={`transition-transform ${state.showAdvanced ? 'rotate-90' : ''}`}
           />
-          Advanced metadata
-          {state.metadataRows.length > 0 && (
-            <span className="ml-1 rounded bg-secondary px-1.5 py-0.5 text-3xs">
-              {state.metadataRows.length}
-            </span>
-          )}
+          <span className="inline-flex items-center gap-2.5">
+            Advanced metadata
+            {state.metadataRows.length > 0 && (
+              <Count value={state.metadataRows.length} />
+            )}
+          </span>
         </Button>
 
         {state.showAdvanced && (
-          <Surface variant="group" padding="compact" className="mt-2">
-            <div className="space-y-2">
+          <Surface gap="inline" variant="group" padding="compact" className="">
+            <div className="flex flex-col gap-2">
               <p className="text-xs fg-secondary">
                 Extra YAML frontmatter keys. <code>name</code> and{' '}
                 <code>description</code> are reserved.
@@ -1520,6 +1533,7 @@ function SkillEditorBody({
                 </FieldError>
               )}
               <Button
+                className="self-start"
                 variant="ghost"
                 size="compact"
                 onClick={state.addMetadataRow}
@@ -1530,7 +1544,7 @@ function SkillEditorBody({
             </div>
           </Surface>
         )}
-      </div>
+      </Stack>
 
       <FormField
         label="Skill content"
@@ -1550,7 +1564,7 @@ function SkillEditorBody({
           />
         )}
       </FormField>
-    </div>
+    </Stack>
   );
 
   const treePaths = [
@@ -1604,7 +1618,6 @@ function SkillEditorBody({
                   onClick={state.addFile}
                   aria-label="Add file"
                   data-testid="skill-editor-add-file"
-                  className="ml-1"
                 >
                   <AppCatalogPlusIcon size="sm" />
                 </Button>
@@ -2082,43 +2095,48 @@ export function CustomSkillEditor({
           isDirty={hasUnsavedChanges}
           save={save}
         />
-        <div className="px-5">
-          <DetailBackChip onNavigateBack={cancel} />
-          <div
-            className="mb-2 flex justify-end gap-2"
-            data-testid="skill-editor-page-actions"
-          >
-            {editWithAI && (
-              <SkillEditWithAIButton
-                state={
-                  hasUnsavedChanges
-                    ? { available: false, reason: EDIT_WITH_AI_UNSAVED_REASON }
-                    : {
-                        available: true,
-                        onSelect: editWithAI.onSelect,
-                        pending: editWithAI.pending || loading || saving,
-                      }
-                }
-                dataTestId="skill-editor-edit-with-ai"
-              />
-            )}
-            <Button
-              size="compact"
-              onClick={cancel}
-              disabled={saving}
-              data-testid="skill-editor-cancel"
+        <div className="flex flex-col px-5 gap-2">
+          <div className="flex flex-col gap-0">
+            <DetailBackChip onNavigateBack={cancel} />
+            <div
+              className="flex justify-end gap-2"
+              data-testid="skill-editor-page-actions"
             >
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              size="compact"
-              onClick={() => void handleSave()}
-              disabled={saveDisabled}
-              data-testid="skill-editor-save"
-            >
-              {saveLabel}
-            </Button>
+              {editWithAI && (
+                <SkillEditWithAIButton
+                  state={
+                    hasUnsavedChanges
+                      ? {
+                          available: false,
+                          reason: EDIT_WITH_AI_UNSAVED_REASON,
+                        }
+                      : {
+                          available: true,
+                          onSelect: editWithAI.onSelect,
+                          pending: editWithAI.pending || loading || saving,
+                        }
+                  }
+                  dataTestId="skill-editor-edit-with-ai"
+                />
+              )}
+              <Button
+                size="compact"
+                onClick={cancel}
+                disabled={saving}
+                data-testid="skill-editor-cancel"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="compact"
+                onClick={() => void handleSave()}
+                disabled={saveDisabled}
+                data-testid="skill-editor-save"
+              >
+                {saveLabel}
+              </Button>
+            </div>
           </div>
           <ErrorBanner error={error || (editWithAI?.error ?? '')} />
         </div>

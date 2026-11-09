@@ -1,4 +1,4 @@
-import type { DetectedMcpServerInfo } from '@canopy/desktop-shared/types/mcp-servers';
+import type { DetectedMcpServerInfo } from '@canopy/execution-engine/types/mcp-servers';
 import type { WorkspaceTemplateStarterPrompt } from '@canopy/protocol/workspace-templates';
 import {
   GENERIC_FALLBACK_PROMPTS,

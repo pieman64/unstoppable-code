@@ -141,12 +141,21 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Obsolete code graph Labs selector. Retained only for wire compatibility.',
   },
+  // Retired Labs selector; preserve its wire key and availability values.
   canopyDesktopLabsDaemonScripts: {
     key: 'canopy-desktop-labs-daemon-scripts',
-    // Off until opted in: renderer script runs execute in the daemon.
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
-    description: 'Availability of the daemon scripts experiment.',
+    description:
+      'Obsolete daemon scripts Labs selector. Retained only for wire compatibility.',
+  },
+  // Retired Labs selector; preserve its wire key and availability values.
+  canopyDesktopLabsDaemonPipelines: {
+    key: 'canopy-desktop-labs-daemon-pipelines',
+    launchDarklyDisabledDefaultValue: 'offered',
+    launchDarklyEnabledUnavailableValue: 'offered',
+    description:
+      'Obsolete daemon workflows Labs selector. Retained only for wire compatibility.',
   },
   canopyDesktopLabsChatAutomationPipelines: {
     key: 'canopy-desktop-labs-chat-automation-pipelines',
@@ -329,6 +338,13 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Gates the browser Remote Control sidebar worktree-archive action on the paired desktop. Off by default; fails closed. Workspace removal is not gated by this flag.',
   },
+  canopyWebDirectRemoteControl: {
+    key: 'canopy-web-direct-remote-control',
+    launchDarklyDisabledDefaultValue: true,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Gates new browser and hosted Remote Control admissions over the encrypted device relay.',
+  },
   canopyDeviceRemoteControl: {
     key: 'canopy-device-remote-control',
     // Unconfigured (local development, tests, the E2E harness) keeps the
@@ -346,16 +362,6 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     description:
       'Controls whether desktop PR Split entry points are visible and usable.',
-  },
-  canopyDesktopMemorySync: {
-    key: 'canopy-desktop-memory-sync',
-    // Off in both modes (cloud memory sync §28 item 2): the desktop engine
-    // also needs the account's memory-sync-v1 capability, and an evaluator
-    // outage must never start syncing personal memory.
-    launchDarklyDisabledDefaultValue: false,
-    launchDarklyEnabledUnavailableValue: false,
-    description:
-      'Controls the desktop cloud memory sync engine, which also requires the memory-sync-v1 account capability.',
   },
   canopyDesktopCursorHarness: {
     key: 'canopy-desktop-cursor-harness',
@@ -421,6 +427,16 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     description:
       'Controls whether desktop Claude Code chat terminal-mode settings and composer controls are visible and usable.',
+  },
+  canopyDesktopClaudeModAdmission: {
+    key: 'canopy-desktop-claude-mod-admission',
+    // On when LaunchDarkly is not configured, so local development builds
+    // gate Mods by admission. Release builds bundle a LaunchDarkly client ID,
+    // so users get it only where the flag is enabled there.
+    launchDarklyDisabledDefaultValue: true,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Controls personal Claude Mod admission before desktop Claude launches.',
   },
   canopyDesktopWorkspaceCodeGraph: {
     key: 'canopy-desktop-workspace-code-graph',
@@ -560,6 +576,13 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Cloud terminals on durable sandbox terminals through the web core (worker.terminal.*), surviving a page reload',
   },
+  canopyDesktopCloudChats: {
+    key: 'canopy-desktop-cloud-chats',
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Temporary: cloud cowork chats in the desktop sidebar and chat view through the web core (CAN-4185); remove at CAN-4186 rollout.',
+  },
   canopyFreeAccessEnabled: {
     key: 'canopy-free-access-enabled',
     // CAN-3926. With LaunchDarkly not configured (local development), the
@@ -685,6 +708,8 @@ export type ClientFeatureFlagValues = {
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts
     .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines
+    .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
@@ -710,9 +735,9 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyPortalSseEvents.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyPortalAsyncSnapshots.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]: boolean;
-  [CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]: boolean;
@@ -721,6 +746,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiWorkers.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeModAdmission.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopWorkspaceCodeGraph.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopChatVisuals.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyBillingEnabled.key]: boolean;
@@ -735,6 +761,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopySharedSpaceNotificationSettings.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu.key]: boolean;
@@ -819,6 +846,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines
+        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
         .launchDarklyDisabledDefaultValue,
@@ -880,14 +910,14 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions.key]:
       CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl.key]:
+      CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl
+        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key]:
       CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit
-        .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync.key]:
-      CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness
@@ -912,6 +942,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeModAdmission.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopClaudeModAdmission
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopWorkspaceCodeGraph.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopWorkspaceCodeGraph
@@ -953,6 +986,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]:
       CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled
@@ -1034,6 +1070,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
         .launchDarklyEnabledUnavailableValue,
@@ -1097,14 +1136,14 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions.key]:
       CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl.key]:
+      CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key]:
       CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit
-        .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync.key]:
-      CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness
@@ -1129,6 +1168,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeModAdmission.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopClaudeModAdmission
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopWorkspaceCodeGraph.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopWorkspaceCodeGraph
@@ -1171,6 +1213,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]:
       CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled
@@ -1218,6 +1263,7 @@ export const LABS_EXPERIMENT_FLAG_KEYS: ReadonlySet<string> = new Set([
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key,
@@ -1330,4 +1376,16 @@ export function getDefaultFeatureFlagSnapshot(
     updatedAt: new Date(0).toISOString(),
     error,
   };
+}
+
+/**
+ * Protocol 17 hosts predate this hosted-only rollout flag. Its absence must
+ * fail closed without making their otherwise compatible IPC snapshot invalid.
+ * This adds no controller authority or host security capability.
+ */
+export function restoreOptionalRemoteControlFlag(
+  values: Record<string, unknown>,
+): void {
+  const key = CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl.key;
+  if (values[key] === undefined) values[key] = false;
 }

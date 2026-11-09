@@ -1,9 +1,12 @@
-import { Heading, Surface } from '@canopy/ui-shared/components';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { Stack, Heading, Surface } from '@canopy/ui-shared/components';
 import { Button } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type JSX,
   type ReactNode,
@@ -16,7 +19,7 @@ import {
   type SplitTemporaryWorkspacePreviewResponse,
   type SplitTemporaryWorkspaceSelection,
 } from '@canopy/desktop-shared/types';
-import { ErrorBanner, RichHoverTooltip } from '@canopy/ui-shared/components';
+import { RichHoverTooltip } from '@canopy/ui-shared/components';
 import {
   ArchiveIcon,
   ChatIcon,
@@ -27,12 +30,13 @@ import {
   AttachmentIcon as AppCatalogAttachmentIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { useChatStore } from '@/stores/chatStore';
-import { useGitHubStore } from '@/stores/githubStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { createDiffStatsKey } from '@/stores/projectsStore.diffStats';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { ActionTooltip } from '@/components/shared/ActionTooltip';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { RefreshSpinner } from '@/components/shared/loading';
 import { DialogModal } from '../shared';
 import { DiffBadge } from './DiffBadge';
@@ -77,9 +81,9 @@ function ItemListContent({
   moreCount: number;
 }): JSX.Element {
   return (
-    <>
-      <div className="mb-1 text-3xs font-semibold fg-secondary">{heading}</div>
-      <div className="space-y-1.5">
+    <div className="flex flex-col gap-1">
+      <div className="text-3xs font-semibold fg-secondary">{heading}</div>
+      <div className="flex flex-col gap-1.5">
         {disambiguateEntries(entries).map(({ key, entry }) => (
           <div
             key={key}
@@ -100,7 +104,7 @@ function ItemListContent({
           <div className="text-3xs fg-secondary">{moreCount} more…</div>
         )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -197,11 +201,11 @@ function SelectionToggleButton({
 }
 
 /**
- * Fire-and-forget confirm path. Lives outside the component because the modal
- * closes the instant the user confirms — the fast split phase, navigation,
- * and error surfacing must not depend on the (unmounted) component. Errors
- * land as toasts; the background phase's outcome is handled globally by the
- * projectsStore split-complete subscription.
+ * The confirm path's fast phase: approval, the split's fast response, and
+ * navigation to its destination. The modal stays open until it settles, so a
+ * failure shows in the modal with the person's selections intact (null means
+ * it succeeded, or was cancelled). The background phase's outcome is handled
+ * globally by the projectsStore split-complete subscription.
  */
 async function performSplitConfirm(
   workspaceId: string,
@@ -209,7 +213,7 @@ async function performSplitConfirm(
   selections: Record<string, SplitTemporaryWorkspaceSelection>,
   rootAction: 'archive' | 'delete' | undefined,
   previewRevision: string,
-): Promise<void> {
+): Promise<InlineFailure | null> {
   try {
     const { approvalToken } =
       await window.api.approveSplitTemporaryWorkspaceDestructiveAction({
@@ -242,15 +246,12 @@ async function performSplitConfirm(
     } else {
       navigate('home');
     }
+    return null;
   } catch (cause: unknown) {
-    useGitHubStore
-      .getState()
-      .addToast(
-        cause instanceof Error ? cause.message : 'Failed to split project.',
-        'error',
-        undefined,
-        { projectId: workspaceId, worktreeId },
-      );
+    const appError = toAppError(resolveClientAppError(cause));
+    return appError
+      ? inlineFailure(appError, "Couldn't split this project.")
+      : null;
   }
 }
 
@@ -297,7 +298,6 @@ export function SplitWorkspaceModal({
         state.repoBranches[createDiffStatsKey(workspaceId, worktreeId)],
     })),
   );
-  const addToast = useGitHubStore((state) => state.addToast);
 
   // Instant row source: the workspace's configured repos. The preview below
   // only adds destination names, removal modes, and item counters.
@@ -338,7 +338,12 @@ export function SplitWorkspaceModal({
 
   const [preview, setPreview] =
     useState<SplitTemporaryWorkspacePreviewResponse | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<InlineFailure | null>(null);
+  // Bumped by Try again on a failed preview load to fetch it again.
+  const [previewAttempt, setPreviewAttempt] = useState(0);
+  // Whether a preview has loaded, so its root choice has been shown.
+  const previewSeen = useRef(false);
+  const [confirmError, setConfirmError] = useState<InlineFailure | null>(null);
   const [selections, setSelections] = useState<
     Record<string, SplitTemporaryWorkspaceSelection>
   >({});
@@ -349,6 +354,7 @@ export function SplitWorkspaceModal({
 
   useEffect(() => {
     let cancelled = false;
+    setPreviewError(null);
     void (async (): Promise<void> => {
       try {
         // The preview revision covers the persisted chat inventory. Flush the
@@ -363,20 +369,27 @@ export function SplitWorkspaceModal({
         });
         if (cancelled) return;
         setPreview(response);
-        setRootSelection(response.root.canArchive ? 'archive' : 'delete');
+        // The first loaded preview defaults the root to Archive; a reload
+        // after it (a failed confirm) keeps the choice the person saw, while
+        // it is still allowed.
+        const seen = previewSeen.current;
+        previewSeen.current = true;
+        setRootSelection((current) =>
+          !response.root.canArchive ? 'delete' : seen ? current : 'archive',
+        );
       } catch (cause: unknown) {
         if (cancelled) return;
-        setPreviewError(
-          cause instanceof Error
-            ? cause.message
-            : 'Failed to load destination projects.',
-        );
+        const appError = toAppError(resolveClientAppError(cause));
+        if (appError)
+          setPreviewError(
+            inlineFailure(appError, "Couldn't load destination projects."),
+          );
       }
     })();
     return (): void => {
       cancelled = true;
     };
-  }, [workspaceId, worktreeId]);
+  }, [workspaceId, worktreeId, previewAttempt]);
 
   const previewLoaded = preview !== null;
   const previewByRepoId = useMemo(() => {
@@ -434,7 +447,7 @@ export function SplitWorkspaceModal({
     rootRowVisible: rootPresent,
     rootSelection,
     destinationsLoaded: previewLoaded,
-    errorVisible: previewError !== null,
+    errorVisible: previewError !== null || confirmError !== null,
   });
 
   const setSelection = useCallback(
@@ -447,67 +460,73 @@ export function SplitWorkspaceModal({
   const handleConfirm = useCallback((): void => {
     if (confirmed || !preview || repos.length === 0) return;
     setConfirmed(true);
-    // Eagerly drop the user onto the planned destination page right now —
-    // main for a split/archive destination (the concrete reserved worktree is
-    // selected in its "setting up" state as soon as the fast phase returns),
-    // home when nothing survives the split.
-    const anySurvivingDestination =
-      (rootPresent && rootSelection === 'archive') ||
-      repos.some(
-        (repo) =>
-          selectionOf(repo.id) === 'split' ||
-          (previewByRepoId.get(repo.id)?.removalMode ?? 'archive') ===
-            'archive',
-      );
-    useNavigationStore
-      .getState()
-      .navigate(anySurvivingDestination ? 'main' : 'home');
-    // Close immediately; the fast split phase, destination selection, and any
-    // errors continue outside the component (toasts + the global
-    // split-complete subscription).
-    onClose();
+    setConfirmError(null);
+    // The modal stays open (and can't be closed) through the fast phase, so
+    // a failure shows here with the selections kept. The choices lock until
+    // then: what is shown must be what was sent. Navigation to the
+    // destination happens once the fast phase returns; the background
+    // phase's outcome arrives through the global split-complete
+    // subscription.
     void performSplitConfirm(
       workspaceId,
       worktreeId,
       { ...selections },
       rootPresent ? rootSelection : undefined,
       preview.previewRevision,
-    );
+    ).then((failure): void => {
+      if (failure) {
+        setConfirmError(failure);
+        setConfirmed(false);
+        // The rejection may be a stale preview revision (the inventory
+        // changed). Load a fresh preview so confirming again sends its
+        // revision; the selections stay.
+        setPreviewAttempt((n) => n + 1);
+        return;
+      }
+      onClose();
+    });
   }, [
     confirmed,
     onClose,
-    previewByRepoId,
     preview,
     repos,
     rootPresent,
     rootSelection,
-    selectionOf,
     selections,
     workspaceId,
     worktreeId,
   ]);
 
   // The workspace disappearing under the modal (e.g. split finished from
-  // another surface) leaves nothing to configure.
-  useEffect(() => {
-    if (!project && !confirmed) {
-      addToast('This project is no longer available.', 'error');
-      onClose();
-    }
-  }, [project, confirmed, addToast, onClose]);
+  // another surface) leaves nothing to configure: say so in the modal and
+  // leave closing it to the person. While a split is running, the store's
+  // optimistic removal hides the project too; that is not this case.
+  const projectGone = !project && !confirmed;
 
   const confirmLabel = buildConfirmLabel(splitCount, archiveCount, deleteCount);
   const confirmDisabled =
-    confirmed || !previewLoaded || repos.length === 0 || previewError !== null;
+    confirmed ||
+    projectGone ||
+    !previewLoaded ||
+    repos.length === 0 ||
+    previewError !== null;
+  const requestClose = useCallback((): void => {
+    if (!confirmed) onClose();
+  }, [confirmed, onClose]);
 
   return (
     <DialogModal
-      onClose={onClose}
+      onClose={requestClose}
+      closeButtonDisabled={confirmed}
+      closeOnBackdrop={!confirmed}
       title="Split project"
       titleId="split-workspace-title"
       maxWidth="xl"
     >
-      <div className="space-y-4 text-s" data-testid="split-workspace-modal">
+      <div
+        className="flex flex-col text-s gap-4"
+        data-testid="split-workspace-modal"
+      >
         <p className="text-xs fg-secondary">
           Splitting moves each kept repo&apos;s checkout — along with its chats,
           workflow runs and plans — into a new worktree in that repo&apos;s own
@@ -527,7 +546,7 @@ export function SplitWorkspaceModal({
             </Heading>
           </Surface>
         ) : (
-          <div className="space-y-2">
+          <Stack gap="inline">
             {rootPresent && root && (
               <Surface variant="group" data-testid="split-workspace-modal-root">
                 <div className="flex items-center justify-between gap-3 px-3 py-2">
@@ -585,7 +604,7 @@ export function SplitWorkspaceModal({
                             : 'Archive retention is disabled for this project'
                         }
                         testId="split-workspace-modal-root-archive"
-                        disabled={!root.canArchive}
+                        disabled={!root.canArchive || confirmed}
                       />
                       <SelectionToggleButton
                         kind="delete"
@@ -594,6 +613,7 @@ export function SplitWorkspaceModal({
                         tooltipTitle="Delete"
                         tooltipDescription="Delete the project root contents permanently"
                         testId="split-workspace-modal-root-delete"
+                        disabled={confirmed}
                       />
                     </div>
                   </Surface>
@@ -684,6 +704,7 @@ export function SplitWorkspaceModal({
                           tooltipTitle="Split"
                           tooltipDescription={`Move to its own worktree in "${destinationName}"`}
                           testId={`split-workspace-modal-repo-${repo.id}-split`}
+                          disabled={confirmed}
                         />
                         <SelectionToggleButton
                           kind={removalMode}
@@ -698,6 +719,7 @@ export function SplitWorkspaceModal({
                               : 'Delete this repo checkout permanently'
                           }
                           testId={`split-workspace-modal-repo-${repo.id}-remove`}
+                          disabled={confirmed}
                         />
                       </div>
                     </Surface>
@@ -705,14 +727,32 @@ export function SplitWorkspaceModal({
                 </Surface>
               );
             })}
-          </div>
+          </Stack>
         )}
 
-        <ErrorBanner
-          error={previewError}
-          className=""
-          testId="split-workspace-modal-error"
-        />
+        {projectGone ? (
+          <DesktopErrorBanner
+            className=""
+            error="This project is no longer available."
+            testId="split-workspace-modal-error"
+          />
+        ) : previewError ? (
+          <DesktopErrorBanner
+            className=""
+            error={previewError.error}
+            details={previewError.details}
+            onRetry={() => setPreviewAttempt((n) => n + 1)}
+            testId="split-workspace-modal-error"
+          />
+        ) : (
+          <DesktopErrorBanner
+            className=""
+            error={confirmError?.error}
+            details={confirmError?.details}
+            onDismiss={() => setConfirmError(null)}
+            testId="split-workspace-modal-error"
+          />
+        )}
 
         <div className="flex items-center justify-end gap-2 pt-1">
           {!previewLoaded && previewError === null && repos.length > 0 && (
@@ -727,6 +767,7 @@ export function SplitWorkspaceModal({
           <Button
             size="compact"
             onClick={onClose}
+            disabled={confirmed}
             data-testid="split-workspace-modal-cancel"
           >
             Cancel
@@ -743,7 +784,7 @@ export function SplitWorkspaceModal({
               data-testid="split-workspace-modal-confirm"
               data-danger={deleteCount > 0 ? 'true' : 'false'}
             >
-              {confirmLabel}
+              {confirmed ? 'Splitting…' : confirmLabel}
             </Button>
           </Tooltip>
         </div>

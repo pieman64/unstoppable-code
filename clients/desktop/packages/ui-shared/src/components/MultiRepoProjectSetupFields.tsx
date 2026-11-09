@@ -1,8 +1,9 @@
 'use client';
 
 import { useId, useMemo, useState, type JSX } from 'react';
+import { Fieldset } from './Fieldset';
 import { ChoiceField } from './Choice';
-import { TextInput } from './Field';
+import { TextInput, FieldError } from './Field';
 import { FormField } from './FormField';
 import { Button } from './Button';
 import { SearchEmptyState, SearchField } from './SearchField';
@@ -83,8 +84,11 @@ export function MultiRepoProjectSetupFields({
           />
         )}
       </FormField>
-      <fieldset className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
-        <legend className="mb-2 text-s fg-primary">{optionsLabel}</legend>
+      <Fieldset
+        className="min-h-0 flex-1"
+        gap="inline"
+        legend={<span className="text-s fg-primary">{optionsLabel}</span>}
+      >
         {showSearch && (
           <SearchField
             size="sm"
@@ -182,16 +186,16 @@ export function MultiRepoProjectSetupFields({
             ))}
           </div>
         )}
-      </fieldset>
+      </Fieldset>
       {loading && (
         <p role="status" className="text-s fg-secondary">
           Checking repositories…
         </p>
       )}
       {error && (
-        <p id={`${id}-error`} role="alert" className="text-s fg-secondary">
+        <FieldError id={`${id}-error`} announce>
           {error}
-        </p>
+        </FieldError>
       )}
     </div>
   );

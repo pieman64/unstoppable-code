@@ -31,6 +31,7 @@ import { useNavigationStore } from '@/stores/navigationStore';
 // Imported here, inside the hosted content chunk, so the device sections
 // load with hosted pages rather than with the overlay.
 import { AccountDeviceSettings } from './AccountDeviceSettings';
+import { HostedSettingsHostFailureNotice } from './HostedSettingsHostFailureNotice';
 import {
   useHostedSettingsAccount,
   useHostedSettingsPersistedNavModel,
@@ -240,11 +241,19 @@ function SignedInHostedSettingsContent({
     onOpenOnWeb: openOnWeb,
   };
   // Shown inside the page, below its header (the Organizations list after a
-  // lost-access redirect), so the header keeps its place.
+  // lost-access redirect, or a failed host action), so the header keeps its
+  // place.
+  // The host failure shows in every state, the lost-access one included, so
+  // a sign-in started from that recovery still reports its failure.
   const notice =
     location.notice === 'access-lost' ? (
-      <HostedSettingsErrorState code="forbidden" />
-    ) : null;
+      <>
+        <HostedSettingsHostFailureNotice location={location} />
+        <HostedSettingsErrorState code="forbidden" />
+      </>
+    ) : (
+      <HostedSettingsHostFailureNotice location={location} />
+    );
 
   const error = bootstrap.status === 'error' ? bootstrap.error : null;
   const blockingError =
@@ -314,7 +323,14 @@ function SignedInHostedSettingsContent({
     );
   }
 
-  if (errorState !== null) return errorState;
+  // A sign-in started from the blocking error keeps its failure beside it.
+  if (errorState !== null)
+    return (
+      <>
+        <HostedSettingsHostFailureNotice location={location} />
+        {errorState}
+      </>
+    );
   if (loading) return <HostedRouteLoading route={route} />;
   return (
     // Not keyed by page: the shared page keys `renderHostedPageFrame` by the

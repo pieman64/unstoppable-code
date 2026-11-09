@@ -11,7 +11,6 @@ import { useGitHubStore } from '@/stores/githubStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { retainAppAdvisorWatchersBridge } from '@/stores/appAdvisorWatchersStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import type { PipelineAdvisorSnapshot } from '@canopy/desktop-shared/types/pipeline';
 import { useActivitySectionChrome } from '@/components/shared/panel-section';
 import { ActivitySection, type CollapsedIconColor } from './ActivitySection';
 import type { DispatchPipelineTarget } from './useDispatchPipelineModal';
@@ -36,16 +35,6 @@ import {
   type PipelineRunSummary,
 } from '@canopy/ui-app';
 import { WatcherManagementButton } from '@/components/watchers/WatcherManagementButton';
-
-function PipelineRunAdvisorBadge({
-  run,
-  snapshot,
-}: {
-  run: PipelineRunSummary;
-  snapshot?: PipelineAdvisorSnapshot;
-}): JSX.Element {
-  return <AdvisorEtaBadge snapshot={snapshot} pipelineStatus={run.status} />;
-}
 
 function PipelineRunWatcherButton({
   summary,
@@ -422,9 +411,9 @@ export function PipelineRunsSection({
             onOpenSource: handleOpenExecutionById,
             parentChain: [],
             renderAdvisorBadge: (run) => (
-              <PipelineRunAdvisorBadge
-                run={run}
+              <AdvisorEtaBadge
                 snapshot={advisorSnapshotsByExecutionId[run.id]}
+                pipelineStatus={run.status}
               />
             ),
             renderWatcherButton: (run) => (

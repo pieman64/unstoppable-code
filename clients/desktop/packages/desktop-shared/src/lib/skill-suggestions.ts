@@ -1,4 +1,4 @@
-import type { IPCResult } from '../types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 
 /**
  * Repeat-task skill suggestions (CAN-385). Main detects requests a user keeps

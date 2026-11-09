@@ -35,7 +35,7 @@ jest.mock('../../canopy-tools/session-runtime', () => ({
 import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   type CanopyInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { executeCanopyInjectedTool } from '../../canopy-tools/core';
 import { respondToFileCommentInSession } from '../../canopy-tools/session-runtime';
 import { ledgerUnavailableResult } from '../../canopy-tools/ledger-tools-runtime';
@@ -65,12 +65,6 @@ function fakeInterface(): InterfaceToolRequests & {
       calls.push({ method: 'showFiles', request });
       return Promise.resolve({ ok: true }) as unknown as ReturnType<
         InterfaceToolRequests['showFiles']
-      >;
-    },
-    showVisualHost: (target) => {
-      calls.push({ method: 'showVisualHost', request: target });
-      return {} as unknown as ReturnType<
-        InterfaceToolRequests['showVisualHost']
       >;
     },
     legacyWindow: () => {
@@ -282,6 +276,70 @@ describe('Canopy tool router (CAN-4125)', () => {
       await service.shutdown();
     }
   }, 60_000);
+
+  it('SaveMemory carries the provider invocation id, so a replay keys the same save (CAN-5993)', async () => {
+    const router = new CanopyToolRouter({ interfaceRequests: fakeInterface() });
+    execute.mockResolvedValue({ text: 'ok' });
+    const route = fixture('native-sdk-full');
+    for (const id of [1, 2])
+      await router.callTool(route, {
+        id,
+        params: {
+          name: displayName('save_memory'),
+          arguments: { text: 'x', scope: 'user' },
+          _meta: { 'claudecode/toolUseId': 'toolu_9' },
+        },
+        uiServer: false,
+      });
+    expect(
+      execute.mock.calls.map(([key, , , context]) => [
+        key,
+        context?.invocationId,
+      ]),
+    ).toEqual([
+      ['save_memory', 'claude:toolu_9'],
+      ['save_memory', 'claude:toolu_9'],
+    ]);
+  });
+
+  it.each([['native-sdk-full'], ['advisor-claude']])(
+    'SetAutoArchive carries the provider invocation id on %s, so a retry keys the same write (CAN-6014)',
+    async (routeName) => {
+      const router = new CanopyToolRouter({
+        interfaceRequests: fakeInterface(),
+      });
+      execute.mockResolvedValue({ text: 'ok' });
+      const route = fixture(
+        routeName,
+        routeName === 'advisor-claude'
+          ? {
+              appAdvisorRuntime: {
+                rememberInterfaceTools: (): void => undefined,
+              } as unknown as CanopyWorktreeSessionRoute['appAdvisorRuntime'],
+            }
+          : {},
+      );
+      for (const id of [1, 2])
+        await router.callTool(route, {
+          id,
+          params: {
+            name: displayName('set_auto_archive'),
+            arguments: { enabled: true },
+            _meta: { 'claudecode/toolUseId': 'toolu_7' },
+          },
+          uiServer: false,
+        });
+      expect(
+        execute.mock.calls.map(([key, , , context]) => [
+          key,
+          context?.invocationId,
+        ]),
+      ).toEqual([
+        ['set_auto_archive', 'claude:toolu_7'],
+        ['set_auto_archive', 'claude:toolu_7'],
+      ]);
+    },
+  );
 
   it('tool-use ids keep their per-route forms', () => {
     const router = new CanopyToolRouter({ interfaceRequests: fakeInterface() });

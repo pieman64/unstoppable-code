@@ -52,7 +52,11 @@ function executable(path: string): boolean {
 
 /** A minimal POSIX host: Node `spawn` detached, run logs in a temp directory. */
 export async function createScriptWorkerFixture(
-  options: { readonly secrets?: ExecutionSecretSource } = {},
+  options: {
+    readonly secrets?: ExecutionSecretSource;
+    /** Replaces host members, for a host whose processes behave otherwise. */
+    readonly host?: Partial<ScriptExecutionWorkerHost>;
+  } = {},
 ): Promise<ScriptWorkerFixture> {
   const dir = await mkdtemp(join(tmpdir(), 'script-worker-'));
   const places: PlaceCall[] = [];
@@ -145,7 +149,7 @@ export async function createScriptWorkerFixture(
       });
     },
   };
-  const worker = new ScriptExecutionWorker(host);
+  const worker = new ScriptExecutionWorker({ ...host, ...options.host });
   return {
     dir,
     worker,

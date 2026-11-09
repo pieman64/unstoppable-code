@@ -11,12 +11,14 @@ import {
   SpaceNotificationMenuRowIcon,
   SPACE_NOTIFICATION_MENU_COPY,
   spaceNotificationMenuStatus,
+  worktreeCountLabel,
 } from '@canopy/ui-shared/components';
 import {
   ArchiveIcon,
   BellIcon,
   EyeOffIcon,
   PinIcon,
+  StopIcon,
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 
@@ -57,6 +59,7 @@ export interface SidebarBatchActionAvailability {
 
 export interface SidebarSelectionMenuTestIds {
   readonly bulkPin?: string;
+  readonly bulkStopScripts?: string;
   readonly bulkArchive?: string;
   readonly bulkDelete?: string;
 }
@@ -125,6 +128,8 @@ export interface SidebarBulkRowState {
   readonly done?: boolean;
   /** Hide is in the row's menu. */
   readonly hideable?: boolean;
+  /** Stop running scripts is in the row's menu: its scripts are running. */
+  readonly scriptsRunning?: boolean;
   /** The row's notification choices, when its menu shows them. */
   readonly notifications?: SpaceNotificationMenuState;
 }
@@ -134,6 +139,7 @@ export type SidebarBulkStateAction =
   | { readonly kind: 'pin'; readonly pinned: boolean }
   | { readonly kind: 'done'; readonly done: boolean }
   | { readonly kind: 'hide' }
+  | { readonly kind: 'stop-scripts' }
   | {
       readonly kind: 'notifications';
       readonly choice: SpaceNotificationMenuChoice;
@@ -160,6 +166,11 @@ export interface SidebarBulkStateActions {
   /** The state Mark sets: done while any row is active. */
   readonly done?: { readonly done: boolean };
   readonly hide?: boolean;
+  /**
+   * Stop running scripts, offered while any selected row's menu offers it.
+   * `count` is how many selected rows have scripts running.
+   */
+  readonly stopScripts?: { readonly count: number };
   readonly notifications?: SidebarBulkNotificationState;
 }
 
@@ -235,12 +246,18 @@ export function bulkStateActions(
     notificationStates.length === rows.length
       ? bulkNotificationState(notificationStates)
       : undefined;
+  // Unlike Pin or Hide, a row offers Stop only while its scripts run, so the
+  // selection offers it when any row does and stops only those.
+  const scriptsRunning = rows.filter(
+    (row) => row.scriptsRunning === true,
+  ).length;
   return {
     ...(offersPin ? { pin: bulkPinAction(rows) } : {}),
     ...(offersDone
       ? { done: { done: !rows.every((row) => row.done === true) } }
       : {}),
     ...(rows.every((row) => row.hideable === true) ? { hide: true } : {}),
+    ...(scriptsRunning > 0 ? { stopScripts: { count: scriptsRunning } } : {}),
     ...(notifications === undefined ? {} : { notifications }),
   };
 }
@@ -257,6 +274,8 @@ export function rowNeedsStateAction(
       return state.done !== undefined && state.done !== action.done;
     case 'hide':
       return state.hideable === true;
+    case 'stop-scripts':
+      return state.scriptsRunning === true;
     case 'notifications':
       return (
         state.notifications !== undefined &&
@@ -323,6 +342,17 @@ export function deriveSelectionMenuItems(input: {
       icon: <PinIcon />,
       onSelect: () => onStateAction?.({ kind: 'pin', pinned }),
       testId: testIds?.bulkPin,
+    });
+  }
+  const stopScripts =
+    onStateAction === undefined ? undefined : input.stateActions?.stopScripts;
+  if (stopScripts !== undefined) {
+    items.push({
+      key: 'bulk-stop-scripts',
+      label: `Stop scripts in ${worktreeCountLabel(stopScripts.count)}`,
+      icon: <StopIcon />,
+      onSelect: () => onStateAction?.({ kind: 'stop-scripts' }),
+      testId: testIds?.bulkStopScripts,
     });
   }
   const notifications = input.stateActions?.notifications;

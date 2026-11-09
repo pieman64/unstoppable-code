@@ -1,6 +1,6 @@
 import { type JSX, useState } from 'react';
-import type { PipelineScalar } from '@canopy/desktop-shared/types/pipeline';
-import { Surface, TextArea } from '@canopy/ui-shared/components';
+import type { PipelineScalar } from '@canopy/execution-engine/types/pipeline';
+import { Stack, Surface, TextArea } from '@canopy/ui-shared/components';
 import { TextField } from './TextField';
 import { EnlargeValueModal } from './EnlargeValueModal';
 import { ActionTooltip } from '@/components/shared/ActionTooltip';
@@ -125,12 +125,12 @@ export function KeyValueEditor({
   }
 
   return (
-    <div className="space-y-3">
+    <Stack gap="item">
       {entries.map(([key, val]) => {
         const valType = detectType(val);
         return (
           <Surface variant="group" size="small" padding="tight" key={key}>
-            <div className="space-y-2">
+            <div className="flex flex-col gap-2">
               {/* Row 1: key name + type button + enlarge button + delete */}
               <div className="flex gap-2 items-center">
                 <TextField
@@ -246,6 +246,6 @@ export function KeyValueEditor({
           onClose={() => setEnlargeKey(null)}
         />
       )}
-    </div>
+    </Stack>
   );
 }

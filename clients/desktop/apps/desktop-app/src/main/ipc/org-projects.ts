@@ -1,6 +1,4 @@
 import { registerPersonalOrganizationUpgradeHandlers } from './personal-organization-upgrade';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { getFeatureFlagService } from '../feature-flags';
 import { getObservabilityService } from '../observability';
 import {
   listOrgProjectRelationships,
@@ -33,8 +31,6 @@ import { isAbsolute } from 'node:path';
 import {
   IPC_CHANNELS,
   isWorkspaceContext,
-  serializeWorkspaceContext,
-  type WorkspaceContext,
   type DesktopOrgProjectCatalogSnapshot,
   type OrgProjectsListRequest,
   type OrgProjectsRefreshRequest,
@@ -56,25 +52,7 @@ import { getOrgMemberMultiRepoCreator } from '../lib/org-member-multi-repo-creat
 import { getOrgMemberMultiRepoSync } from '../lib/org-member-multi-repo-sync-deps';
 import { getOrgProjectMover } from '../lib/org-project-move-deps';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
-
-function disabledCatalog(
-  context: WorkspaceContext,
-): DesktopOrgProjectCatalogSnapshot | null {
-  if (
-    getFeatureFlagService().isEnabled(
-      CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key,
-    )
-  )
-    return null;
-  return {
-    context: serializeWorkspaceContext(context),
-    revision: '',
-    projects: [],
-    fetchedAt: new Date(0).toISOString(),
-    stale: true,
-    error: 'unavailable',
-  };
-}
+import { disabledOrgProjectCatalog as disabledCatalog } from '../lib/org-project-catalog-gate';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

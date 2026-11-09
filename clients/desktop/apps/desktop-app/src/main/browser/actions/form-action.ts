@@ -4,7 +4,7 @@ import type {
   BrowserActionTargetState,
   BrowserInputMode,
   BrowserJavaScriptDialog,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import type { ResolvedActionTarget } from '../frames/action-targets';
 import type { ActionLaneContext } from './action-lane';
 import type { BrowserCdpSend } from './actionability';

@@ -1,4 +1,4 @@
-import { AccountMcpConnectionError } from '@canopy/desktop-shared/types/mcp-servers';
+import { AccountMcpConnectionError } from '@canopy/execution-engine/types/mcp-servers';
 import {
   ACCOUNT_MCP_CLIENT_CREDENTIALS_REQUIRED,
   ACCOUNT_MCP_SIGN_IN_UNAVAILABLE,
@@ -22,8 +22,8 @@ import type {
   StartAccountMcpConnectionRequest,
   StartAccountMcpConnectionResponse,
   UpdateAccountMcpConnectionRequest,
-} from '@canopy/desktop-shared/types/mcp-servers';
-export type { AccountMcpConnection } from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
+export type { AccountMcpConnection } from '@canopy/execution-engine/types/mcp-servers';
 import { openExternalUrl } from '../mcp/oauth-client';
 import {
   matchAccountMcpConnection,

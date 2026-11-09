@@ -8,17 +8,21 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
+import type {
+  AppError,
+  AppErrorDisplayPolicy,
+} from '@canopy/protocol/app-errors';
 import {
   Button,
   DialogModal,
   EmptyState,
+  ErrorBanner,
   Notice,
   SegmentedControl,
   type NoticeIntent,
   type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
 import { RefreshSpinnerIcon } from '@canopy/ui-shared/icons';
-import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { Tooltip } from '@canopy/ui-shared';
 import {
   WorkspaceMultiSelectPicker,
@@ -85,7 +89,19 @@ export interface AddRepositoryDialogProps<
   readonly submitBlocked?: boolean;
   readonly savedAttempt?: AddRepositorySavedAttempt;
   readonly submitting: boolean;
-  readonly errorMessage: string | null;
+  /**
+   * The dialog's failure, above its actions: an authored sentence, or a
+   * structured error that shows its catalog copy and recovery.
+   */
+  readonly errorMessage: string | AppError | null;
+  /** The raw reason behind `Copy details`, never rendered. */
+  readonly errorDetails?: string;
+  /** Repeats the failed step, only when doing so can fix it. */
+  readonly onErrorRetry?: () => void;
+  /** The host's raw-detail policy for a structured error. */
+  readonly errorDisplayPolicy?: AppErrorDisplayPolicy;
+  /** The host's `Report this`, rendered only beside a defect. */
+  readonly renderErrorReportAction?: (error: AppError) => ReactNode;
   /** The dismiss button's label; `Cancel` by default. */
   readonly dismissLabel?: string;
   /**
@@ -134,6 +150,10 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
   savedAttempt,
   submitting,
   errorMessage,
+  errorDetails,
+  onErrorRetry,
+  errorDisplayPolicy,
+  renderErrorReportAction,
   dismissLabel = 'Cancel',
   dismissWhileSubmitting = false,
 }: AddRepositoryDialogProps<TOption>): JSX.Element {
@@ -333,20 +353,19 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
         {!savedAttempt && hasSelection ? selectionAccessory : null}
         {notices}
 
-        {errorMessage && (
-          <Notice
-            intent="destructive"
-            data-testid="add-repo-to-worktree-modal-error"
-          >
-            {/* The full message: this box has no details view. Command
-                output can name paths and branches. */}
-            <span
-              className={`${REPLAY_BLOCK_CLASS} block max-h-40 overflow-y-auto whitespace-pre-wrap break-words`}
-            >
-              {errorMessage}
-            </span>
-          </Notice>
-        )}
+        {/* Command output can name paths and branches. */}
+        <ErrorBanner
+          className=""
+          error={errorMessage}
+          blockMessageFromReplay
+          testId="add-repo-to-worktree-modal-error"
+          {...(errorDetails === undefined ? {} : { details: errorDetails })}
+          {...(onErrorRetry ? { onRetry: onErrorRetry } : {})}
+          {...(errorDisplayPolicy ? { displayPolicy: errorDisplayPolicy } : {})}
+          {...(renderErrorReportAction
+            ? { reportAction: renderErrorReportAction }
+            : {})}
+        />
       </fieldset>
     </DialogModal>
   );

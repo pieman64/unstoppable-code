@@ -67,7 +67,7 @@ export function SharedContainerInvitationDialog({
       closeButtonDisabled={busy}
       dataTestId={TEST_ID}
     >
-      <div className="space-y-4 px-6 py-4">
+      <div className="flex flex-col gap-4 px-6 py-4">
         <p className="text-s fg-primary" data-testid={`${TEST_ID}-kind`}>
           {kind === 'code' ? 'Code project' : 'Cowork project'}
         </p>

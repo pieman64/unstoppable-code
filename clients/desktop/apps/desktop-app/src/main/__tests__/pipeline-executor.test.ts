@@ -58,7 +58,7 @@ import type {
 import type {
   Pipeline,
   PipelinePreferenceLocator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   createTrackedPlan,
   listTrackedPlans,

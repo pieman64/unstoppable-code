@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { BrowserRecordingStep } from '@canopy/desktop-shared/types/browser';
+import type { BrowserRecordingStep } from '@canopy/execution-engine/types/browser';
 import { CENTER_TEXT_MATCH } from '../frames/scroll-state';
 import type { AmountScrollResult } from './scroll';
 

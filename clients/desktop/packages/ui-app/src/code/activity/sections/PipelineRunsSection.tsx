@@ -204,7 +204,7 @@ export function PipelineRunsSection({
   const completed = sorted.filter((run) => !isActivePipelineStatus(run.status));
   return (
     <div
-      className="max-h-76 space-y-2 overflow-y-auto"
+      className="grid grid-cols-1 content-start max-h-76 overflow-y-auto gap-2"
       data-testid="activity-pipeline-runs"
     >
       {active.map((run) => (

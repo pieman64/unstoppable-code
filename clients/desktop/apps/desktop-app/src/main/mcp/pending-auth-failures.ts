@@ -1,5 +1,5 @@
 import type { AuthDependencyFailure } from '@canopy/protocol/auth-recovery';
-import type { CanopyInjectedToolKey } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import type { CanopyInjectedToolKey } from '@canopy/execution-engine/lib/canopy-injected-tools';
 
 /**
  * Which errored tool result is allowed to claim a pending failure.

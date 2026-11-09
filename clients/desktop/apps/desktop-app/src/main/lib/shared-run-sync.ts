@@ -8,13 +8,13 @@ import type {
   UnshareRunRequest,
   UnshareRunResponse,
 } from '@canopy/desktop-shared/types';
-import type { AgentAuditEntry } from '@canopy/desktop-shared/types/observability';
+import type { AgentAuditEntry } from '@canopy/execution-engine/types/observability';
 import {
   MAX_SHARED_RUN_TITLE_LENGTH,
   type RunShareScope,
   type SharedRunCreateRequest,
 } from '@canopy/protocol/runs';
-import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import { getObservabilityService } from '../observability';
 import { getTelemetrySyncService } from '../services/telemetry-sync-service';
 import { readDiff } from '../services/diff-service';
@@ -35,7 +35,7 @@ import {
   type StoredTelemetryEnforcementByOrganization,
 } from './telemetry-enforcement-state';
 import { enforcementForOrganization } from '@canopy/desktop-shared/lib/telemetry-enforcement';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import { resolveWorkOwnerOrganization } from './work-owner';
 import { getWorkspaceContextService } from './workspace-context-service';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';

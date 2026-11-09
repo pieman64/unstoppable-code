@@ -1,4 +1,12 @@
-import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  type JSX,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { useShallow } from 'zustand/shallow';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { Button } from '@/components/shared/Button';
 import { DialogModal } from '@/components/shared/DialogModal';
@@ -6,6 +14,11 @@ import { CopyButton } from '@/components/shared/CopyButton';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useSubscriptionStatus } from '@/hooks/useSubscriptionStatus';
 import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
+import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  getRemoteControlApi,
+  useRemoteControlStore,
+} from '@/stores/remoteControlStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { RemoteControlUpgradeCta } from '@/components/portal/RemoteControlUpgradeCta';
 import {
@@ -15,56 +28,110 @@ import {
 import { RemoteControlGuestCta } from '@/components/portal/RemoteControlGuestCta';
 import { RemoteControlMobileAppsCta } from '@/components/portal/RemoteControlMobileAppsCta';
 import { RemoteControlPairingQr } from '@/components/portal/RemoteControlPairingQr';
+import {
+  IncomingPairingRequestActions,
+  IncomingPairingRequestBody,
+} from '@/components/remote-access/IncomingPairingRequest';
+import {
+  incomingPairingTitle,
+  useIncomingPairingResponse,
+} from '@/components/remote-access/incoming-pairing-response';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useQrCodeDataUrl } from '@/hooks/useQrCodeDataUrl';
 import type {
   CanopyCloudAccountPublicState,
   CanopyPortalState,
+  RemoteControlOpenPairingWindowResult,
+  RemoteIncomingPairing,
 } from '@canopy/desktop-shared/types';
+import type { DeviceKind } from '@canopy/protocol/device-relay';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { lapsedOrgNames as lapsedOrgNamesFrom } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
 import { organizationBillingPath } from '@canopy/protocol/billing';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
-import { buildRemoteControlPairingUrl } from '@canopy/protocol/portal/pairing-link';
 import { GUEST_WORK_PRESERVED } from '@/lib/guest-cta-copy';
-import { brandText, getBrandMobileApps } from '@/lib/brand';
+import { brandText } from '@/lib/brand';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 import { useSettingsLocationLabel } from '@/lib/navigation/settings-destinations';
-import { ErrorBanner, Fact, FactList } from '@canopy/ui-shared/components';
+import {
+  ConfirmDialog,
+  Disclosure,
+  formatPairingCode,
+  Inline,
+  LoadingSpinner,
+  Notice,
+  NoticeButton,
+  Skeleton,
+  Stack,
+  TextLinkButton,
+} from '@canopy/ui-shared/components';
 
-const PORTAL_NAME = REMOTE_CONTROL_LABEL;
 const CLOUD_NAME = `${brandText.appName} Cloud`;
-const TITLE = PORTAL_NAME;
-const SUBTITLE = `Steer the agents running on this ${brandText.appName} app from any browser. Pair securely with ${CLOUD_NAME} to control the sessions on this machine from anywhere.`;
+
 /**
- * Same sentence, naming the phone app as a second way in.
- *
- * This is how the mobile story survives {@link RemoteControlMobileAppsCta}
- * being hidden from signed-out and guest visitors: prose costs nothing next to
- * the modal's primary CTA, while a pair of store badges under that CTA competes
- * with it. Brand-gated on a declared listing, so a brand with no mobile app
- * never names one.
+ * The Remote Control dialog copy (CAN-5985 A1–A6). The A1 body describes the
+ * feature in every state before it is on, so it is the dialog's subtitle
+ * there.
  */
-const SUBTITLE_WITH_MOBILE = `Steer the agents running on this ${brandText.appName} app from any browser, or from the ${brandText.appName} mobile app. Pair securely with ${CLOUD_NAME} to control the sessions on this machine from anywhere.`;
+const OFF_BODY =
+  'Control this computer from your phone, a browser, or another computer.';
+const OFF_WARNING =
+  'A paired device can see and change everything on this computer, including running commands.';
+const ENABLE_BUTTON = `Enable ${REMOTE_CONTROL_LABEL}`;
+/** The pairing view's subtitle: the QR code and link are the first choice. */
+const PAIRING_SUBTITLE =
+  "Scan with your phone's camera, or copy the link to open on any device.";
+const COPY_LINK_LABEL = 'Copy link';
+const PAIRING_ALTERNATIVE = `Or open ${REMOTE_CONTROL_LABEL} in the web or mobile app and choose this computer. You'll confirm a matching code here.`;
+const EXPIRED_BODY = 'The QR code and link expired. Paired devices still work.';
+const PAIR_DEVICE_BUTTON = 'Pair a device';
+const PAIRED_BODY =
+  'It can control this computer now. You can remove it anytime in Settings.';
+const DONE_BUTTON = 'Done';
+const MANAGE_BUTTON = 'Manage';
+const OPEN_PAIRING_FAILED = "Couldn't open pairing. Try again.";
+const ENABLE_FAILED = `Couldn't turn on ${REMOTE_CONTROL_LABEL}. Try again.`;
 
 /** Where the cloud account lives depends on the Settings rail. */
 function noAccountMessage(accountLocation: string): string {
   return `Connect ${CLOUD_NAME} in ${accountLocation} before enabling ${REMOTE_CONTROL_LABEL.toLowerCase()}.`;
 }
-const DISABLED_HELPER = `A QR code will appear. Scan it with your phone, or enter its 6-digit code in ${CLOUD_NAME}.`;
-const PENDING_STATUS_LABEL = 'Waiting for code';
-/** Shown only when no QR code is available; the QR code carries its own line. */
-const PENDING_HELPER = `Enter this code in ${CLOUD_NAME}.`;
-const MANUAL_FALLBACK_LABEL = `Or enter this code in ${CLOUD_NAME}:`;
-const EXPIRED_RETRY_HELPER = `Enable ${REMOTE_CONTROL_LABEL} to get a new QR code.`;
-const CONNECTED_STATUS_LABEL = 'Connected';
-const RECONNECTING_STATUS_LABEL = 'Reconnecting';
-const RECONNECTING_HELPER = `${CLOUD_NAME} will keep the session open while this app reconnects.`;
-const ERROR_STATUS_LABEL = 'Connection failed';
-const STARTING_STATUS_LABEL = 'Starting…';
-const STOPPING_STATUS_LABEL = 'Stopping…';
-const DISCONNECTED_STATUS_LABEL = 'Disconnected';
-const DISCONNECTED_HELPER = `The session ended. Reconnect to start a new session — a fresh pairing code will appear if ${CLOUD_NAME} needs to pair again.`;
+
+/**
+ * The Portal's own code, kept while Portal stays on during the rollout
+ * (CAN-5985): a browser that still connects through Portal pairs with it.
+ * It sits behind a disclosure so it never reads as the matching code the
+ * app method compares, and the whole block goes when Portal does.
+ */
+const PORTAL_CODE_TOGGLE = `Code for ${CLOUD_NAME}`;
+const PORTAL_CODE_PROMPT = `If ${CLOUD_NAME} asks for a code, enter`;
+const COPY_CODE_LABEL = 'Copy code';
+/**
+ * A live Portal session. Portal state names no connecting device and counts
+ * none (one session can serve several), so the copy names neither, and says
+ * why the paired count below leaves them out.
+ */
+const PORTAL_CONNECTED_TITLE = `Connected to ${CLOUD_NAME}.`;
+const PORTAL_CONNECTED_BODY =
+  "Devices that joined with a code aren't counted as paired devices.";
+const PORTAL_RECONNECTING_TITLE = `Reconnecting to ${CLOUD_NAME}.`;
+const PORTAL_RECONNECTING_BODY =
+  'Sessions stay open while this computer reconnects.';
+/**
+ * Ends the Portal session on its own, without turning Remote Control off, so
+ * a computer that still has a Portal session can be tested over the direct
+ * path during the rollout. Stopping records a local disconnect, which the
+ * next launch does not resume; turning Remote Control off and on starts
+ * Portal again while its flag is on.
+ */
+const PORTAL_DISCONNECT_BUTTON = 'Disconnect';
+const PORTAL_DISCONNECT_TITLE = `Disconnect from ${CLOUD_NAME}?`;
+const PORTAL_DISCONNECT_MESSAGE = `Devices using ${CLOUD_NAME} lose access to this computer. Paired devices aren't affected. To reconnect, turn ${REMOTE_CONTROL_LABEL} off and on in Settings.`;
+const PORTAL_DISCONNECT_FAILED = `Couldn't disconnect from ${CLOUD_NAME}. Try again.`;
 
 const SIGN_IN_BUTTON = `Sign in to enable ${REMOTE_CONTROL_LABEL}`;
 /**
@@ -86,22 +153,8 @@ const GUEST_GATE_DESCRIPTION = `An account is what pairs this device with ${REMO
  * is not told about a different feature than the one they just signed in for.
  */
 const GUEST_GATE_TOAST = `You're all set. Your guest work is synced and ${REMOTE_CONTROL_LABEL} is ready to enable.`;
-const ENABLE_BUTTON = `Enable ${REMOTE_CONTROL_LABEL}`;
-const DISABLE_BUTTON = `Disable ${REMOTE_CONTROL_LABEL}`;
-const REGENERATE_BUTTON = 'Regenerate code';
-const PAIR_ANOTHER_DEVICE_BUTTON = 'Pair another device';
-const CANCEL_PAIRING_CODE_BUTTON = 'Cancel pairing code';
-const HOST_ID_LABEL = 'Host ID for agents';
-const HOST_ID_HELPER = 'It stays the same unless the app is reinstalled.';
-const PAIR_ANOTHER_DEVICE_HELPER =
-  'Enter this code on the other device. Devices already connected stay connected.';
-const PAIR_ANOTHER_DEVICE_QR_HELPER =
-  'Scan the QR code or enter the code on the other device. Devices already connected stay connected.';
-const TRY_AGAIN_BUTTON = 'Try again';
-const RECONNECT_BUTTON = 'Reconnect';
 const OPEN_SETTINGS_BUTTON = 'Open settings';
-const VIEW_PORTAL_BUTTON = 'View web portal';
-const CLOSE_BUTTON = 'Close';
+const VIEW_PORTAL_BUTTON = `Open ${CLOUD_NAME}`;
 const ACCOUNT_LOADING_LABEL = `Checking ${CLOUD_NAME} account…`;
 
 interface CanopyPortalModalProps {
@@ -122,28 +175,71 @@ interface CanopyPortalModalProps {
   onRequestSignIn: () => void;
 }
 
-function PairingCodeDisplay({ code }: { code: string | null }): JSX.Element {
-  if (!code) {
-    return (
-      <span className="font-mono text-3xl font-semibold fg-secondary">
-        — — — — — —
-      </span>
-    );
-  }
-  // Render the two halves as adjacent spans with a CSS gap so the visible
-  // separation does not insert a whitespace character into the DOM —
-  // copy/paste (via select-all or the explicit copy button) yields the
-  // raw 6-digit code with no spaces.
-  return (
-    <span
-      className={`${POSTHOG_REPLAY_BLOCK_CLASS} font-mono text-3xl font-semibold fg-primary select-all`}
-      data-testid="canopy-portal-pairing-code-value"
-    >
-      <span>{code.slice(0, 3)}</span>
-      <span className="ml-4">{code.slice(3)}</span>
-    </span>
-  );
+/**
+ * The pairing countdown (CAN-5985 A2). A deliberate deviation from
+ * numbers-and-time's absolute expiry time: the window lasts ten minutes and
+ * the user acts inside it, so a ticking `m:ss` answers "how long do I have"
+ * better than a clock time. "Expires in" keeps it from reading as a time of
+ * day.
+ */
+function expiresInLabel(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `Expires in ${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
+
+/** The opening state's stand-in countdown: a full window, for the skeleton. */
+const SAMPLE_REMAINING_MS = 10 * 60_000;
+
+/** Milliseconds left until `expiresAt`, ticking each second; null when none. */
+function useRemainingMs(expiresAt: string | null): number | null {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (expiresAt === null) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return (): void => window.clearInterval(timer);
+  }, [expiresAt]);
+  if (expiresAt === null) return null;
+  const end = Date.parse(expiresAt);
+  return Number.isNaN(end) ? null : end - now;
+}
+
+function devicesPairedLabel(count: number): string {
+  if (count === 0) return 'No paired devices yet';
+  return `${count} paired ${count === 1 ? 'device' : 'devices'}`;
+}
+
+/** The device a pairing completed with, as A4 names it. */
+interface PairedDevice {
+  readonly name: string;
+  readonly kind: DeviceKind;
+}
+
+function pairedTitle(device: PairedDevice): string {
+  const name =
+    device.kind === 'hosted' ? `${brandText.appName} agents` : device.name;
+  return `${name} is paired`;
+}
+
+/**
+ * What the dialog shows, in priority order: account gates first, then a
+ * finished pairing, a code request to answer, the opt-in, and the pairing
+ * window's own states.
+ */
+type RemoteControlView =
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'signed-out' }
+  | { readonly kind: 'guest' }
+  | { readonly kind: 'upgrade' }
+  | { readonly kind: 'paired'; readonly device: PairedDevice }
+  | { readonly kind: 'request'; readonly request: RemoteIncomingPairing }
+  | { readonly kind: 'off' }
+  | { readonly kind: 'opening' }
+  | { readonly kind: 'pairing'; readonly remainingMs: number }
+  | { readonly kind: 'expired' }
+  | { readonly kind: 'pairing-failed' };
 
 export function CanopyPortalModal({
   onClose,
@@ -156,10 +252,6 @@ export function CanopyPortalModal({
   const [cloudAccount, setCloudAccount] =
     useState<CanopyCloudAccountPublicState | null>(null);
   const [cloudLoading, setCloudLoading] = useState(true);
-  const [busy, setBusy] = useState<
-    'idle' | 'starting' | 'stopping' | 'regenerating'
-  >('idle');
-  const [actionError, setActionError] = useState<string | null>(null);
 
   // Load the configured Canopy Cloud account on mount and after Settings changes.
   useEffect(() => {
@@ -400,24 +492,193 @@ export function CanopyPortalModal({
     openBillingAction,
     openUpgradePage,
   ]);
-  const showGuestCta = cloudReady && portal.status === 'disabled' && isGuest;
+
+  const {
+    rcHydrated,
+    allowIncoming,
+    pairedCount,
+    pendingRequest,
+    setAllowIncoming,
+    openPairingWindow,
+  } = useRemoteControlStore(
+    useShallow((store) => ({
+      rcHydrated: store.hydrated,
+      allowIncoming: store.state.allowIncoming,
+      pairedCount: store.state.controllers.length,
+      // Requests are answered in this computer's own windows only.
+      pendingRequest:
+        store.context.mode === 'local' && store.state.allowIncoming
+          ? (store.state.incomingPairings[0] ?? null)
+          : null,
+      setAllowIncoming: store.setAllowIncoming,
+      openPairingWindow: store.openPairingWindow,
+    })),
+  );
+  const openSettings = useNavigationStore((store) => store.openSettings);
+  // A3/A6: this dialog answers the request itself while it is open.
+  const requestAnswer = useIncomingPairingResponse(
+    pendingRequest?.pairingId ?? null,
+  );
+
+  const [busy, setBusy] = useState<'idle' | 'enabling' | 'opening'>('idle');
+  const [actionError, setActionError] = useState<InlineFailure | null>(null);
+  // The link lives only in this component: main never returns it again.
+  const [pairingLink, setPairingLink] =
+    useState<RemoteControlOpenPairingWindowResult | null>(null);
+  const [windowEnded, setWindowEnded] = useState(false);
+  const [pairingFailed, setPairingFailed] = useState(false);
+  const [pairedDevice, setPairedDevice] = useState<PairedDevice | null>(null);
+  // Our own replace closes the previous window with `replaced`; that close is
+  // not an expiry. Counted, since a reopen can overlap a slow earlier one.
+  const openingCount = useRef(0);
+  const autoOpened = useRef(false);
+
+  // A guest can't pair: the relay needs a signed-in account.
+  const showGuestCta = cloudReady && isGuest;
   // Free app access grants `remote_control` to every signed-in account, so
   // there is no plan to sell. `subscription.visible` is already false then;
   // the explicit check keeps the paywall closed even if a stale account
   // snapshot still lacks `portal-v1` or names a lapsed org.
   const showUpgradeCta =
     cloudReady &&
-    portal.status === 'disabled' &&
+    !allowIncoming &&
     !hasPortalCapability &&
     !isGuest &&
     !subscription.freeAccess &&
     subscription.visible;
+  const accountGated = !cloudReady || showGuestCta || showUpgradeCta;
+
+  // Opening the dialog opens pairing; reopening it replaces the window (and
+  // its link) with a new one.
+  const openPairing = useCallback(async (): Promise<void> => {
+    setActionError(null);
+    setPairingFailed(false);
+    setWindowEnded(false);
+    setPairedDevice(null);
+    setBusy('opening');
+    openingCount.current += 1;
+    try {
+      setPairingLink(await openPairingWindow());
+    } catch (err) {
+      setPairingLink(null);
+      setPairingFailed(true);
+      const appError = toAppError(resolveClientAppError(err));
+      setActionError(
+        appError ? inlineFailure(appError, OPEN_PAIRING_FAILED) : null,
+      );
+    } finally {
+      openingCount.current -= 1;
+      setBusy('idle');
+    }
+  }, [openPairingWindow]);
+
+  useEffect(() => {
+    if (!allowIncoming) {
+      // Turned off here or elsewhere: the window is gone with it.
+      autoOpened.current = false;
+      setPairingLink(null);
+      setWindowEnded(false);
+      setPairingFailed(false);
+      return;
+    }
+    if (!rcHydrated || cloudLoading || accountGated || autoOpened.current) {
+      return;
+    }
+    autoOpened.current = true;
+    void openPairing();
+  }, [allowIncoming, rcHydrated, cloudLoading, accountGated, openPairing]);
+
+  useEffect(() => {
+    const api = getRemoteControlApi();
+    if (!api) return undefined;
+    return api.onPairingEvent((event) => {
+      switch (event.type) {
+        case 'window-closed':
+          if (event.reason === 'replaced' && openingCount.current > 0) return;
+          setPairingLink(null);
+          // A consumed window ends in `paired`; a disabled one in the off
+          // state. Anything else leaves the expired state to reopen from.
+          if (
+            event.reason === 'expired' ||
+            event.reason === 'replaced' ||
+            event.reason === 'closed'
+          ) {
+            setWindowEnded(true);
+          }
+          return;
+        case 'paired':
+          setPairedDevice({ name: event.name, kind: event.kind });
+          return;
+        case 'window-opened':
+        case 'request':
+        case 'request-ended':
+          return;
+      }
+    });
+  }, []);
+
+  const enable = useCallback(async (): Promise<void> => {
+    if (!cloudReady) return;
+    setActionError(null);
+    setBusy('enabling');
+    // The opt-in's own effect would open pairing too; this flow does it.
+    autoOpened.current = true;
+    try {
+      await setAllowIncoming(true);
+    } catch (err) {
+      autoOpened.current = false;
+      const appError = toAppError(resolveClientAppError(err));
+      setActionError(appError ? inlineFailure(appError, ENABLE_FAILED) : null);
+      setBusy('idle');
+      return;
+    }
+    await openPairing();
+  }, [cloudReady, setAllowIncoming, openPairing]);
+
+  const manage = useCallback((): void => {
+    onClose();
+    openSettings('remote-access');
+  }, [onClose, openSettings]);
+
+  const remainingMs = useRemainingMs(pairingLink?.expiresAt ?? null);
+  const pairingQrSrc = useQrCodeDataUrl(pairingLink?.link ?? null);
+
+  const view = useMemo<RemoteControlView>(() => {
+    if (cloudLoading || !rcHydrated) return { kind: 'loading' };
+    if (!cloudReady) return { kind: 'signed-out' };
+    if (showGuestCta) return { kind: 'guest' };
+    if (showUpgradeCta) return { kind: 'upgrade' };
+    if (pairedDevice) return { kind: 'paired', device: pairedDevice };
+    if (pendingRequest) return { kind: 'request', request: pendingRequest };
+    if (!allowIncoming) return { kind: 'off' };
+    if (pairingFailed) return { kind: 'pairing-failed' };
+    if (busy === 'opening' || busy === 'enabling') return { kind: 'opening' };
+    if (pairingLink && remainingMs !== null && remainingMs > 0) {
+      return { kind: 'pairing', remainingMs };
+    }
+    if (pairingLink === null && !windowEnded) return { kind: 'opening' };
+    return { kind: 'expired' };
+  }, [
+    cloudLoading,
+    rcHydrated,
+    cloudReady,
+    showGuestCta,
+    showUpgradeCta,
+    pairedDevice,
+    pendingRequest,
+    allowIncoming,
+    pairingFailed,
+    busy,
+    pairingLink,
+    remainingMs,
+    windowEnded,
+  ]);
 
   // Resolve the Canopy Cloud base URL this build talks to (a localhost origin
-  // in dev, staging for internal builds, production for releases), so the link
-  // always targets the environment the session is paired with. Stays null when
-  // the base URL is not configured — the View Web Portal button is hidden
-  // rather than pointing at a dead origin.
+  // in dev, staging for internal builds, production for releases), so the
+  // View web portal button targets the environment the Portal session is
+  // paired with. Stays null when the base URL is not configured — the button
+  // is hidden rather than pointing at a dead origin.
   const [cloudBaseUrl, setCloudBaseUrl] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -428,25 +689,19 @@ export function CanopyPortalModal({
         setCloudBaseUrl(base.replace(/\/+$/, ''));
       })
       .catch(() => {
-        // Leave null; the View Web Portal button stays hidden.
+        // Leave null; the View web portal button stays hidden.
       });
     return (): void => {
       cancelled = true;
     };
   }, []);
 
-  // CAN-2938: the QR code opens the web pairing page with the code in the URL
-  // fragment. Derived from the current code, so it changes whenever the code
-  // is regenerated or re-armed and disappears when the code is cleared.
-  const pairingUrl =
-    cloudBaseUrl !== null && portal.pairingCode !== null
-      ? buildRemoteControlPairingUrl(cloudBaseUrl, portal.pairingCode)
+  const portalLive =
+    portal.status === 'active' || portal.status === 'reconnecting';
+  const portalPairingCode =
+    portal.status === 'pending_auth' || portal.status === 'active'
+      ? portal.pairingCode
       : null;
-  const pairingQrSrc = useQrCodeDataUrl(pairingUrl);
-  const pairingQrVisible =
-    pairingQrSrc !== null &&
-    (portal.status === 'pending_auth' || portal.status === 'active');
-
   // While pairing, deep-link to the code-entry dialog: `/portal` permanently
   // redirects to `/chat`, where the pairing form only opens on an explicit
   // Connect-a-device click — `?pair=1` opens it on arrival (CAN-2357).
@@ -474,536 +729,432 @@ export function CanopyPortalModal({
     }
   }, [cloudBaseUrl, portalPath]);
 
-  const enable = useCallback(async () => {
-    if (!cloudReady) return;
-    setActionError(null);
-    setBusy('starting');
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [disconnectError, setDisconnectError] = useState<InlineFailure | null>(
+    null,
+  );
+  const disconnectPortal = useCallback(async (): Promise<void> => {
+    setDisconnecting(true);
+    setDisconnectError(null);
     try {
-      await window.api.canopyPortal.start();
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : `Failed to enable ${REMOTE_CONTROL_LABEL.toLowerCase()}.`;
-      setActionError(message);
-    } finally {
-      setBusy('idle');
-    }
-  }, [cloudReady]);
-
-  const disable = useCallback(async () => {
-    setActionError(null);
-    setBusy('stopping');
-    try {
+      // The pushed Portal state then hides the notice.
       await window.api.canopyPortal.stop();
+      setConfirmingDisconnect(false);
     } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : `Failed to disable ${REMOTE_CONTROL_LABEL.toLowerCase()}.`;
-      setActionError(message);
+      const appError = toAppError(resolveClientAppError(err));
+      setDisconnectError(
+        appError
+          ? inlineFailure(appError, PORTAL_DISCONNECT_FAILED)
+          : { error: PORTAL_DISCONNECT_FAILED },
+      );
     } finally {
-      setBusy('idle');
+      setDisconnecting(false);
     }
   }, []);
 
-  const regenerate = useCallback(async () => {
-    if (!cloudReady) return;
-    setActionError(null);
-    setBusy('regenerating');
-    try {
-      // Regeneration is modelled as stop+start; the main process will end
-      // the prior pending session with reason `replaced` and create a new
-      // one. We treat any failure during stop as fatal so the user sees a
-      // clear error rather than a half-rotated state.
-      await window.api.canopyPortal.stop();
-      await window.api.canopyPortal.start();
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to regenerate code.';
-      setActionError(message);
-    } finally {
-      setBusy('idle');
-    }
-  }, [cloudReady]);
-
-  const pairAnotherDevice = useCallback(async () => {
-    if (!cloudReady) return;
-    setActionError(null);
-    setBusy('regenerating');
-    try {
-      // CAN-2981: re-arm a code on the live session. Connected devices are
-      // untouched; the main process keeps the session and its activation.
-      await window.api.canopyPortal.regeneratePairingCode();
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to generate a code.';
-      setActionError(message);
-    } finally {
-      setBusy('idle');
-    }
-  }, [cloudReady]);
-
-  const cancelPairingCode = useCallback(async () => {
-    setActionError(null);
-    setBusy('regenerating');
-    try {
-      // CAN-2981: drop the armed code; nothing already connected changes.
-      await window.api.canopyPortal.cancelPairingCode();
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to cancel the code.';
-      setActionError(message);
-    } finally {
-      setBusy('idle');
-    }
-  }, []);
-
-  const isBusy = busy !== 'idle';
+  const viewPortalVisible = portalLive && cloudBaseUrl !== null;
   // Expose the inline sign-in affordance (shown in the no-account state) so the
   // App Advisor knows the user can sign in from here (CAN-936, WS3).
-  const signInAffordanceVisible = !cloudLoading && !cloudReady;
-  // Shown while pairing too (CAN-2357): the portal is where the user must
-  // enter the code, so the CTA has to be reachable before the session
-  // connects, not only after.
-  const viewPortalVisible =
-    (portal.status === 'pending_auth' ||
-      portal.status === 'active' ||
-      portal.status === 'reconnecting') &&
-    cloudBaseUrl !== null;
+  const signInAffordanceVisible = view.kind === 'signed-out';
   useCurrentUiStateReporter('canopyPortal.modal', {
     open: true,
     busy,
     errorVisible: Boolean(actionError),
     signInAffordanceVisible,
     viewPortalVisible,
-    upgradeCtaVisible: showUpgradeCta,
-    guestCtaVisible: showGuestCta,
-    pairingQrVisible,
+    upgradeCtaVisible: view.kind === 'upgrade',
+    guestCtaVisible: view.kind === 'guest',
+    pairingQrVisible: view.kind === 'pairing' && pairingQrSrc !== null,
   });
 
-  const statusInfo = useMemo(() => {
-    return derivePresentation(portal, { pairingQrVisible });
-  }, [portal, pairingQrVisible]);
+  const title =
+    view.kind === 'request'
+      ? incomingPairingTitle(view.request)
+      : view.kind === 'paired'
+        ? pairedTitle(view.device)
+        : REMOTE_CONTROL_LABEL;
+  const subtitle =
+    view.kind === 'loading' ||
+    view.kind === 'signed-out' ||
+    view.kind === 'guest' ||
+    view.kind === 'upgrade' ||
+    view.kind === 'off'
+      ? OFF_BODY
+      : view.kind === 'opening' || view.kind === 'pairing'
+        ? PAIRING_SUBTITLE
+        : undefined;
+  const pairingStates =
+    view.kind === 'opening' ||
+    view.kind === 'pairing' ||
+    view.kind === 'expired' ||
+    view.kind === 'pairing-failed';
+
+  const pairedSummary = pairingStates ? (
+    <span
+      className="mr-auto text-xs fg-secondary"
+      data-testid="remote-control-paired-summary"
+    >
+      {devicesPairedLabel(pairedCount)}
+      {' · '}
+      <TextLinkButton onClick={manage} data-testid="remote-control-manage">
+        {MANAGE_BUTTON}
+      </TextLinkButton>
+    </span>
+  ) : null;
+
+  const footer =
+    view.kind === 'request' ? (
+      <IncomingPairingRequestActions
+        busy={requestAnswer.busy}
+        onRespond={requestAnswer.respond}
+      />
+    ) : view.kind === 'paired' ? (
+      <Button
+        variant="primary"
+        size="compact"
+        onClick={onClose}
+        data-testid="remote-control-paired-done"
+      >
+        {DONE_BUTTON}
+      </Button>
+    ) : pairedSummary !== null ||
+      view.kind === 'off' ||
+      view.kind === 'expired' ||
+      view.kind === 'pairing-failed' ? (
+      <>
+        {/* Primary actions only: the X and an outside click dismiss. */}
+        {pairedSummary}
+        {view.kind === 'off' ? (
+          <Button
+            variant="primary"
+            size="compact"
+            onClick={() => void enable()}
+            disabled={busy !== 'idle'}
+            data-testid="canopy-portal-enable"
+          >
+            {busy === 'enabling' ? 'Enabling…' : ENABLE_BUTTON}
+          </Button>
+        ) : null}
+        {view.kind === 'expired' || view.kind === 'pairing-failed' ? (
+          <Button
+            variant="primary"
+            size="compact"
+            onClick={() => void openPairing()}
+            disabled={busy !== 'idle'}
+            data-testid="remote-control-pair-device"
+          >
+            {PAIR_DEVICE_BUTTON}
+          </Button>
+        ) : null}
+      </>
+    ) : undefined;
 
   return (
     <DialogModal
-      inset="flush"
-      onClose={isBusy ? (): void => {} : onClose}
-      title={TITLE}
-      subtitle={getBrandMobileApps() ? SUBTITLE_WITH_MOBILE : SUBTITLE}
+      onClose={busy === 'enabling' ? (): void => {} : onClose}
+      title={title}
+      subtitle={subtitle}
       maxWidth="md"
-      closeOnBackdrop={!isBusy}
+      closeOnBackdrop={busy !== 'enabling'}
       dataTestId="canopy-portal-modal"
+      footer={footer}
     >
-      <div className="px-6 py-4 space-y-4">
-        {cloudLoading && (
-          <p className="text-s fg-secondary">{ACCOUNT_LOADING_LABEL}</p>
-        )}
+      {view.kind === 'loading' ? (
+        <p className="text-s fg-secondary">{ACCOUNT_LOADING_LABEL}</p>
+      ) : null}
 
-        {!cloudLoading && !cloudReady && (
-          <div className="space-y-3" data-testid="canopy-portal-no-account">
-            <p className="text-s fg-secondary">
-              {noAccountMessage(accountLocation)}
-            </p>
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                variant="primary"
-                size="compact"
-                onClick={onRequestSignIn}
-                data-testid="canopy-portal-sign-in"
-              >
-                {SIGN_IN_BUTTON}
-              </Button>
-              <Button
-                variant="secondary"
-                size="compact"
-                onClick={onOpenAccountSettings}
-                data-testid="canopy-portal-open-settings"
-              >
-                {OPEN_SETTINGS_BUTTON}
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {!cloudLoading && cloudReady && portal.status === 'disabled' && (
-          <div className="space-y-3" data-testid="canopy-portal-disabled">
-            {showGuestCta ? (
-              <RemoteControlGuestCta
-                freeAccess={subscription.freeAccess}
-                // Keep the gate on the subject of the button that opened it.
-                // `startFreeTrial`'s default title names a specific offer, and
-                // a guest who clicked to unlock pairing would otherwise get a
-                // dialog headed by an unrelated product — a non sequitur, not
-                // an upsell. Same reason `GuestUpgradeNudge` passes its own.
-                onCreateAccount={(): void =>
-                  subscription.startFreeTrial({
-                    title: GUEST_GATE_TITLE,
-                    description: GUEST_GATE_DESCRIPTION,
-                    toastMessage: GUEST_GATE_TOAST,
-                  })
-                }
-              />
-            ) : showUpgradeCta ? (
-              <RemoteControlUpgradeCta
-                onUpgrade={openUpgrade}
-                lapsedOrgNames={lapsedOrgNames}
-                manageableLapsedOrg={manageableLapsedOrg}
-                planDisplayName={upgradePlan?.displayName ?? null}
-              />
-            ) : portal.error ? (
-              // CAN-2938: the pending code (and its QR code) lapsed unscanned.
-              // Enable below mints a fresh one.
-              <div data-testid="canopy-portal-pairing-expired">
-                <StatusRow
-                  label={portal.error}
-                  tone="warning"
-                  helper={EXPIRED_RETRY_HELPER}
-                />
-              </div>
-            ) : (
-              <p className="text-s fg-secondary">{DISABLED_HELPER}</p>
-            )}
-          </div>
-        )}
-
-        {(portal.status === 'pending_auth' ||
-          portal.status === 'active' ||
-          portal.status === 'reconnecting' ||
-          portal.status === 'starting' ||
-          portal.status === 'stopping') && (
-          <div
-            className="space-y-4"
-            data-testid={`canopy-portal-${portal.status.replace(/_/g, '-')}`}
-          >
-            <StatusRow
-              label={statusInfo.label}
-              tone={statusInfo.tone}
-              helper={statusInfo.helper}
-              action={
-                viewPortalVisible ? (
-                  <Button
-                    variant="primary"
-                    size="compact"
-                    onClick={openPortal}
-                    data-testid="canopy-portal-view-web-portal"
-                  >
-                    {VIEW_PORTAL_BUTTON}
-                  </Button>
-                ) : undefined
-              }
-            />
-            {(portal.status === 'pending_auth' ||
-              (portal.status === 'active' && portal.pairingCode !== null)) && (
-              <div
-                className="rounded-2xl border bg-base p-6 text-center"
-                data-testid="canopy-portal-pairing-code"
-              >
-                {pairingQrVisible && pairingQrSrc !== null && (
-                  <div className="mb-4 space-y-4">
-                    <RemoteControlPairingQr
-                      qrSrc={pairingQrSrc}
-                      machineName={portal.machineName}
-                    />
-                    <p
-                      className="text-xs fg-secondary"
-                      data-testid="canopy-portal-pairing-manual-fallback"
-                    >
-                      {MANUAL_FALLBACK_LABEL}
-                    </p>
-                  </div>
-                )}
-                <div className="flex items-center justify-center gap-3">
-                  <PairingCodeDisplay code={portal.pairingCode} />
-                  {portal.pairingCode && (
-                    <CopyButton
-                      value={portal.pairingCode}
-                      ariaLabel="Copy pairing code"
-                      title="Copy pairing code"
-                      size="lg"
-                      dataTestId="canopy-portal-copy-code"
-                    />
-                  )}
-                </div>
-                <p className="mt-2 text-xs fg-secondary">
-                  {portal.pairingCodeExpiresAt
-                    ? `Expires at ${new Date(portal.pairingCodeExpiresAt).toLocaleTimeString()}.`
-                    : 'Code expires automatically after 10 minutes.'}
-                </p>
-                {portal.status === 'active' && (
-                  <p
-                    className="mt-1 text-xs fg-secondary"
-                    data-testid="canopy-portal-pair-another-device-helper"
-                  >
-                    {pairingQrVisible
-                      ? PAIR_ANOTHER_DEVICE_QR_HELPER
-                      : PAIR_ANOTHER_DEVICE_HELPER}
-                  </p>
-                )}
-              </div>
-            )}
-            {portal.status === 'active' &&
-              typeof portal.hostCode === 'string' &&
-              portal.hostCode.length > 0 && (
-                <div className="space-y-1" data-testid="portal-host-id">
-                  <FactList layout="stacked" size="s" labelTone="secondary">
-                    <Fact label={HOST_ID_LABEL} fit="break-all">
-                      <code
-                        className="font-mono select-all"
-                        data-testid="portal-host-id-value"
-                      >
-                        {portal.hostCode}
-                      </code>
-                    </Fact>
-                  </FactList>
-                  <p className="text-xs fg-secondary">{HOST_ID_HELPER}</p>
-                </div>
-              )}
-          </div>
-        )}
-
-        {portal.status === 'inactive' && (
-          <div className="space-y-3" data-testid="canopy-portal-inactive">
-            <StatusRow
-              label={DISCONNECTED_STATUS_LABEL}
-              tone="error"
-              helper={portal.error ?? DISCONNECTED_HELPER}
-            />
-            {portal.error && (
-              <p className="text-xs fg-secondary">{DISCONNECTED_HELPER}</p>
-            )}
-          </div>
-        )}
-
-        {portal.status === 'error' && (
-          <div className="space-y-3" data-testid="canopy-portal-error">
-            <StatusRow
-              label={ERROR_STATUS_LABEL}
-              tone="error"
-              helper={portal.error ?? undefined}
-            />
-          </div>
-        )}
-
-        <ErrorBanner
-          className=""
-          error={actionError}
-          testId="canopy-portal-action-error"
-        />
-
-        {/* Deliberate download surface, appended unconditionally as the last
-            child of the body so it covers every modal state at once. It sits
-            below the pairing code and above the footer, so it never competes
-            with Enable/Reconnect/Try Again. */}
-        <RemoteControlMobileAppsCta />
-      </div>
-
-      <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
-        <Button
-          variant="secondary"
-          size="compact"
-          onClick={onClose}
-          disabled={isBusy}
-          data-testid="canopy-portal-close"
-        >
-          {CLOSE_BUTTON}
-        </Button>
-
-        {portal.status === 'disabled' &&
-          cloudReady &&
-          !showUpgradeCta &&
-          !showGuestCta && (
+      {view.kind === 'signed-out' ? (
+        <Stack gap="item" data-testid="canopy-portal-no-account">
+          <p className="text-s fg-secondary">
+            {noAccountMessage(accountLocation)}
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
             <Button
               variant="primary"
               size="compact"
-              onClick={() => void enable()}
-              disabled={isBusy}
-              data-testid="canopy-portal-enable"
+              onClick={onRequestSignIn}
+              data-testid="canopy-portal-sign-in"
             >
-              {busy === 'starting' ? 'Enabling…' : ENABLE_BUTTON}
-            </Button>
-          )}
-
-        {portal.status === 'pending_auth' && (
-          <>
-            <Button
-              variant="secondary"
-              size="compact"
-              onClick={() => void regenerate()}
-              disabled={isBusy}
-              data-testid="canopy-portal-regenerate"
-            >
-              {busy === 'regenerating' ? 'Regenerating…' : REGENERATE_BUTTON}
+              {SIGN_IN_BUTTON}
             </Button>
             <Button
               variant="secondary"
               size="compact"
-              onClick={() => void disable()}
-              disabled={isBusy}
-              data-testid="canopy-portal-disable"
+              onClick={onOpenAccountSettings}
+              data-testid="canopy-portal-open-settings"
             >
-              {busy === 'stopping' ? 'Disabling…' : DISABLE_BUTTON}
+              {OPEN_SETTINGS_BUTTON}
             </Button>
-          </>
-        )}
+          </div>
+        </Stack>
+      ) : null}
 
-        {(portal.status === 'active' || portal.status === 'reconnecting') && (
-          <>
-            {portal.status === 'active' && portal.pairingCode !== null && (
-              <Button
-                variant="secondary"
-                size="compact"
-                onClick={() => void cancelPairingCode()}
-                disabled={isBusy}
-                data-testid="canopy-portal-cancel-pairing-code"
-              >
-                {busy === 'regenerating'
-                  ? 'Cancelling…'
-                  : CANCEL_PAIRING_CODE_BUTTON}
-              </Button>
-            )}
-            {portal.status === 'active' && portal.pairingCode === null && (
-              <Button
-                variant="secondary"
-                size="compact"
-                onClick={() => void pairAnotherDevice()}
-                disabled={isBusy}
-                data-testid="canopy-portal-pair-another-device"
-              >
-                {busy === 'regenerating'
-                  ? 'Generating code…'
-                  : PAIR_ANOTHER_DEVICE_BUTTON}
-              </Button>
-            )}
-            <Button
-              variant="secondary"
-              size="compact"
-              onClick={() => void disable()}
-              disabled={isBusy}
-              data-testid="canopy-portal-disable"
-            >
-              {busy === 'stopping' ? 'Disabling…' : DISABLE_BUTTON}
-            </Button>
-          </>
-        )}
+      {view.kind === 'guest' ? (
+        <RemoteControlGuestCta
+          freeAccess={subscription.freeAccess}
+          // Keep the gate on the subject of the button that opened it.
+          // `startFreeTrial`'s default title names a specific offer, and a
+          // guest who clicked to unlock pairing would otherwise get a dialog
+          // headed by an unrelated product — a non sequitur, not an upsell.
+          // Same reason `GuestUpgradeNudge` passes its own.
+          onCreateAccount={(): void =>
+            subscription.startFreeTrial({
+              title: GUEST_GATE_TITLE,
+              description: GUEST_GATE_DESCRIPTION,
+              toastMessage: GUEST_GATE_TOAST,
+            })
+          }
+        />
+      ) : null}
 
-        {portal.status === 'inactive' && (
-          <Button
-            variant="primary"
-            size="compact"
-            onClick={() => void enable()}
-            disabled={isBusy || !cloudReady}
-            data-testid="canopy-portal-reconnect"
-          >
-            {busy === 'starting' ? 'Reconnecting…' : RECONNECT_BUTTON}
-          </Button>
-        )}
+      {view.kind === 'upgrade' ? (
+        <RemoteControlUpgradeCta
+          onUpgrade={openUpgrade}
+          lapsedOrgNames={lapsedOrgNames}
+          manageableLapsedOrg={manageableLapsedOrg}
+          planDisplayName={upgradePlan?.displayName ?? null}
+        />
+      ) : null}
 
-        {portal.status === 'error' && (
-          <Button
-            variant="primary"
-            size="compact"
-            onClick={() => void enable()}
-            disabled={isBusy || !cloudReady}
-            data-testid="canopy-portal-try-again"
-          >
-            {busy === 'starting' ? 'Trying again…' : TRY_AGAIN_BUTTON}
-          </Button>
-        )}
-      </div>
+      {view.kind === 'off' ? (
+        <Notice intent="attention" data-testid="remote-control-off-warning">
+          {OFF_WARNING}
+        </Notice>
+      ) : null}
+
+      {view.kind === 'paired' ? (
+        <p
+          className="text-s text-pretty fg-secondary"
+          data-testid="remote-control-paired"
+        >
+          {PAIRED_BODY}
+        </p>
+      ) : null}
+
+      {view.kind === 'request' ? (
+        <IncomingPairingRequestBody
+          request={view.request}
+          error={requestAnswer.error}
+        />
+      ) : null}
+
+      {/* The opening state draws the pairing view's own layout, so the QR
+          code and link replace the skeleton in place. */}
+      {view.kind === 'opening' ? (
+        <Skeleton
+          loading
+          label="Opening pairing"
+          testId="remote-control-pairing-opening"
+        >
+          <PairingLink qrSrc={null} link="" remainingMs={SAMPLE_REMAINING_MS} />
+        </Skeleton>
+      ) : null}
+
+      {view.kind === 'pairing' && pairingLink ? (
+        <div data-testid="remote-control-pairing">
+          <PairingLink
+            qrSrc={pairingQrSrc}
+            link={pairingLink.link}
+            remainingMs={view.remainingMs}
+            live
+          />
+        </div>
+      ) : null}
+
+      {view.kind === 'expired' ? (
+        <p
+          className="text-s text-pretty fg-secondary"
+          data-testid="remote-control-pairing-expired"
+        >
+          {EXPIRED_BODY}
+        </p>
+      ) : null}
+
+      {view.kind !== 'request' && view.kind !== 'paired' ? (
+        <PortalCompatibility
+          portal={portal}
+          pairingCode={portalPairingCode}
+          live={portalLive}
+          viewPortal={viewPortalVisible ? openPortal : null}
+          onDisconnect={() => {
+            setDisconnectError(null);
+            setConfirmingDisconnect(true);
+          }}
+        />
+      ) : null}
+
+      {confirmingDisconnect ? (
+        <ConfirmDialog
+          title={PORTAL_DISCONNECT_TITLE}
+          message={PORTAL_DISCONNECT_MESSAGE}
+          confirmLabel={PORTAL_DISCONNECT_BUTTON}
+          busyLabel="Disconnecting…"
+          busy={disconnecting}
+          errorMessage={
+            disconnectError === null
+              ? null
+              : typeof disconnectError.error === 'string'
+                ? disconnectError.error
+                : PORTAL_DISCONNECT_FAILED
+          }
+          {...(disconnectError?.details === undefined
+            ? {}
+            : { errorDetails: disconnectError.details })}
+          destructive
+          onConfirm={() => void disconnectPortal()}
+          onCancel={() => setConfirmingDisconnect(false)}
+          confirmTestId="canopy-portal-disconnect-confirm"
+          dataTestId="canopy-portal-disconnect-dialog"
+        />
+      ) : null}
+
+      <DesktopErrorBanner
+        className=""
+        error={actionError?.error}
+        {...(actionError?.details === undefined
+          ? {}
+          : { details: actionError.details })}
+        testId="canopy-portal-action-error"
+      />
+
+      {/* Deliberate download surface for the states before Remote Control is
+          on; once it is, the pairing QR code is the one to scan. */}
+      {view.kind === 'signed-out' ||
+      view.kind === 'guest' ||
+      view.kind === 'upgrade' ||
+      view.kind === 'off' ? (
+        <RemoteControlMobileAppsCta />
+      ) : null}
     </DialogModal>
   );
 }
 
-interface PortalPresentation {
-  label: string;
-  tone: 'neutral' | 'success' | 'warning' | 'error';
-  helper?: string;
-}
-
-function derivePresentation(
-  state: CanopyPortalState,
-  { pairingQrVisible }: { pairingQrVisible: boolean },
-): PortalPresentation {
-  switch (state.status) {
-    case 'starting':
-      return { label: STARTING_STATUS_LABEL, tone: 'neutral' };
-    case 'pending_auth':
-      return {
-        label: PENDING_STATUS_LABEL,
-        tone: 'warning',
-        // One home per fact: with a QR code on screen, its instruction and
-        // the manual-fallback line already say what to do.
-        helper: pairingQrVisible ? undefined : PENDING_HELPER,
-      };
-    case 'active':
-      return {
-        label: CONNECTED_STATUS_LABEL,
-        tone: 'success',
-        // Sentence-start copy, so the lowercase "this computer" stand-in
-        // from `pairingMachineLabel` is not used here: a blank or
-        // whitespace-only name takes the neutral branch.
-        helper: state.machineName?.trim()
-          ? `${state.machineName.trim()} is connected.`
-          : 'This computer is connected.',
-      };
-    case 'reconnecting':
-      return {
-        label: RECONNECTING_STATUS_LABEL,
-        tone: 'warning',
-        helper: RECONNECTING_HELPER,
-      };
-    case 'stopping':
-      return { label: STOPPING_STATUS_LABEL, tone: 'neutral' };
-    case 'inactive':
-      return {
-        label: DISCONNECTED_STATUS_LABEL,
-        tone: 'error',
-        helper: state.error ?? DISCONNECTED_HELPER,
-      };
-    case 'error':
-      return {
-        label: ERROR_STATUS_LABEL,
-        tone: 'error',
-        helper: state.error ?? undefined,
-      };
-    case 'disabled':
-    default:
-      return { label: '', tone: 'neutral' };
-  }
-}
-
-function StatusRow({
-  label,
-  tone,
-  helper,
-  action,
+/**
+ * The pairing view's body (CAN-5985 A2): the QR code first, the link and its
+ * countdown under it, then the app method. The opening state renders it with
+ * sample values inside a `Skeleton` (`live` false), so it carries no test ids
+ * there and specs never find a stand-in control.
+ */
+function PairingLink({
+  qrSrc,
+  link,
+  remainingMs,
+  live = false,
 }: {
-  label: string;
-  tone: 'neutral' | 'success' | 'warning' | 'error';
-  helper?: string;
-  action?: JSX.Element;
+  readonly qrSrc: string | null;
+  readonly link: string;
+  readonly remainingMs: number;
+  readonly live?: boolean;
 }): JSX.Element {
-  const dotClass =
-    tone === 'success'
-      ? 'bg-success'
-      : tone === 'warning'
-        ? 'bg-warning'
-        : tone === 'error'
-          ? 'bg-destructive'
-          : 'bg-fg-secondary';
   return (
-    <div className="space-y-1" data-testid="canopy-portal-status-row">
-      <div className="flex items-center gap-2">
-        <span
-          aria-hidden="true"
-          className={`inline-block h-2 w-2 rounded-full ${dotClass}`}
-        />
-        <span className="text-s font-medium fg-primary">{label}</span>
-        {action && <span className="ml-auto">{action}</span>}
-      </div>
-      {helper && <p className="text-xs fg-secondary">{helper}</p>}
-    </div>
+    <Stack gap="group">
+      <Stack gap="item" align="center">
+        <RemoteControlPairingQr qrSrc={qrSrc} />
+        <Inline gap="item" justify="center" wrap>
+          <CopyButton
+            value={link}
+            label={COPY_LINK_LABEL}
+            ariaLabel={COPY_LINK_LABEL}
+            title={COPY_LINK_LABEL}
+            variant="secondary"
+            size="compact"
+            {...(live ? { dataTestId: 'remote-control-copy-link' } : {})}
+          />
+          <p
+            className="text-s tabular-nums fg-secondary"
+            {...(live
+              ? { 'data-testid': 'remote-control-pairing-countdown' }
+              : {})}
+          >
+            {expiresInLabel(remainingMs)}
+          </p>
+        </Inline>
+      </Stack>
+      <p className="text-s text-pretty fg-secondary">{PAIRING_ALTERNATIVE}</p>
+    </Stack>
+  );
+}
+
+/**
+ * A browser that connects through Portal during the rollout: its live
+ * session, and its code behind a disclosure while Portal waits. Portal
+ * follows the Remote Control opt-in, so there is no separate switch.
+ */
+function PortalCompatibility({
+  portal,
+  pairingCode,
+  live,
+  viewPortal,
+  onDisconnect,
+}: {
+  readonly portal: CanopyPortalState;
+  readonly pairingCode: string | null;
+  readonly live: boolean;
+  readonly viewPortal: (() => void) | null;
+  readonly onDisconnect: () => void;
+}): JSX.Element | null {
+  if (pairingCode === null && !live) return null;
+  const reconnecting = portal.status === 'reconnecting';
+  return (
+    <Stack gap="item" data-testid="remote-control-portal">
+      {live ? (
+        <Notice
+          intent={reconnecting ? 'neutral' : 'positive'}
+          {...(reconnecting ? { icon: <LoadingSpinner /> } : {})}
+          title={
+            reconnecting ? PORTAL_RECONNECTING_TITLE : PORTAL_CONNECTED_TITLE
+          }
+          actions={
+            <>
+              {viewPortal ? (
+                <NoticeButton
+                  variant="secondary"
+                  onClick={viewPortal}
+                  data-testid="canopy-portal-view-web-portal"
+                >
+                  {VIEW_PORTAL_BUTTON}
+                </NoticeButton>
+              ) : null}
+              <NoticeButton
+                variant="secondary"
+                onClick={onDisconnect}
+                data-testid="canopy-portal-disconnect"
+              >
+                {PORTAL_DISCONNECT_BUTTON}
+              </NoticeButton>
+            </>
+          }
+          data-testid="canopy-portal-status-row"
+        >
+          {reconnecting ? PORTAL_RECONNECTING_BODY : PORTAL_CONNECTED_BODY}
+        </Notice>
+      ) : null}
+      {pairingCode !== null ? (
+        <Disclosure
+          label={PORTAL_CODE_TOGGLE}
+          dataTestId="canopy-portal-pairing-code-disclosure"
+        >
+          <Inline gap="inline" wrap data-testid="canopy-portal-pairing-code">
+            <span className="text-s fg-secondary">{PORTAL_CODE_PROMPT}</span>
+            <span
+              className={`${POSTHOG_REPLAY_BLOCK_CLASS} font-mono text-s fg-primary select-all`}
+              data-testid="canopy-portal-pairing-code-value"
+            >
+              {formatPairingCode(pairingCode)}
+            </span>
+            <CopyButton
+              value={pairingCode}
+              label={COPY_CODE_LABEL}
+              ariaLabel={COPY_CODE_LABEL}
+              title={COPY_CODE_LABEL}
+              variant="secondary"
+              size="compact"
+              dataTestId="canopy-portal-copy-code"
+            />
+          </Inline>
+        </Disclosure>
+      ) : null}
+    </Stack>
   );
 }

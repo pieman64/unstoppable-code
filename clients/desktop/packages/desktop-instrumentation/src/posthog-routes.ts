@@ -73,6 +73,7 @@ export const NAVIGATION_PAGE_ROUTES = Object.freeze({
   overview: 'app://main/overview',
   home: 'app://main/home',
   chat: 'app://main/chat',
+  'cloud-chat': 'app://main/cloud-chat',
   pipelines: 'app://main/pipelines',
   plugins: 'app://main/plugins',
   audit: 'app://main/audit',

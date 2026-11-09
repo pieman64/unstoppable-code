@@ -37,11 +37,11 @@ import {
 import * as path from 'node:path';
 import { isSafeCapabilityRelativePath } from '@canopy/protocol/capability-files';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
-import { pruneDamagedCopies } from '@canopy/desktop-shared/node/lib/damaged-copies';
+import { pruneDamagedCopies } from '@canopy/execution-engine/node/lib/damaged-copies';
 import {
   isInstallReceipt,
   type InstallReceipt,
-} from '@canopy/desktop-shared/lib/resource-context-policy';
+} from '@canopy/execution-engine/lib/resource-context-policy';
 import {
   inspectStoredPipelineDocument,
   removeUnlistedStoredPipelineDocument,
@@ -52,12 +52,17 @@ import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeli
 import type {
   CapabilityPackageInstallRecordV1,
   PipelinePackageInstallRecordV1,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { recordSharedItemLocalUninstall } from '../canopy-cloud/shared-item-subscriptions';
-import { syncDirectory, writeFileAtomically } from '../lib/atomic-file';
+import {
+  createDirectoryDurably,
+  syncDirectory,
+  writeFileAtomically,
+} from '../lib/atomic-file';
 import { writeStoreFileDurably } from '../lib/durable-store-write';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
+  getDataDir,
   getPipelineAssetsDir,
   getPipelineAssetsManifestPath,
   getPipelineInstallIntentsDir,
@@ -352,7 +357,11 @@ function snapshotsDir(id: string): string {
 }
 
 async function writeIntent(intent: IntentFileV1): Promise<void> {
-  await mkdir(getPipelineInstallIntentsDir(), { recursive: true });
+  // The folder's own entry must survive power loss with the record, before
+  // any write the record covers (CAN-5678).
+  await createDirectoryDurably(getPipelineInstallIntentsDir(), {
+    dataRoot: getDataDir(),
+  });
   // A build that knows only version 1 leaves a record noting files alone
   // instead of rolling it back without them.
   const version = intent.definitions.some((entry) => entry.assetFiles) ? 2 : 1;
@@ -654,6 +663,9 @@ async function removeCreatedAssets(
   const id = definition.definitionId;
   await rm(getPipelineAssetsDir(id), { recursive: true, force: true });
   await rm(getPipelineAssetsManifestPath(id), { force: true });
+  // Flushed before the record goes, so power loss cannot bring them back
+  // with nothing left to remove them (CAN-5678).
+  await flushFolderIfPresent(path.dirname(getPipelineAssetsManifestPath(id)));
 }
 
 /**

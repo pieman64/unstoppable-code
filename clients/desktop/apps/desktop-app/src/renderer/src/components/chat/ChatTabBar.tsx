@@ -640,19 +640,18 @@ export const ChatTabBar = memo(function ChatTabBar({
     const trailing = (
       <>
         {awaitingToolApproval && (
-          <span
-            aria-label="Approval needed"
-            title="Approval needed"
-            data-testid={`chat-tab-tool-approval-${tab.id}`}
-            className="ml-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-fg-warning"
-          />
+          <span title="Approval needed" className="ml-0.5 inline-flex shrink-0">
+            <Dot
+              tone="attention"
+              label="Approval needed"
+              data-testid={`chat-tab-tool-approval-${tab.id}`}
+            />
+          </span>
         )}
         {isFileTabDirty && (
-          <span
-            aria-label="Unsaved changes"
-            title="Unsaved changes"
-            className="ml-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-warning"
-          />
+          <span title="Unsaved changes" className="ml-0.5 inline-flex shrink-0">
+            <Dot tone="attention" label="Unsaved changes" />
+          </span>
         )}
         {!isFileTab && tab.readOnly && (
           <AppCatalogLock

@@ -5,7 +5,7 @@ import type {
   ProviderRateLimitWindow,
   ProviderSpendSnapshot,
   RetainedAccountUsageSnapshot,
-} from '../types/observability';
+} from '@canopy/execution-engine/types/observability';
 
 export const MAX_RETAINED_ACCOUNTS_PER_PROVIDER = 10;
 

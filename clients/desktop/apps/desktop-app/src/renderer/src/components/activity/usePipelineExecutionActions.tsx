@@ -14,7 +14,7 @@ import type {
   ExecutionState,
   PipelineData,
   PipelinePauseResponse,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { PipelinePluginCollectionRunContext } from './PipelineTriggerModal';
 import { dispatchAppAction } from '@/lib/app-actions/dispatcher';
 import { extractIpcErrorMessage } from '@/lib/errors';

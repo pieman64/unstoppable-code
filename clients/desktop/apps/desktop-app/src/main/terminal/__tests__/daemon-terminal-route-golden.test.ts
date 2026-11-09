@@ -1,3 +1,16 @@
+import { AppErrorSchema } from '@canopy/protocol/app-errors';
+import {
+  decodeIpcAppError,
+  formatIpcLegacyError,
+  IpcAppErrorRejection,
+} from '@canopy/desktop-shared/ipc/app-error-rejection';
+import { registerIpcHandler } from '../../ipc/register';
+import * as appErrorPolicy from '../../ipc/app-error-policy';
+import * as appErrorRecording from '@canopy/desktop-instrumentation/electron/main';
+import {
+  restoreIpcAppError,
+  resolveIpcAppError,
+} from '../../../preload/ipc-app-errors';
 /**
  * CAN-5718 migration golden: real terminal/Labs IPC handlers, terminal service,
  * canonical route selection and RemoteTerminals over injected execution hosts.
@@ -381,8 +394,8 @@ describe('terminal:spawn and terminal:restore default daemon placement (CAN-5718
           enabled: true,
         }),
       ).rejects.toMatchObject({
-        code: 'invalid_payload',
-        message: 'Unknown experiment.',
+        name: 'CanopyIpcAppError',
+        cause: { code: 'invalid_payload', message: 'Unknown experiment.' },
       });
       await expect(
         invoke(IPC_CHANNELS.terminalSpawn, REQUEST),
@@ -468,10 +481,82 @@ describe('terminal:spawn and terminal:restore default daemon placement (CAN-5718
     mockState.failure = Object.assign(new Error('refused'), {
       payload: { kind, retry: { kind: retry } },
     });
-    await expect(invoke(IPC_CHANNELS.terminalSpawn, REQUEST)).rejects.toBe(
-      mockState.failure,
-    );
+    // This source-route assertion inspects the cause; boundary restoration is
+    // qualified separately below, without bypassing the carrier.
+    await expect(
+      invoke(IPC_CHANNELS.terminalSpawn, REQUEST),
+    ).rejects.toMatchObject({
+      name: 'CanopyIpcAppError',
+      cause: mockState.failure,
+    });
     expect([...mockState.local.keys()]).toEqual([]);
     expect(mockState.hosted.size).toBe(mockState.failureAfterCreate ? 1 : 0);
   });
+});
+
+// CAN-5115: qualify the real registration wrapper and the appErrors.resolve
+// transport contract as well as the source route.
+// String(error) below models the wrapper proven in real Electron scratch evidence.
+test('IPC records before settlement, restores lookup, and fails closed under stable policy', async () => {
+  const callbacks = new Map<string, Parameters<typeof ipcMain.handle>[1]>();
+  jest.spyOn(ipcMain, 'handle').mockImplementation((channel, handler) => {
+    callbacks.set(channel, handler);
+  });
+  jest.spyOn(appErrorPolicy, 'ipcShowsRawErrorDetail').mockReturnValue(false);
+  const report = jest.spyOn(appErrorRecording, 'reportMainAppError');
+  const original = new Error('private diagnostic');
+  registerIpcHandler('terminal:spawn', () => Promise.reject(original));
+  const callback = callbacks.get('terminal:spawn');
+  if (!callback) throw new Error('Missing real registration');
+  const event: IpcMainInvokeEvent = {
+    sender: new BrowserWindow().webContents,
+    senderFrame: null,
+    frameId: 1,
+    processId: 1,
+    type: 'frame',
+    preventDefault: () => undefined,
+    defaultPrevented: false,
+  };
+  const rejection: unknown = await Promise.resolve(callback(event)).catch(
+    (error: unknown) => error,
+  );
+  expect(rejection).toBeInstanceOf(IpcAppErrorRejection);
+  expect(report).toHaveBeenCalledTimes(1);
+  if (!(rejection instanceof IpcAppErrorRejection))
+    throw new Error('Missing carrier');
+  expect(rejection.cause).toBe(original);
+  const wrapper = formatIpcLegacyError('terminal:spawn', String(rejection));
+  const decoded = decodeIpcAppError(wrapper);
+  const shape = AppErrorSchema.parse(decoded?.appError);
+  expect(shape).toMatchObject({
+    kind: 'defect',
+    recordedBy: 'main',
+    detail: { message: 'app.unexpected' },
+  });
+  expect(shape.detail.stack).toBeUndefined();
+  expect(wrapper).not.toContain('private diagnostic');
+  let restored: Error | undefined;
+  try {
+    restoreIpcAppError(new Error(wrapper));
+  } catch (error) {
+    if (error instanceof Error) restored = error;
+  }
+  expect(restored?.message).toBe(
+    formatIpcLegacyError('terminal:spawn', decoded?.legacy ?? ''),
+  );
+  expect(resolveIpcAppError(restored?.message)).toEqual(shape);
+  report.mockImplementation(() => {
+    throw new Error('sink failure');
+  });
+  const failedReport: unknown = await Promise.resolve(callback(event)).catch(
+    (error: unknown) => error,
+  );
+  const unrecorded = AppErrorSchema.parse(
+    decodeIpcAppError(
+      formatIpcLegacyError('terminal:spawn', String(failedReport)),
+    )?.appError,
+  );
+  expect(unrecorded.recordedBy).toBeUndefined();
+  expect(unrecorded.detail).toEqual({ message: 'app.unexpected' });
+  jest.restoreAllMocks();
 });

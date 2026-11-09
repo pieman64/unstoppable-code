@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import { readPluginCatalog, readPluginCacheIndex } from './catalog-read-health';
 import { getCanopyDataDir } from '../../canopy-paths';
 import { getBundledSkillDir } from '../../pipelines/config-paths';
@@ -7,7 +8,7 @@ import type {
   ChatTabPluginSelections,
   CodexSelectedCapabilityRoot,
 } from '../../types';
-import type { PipelinePackageCapabilityOverlay } from '../../types/pipeline';
+import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/types/pipeline';
 import type {
   MarketplaceInfo,
   PluginInfo,
@@ -16,12 +17,26 @@ import type {
 import {
   normalizeMcpServerFile,
   type McpServerFile,
-} from '../../types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { sanitizeEnvVars } from '../../lib/mcp-security';
-import { isPathInside } from '../lib/path-safety';
+import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 import { createLocalCapabilityRoot } from '../codex-runtime/capability-root';
 import { getInstalledSkillDirectory } from '../skills/paths';
 import { projectCodexPluginWithoutMcpServers } from './codex-plugin-projection';
+import {
+  evaluateClaudeModAdmission,
+  isClaudeModAdmissionLaunch,
+  type ClaudeModAdmissionLaunch,
+  type ClaudeModPluginInput,
+} from './claude-mod-admission';
+import { projectClaudePluginForLaunch } from './claude-mod-projection';
+import {
+  isClaudeModPluginId,
+  type ClaudeModAdmission,
+  type SkippedClaudeMod,
+} from '../../types/claude-mod-admission';
+import { claudeMarketplaceNames } from '../../lib/claude-marketplace-names';
+import type { ClaudeModAdmissionContext } from '../pipelines/executor/types';
 import {
   buildManagedMcpServerName,
   normalizeManagedMcpServerLabel,
@@ -37,6 +52,7 @@ export interface ResolvedPluginRuntime {
   sdkPlugins: SdkPluginConfig[];
   selectedCapabilityRoots: CodexSelectedCapabilityRoot[];
   mcpServers: Record<string, unknown>;
+  claudeModAdmission?: ClaudeModAdmissionLaunch;
 }
 
 export interface ResolvePluginsOptions {
@@ -46,6 +62,9 @@ export interface ResolvePluginsOptions {
     claudePluginDir: string;
   };
   packageOverlay?: PipelinePackageCapabilityOverlay;
+  claudeModAdmissionContext?: ClaudeModAdmissionContext;
+  claudeModAdmissionCwd?: string;
+  claudeModAdmissionSettingSources?: readonly SettingSource[];
 }
 
 interface ResolvedPluginPath {
@@ -67,6 +86,69 @@ interface SelectedCodexPlugin {
 interface ResolvedSkill {
   name: string;
   sourceDir: string;
+}
+
+const DEFAULT_CLAUDE_SETTING_SOURCES: readonly SettingSource[] = [
+  'user',
+  'project',
+  'local',
+];
+
+function isSafeClaudePluginPart(value: string): boolean {
+  return /^[^@\s/\\]+$/.test(value);
+}
+
+function selectedClaudePluginInput(
+  plugin: ResolvedPluginPath,
+  index: number,
+  marketplaces: readonly MarketplaceInfo[],
+  admissions: readonly ClaudeModAdmission[],
+): ClaudeModPluginInput {
+  const marketplace = marketplaces.find(
+    (entry) => entry.id === plugin.marketplaceId,
+  );
+  const pluginName = isSafeClaudePluginPart(plugin.pluginName)
+    ? plugin.pluginName
+    : `local-${index + 1}`;
+  // The same id rules as consent, so a catalog id such as `curated/cloud`
+  // keeps its marketplace.
+  const catalogId = `${pluginName}@${plugin.marketplaceId}`;
+  if (!marketplace || !isClaudeModPluginId(catalogId)) {
+    return { pluginId: `${pluginName}@inline`, installPath: plugin.pluginPath };
+  }
+  // Consent for a natively installed plugin is keyed by the marketplace's
+  // registered name; the digest check still compares this exact copy.
+  const consentId = claudeMarketplaceNames(marketplace)
+    .map((name) => `${pluginName}@${name}`)
+    .find(
+      (pluginId) =>
+        isClaudeModPluginId(pluginId) &&
+        admissions.some((admission) => admission.pluginId === pluginId),
+    );
+  return { pluginId: consentId ?? catalogId, installPath: plugin.pluginPath };
+}
+
+function recordProjectionFailure(
+  skippedMods: SkippedClaudeMod[],
+  plugin: ClaudeModPluginInput,
+  contentDigest: string | null,
+): void {
+  if (
+    skippedMods.some(
+      (entry) =>
+        entry.pluginId === plugin.pluginId &&
+        entry.source === 'selected' &&
+        entry.reason === 'projection-failed',
+    )
+  ) {
+    return;
+  }
+  skippedMods.push({
+    pluginId: plugin.pluginId,
+    source: 'selected',
+    contentDigest,
+    reason: 'projection-failed',
+  });
 }
 
 function readJson<T>(filePath: string): T | null {
@@ -750,6 +832,7 @@ export function resolvePlugins(
   const purpose = options?.purpose ?? 'claude-session';
   const warnings: string[] = [];
   const sdkPlugins: SdkPluginConfig[] = [];
+  const selectedClaudePlugins: ClaudeModPluginInput[] = [];
   let selectedCapabilityRoots: CodexSelectedCapabilityRoot[] = [];
   const mcpServers = resolveStandaloneMcpServers(selections, warnings);
   const codexPluginsWithMcpServers = new Set<string>();
@@ -775,6 +858,13 @@ export function resolvePlugins(
       resolvedPlugins.push(plugin);
       if (purpose !== 'codex-session') {
         sdkPlugins.push({ type: 'local', path: resource.rootPath });
+        const resourceName = isSafeClaudePluginPart(resource.resourceId)
+          ? resource.resourceId
+          : `local-${selectedClaudePlugins.length + 1}`;
+        selectedClaudePlugins.push({
+          pluginId: `${resourceName}@inline`,
+          installPath: resource.rootPath,
+        });
       }
     }
   }
@@ -792,6 +882,14 @@ export function resolvePlugins(
     resolvedPlugins.push(resolved);
     if (purpose !== 'codex-session') {
       sdkPlugins.push({ type: 'local', path: resolved.pluginPath });
+      selectedClaudePlugins.push(
+        selectedClaudePluginInput(
+          resolved,
+          selectedClaudePlugins.length,
+          marketplaces,
+          options?.claudeModAdmissionContext?.admissions ?? [],
+        ),
+      );
     }
   }
 
@@ -834,6 +932,10 @@ export function resolvePlugins(
     );
     if (pluginDir) {
       sdkPlugins.push({ type: 'local', path: pluginDir });
+      selectedClaudePlugins.push({
+        pluginId: 'canopy-pipeline-skills@inline',
+        installPath: pluginDir,
+      });
     }
   }
 
@@ -878,16 +980,110 @@ export function resolvePlugins(
     }
   }
 
-  return {
-    warnings,
-    sdkPlugins: sdkPlugins.filter((plugin) => {
+  let finalSdkPlugins: SdkPluginConfig[];
+  let claudeModAdmission: ClaudeModAdmissionLaunch | undefined;
+  const admissionContext =
+    purpose === 'codex-session'
+      ? undefined
+      : options?.claudeModAdmissionContext;
+  const settingSources =
+    options?.claudeModAdmissionSettingSources ?? DEFAULT_CLAUDE_SETTING_SOURCES;
+  // Always decide while enabled: an inherited CLAUDE_CODE_PLUGIN_DIRS loads
+  // Mods even with no setting sources and no selected plugins.
+  if (admissionContext?.enabled) {
+    const cwd = options?.claudeModAdmissionCwd;
+    if (!cwd || !path.isAbsolute(cwd)) {
+      throw new Error(
+        'Claude Mod admission requires the absolute pipeline step cwd.',
+      );
+    }
+    const decision = evaluateClaudeModAdmission({
+      ...admissionContext,
+      selectedPlugins: selectedClaudePlugins,
+    });
+    const stripKeys = new Set(
+      decision.stripSelectedPlugins.map(
+        (plugin) => `${plugin.pluginId}\0${plugin.installPath ?? ''}`,
+      ),
+    );
+    const skippedMods: SkippedClaudeMod[] = [...decision.skippedMods];
+    const safePlugins: SdkPluginConfig[] = [];
+    const projectionRootDir = path.join(
+      options?.runtimeDirs?.rootDir ??
+        path.join(getCanopyDataDir(), 'pipeline-plugins'),
+      'claude-mod-admission-projections',
+    );
+
+    for (let index = 0; index < sdkPlugins.length; index++) {
+      const plugin = sdkPlugins[index];
+      const selected = selectedClaudePlugins[index];
+      if (!plugin || !selected) continue;
+      const key = `${selected.pluginId}\0${selected.installPath ?? ''}`;
+      if (!stripKeys.has(key)) {
+        safePlugins.push(plugin);
+        continue;
+      }
+      const projectedPath = projectClaudePluginForLaunch({
+        sourcePluginPath: plugin.path,
+        projectionRootDir,
+        removeModules: true,
+        removeMcpServers: false,
+      });
+      if (projectedPath) {
+        safePlugins.push({ type: 'local', path: projectedPath });
+        continue;
+      }
+      const selectedSkipped = decision.skippedMods.find(
+        (entry) =>
+          entry.pluginId === selected.pluginId && entry.source === 'selected',
+      );
+      recordProjectionFailure(
+        skippedMods,
+        selected,
+        selectedSkipped?.contentDigest ?? null,
+      );
+      warnings.push(
+        `Claude Mod projection failed for selected plugin "${selected.pluginId}"; it was omitted from this launch.`,
+      );
+    }
+
+    finalSdkPlugins = safePlugins.filter((plugin) => {
+      if (fs.existsSync(plugin.path)) return true;
+      warnings.push(`Plugin path does not exist: ${plugin.path}`);
+      return false;
+    });
+    const launch: ClaudeModAdmissionLaunch = {
+      version: 1,
+      cwd,
+      ...(admissionContext.claudeConfigDir
+        ? { claudeConfigDir: admissionContext.claudeConfigDir }
+        : {}),
+      settingSources,
+      ...(decision.settings ? { settings: decision.settings } : {}),
+      plugins: finalSdkPlugins,
+      skippedMods,
+    };
+    if (!isClaudeModAdmissionLaunch(launch)) {
+      throw new Error(
+        'Claude Mod admission produced an invalid launch decision.',
+      );
+    }
+    claudeModAdmission = launch;
+  } else {
+    finalSdkPlugins = sdkPlugins.filter((plugin) => {
       if (fs.existsSync(plugin.path)) {
         return true;
       }
       warnings.push(`Plugin path does not exist: ${plugin.path}`);
       return false;
-    }),
+    });
+  }
+
+  return {
+    warnings,
+    sdkPlugins: finalSdkPlugins,
     selectedCapabilityRoots,
     mcpServers,
+    ...(claudeModAdmission ? { claudeModAdmission } : {}),
   };
 }

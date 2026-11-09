@@ -2,15 +2,16 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type JSX,
 } from 'react';
-import { computeUsageLimitResumePrompt } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { computeUsageLimitResumePrompt } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import {
   MODEL_LIBRARY_UNLOCK_COPY,
-  Notice,
+  CanopyProxyErrorPresentation,
   NoticeButton,
 } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
@@ -25,7 +26,16 @@ import {
   useUnlockModelsAction,
   type UnlockModelsResult,
 } from '@/lib/openBillingPage';
-import { useChatTargetAiCreditsScope } from '@/lib/aiCreditsScope';
+import type { AiCreditsScopeRequest } from '@canopy/desktop-shared/types';
+import type { ModelLibraryAccess } from '@canopy/protocol/models';
+import {
+  aiCreditsScopeKey,
+  readNavigationScopeKey,
+  useChatTargetAiCreditsScope,
+  useNavigationScopeKey,
+} from '@/lib/aiCreditsScope';
+import { useWorkModelLibraryAccess } from '@/hooks/useModelLibraryAccess';
+import { useModelLibraryAccessStore } from '@/lib/modelLibraryAccess';
 import { useModelUnlockIntentStore } from '@/lib/modelUnlockIntent';
 import {
   useChatStore,
@@ -228,6 +238,48 @@ function isCurrentFailureNotice(
   });
 }
 
+/**
+ * The account and owner scope a local unlock result belongs to (CAN-5951). A
+ * checkout opened for one account or chat owner says nothing about another, so
+ * a result recorded under one identity is never rendered under the next.
+ */
+function unlockIdentity(
+  accountKey: string | null | undefined,
+  scopeKey: string,
+  ownerKey: string | undefined,
+): string {
+  return `${String(accountKey)}\u0000${scopeKey}\u0000${ownerKey ?? ''}`;
+}
+
+/**
+ * Click-time read of the same account-bound, owner-scoped access that
+ * `useWorkModelLibraryAccess` renders. The store can move between a render and
+ * the click that render's button receives, so the handler asks again rather
+ * than trusting its closure.
+ */
+function readLiveUnlockState(scope: AiCreditsScopeRequest | undefined): {
+  readonly identity: string;
+  readonly scopeIdentity: string;
+  readonly ownerKey: string | undefined;
+  readonly access: ModelLibraryAccess | undefined;
+} {
+  const scopeKey = aiCreditsScopeKey(scope, readNavigationScopeKey());
+  const { accountKey, workAccess } = useModelLibraryAccessStore.getState();
+  const read = workAccess?.[scopeKey];
+  const ownerKey = read?.accountKey === accountKey ? read?.ownerKey : undefined;
+  return {
+    identity: unlockIdentity(accountKey, scopeKey, ownerKey),
+    scopeIdentity: unlockIdentity(accountKey, scopeKey, undefined),
+    ownerKey,
+    access:
+      scope !== undefined && read?.accountKey === accountKey
+        ? read?.access
+        : undefined,
+  };
+}
+
+type LocalUnlockResult = UnlockModelsResult | { readonly outcome: 'opening' };
+
 export interface CanopyProxyErrorNoticeProps {
   error: CanopyProxyError;
   /** Tab this block was rendered from, used to target the retry re-send. */
@@ -348,8 +400,14 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
   // Scoped to THIS chat's owner, so an organization's work opens the
   // organization's billing (or tells a member who cannot fund it to ask an
   // admin) instead of selling a personal purchase that would not unlock it.
-  // The scope hook only memoizes an object: this block fires zero IPC until
-  // the button is pressed.
+  //
+  // CAN-5951: this block lives in the transcript, so a purchase made after it
+  // rendered — here, from the composer, or in an earlier session — must still
+  // read as resolved after the next turn, a remount, or a relaunch. Only the
+  // current account's access for this chat's owner can say so; a later
+  // successful turn may have used another model. The unlock branch therefore
+  // refreshes and watches that scoped access while mounted (single-flight per
+  // scope); every other code leaves the read disabled.
   //
   // Transcript blocks unmount routinely (tab switch, navigation) while the
   // unlock awaits IPC, so its continuation checks this before setting state.
@@ -362,28 +420,133 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
       mountedRef.current = false;
     };
   }, []);
+  const isUnlockBranch = copy.action === 'unlock';
   const unlockScope = useChatTargetAiCreditsScope(retryTarget);
   const unlockModels = useUnlockModelsAction(unlockScope);
-  const [unlockResult, setUnlockResult] = useState<
-    UnlockModelsResult | { readonly outcome: 'opening' } | null
-  >(null);
+  // `undefined` is unknown: no read has landed for this account and owner yet,
+  // or this notice has no chat to scope by. Neither resolves it.
+  const scopedAccess = useWorkModelLibraryAccess(
+    unlockScope,
+    isUnlockBranch && unlockScope !== undefined,
+  );
+  const unlockAccountKey = useModelLibraryAccessStore(
+    (state) => state.accountKey,
+  );
+  const navigationScopeKey = useNavigationScopeKey();
+  const unlockScopeKey = aiCreditsScopeKey(unlockScope, navigationScopeKey);
+  const unlockOwnerKey = useModelLibraryAccessStore((state) => {
+    const read = state.workAccess?.[unlockScopeKey];
+    return read?.accountKey === state.accountKey ? read?.ownerKey : undefined;
+  });
+  const currentScopeIdentity = unlockIdentity(
+    unlockAccountKey,
+    unlockScopeKey,
+    undefined,
+  );
+  const currentUnlockIdentity = unlockIdentity(
+    unlockAccountKey,
+    unlockScopeKey,
+    unlockOwnerKey,
+  );
+  // Discard the result when identity changes, including A → B → A. Merely
+  // filtering an old result on read would resurrect A's previous success.
+  const [localUnlock, setLocalUnlock] = useState<{
+    readonly identity: string;
+    readonly result: LocalUnlockResult | null;
+  }>({ identity: currentUnlockIdentity, result: null });
+  if (localUnlock.identity !== currentUnlockIdentity) {
+    // Initial owner discovery belongs to the checkout already opening for
+    // this account and scope. Keep it disabled until the handoff completes;
+    // established-owner changes must still discard the previous result.
+    const discoveringOwnerWhileOpening =
+      localUnlock.identity === currentScopeIdentity &&
+      unlockOwnerKey !== undefined &&
+      localUnlock.result?.outcome === 'opening';
+    setLocalUnlock({
+      identity: currentUnlockIdentity,
+      result: discoveringOwnerWhileOpening ? localUnlock.result : null,
+    });
+  }
+  const unlockResult =
+    localUnlock.identity === currentUnlockIdentity ? localUnlock.result : null;
+  const unlockAttemptRef = useRef(0);
+  const mountedScopeIdentity = useRef<string | null>(null);
+  const mountedOwnerKey = useRef<string | undefined>(unlockOwnerKey);
+  useLayoutEffect(() => {
+    mountedScopeIdentity.current = currentScopeIdentity;
+    mountedOwnerKey.current = readLiveUnlockState(unlockScope).ownerKey;
+    return (): void => {
+      // Fence a completion even after an account/scope round trip.
+      mountedScopeIdentity.current = null;
+      unlockAttemptRef.current += 1;
+    };
+  }, [currentScopeIdentity, unlockScope]);
+  useLayoutEffect(() => {
+    // The first owner read can land during checkout's own refresh. Keep that
+    // request's feedback; only a change away from an established owner fences
+    // the attempt (including an owner round trip).
+    if (
+      mountedOwnerKey.current !== undefined &&
+      mountedOwnerKey.current !== unlockOwnerKey
+    ) {
+      unlockAttemptRef.current += 1;
+    }
+    mountedOwnerKey.current = unlockOwnerKey;
+  }, [unlockOwnerKey]);
+  const canConfirmLocally =
+    typeof unlockAccountKey === 'string' &&
+    unlockAccountKey.length > 0 &&
+    unlockScope !== undefined;
   const unlockRequestId =
     unlockResult?.outcome === 'opened' ? unlockResult.requestId : undefined;
   // Confirmed by the app root's poll for the purchase THIS notice opened.
-  // Matched on the request id, so another chat's purchase is never reported
-  // here, and reduced to a boolean so the poll's other phases do not
-  // re-render a block that lives in the transcript.
+  // Match the attempt, account and work scope, including while access is
+  // unknown. The boolean selector tracks confirmation, not unrelated phases.
   const unlockConfirmed = useModelUnlockIntentStore(
     (state) =>
       unlockRequestId !== undefined &&
+      canConfirmLocally &&
       state.intent?.requestId === unlockRequestId &&
+      state.intent.accountId === unlockAccountKey &&
+      (unlockOwnerKey === undefined || state.intent.owner === unlockOwnerKey) &&
+      state.intent.chatId === (retryTarget?.chatId ?? null) &&
+      state.intent.scope !== undefined &&
+      aiCreditsScopeKey(state.intent.scope, navigationScopeKey) ===
+        aiCreditsScopeKey(unlockScope, navigationScopeKey) &&
       (state.phase === 'unlocked' ||
         state.phase === 'applying' ||
         state.phase === 'apply-failed'),
   );
-  const unlocked = unlockConfirmed || unlockResult?.outcome === 'unlocked';
+  // Current scoped access decides whenever it is known: `unlocked` resolves
+  // the notice, and any explicit locked value outranks an older local success.
+  // Only while access is unknown may this mount's own confirmed checkout (or
+  // the action's fresh read) resolve it.
+  const unlocked =
+    isUnlockBranch &&
+    (scopedAccess === 'unlocked' ||
+      (scopedAccess === undefined &&
+        canConfirmLocally &&
+        (unlockConfirmed || unlockResult?.outcome === 'unlocked')));
   const handleUnlock = useCallback((): void => {
-    setUnlockResult({ outcome: 'opening' });
+    // A stale button: the store already unlocked this scope, or moved to
+    // another account or owner, before React re-rendered. The subscription
+    // renders the right state; opening checkout here would sell a purchase
+    // that is already made, or one for the wrong owner.
+    const live = readLiveUnlockState(unlockScope);
+    if (
+      mountedScopeIdentity.current !== currentScopeIdentity ||
+      live.scopeIdentity !== currentScopeIdentity ||
+      (unlockOwnerKey !== undefined && live.ownerKey !== unlockOwnerKey) ||
+      live.access === 'unlocked'
+    ) {
+      return;
+    }
+    unlockAttemptRef.current += 1;
+    const attempt = unlockAttemptRef.current;
+    setLocalUnlock({
+      identity: live.identity,
+      result: { outcome: 'opening' },
+    });
     void (async (): Promise<void> => {
       let result: UnlockModelsResult;
       try {
@@ -397,11 +560,30 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
       } catch {
         result = { outcome: 'failed' };
       }
-      // The block can unmount mid-read.
-      if (!mountedRef.current) return;
-      setUnlockResult(result.outcome === 'sign-in' ? null : result);
+      // The block can unmount mid-read, and a newer attempt or another
+      // account or owner replaces this one's answer.
+      const latest = readLiveUnlockState(unlockScope);
+      if (
+        !mountedRef.current ||
+        mountedScopeIdentity.current !== currentScopeIdentity ||
+        attempt !== unlockAttemptRef.current ||
+        latest.scopeIdentity !== currentScopeIdentity ||
+        (unlockOwnerKey !== undefined && latest.ownerKey !== unlockOwnerKey)
+      ) {
+        return;
+      }
+      setLocalUnlock({
+        identity: latest.identity,
+        result: result.outcome === 'sign-in' ? null : result,
+      });
     })();
-  }, [originChatTabId, unlockModels]);
+  }, [
+    currentScopeIdentity,
+    originChatTabId,
+    unlockModels,
+    unlockOwnerKey,
+    unlockScope,
+  ]);
 
   const handleOpenSettings = useCallback((): void => {
     // The cloud account section, NOT the Codex sign-in modal the harness
@@ -471,21 +653,20 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
     })();
   }, [originChatTabId, sourceText, correlationId]);
 
-  // The unlock branch's outcome line, in the same supporting slot.
+  // The unlock branch's outcome line, in the same supporting slot. A resolved
+  // notice says so in its title instead, and drops every recovery line.
+  const unlockOutcome =
+    copy.action === 'unlock' && !unlocked ? unlockResult?.outcome : undefined;
   const unlockStatus =
-    copy.action !== 'unlock' ? null : unlocked ? (
-      <div data-testid="chat-canopy-proxy-error-unlock-confirmed">
-        {MODEL_LIBRARY_UNLOCK_COPY.confirmed}
-      </div>
-    ) : unlockResult?.outcome === 'opened' ? (
+    unlockOutcome === 'opened' ? (
       <div data-testid="chat-canopy-proxy-error-unlock-waiting">
         {MODEL_LIBRARY_UNLOCK_COPY.waitingInBrowser}
       </div>
-    ) : unlockResult?.outcome === 'contact-admin' ? (
+    ) : unlockOutcome === 'contact-admin' ? (
       <div data-testid="chat-canopy-proxy-error-unlock-contact-admin">
         {CONTACT_ORG_ADMIN_COPY}
       </div>
-    ) : unlockResult?.outcome === 'failed' ? (
+    ) : unlockOutcome === 'failed' ? (
       <div data-testid="chat-canopy-proxy-error-unlock-failed">
         We couldn’t open your browser. Try again.
       </div>
@@ -493,31 +674,20 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
 
   const detail = unlockStatus ?? undefined;
 
-  // The error id rides inline at the end of the message (design owner,
-  // 2026-09-17): it is part of the explanation, not a second line. The label
-  // and the id stay together as one unbreakable unit if the line wraps.
-  const errorId = correlationId ? (
-    <span className="whitespace-nowrap">
-      Error id{' '}
-      <span
-        data-testid="chat-canopy-proxy-error-correlation-id"
-        className="font-mono select-all"
-      >
-        {correlationId}
-      </span>
-    </span>
-  ) : null;
-
   // One recommended action per state: Retry where it is offered, otherwise
   // the action the copy points at (Open settings, the unlock purchase, or
   // Copy id when reporting the id IS the next step). Copy id is the quiet
   // alternative everywhere else.
   const copyIdVariant = copy.action === 'copy-id' ? 'primary' : 'secondary';
 
-  // Never hand the notice an empty actions row (an unlocked notice with no
-  // correlation id has nothing left to offer).
+  // A resolved notice drops its error id with the failure it described, so
+  // Copy id goes too.
+  const offersCopyId = Boolean(correlationId) && !unlocked;
+
+  // Never hand the notice an empty actions row (an unlocked notice has
+  // nothing left to offer).
   const hasActions =
-    Boolean(correlationId) ||
+    offersCopyId ||
     copy.action === 'settings' ||
     copy.action === 'organizations' ||
     (copy.action === 'unlock' && !unlocked) ||
@@ -525,7 +695,7 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
 
   const actions = hasActions ? (
     <>
-      {correlationId ? (
+      {offersCopyId ? (
         <NoticeButton
           variant={copyIdVariant}
           data-testid="chat-canopy-proxy-error-copy-id"
@@ -593,10 +763,12 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
   ) : undefined;
 
   return (
-    <Notice
-      intent="attention"
+    <CanopyProxyErrorPresentation
+      state={unlocked ? 'resolved' : 'unresolved'}
+      diagnostics="inline"
+      correlationId={correlationId}
       role="alert"
-      data-testid="chat-canopy-proxy-error"
+      dataTestId="chat-canopy-proxy-error"
       title={
         <span data-testid="chat-canopy-proxy-error-title">{copy.title}</span>
       }
@@ -606,7 +778,6 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
       <span data-testid="chat-canopy-proxy-error-body" className="break-words">
         {copy.body}
       </span>
-      {errorId ? <> {errorId}</> : null}
-    </Notice>
+    </CanopyProxyErrorPresentation>
   );
 });

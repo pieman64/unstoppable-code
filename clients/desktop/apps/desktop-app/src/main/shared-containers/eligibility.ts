@@ -34,7 +34,7 @@ import {
   recordTelemetryEnforcementReadFailure,
   type StoredTelemetryEnforcementByOrganization,
 } from '../lib/telemetry-enforcement-state';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import { mapWithConcurrency } from '../lib/concurrency';
 import {
   getCurrentBranch,

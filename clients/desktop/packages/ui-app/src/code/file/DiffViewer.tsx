@@ -8,6 +8,7 @@ import {
   useWorkspaceCapabilities,
 } from '@canopy/app-state';
 import {
+  Surface,
   DiffBinaryState,
   DiffBoundNotice,
   DiffFileTree,
@@ -181,26 +182,28 @@ export function DiffViewer({
         // Collapsed rail: a diff on a narrow viewport is unreadable beside a
         // fixed 256px file list, so the list folds away to a single control
         // that still shows the file count.
-        <div className="flex shrink-0 flex-col items-center gap-1 border-r px-1 py-2">
-          <Button
-            variant="ghost"
-            iconOnly
-            onClick={(): void => setFilesCollapsed(false)}
-            // The visible count beside this button is aria-hidden, so the
-            // count has to ride on the accessible name or assistive tech
-            // cannot discover it while the rail is collapsed.
-            aria-label={`Show ${fileCountLabel} changed file${
-              fileCount === 1 && !filesTruncated ? '' : 's'
-            }${filesTruncated ? '. Not every changed file is listed.' : ''}`}
-            aria-expanded={false}
-            data-testid="diff-viewer-files-expand"
-          >
-            <FilesIcon />
-          </Button>
-          <span className="text-3xs fg-secondary" aria-hidden="true">
-            {fileCountLabel}
-          </span>
-        </div>
+        <Surface variant="section" boundary="right" className="shrink-0">
+          <div className="flex shrink-0 flex-col items-center gap-1 px-1 py-2">
+            <Button
+              variant="ghost"
+              iconOnly
+              onClick={(): void => setFilesCollapsed(false)}
+              // The visible count beside this button is aria-hidden, so the
+              // count has to ride on the accessible name or assistive tech
+              // cannot discover it while the rail is collapsed.
+              aria-label={`Show ${fileCountLabel} changed file${
+                fileCount === 1 && !filesTruncated ? '' : 's'
+              }${filesTruncated ? '. Not every changed file is listed.' : ''}`}
+              aria-expanded={false}
+              data-testid="diff-viewer-files-expand"
+            >
+              <FilesIcon />
+            </Button>
+            <span className="text-3xs fg-secondary" aria-hidden="true">
+              {fileCountLabel}
+            </span>
+          </div>
+        </Surface>
       ) : (
         <div className="flex min-h-0 shrink-0 flex-col overflow-hidden">
           <div className="flex shrink-0 justify-end border-b border-r px-1 pt-1">
@@ -235,15 +238,17 @@ export function DiffViewer({
       <div className="flex min-w-0 flex-1 flex-col">
         {patchBinary || patch.trim() === '' ? null : (
           // Mirrors the file list's header height so the two borders align.
-          <div className="flex shrink-0 justify-end border-b px-2 pt-1">
-            <div className="flex min-h-8 items-center">
-              <DiffViewModeToggle
-                value={viewMode}
-                onChange={setViewMode}
-                dataTestId="diff-viewer-layout"
-              />
+          <Surface variant="section" boundary="bottom" className="shrink-0">
+            <div className="flex shrink-0 justify-end px-2 pt-1">
+              <div className="flex min-h-8 items-center">
+                <DiffViewModeToggle
+                  value={viewMode}
+                  onChange={setViewMode}
+                  dataTestId="diff-viewer-layout"
+                />
+              </div>
             </div>
-          </div>
+          </Surface>
         )}
         {filesTruncated && filesCollapsed ? (
           // The list's own notice folds away with it; keep it in view.

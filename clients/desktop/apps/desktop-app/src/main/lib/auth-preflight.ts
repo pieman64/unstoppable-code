@@ -45,14 +45,14 @@ import type {
 import type {
   McpHttpAuthHandler,
   McpServerFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
-import { normalizeMcpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
+import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
   getMcpHttpAuthDefault,
   getMcpHttpAuthHandler,
 } from '@canopy/desktop-shared/lib/mcp-http-auth';
-import { toAuthDiagnosticDetail } from '@canopy/desktop-shared/agent-failures/auth-diagnostic-detail';
+import { toAuthDiagnosticDetail } from '@canopy/execution-engine/agent-failures/auth-diagnostic-detail';
 import { TurnAuthPreflightBlockedError } from './auth-preflight-error';
 import { safeReadJsonAsync } from './fs-utils';
 import { getMcpServerFilePath } from './paths';

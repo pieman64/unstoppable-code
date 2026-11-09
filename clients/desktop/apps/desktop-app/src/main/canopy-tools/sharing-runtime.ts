@@ -4,10 +4,19 @@ import type {
   AppAdvisorActionResponse,
 } from '@canopy/desktop-shared/types';
 import { sharingOpenDialogSchema } from '@canopy/desktop-shared/lib/sharing-action-schema';
-import { requestAppAdvisorRendererTool } from '../ipc/app-advisor';
-import { mainWindowOnlyToolSurfaces } from './show-files-runtime';
+import {
+  getSessionInterfaceToolRegistry,
+  interfaceToolAudience,
+} from '../agents/interface-tool-binding';
+import { presentAppAdvisorAction } from '../app-advisor/presentation-tools';
 import type { WorktreeActionRuntime } from './worktree-actions';
 
+/**
+ * CAN-5830: the share dialog is presentation, so it reaches the main window
+ * only through its interface lease (`ui.app_advisor.present`), never through
+ * a window accessor. A chat driven from another computer uses that
+ * computer's interface lease.
+ */
 export async function openShareDialog(
   action: Extract<AppAdvisorAction, { type: 'sharing.open_dialog' }>,
   runtime: WorktreeActionRuntime,
@@ -21,16 +30,19 @@ export async function openShareDialog(
       error: { code: 'invalid_target', message: 'Invalid sharing target.' },
     };
   try {
-    const response = await requestAppAdvisorRendererTool(
-      {
-        kind: 'dispatch_action',
-        requestId,
-        action: parsed.data,
-        originWorktreeId: runtime.worktreeId,
-        originChatTabId: runtime.chatId,
+    const response = await presentAppAdvisorAction({
+      action: parsed.data,
+      requestId,
+      destination: {
+        projectId: runtime.projectId,
+        worktreeId: runtime.worktreeId,
+        chatId: runtime.chatId,
       },
-      mainWindowOnlyToolSurfaces(runtime.getWindow),
-    );
+      boundTools:
+        getSessionInterfaceToolRegistry()?.availableFor(
+          interfaceToolAudience(runtime.chatId),
+        ) ?? [],
+    });
     return response.ok
       ? {
           ...response,

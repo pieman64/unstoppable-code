@@ -1,6 +1,9 @@
 import { randomBytes } from 'node:crypto';
+import type { DeviceKind } from '@canopy/protocol/device-relay';
+import type { HostedDelegation } from '@canopy/protocol/remote-control';
 import type { DeviceKeyPair } from '../crypto/device-key';
 import {
+  assertHello1Sender,
   HandshakeError,
   HandshakeInitiator,
   HandshakeResponder,
@@ -8,6 +11,8 @@ import {
   Hello2Schema,
   Hello3Schema,
   Hello4Schema,
+  type Hello1,
+  type Hello4,
   type HandshakePurpose,
   type HandshakeResult,
 } from '../crypto/handshake';
@@ -55,6 +60,42 @@ const MAX_TRACKED_UNKNOWN_SESSIONS = 256;
 /** Abort reason for traffic to a session this side does not have. */
 export const UNKNOWN_SESSION_MESSAGE = 'unknown_session';
 
+/**
+ * What the responder authorized an incoming session as. Decided at hello1
+ * and decided again after hello3; the two decisions must agree.
+ */
+export interface SessionGrant {
+  /** The controller profile the session is held to. */
+  readonly kind: DeviceKind;
+  /** Whether `kind` came from relay-authenticated presence. */
+  readonly kindAuthenticated: boolean;
+  /**
+   * The pinned hosted root a delegated session is attributed to, or null
+   * when the initiator's own key is the pinned identity.
+   */
+  readonly rootDeviceId: string | null;
+  /** Milliseconds since the epoch the grant lapses at, or null. */
+  readonly expiresAt: number | null;
+}
+
+/** One responder authorization question, asked before hello2 and after hello3. */
+export interface HandshakeAdmission {
+  stage: 'hello1' | 'hello3';
+  purpose: HandshakePurpose;
+  initiatorKey: string;
+  /** Source device the relay reported. */
+  peerDeviceId: string;
+  delegation: HostedDelegation | null;
+}
+
+function sameGrant(left: SessionGrant, right: SessionGrant): boolean {
+  return (
+    left.kind === right.kind &&
+    left.kindAuthenticated === right.kindAuthenticated &&
+    left.rootDeviceId === right.rootDeviceId
+  );
+}
+
 /** An established, end-to-end encrypted session with one peer device. */
 export class SecureSession {
   private readonly channel: SecureChannel;
@@ -71,6 +112,8 @@ export class SecureSession {
     readonly sessionId: Buffer,
     readonly handshake: HandshakeResult,
     private readonly transport: RelayTransport,
+    /** The responder's authorization; null on the initiating side. */
+    readonly grant: SessionGrant | null = null,
   ) {
     this.channel = new SecureChannel(handshake.sendKey, handshake.receiveKey);
     this.dataHeader = envelopeHeader('data', sessionId);
@@ -169,12 +212,14 @@ export class SecureSession {
 export interface SessionManagerOptions {
   transport: RelayTransport;
   identity: () => DeviceKeyPair;
-  /** Responder-side authorization for an incoming handshake. */
+  /**
+   * Responder-side authorization for an incoming handshake, asked before
+   * hello2 and again after hello3. Null (or a throw) refuses it. It may
+   * persist first, for example to narrow a pairing's kind before access.
+   */
   authorize: (
-    purpose: HandshakePurpose,
-    initiatorKey: string,
-    peerDeviceId: string,
-  ) => boolean;
+    request: HandshakeAdmission,
+  ) => SessionGrant | null | Promise<SessionGrant | null>;
   onIncomingSession: (session: SecureSession) => void;
   handshakeTimeoutMs?: number;
 }
@@ -183,6 +228,8 @@ export interface ConnectOptions {
   peerDeviceId: string;
   purpose: HandshakePurpose;
   pinnedPeerPublicKey: string | null;
+  /** A hosted root's grant for this device's key, sent in hello1. */
+  delegation?: HostedDelegation;
 }
 
 interface PendingInitiator {
@@ -193,7 +240,11 @@ interface PendingInitiator {
 }
 
 interface PendingResponder {
-  handshake: HandshakeResponder;
+  /** Null while hello1 is being authorized. */
+  handshake: HandshakeResponder | null;
+  grant: SessionGrant | null;
+  /** Hello3 arrived and its recheck is running. */
+  finishing: boolean;
   sessionId: Buffer;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -259,6 +310,7 @@ export class RemoteSessionManager {
       identity: this.options.identity(),
       peerDeviceId: options.peerDeviceId,
       pinnedPeerPublicKey: options.pinnedPeerPublicKey,
+      ...(options.delegation ? { delegation: options.delegation } : {}),
     });
     return new Promise<SecureSession>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -421,22 +473,70 @@ export class RemoteSessionManager {
       return;
     }
     const hello1 = Hello1Schema.parse(parseJson(body));
-    const handshake = new HandshakeResponder({
+    assertHello1Sender(hello1, peer);
+    // The slot counts against the peer's limits while it is authorized.
+    const pending: PendingResponder = {
+      handshake: null,
+      grant: null,
+      finishing: false,
       sessionId,
-      identity: this.options.identity(),
+      timer: setTimeout(() => {
+        if (this.responders.get(key) === pending) this.responders.delete(key);
+      }, this.handshakeTimeoutMs),
+    };
+    this.responders.set(key, pending);
+    void this.admitHello1(peer, sessionId, key, hello1, pending);
+  }
+
+  private async authorizeSafely(
+    request: HandshakeAdmission,
+  ): Promise<SessionGrant | null> {
+    try {
+      return await this.options.authorize(request);
+    } catch {
+      return null;
+    }
+  }
+
+  private async admitHello1(
+    peer: string,
+    sessionId: Buffer,
+    key: string,
+    hello1: Hello1,
+    pending: PendingResponder,
+  ): Promise<void> {
+    const grant = await this.authorizeSafely({
+      stage: 'hello1',
+      purpose: hello1.purpose,
+      initiatorKey: hello1.initiatorKey,
       peerDeviceId: peer,
-      authorize: (purpose: HandshakePurpose, initiatorKey: string): boolean =>
-        this.options.authorize(purpose, initiatorKey, peer),
+      delegation: hello1.delegation ?? null,
     });
-    const hello2 = handshake.receiveHello1(hello1);
-    const timer = setTimeout(() => {
-      this.responders.delete(key);
-    }, this.handshakeTimeoutMs);
-    this.responders.set(key, { handshake, sessionId, timer });
-    this.options.transport.sendFrame(
-      peer,
-      encodeEnvelope('hello2', sessionId, jsonBody(hello2)),
-    );
+    // Abandoned meanwhile: timed out, aborted, peer offline or shut down.
+    if (this.disposed || this.responders.get(key) !== pending) return;
+    try {
+      if (grant === null) {
+        throw new HandshakeError(
+          'unauthorized_peer',
+          'This computer has not allowed that device.',
+        );
+      }
+      const handshake = new HandshakeResponder({
+        sessionId,
+        identity: this.options.identity(),
+        peerDeviceId: peer,
+        authorize: (): boolean => true,
+      });
+      const hello2 = handshake.receiveHello1(hello1);
+      pending.handshake = handshake;
+      pending.grant = grant;
+      this.options.transport.sendFrame(
+        peer,
+        encodeEnvelope('hello2', sessionId, jsonBody(hello2)),
+      );
+    } catch (error) {
+      this.failHandshake(peer, sessionId, key, error);
+    }
   }
 
   /**
@@ -498,14 +598,41 @@ export class RemoteSessionManager {
       this.answerUnknownSession(peer, sessionId, key);
       return;
     }
-    const { hello4, result } = pending.handshake.receiveHello3(
+    if (pending.finishing) return;
+    const handshake = pending.handshake;
+    const grant = pending.grant;
+    if (handshake === null || grant === null) {
+      throw new HandshakeError('unexpected_message', 'Unexpected hello3.');
+    }
+    const finished = handshake.receiveHello3(
       Hello3Schema.parse(parseJson(body)),
     );
+    pending.finishing = true;
+    void this.finishResponder(peer, sessionId, key, pending, grant, finished);
+  }
+
+  private async finishResponder(
+    peer: string,
+    sessionId: Buffer,
+    key: string,
+    pending: PendingResponder,
+    first: SessionGrant,
+    finished: { hello4: Hello4; result: HandshakeResult },
+  ): Promise<void> {
+    const { hello4, result } = finished;
+    // Authorized at hello1; check again now, since the peer may have been
+    // revoked, or its delegation lapsed, while the handshake was in flight.
+    const grant = await this.authorizeSafely({
+      stage: 'hello3',
+      purpose: result.purpose,
+      initiatorKey: result.peerPublicKey,
+      peerDeviceId: peer,
+      delegation: result.delegation,
+    });
+    if (this.disposed || this.responders.get(key) !== pending) return;
     clearTimeout(pending.timer);
     this.responders.delete(key);
-    // Authorized at hello1; check again now, since the peer may have been
-    // revoked while the handshake was in flight.
-    if (!this.options.authorize(result.purpose, result.peerPublicKey, peer)) {
+    if (grant === null || !sameGrant(first, grant)) {
       this.abort(peer, sessionId, 'This computer is not allowed to connect.');
       return;
     }
@@ -513,6 +640,7 @@ export class RemoteSessionManager {
       sessionId,
       result,
       this.options.transport,
+      grant,
     );
     this.trackSession(key, session);
     const sent = this.options.transport.sendFrame(

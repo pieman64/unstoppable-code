@@ -1,3 +1,4 @@
+import { Stack } from '../Stack';
 import type { JSX, ReactNode } from 'react';
 import { Button } from '../Button';
 import { LoadingSpinner } from '../LoadingSpinner';
@@ -219,7 +220,7 @@ function SummaryDetails({
 }): JSX.Element {
   const { totals } = summary;
   return (
-    <div className="space-y-4" data-testid="code-graph-summary-details">
+    <Stack gap="group" data-testid="code-graph-summary-details">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <MetricCard
           label="Files"
@@ -258,13 +259,16 @@ function SummaryDetails({
       </SettingsRowsGroup>
 
       {summary.repositories.length > 1 && (
-        <ul className="space-y-1.5" data-testid="code-graph-repository-list">
+        <ul
+          className="flex flex-col gap-1.5"
+          data-testid="code-graph-repository-list"
+        >
           {summary.repositories.map((repository) => (
             <RepositoryRow key={repository.repoId} repository={repository} />
           ))}
         </ul>
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -590,7 +594,7 @@ export function CodeGraphSummaryView({
     const unreadable = loadSnapshotState === 'read-error';
     return (
       <div
-        className="space-y-3 py-4"
+        className="flex flex-col gap-3 py-4"
         data-testid={pending ? testId : `${testId}-error`}
       >
         {pending || unreadable ? (
@@ -628,6 +632,7 @@ export function CodeGraphSummaryView({
         )}
         {unreadable && (
           <Button
+            className="self-start"
             variant="primary"
             size="compact"
             onClick={onBuild}
@@ -654,13 +659,9 @@ export function CodeGraphSummaryView({
     : 'Generating Code Graph…';
 
   return (
-    <div
-      className="space-y-4"
-      data-testid={testId}
-      aria-busy={refreshing || undefined}
-    >
+    <Stack gap="group" data-testid={testId} aria-busy={refreshing || undefined}>
       {!summary.enabled ? (
-        <div className="space-y-3">
+        <Stack gap="item">
           <Notice
             intent="neutral"
             shape="settings"
@@ -690,7 +691,7 @@ export function CodeGraphSummaryView({
             />
           )}
           {measured && <SummaryDetails summary={summary} />}
-        </div>
+        </Stack>
       ) : layout === 'rows' && readiness === 'measured' ? (
         <div className="flex flex-col gap-4">
           {buildErrorMessage && (
@@ -762,7 +763,7 @@ export function CodeGraphSummaryView({
           </SummarySection>
         </div>
       ) : readiness === 'missing' ? (
-        <div className="space-y-3" data-testid={`${testId}-missing`}>
+        <div className="flex flex-col gap-3" data-testid={`${testId}-missing`}>
           <EmptyStateRow title="No Code Graph has been generated yet." />
           {buildErrorMessage && (
             <Notice
@@ -774,6 +775,7 @@ export function CodeGraphSummaryView({
             </Notice>
           )}
           <Button
+            className="self-start"
             variant="primary"
             size="compact"
             onClick={onBuild}
@@ -785,7 +787,7 @@ export function CodeGraphSummaryView({
           </Button>
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           {readiness === 'pending' || readiness === 'unreadable' ? (
             <ReadinessNotice
               readiness={readiness}
@@ -822,6 +824,7 @@ export function CodeGraphSummaryView({
             </Notice>
           )}
           <Button
+            className="self-start"
             variant="primary"
             size="compact"
             onClick={onBuild}
@@ -833,6 +836,6 @@ export function CodeGraphSummaryView({
           </Button>
         </div>
       )}
-    </div>
+    </Stack>
   );
 }

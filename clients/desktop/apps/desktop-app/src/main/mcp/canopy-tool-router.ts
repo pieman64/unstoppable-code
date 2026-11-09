@@ -1,5 +1,6 @@
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
 import { randomUUID } from 'node:crypto';
+import { createShowVisualHost } from '../canopy-tools/show-visual-host';
 import { BRAND } from '@canopy/brand/current';
 import type { ClaudeTerminalHookCallbackBody } from '@canopy/desktop-shared/lib/desktop-integration-transport';
 import {
@@ -7,10 +8,11 @@ import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS,
   isCodeGraphInjectedToolKey,
+  isInvocationKeyedInjectedToolKey,
   isLedgerInjectedToolKey,
   type CanopyInjectedToolKey,
   type CanopyInjectedToolSurface,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   APP_ADVISOR_TOOL_REGISTRY,
   isAppAdvisorLedgerToolKey,
@@ -150,7 +152,8 @@ export interface CanopyWorktreeSessionRoute {
       context?: { requestId?: string },
     ) => Promise<CanopyInjectedToolTextResult>;
   };
-  onSetAutoArchive?: (enabled: boolean) => Promise<void> | void;
+  /** The route's chat may use SetAutoArchive, which writes through `core.chat.update` (CAN-6014). */
+  autoArchiveAvailable?: true;
   /**
    * Execution-time policy gate consulted before any injected tool on this
    * route runs. Claude and managed-terminal calls are gated before they reach
@@ -467,6 +470,10 @@ export class CanopyToolRouter {
                 ledgerRuntime: route.ledgerTools,
               }
             : {}),
+          // SetAutoArchive keys its write by the provider invocation too.
+          ...(canonicalKey === 'set_auto_archive'
+            ? this.ledgerInvocationContext(route, id, params._meta)
+            : {}),
         };
         const result = await executeAppAdvisorTool(
           canonicalKey,
@@ -729,7 +736,7 @@ export class CanopyToolRouter {
                   : VISUAL_PREVIEW_BUDGETS.claudeImageBytes,
             }
           : {}),
-        ...(isLedgerInjectedToolKey(canonicalKey)
+        ...(isInvocationKeyedInjectedToolKey(canonicalKey)
           ? this.ledgerInvocationContext(route, id, params._meta)
           : {}),
       };
@@ -772,7 +779,7 @@ export class CanopyToolRouter {
         assistantMode: route.assistantMode,
       })
         ? {
-            showVisual: this.options.interfaceRequests.showVisualHost({
+            showVisual: createShowVisualHost({
               projectId: route.projectId,
               worktreeId: route.worktreeId,
               chatId: route.chatId,
@@ -964,8 +971,14 @@ export class CanopyToolRouter {
       ...(route.ledgerTools && isLedgerInjectedToolKey(canonicalKey)
         ? { ledgerRuntime: route.ledgerTools }
         : {}),
-      ...(route.onSetAutoArchive
-        ? { setAutoArchiveForCurrentChat: route.onSetAutoArchive }
+      ...(route.autoArchiveAvailable
+        ? {
+            autoArchiveChat: {
+              projectId: route.projectId,
+              worktreeId: route.worktreeId,
+              chatId: route.chatId,
+            },
+          }
         : {}),
     };
   }

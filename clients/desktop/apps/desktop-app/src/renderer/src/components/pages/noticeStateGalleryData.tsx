@@ -40,7 +40,7 @@ import { SKILL_SHARE_NUDGE_COPY } from '@/components/chat/SkillShareNudgeBanner'
 import { SKILL_SUGGESTION_COPY } from '@canopy/ui-app';
 import { automationRevealNoticeCopy } from '@/components/automations/automationRevealNotice';
 import { installRevealNotice } from '@/components/share/installRevealNotice';
-import { automationRunsInMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
+import { automationRunsInMessage } from '@canopy/execution-engine/lib/automation-context-copy';
 import {
   askOwnerToChoosePlanCopy,
   CHOOSE_ORG_PLAN_COPY,
@@ -196,6 +196,61 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         actions: [
           { label: LIFETIME_LIMIT_NOTICE_COPY.extend, variant: 'primary' },
         ],
+      },
+    ],
+  },
+  {
+    id: 'standing-conditions',
+    title: 'Standing conditions',
+    note: 'One app-level banner: the highest-ranked active condition and a count of the rest. Appearance only; detection lives in the hosts.',
+    entries: [
+      {
+        id: 'standing-offline',
+        title: 'Device offline',
+        note: 'Hides conditions that need the network from the banner and its count.',
+        intent: 'attention',
+        heading: "Couldn't reach the network.",
+        message: 'Check your connection, then try again.',
+      },
+      {
+        id: 'standing-session-expired',
+        title: 'Session expired, with one more issue',
+        note: 'Offers Open settings instead for a manual credential.',
+        intent: 'attention',
+        heading: 'Your sign-in has expired.',
+        message: 'Sign in again to continue.',
+        aside: '1 more issue',
+        actions: [{ label: 'Sign in' }],
+      },
+      {
+        id: 'standing-runtime-defect',
+        title: 'Claude or Codex unreachable (defect)',
+        note: 'Two failed auth probes, 5 seconds apart. Retests every 30 seconds until it recovers.',
+        intent: 'destructive',
+        heading: "Couldn't reach Claude.",
+        message:
+          "Agents on it can't start. Try again, or report this if it continues.",
+        detail: 'Reference ERR-0000AB12',
+        aside: '2 more issues',
+        actions: [{ label: 'Try again' }, { label: 'Report this' }],
+        actionsPlacement: 'below',
+      },
+      {
+        id: 'standing-runtime-external',
+        title: 'Ollama unreachable (external)',
+        note: 'Retests every 30 seconds, and clears on the next send.',
+        intent: 'attention',
+        heading: "Couldn't reach Ollama.",
+        message: 'Start it or check its connection settings.',
+        actions: [{ label: 'Open Ollama settings' }],
+      },
+      {
+        id: 'standing-sync-paused',
+        title: 'Sync paused',
+        note: 'Clears on its own when sync resumes.',
+        intent: 'neutral',
+        heading: 'Sync is paused.',
+        message: 'Your work is saved on this device and syncs later.',
       },
     ],
   },
@@ -563,15 +618,6 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
           />
         ),
         dismissible: true,
-      },
-      {
-        id: 'ollama-unreachable',
-        title: 'Ollama unreachable',
-        note: 'Stays until the next send reaches the server; not dismissible.',
-        intent: 'attention',
-        heading: 'Ollama server not reachable',
-        message: 'Start it or check its connection settings.',
-        actions: [{ label: 'Open Ollama settings' }],
       },
       {
         id: 'gateway-key-missing',

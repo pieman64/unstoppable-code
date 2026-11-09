@@ -1,0 +1,18 @@
+{
+  "name": "@canopy/execution-engine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Worker-eligible local execution engine extracted from desktop-shared: storage and process primitives today, the pipeline executor and its daemon host body as CAN-5918 lands.",
+  "license": "MIT",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
+    "@canopy/agent-transcript": "workspace:*",
+    "@canopy/core-platform": "workspace:*",
+    "@canopy/core-runtime": "workspace:*",
+    "@canopy/pipeline-interop": "workspace:*",
+    "@canopy/protocol": "workspace:*"
+  }
+}

@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
 import type { JSX } from 'react';
 import {
   ExecutionActionButton,
@@ -25,21 +26,21 @@ export interface ActivityListItem {
 }
 
 /** Coarse status → chip color. Unknown statuses fall back to muted. */
-function statusToneClass(status: string): string {
+function statusTone(status: string): BadgeTone {
   const value = status.toLowerCase();
   if (
     value.includes('run') ||
     value.includes('active') ||
     value.includes('progress')
   ) {
-    return 'bg-info-subtle fg-info';
+    return 'info';
   }
   if (
     value.includes('fail') ||
     value.includes('error') ||
     value.includes('cancel')
   ) {
-    return 'bg-destructive-subtle fg-destructive-strong';
+    return 'danger';
   }
   if (
     value.includes('success') ||
@@ -48,9 +49,9 @@ function statusToneClass(status: string): string {
     value.includes('approv') ||
     value.includes('pass')
   ) {
-    return 'bg-success-subtle fg-success-strong';
+    return 'success';
   }
-  return 'bg-fg-primary/10 fg-secondary';
+  return 'neutral';
 }
 
 /**
@@ -83,7 +84,10 @@ export function ItemListSection({
     );
   }
   return (
-    <ul className="m-0 list-none space-y-1.5 p-0" data-testid={dataTestId}>
+    <ul
+      className="m-0 list-none flex flex-col gap-1.5 p-0"
+      data-testid={dataTestId}
+    >
       {items.map((item) => (
         <Surface
           as="li"
@@ -107,11 +111,7 @@ export function ItemListSection({
               )}
             </div>
             {item.status && (
-              <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-3xs ${statusToneClass(item.status)}`}
-              >
-                {item.status}
-              </span>
+              <Badge tone={statusTone(item.status)}>{item.status}</Badge>
             )}
             {item.actionLabel && item.onAction && (
               <ExecutionActionButton

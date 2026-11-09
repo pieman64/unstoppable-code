@@ -7,6 +7,10 @@ import {
 import type { E2eBuildUnit } from '../../scripts/lib/e2e-build-inputs.mjs';
 import { preparePdfWorker } from '../../scripts/public-build/pdf-worker.mjs';
 import {
+  workspaceBundleGuardPlugin,
+  workspaceCommonjsOptions,
+} from '../../scripts/lib/desktop-workspace-bundles.mjs';
+import {
   mainEntrySource,
   isolatedMainEntrySource,
   linuxSafeStorageHelperPlugin,
@@ -185,6 +189,10 @@ const aliases = {
     'packages/pipeline-interop/src',
   ),
   '@canopy/app-core': resolve(repoRoot, 'packages/app-core/src'),
+  '@canopy/ipc-canopy-client': resolve(
+    repoRoot,
+    'packages/ipc-canopy-client/src',
+  ),
   '@canopy/app-state': resolve(repoRoot, 'packages/app-state/src'),
   '@canopy/core-runtime': resolve(repoRoot, 'packages/core-runtime/src'),
   '@canopy/core-platform': resolve(repoRoot, 'packages/core-platform/src'),
@@ -195,6 +203,10 @@ const aliases = {
     'packages/copilot-recipient/src',
   ),
   '@canopy/code-graph': resolve(repoRoot, 'packages/code-graph/src'),
+  '@canopy/execution-engine': resolve(
+    repoRoot,
+    'packages/execution-engine/src',
+  ),
   '@canopy/desktop-shared': resolve(repoRoot, 'packages/desktop-shared/src'),
   '@canopy/desktop-instrumentation': resolve(
     repoRoot,
@@ -1008,6 +1020,7 @@ export default defineConfig(({ mode }) => {
     main: {
       plugins: [
         ...mainPreloadPlugins,
+        workspaceBundleGuardPlugin(),
         ...e2eBuildInputGuardPlugins('main'),
         bytecodeJsFallbackPlugin([
           {
@@ -1045,6 +1058,7 @@ export default defineConfig(({ mode }) => {
       },
       resolve: { alias: aliases },
       build: {
+        commonjsOptions: workspaceCommonjsOptions,
         bytecode: {
           removeBundleJS: false,
         },
@@ -1067,7 +1081,11 @@ export default defineConfig(({ mode }) => {
       // electron-vite bytecode entry requires Node's `vm` module there, which
       // Electron explicitly marks unsupported and crash-prone. Keep preload
       // output as ordinary minified CJS; main-process bytecode remains enabled.
-      plugins: [...mainPreloadPlugins, ...e2eBuildInputGuardPlugins('preload')],
+      plugins: [
+        ...mainPreloadPlugins,
+        workspaceBundleGuardPlugin(),
+        ...e2eBuildInputGuardPlugins('preload'),
+      ],
       define: commonDefines,
       resolve: { alias: aliases },
       build: {

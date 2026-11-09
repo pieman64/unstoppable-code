@@ -1,4 +1,8 @@
-import { pluginDisplayName, pluginDisplayAuthor } from '@canopy/ui-shared';
+import {
+  marketplaceDisplayName,
+  pluginDisplayName,
+  pluginDisplayAuthor,
+} from '@canopy/ui-shared';
 import { pluginHasContent } from '@canopy/ui-shared/lib/plugin-install-status';
 import type {
   MarketplaceSource,
@@ -190,7 +194,7 @@ export function toMarketplaceSource(
   const href = managed ? null : marketplaceSourceHref(marketplace);
   return {
     id: marketplace.id,
-    name: marketplace.name,
+    name: marketplaceDisplayName(marketplace.name),
     ...(marketplace.description
       ? { description: marketplace.description }
       : {}),

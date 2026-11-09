@@ -19,7 +19,7 @@ import {
   resolvePrompt,
   serializeTranscript,
 } from '../agent-prompt/logic';
-import { brandEnvName, getBrandEnv } from '../../brand/env';
+import { brandEnvName, getBrandEnv } from '@canopy/execution-engine/brand/env';
 
 interface PromptDescriptor {
   prompt?: string;

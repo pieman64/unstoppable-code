@@ -130,6 +130,7 @@ export async function publishCanopyDaemon(
   const temporaryPath = join(directory, `.core-${randomUUID()}.tmp`);
   const descriptor = CanopyRuntimeDescriptorSchema.parse({
     version: 1,
+    secureStorageLayout: 'nested-v1',
     pid: options.pid,
     startIdentity: options.startIdentity,
     buildVersion: options.buildVersion,

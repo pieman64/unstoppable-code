@@ -23,7 +23,9 @@ import {
 import type {
   McpProxyState,
   McpProxyStatus,
-} from '@canopy/desktop-shared/types/mcp-servers';
+  McpServerConfigData,
+  McpServerDefinitionData,
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   DEFAULT_MCP_PROXY_PORT,
   IPC_CHANNELS,
@@ -32,7 +34,6 @@ import {
 import {
   AgentMcpConnections,
   type McpProxiedToolCallGate,
-  type McpProxyRouteRegistration,
 } from './agent-mcp-connections';
 import {
   getHeaderValue,
@@ -45,8 +46,12 @@ import {
   writeJson,
   writePayloadTooLargeJsonRpc,
 } from './integration-http';
-import { handleMcpOAuthCallback } from './oauth-client';
 import { writeMcpOAuthCallbackPage } from './oauth-callback-page';
+import { getMcpOAuthCoordinator } from './oauth-coordinator';
+import {
+  getMcpOAuthCredentials,
+  mcpOAuthSubjectForRegistration,
+} from './oauth-credentials';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import { sendToWindow } from '../lib/window-send';
 import { rejectRequest } from './pending-requests';
@@ -81,11 +86,38 @@ export interface McpProxyBroadcastHandlers {
 
 type WindowAccessor = () => BrowserWindow | null;
 
-export type {
+export type { McpProxiedToolCallGate } from './agent-mcp-connections';
+
+/**
+ * Registration input. The integration server binds `oauthDefinition` and `oauthConfig` into an owner-held credential; neither reaches the connection service (CAN-4126).
+ */
+export interface McpProxyRoute {
+  routeId: string;
+  sessionId: string | null;
+  serverId: string;
+  configId: string;
+  displayName: string;
+  upstreamUrl: string;
+  headers: Record<string, string>;
+  oauthEnabled: boolean;
+  authSupplier?: 'oauth' | 'canopy-cloud';
+  reauthRequired?: boolean;
+  oauthRequired?: boolean;
+  oauthDefinition?: McpServerDefinitionData;
+  oauthConfig?: McpServerConfigData;
+  /** Delegated routes must never forward without their live parent gate. */
+  requireToolCallGate?: boolean;
+}
+
+/**
+ * Registration input. The integration server binds `oauthDefinition` and `oauthConfig` into an owner-held credential; neither reaches the connection service (CAN-4126).
+ */
+export interface McpProxyRouteRegistration extends Omit<
   McpProxyRoute,
-  McpProxyRouteRegistration,
-  McpProxiedToolCallGate,
-} from './agent-mcp-connections';
+  'routeId' | 'reauthRequired'
+> {
+  routeKey?: string;
+}
 export type {
   CanopyWorktreeSessionRoute,
   ClaudeTerminalHookHandler,
@@ -251,9 +283,11 @@ export class McpHttpProxyService {
   private startPromise: Promise<void> | null = null;
   private currentPort: number | null = null;
   private sockets = new Set<Socket>();
+  private readonly credentials = getMcpOAuthCredentials();
   private readonly connections = new AgentMcpConnections({
     proxyUrl: (routeId): string => this.getProxyUrl(routeId),
     listening: (): boolean => this.currentPort !== null,
+    credentials: this.credentials,
   });
   private readonly tools = new CanopyToolRouter({
     interfaceRequests: createWindowInterfaceToolRequests(() =>
@@ -516,8 +550,29 @@ export class McpHttpProxyService {
     }
   }
 
-  registerRoute(route: McpProxyRouteRegistration): Promise<string> {
-    return this.connections.register(route);
+  async registerRoute(
+    registration: McpProxyRouteRegistration,
+  ): Promise<string> {
+    const { oauthDefinition, oauthConfig, ...route } = registration;
+    const credential =
+      registration.authSupplier !== 'canopy-cloud' && registration.oauthEnabled
+        ? this.credentials.bind(
+            mcpOAuthSubjectForRegistration({
+              serverId: route.serverId,
+              configId: route.configId,
+              oauthDefinition,
+              oauthConfig,
+            }),
+          )
+        : undefined;
+    try {
+      return await this.connections.register(
+        credential ? { ...route, credential } : route,
+      );
+    } catch (error: unknown) {
+      if (credential) this.credentials.release(credential);
+      throw error;
+    }
   }
 
   getRouteStatus(routeId: string): { reauthRequired: boolean } | undefined {
@@ -525,7 +580,7 @@ export class McpHttpProxyService {
   }
 
   registerMcpProxyRoute(route: McpProxyRouteRegistration): Promise<string> {
-    return this.connections.register(route);
+    return this.registerRoute(route);
   }
 
   unregisterRoute(routeId: string): void {
@@ -737,7 +792,8 @@ export class McpHttpProxyService {
     }
 
     if (requestUrl.pathname === '/oauth/callback') {
-      const result = await handleMcpOAuthCallback(requestUrl);
+      const result =
+        await getMcpOAuthCoordinator().completeCallback(requestUrl);
       writeMcpOAuthCallbackPage(res, result.success ? 200 : 400, result);
       return;
     }

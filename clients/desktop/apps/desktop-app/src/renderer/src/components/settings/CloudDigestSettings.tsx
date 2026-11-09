@@ -11,16 +11,21 @@ import {
   digestOrdinalDay,
   digestWeeklyDescription,
 } from '@canopy/protocol/digests';
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
 import {
   Button,
   InlineTextSkeleton,
-  Notice,
-  NoticeButton,
   SettingsSelect,
   ToggleSwitch,
   type SettingsSelectOption,
 } from '@canopy/ui-shared/components';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { brandText } from '@/lib/brand';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import {
   SettingsDescriptionLoading,
   SettingsGroup,
@@ -106,7 +111,7 @@ const CADENCES: ReadonlyArray<{
 export function CloudDigestSettings(): JSX.Element | null {
   const [state, setState] = useState<CloudDigestPreferencesState | null>(null);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<InlineFailure | null>(null);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -125,13 +130,15 @@ export function CloudDigestSettings(): JSX.Element | null {
         setState(next);
         setError(
           next.available && !next.resolved
-            ? 'Could not load digest settings.'
+            ? { error: 'Could not load digest settings.' }
             : null,
         );
       })
-      .catch(() => {
+      .catch((caught: unknown) => {
         // The handler is fail-soft by contract, so this only fires if the IPC
-        // bridge itself is missing (older shell). Hide rather than error.
+        // bridge itself is missing (older shell). Hide rather than error, but
+        // keep the defect on record.
+        reportClientAppError(caught);
         if (!cancelled) {
           setState({
             available: false,
@@ -172,15 +179,17 @@ export function CloudDigestSettings(): JSX.Element | null {
           setState(result);
         } else {
           setState(previous);
-          setError('Could not save digest settings.');
+          setError({ error: 'Could not save digest settings.' });
         }
-      } catch {
+      } catch (caught: unknown) {
         // The handler is fail-soft by contract, so this only fires if the IPC
         // bridge itself is missing. Revert rather than leaving every toggle
         // permanently disabled behind a `saving` flag that never clears.
+        const appError = toAppError(resolveClientAppError(caught));
         if (!mounted.current) return;
         setState(previous);
-        setError('Could not save digest settings.');
+        if (appError)
+          setError(inlineFailure(appError, 'Could not save digest settings.'));
       } finally {
         if (mounted.current) setSaving(false);
       }
@@ -220,12 +229,15 @@ export function CloudDigestSettings(): JSX.Element | null {
       .openAuthenticatedPortalPage('/account/digests')
       .then((opened) => {
         if (!opened && mounted.current) {
-          setError('Could not open digests in your browser.');
+          setError({ error: 'Could not open digests in your browser.' });
         }
       })
-      .catch(() => {
-        if (mounted.current) {
-          setError('Could not open digests in your browser.');
+      .catch((caught: unknown) => {
+        const appError = toAppError(resolveClientAppError(caught));
+        if (appError && mounted.current) {
+          setError(
+            inlineFailure(appError, 'Could not open digests in your browser.'),
+          );
         }
       });
   }, []);
@@ -239,12 +251,14 @@ export function CloudDigestSettings(): JSX.Element | null {
         setState(next);
         setError(
           next.available && !next.resolved
-            ? 'Could not load digest settings.'
+            ? { error: 'Could not load digest settings.' }
             : null,
         );
       })
-      .catch(() => {
-        if (mounted.current) setError('Could not load digest settings.');
+      .catch((caught: unknown) => {
+        const appError = toAppError(resolveClientAppError(caught));
+        if (appError && mounted.current)
+          setError(inlineFailure(appError, 'Could not load digest settings.'));
       });
   }, []);
 
@@ -276,24 +290,13 @@ export function CloudDigestSettings(): JSX.Element | null {
       }
       dataTestId="settings-cloud-digests"
     >
-      {error && (
-        <Notice
-          intent="destructive"
-          data-testid="cloud-digests-error"
-          actions={
-            unresolved ? (
-              <NoticeButton
-                onClick={handleRetry}
-                data-testid="cloud-digests-retry"
-              >
-                Try again
-              </NoticeButton>
-            ) : undefined
-          }
-        >
-          {error}
-        </Notice>
-      )}
+      <DesktopErrorBanner
+        className=""
+        error={error?.error}
+        {...(error?.details === undefined ? {} : { details: error.details })}
+        testId="cloud-digests-error"
+        {...(unresolved ? { onRetry: handleRetry } : {})}
+      />
 
       <SettingsGroup>
         {CADENCES.map((cadence) => {

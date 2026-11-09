@@ -1,7 +1,7 @@
 import type {
   BrowserActionError,
   BrowserJavaScriptDialog,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import type { ResolvedActionTarget } from '../frames/action-targets';
 import {
   isCDPRecord,

@@ -32,9 +32,9 @@ import {
   createStoredPipelineDefinitionWriter,
   localPipelineNormalizeOptions,
 } from '@canopy/desktop-shared/node/pipelines/definition-sources';
-import { backgroundExecutionDeniedMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
+import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/automation-context-copy';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isPathInside } from '../lib/path-safety';
 import { readPreferencesFile } from '../lib/preferences-store';
@@ -223,20 +223,55 @@ function storedPort(): PipelineDefinitionSourcePort {
 }
 
 /**
- * The checkout a project scope names: the worktree root, which is where
- * project discovery looks today. Member repositories are not resolved yet.
+ * The checkout a project scope names: the worktree root, or a multi-repo
+ * workspace's member repository when `repoId` names one (CAN-5991).
  */
 async function projectCheckout(scope: CanopyWorkspaceScope): Promise<string> {
-  const { workspaceId, worktreeId, repoId } = scope;
-  if (
-    !workspaceId ||
-    !worktreeId ||
-    (repoId !== undefined && repoId !== WORKSPACE_ROOT_REPO_ID)
-  )
+  if (!scope.workspaceId || !scope.worktreeId)
     throw new PipelineDefinitionSourceError(
       'core.pipeline.scopeInvalid',
       'A project workflow needs a workspace and worktree scope.',
     );
+  const member =
+    scope.repoId !== undefined && scope.repoId !== WORKSPACE_ROOT_REPO_ID
+      ? scope.repoId
+      : undefined;
+  const [
+    { isCoworkWorkspace },
+    { resolveRegisteredChatWorktree, resolveWorktreeCwd },
+  ] = await Promise.all([
+    import('../lib/workspace-registry'),
+    import('../lib/resolve-worktree'),
+  ]);
+  // A registered chat scope (plan-explore, code review) reads the worktree
+  // it borrows, as the agent tools resolved it (CAN-5991).
+  let workspaceId: string;
+  let worktreeId: string;
+  try {
+    ({ projectId: workspaceId, worktreeId } = resolveRegisteredChatWorktree(
+      scope.workspaceId,
+      scope.worktreeId,
+    ));
+  } catch (error) {
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.scopeInvalid',
+      'The workflow scope names an unresolvable chat worktree.',
+      error,
+    );
+  }
+  // A Cowork project has no worktrees: its root is the managed home or the
+  // attached folder, resolved as the agent tools resolved it (CAN-5991).
+  if (isCoworkWorkspace(workspaceId) && member === undefined) {
+    try {
+      return resolveWorktreeCwd(workspaceId, worktreeId);
+    } catch (error) {
+      throw new PipelineDefinitionSourceError(
+        'core.pipeline.scopeInvalid',
+        'The workflow scope names an unknown Cowork project.',
+        error,
+      );
+    }
+  }
   const [{ readAllSidebarItems }, paths] = await Promise.all([
     import('../lib/sidebar-items'),
     import('../lib/paths'),
@@ -250,9 +285,24 @@ async function projectCheckout(scope: CanopyWorkspaceScope): Promise<string> {
       'core.pipeline.scopeInvalid',
       'The workflow scope names an unknown worktree.',
     );
-  return item.type === 'single-repo'
-    ? paths.getWorktreeDir(workspaceId, worktreeId)
-    : paths.getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId);
+  if (member === undefined)
+    return item.type === 'single-repo'
+      ? paths.getWorktreeDir(workspaceId, worktreeId)
+      : paths.getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId);
+  if (item.type === 'single-repo')
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.scopeInvalid',
+      'A single-repository project has no member repositories.',
+    );
+  try {
+    return resolveWorktreeCwd(workspaceId, worktreeId, member);
+  } catch (error) {
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.scopeInvalid',
+      'The workflow scope names an unknown repository.',
+      error,
+    );
+  }
 }
 
 function visibleProjectPipelines(

@@ -1,8 +1,10 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import { useEffect, useRef, useState, type JSX } from 'react';
 import type { BackgroundTask } from '@canopy/protocol/background-tasks';
 import {
+  Stack,
   DialogModal,
   AnsiOutput,
   useAnsiSearch,
@@ -12,7 +14,7 @@ import {
 import { SearchBar } from '@canopy/ui-shared/components/SearchBar';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
-  getBackgroundProcessStatusClassName,
+  backgroundProcessStatusBadgeTone,
   isTerminalBackgroundProcessStatus,
 } from '@canopy/ui-shared/lib';
 import type { BackgroundTaskHostActions } from './background-tasks-section';
@@ -217,179 +219,180 @@ export function BackgroundTaskDetailModal({
       maxWidth="3xl"
       dataTestId="bg-process-detail-modal"
     >
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* Metadata */}
-        <div className="mb-4 grid grid-cols-2 gap-x-6 gap-y-2 text-s">
-          <div>
-            <span className="fg-secondary">Kind</span>
-            <span className="ml-2 text-xs font-medium fg-secondary">
-              {task.kind}
-            </span>
-          </div>
-          <div className="flex items-center justify-between">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden gap-4">
+        <Stack gap="group" className="shrink-0">
+          {/* Metadata */}
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-s">
             <div>
-              <span className="fg-secondary">Status</span>
-              <span
-                className={`ml-2 rounded-full px-2 py-0.5 text-3xs font-medium ${getBackgroundProcessStatusClassName(task.status)}`}
-              >
-                {task.status}
+              <span className="fg-secondary">Kind</span>
+              <span className="ml-2 text-xs font-medium fg-secondary">
+                {task.kind}
               </span>
             </div>
-            {stopTarget && (
-              <TaskStopAction
-                target={stopTarget}
-                live={!terminal}
-                accessibleLabel={backgroundTaskStopAccessibleLabel(task.kind)}
-                dataTestId="bg-process-detail-stop"
-                onError={actions?.onStopError}
-                // The dialog closes on Escape from any of its controls.
-                stopKeyDownPropagation={false}
-              />
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="fg-secondary">Status</span>
+                <span className="inline-flex pl-2 align-middle">
+                  <Badge tone={backgroundProcessStatusBadgeTone(task.status)}>
+                    {task.status}
+                  </Badge>
+                </span>
+              </div>
+              {stopTarget && (
+                <TaskStopAction
+                  target={stopTarget}
+                  live={!terminal}
+                  accessibleLabel={backgroundTaskStopAccessibleLabel(task.kind)}
+                  dataTestId="bg-process-detail-stop"
+                  onError={actions?.onStopError}
+                  // The dialog closes on Escape from any of its controls.
+                  stopKeyDownPropagation={false}
+                />
+              )}
+            </div>
+            <div>
+              <span className="fg-secondary">Started</span>
+              <span className="ml-2 fg-primary/80">
+                {task.startedAt === null
+                  ? 'Not started'
+                  : formatTimestamp(task.startedAt)}
+              </span>
+            </div>
+            <div>
+              <span className="fg-secondary">Updated</span>
+              <span className="ml-2 fg-primary/80">
+                {formatTimestamp(task.updatedAt)}
+              </span>
+            </div>
+            {detail?.providerTaskId && (
+              <div className="col-span-2">
+                <span className="fg-secondary">Task ID</span>
+                <span className="ml-2 font-mono text-xs fg-primary/80">
+                  {detail.providerTaskId}
+                </span>
+              </div>
+            )}
+            {detail?.toolName && (
+              <div className="col-span-2">
+                <span className="fg-secondary">Tool</span>
+                <span className="ml-2 fg-primary/80">{detail.toolName}</span>
+              </div>
+            )}
+            {!isWorkflow && detail && detail.outputLocationLabel !== null && (
+              <div className="col-span-2">
+                <span className="fg-secondary">Output file</span>
+                <span className="ml-2 break-all font-mono text-xs fg-primary/80">
+                  {detail.outputLocationLabel ?? 'not set'}
+                </span>
+              </div>
+            )}
+            {isWorkflow && detail?.runId && (
+              <div className="col-span-2">
+                <span className="fg-secondary">Run ID</span>
+                <span className="ml-2 break-all font-mono text-xs fg-primary/80">
+                  {detail.runId}
+                </span>
+              </div>
             )}
           </div>
-          <div>
-            <span className="fg-secondary">Started</span>
-            <span className="ml-2 fg-primary/80">
-              {task.startedAt === null
-                ? 'Not started'
-                : formatTimestamp(task.startedAt)}
-            </span>
-          </div>
-          <div>
-            <span className="fg-secondary">Updated</span>
-            <span className="ml-2 fg-primary/80">
-              {formatTimestamp(task.updatedAt)}
-            </span>
-          </div>
-          {detail?.providerTaskId && (
-            <div className="col-span-2">
-              <span className="fg-secondary">Task ID</span>
-              <span className="ml-2 font-mono text-xs fg-primary/80">
-                {detail.providerTaskId}
-              </span>
-            </div>
-          )}
-          {detail?.toolName && (
-            <div className="col-span-2">
-              <span className="fg-secondary">Tool</span>
-              <span className="ml-2 fg-primary/80">{detail.toolName}</span>
-            </div>
-          )}
-          {!isWorkflow && detail && detail.outputLocationLabel !== null && (
-            <div className="col-span-2">
-              <span className="fg-secondary">Output file</span>
-              <span className="ml-2 break-all font-mono text-xs fg-primary/80">
-                {detail.outputLocationLabel ?? 'not set'}
-              </span>
-            </div>
-          )}
-          {isWorkflow && detail?.runId && (
-            <div className="col-span-2">
-              <span className="fg-secondary">Run ID</span>
-              <span className="ml-2 break-all font-mono text-xs fg-primary/80">
-                {detail.runId}
-              </span>
-            </div>
-          )}
-        </div>
 
-        {/* Command (Bash) */}
-        {detail?.command && (
-          <div className="mb-4">
-            <div className="mb-1 text-xs font-medium fg-secondary">Command</div>
-            <Surface variant="inset" className="overflow-hidden">
-              <div
-                className={`${REPLAY_BLOCK_CLASS} overflow-auto px-3 py-2 font-mono text-xs leading-5 fg-secondary`}
-              >
-                {detail.command}
+          {/* Command (Bash) */}
+          {detail?.command && (
+            <Stack gap="tight">
+              <div className="text-xs font-medium fg-secondary">Command</div>
+              <Surface variant="inset" className="overflow-hidden">
+                <div
+                  className={`${REPLAY_BLOCK_CLASS} overflow-auto px-3 py-2 font-mono text-xs leading-5 fg-secondary`}
+                >
+                  {detail.command}
+                </div>
+              </Surface>
+            </Stack>
+          )}
+
+          {/* Prompt */}
+          {detail?.prompt && (
+            <Stack gap="tight">
+              <div className="text-xs font-medium fg-secondary">Prompt</div>
+              <Surface variant="inset" className="overflow-hidden">
+                <div
+                  className={`${REPLAY_BLOCK_CLASS} max-h-32 overflow-auto px-3 py-2 text-s fg-secondary`}
+                >
+                  {detail.prompt}
+                </div>
+              </Surface>
+            </Stack>
+          )}
+
+          {/* Summary */}
+          {task.summary && (
+            <Stack gap="tight">
+              <div className="text-xs font-medium fg-secondary">Summary</div>
+              <div className={`${REPLAY_BLOCK_CLASS} text-s fg-secondary`}>
+                {task.summary}
               </div>
-            </Surface>
-          </div>
-        )}
-
-        {/* Prompt */}
-        {detail?.prompt && (
-          <div className="mb-4">
-            <div className="mb-1 text-xs font-medium fg-secondary">Prompt</div>
-            <Surface variant="inset" className="overflow-hidden">
-              <div
-                className={`${REPLAY_BLOCK_CLASS} max-h-32 overflow-auto px-3 py-2 text-s fg-secondary`}
-              >
-                {detail.prompt}
-              </div>
-            </Surface>
-          </div>
-        )}
-
-        {/* Summary */}
-        {task.summary && (
-          <div className="mb-4">
-            <div className="mb-1 text-xs font-medium fg-secondary">Summary</div>
-            <div className={`${REPLAY_BLOCK_CLASS} text-s fg-secondary`}>
-              {task.summary}
-            </div>
-          </div>
-        )}
-
+            </Stack>
+          )}
+        </Stack>
         {/* Body: workflow orchestration view OR raw output stream */}
         {isWorkflow ? (
           <div className="min-h-0 flex-1 overflow-auto">
             {actions?.renderWorkflowRun?.(task) ?? null}
           </div>
         ) : (
-          <>
-            <div className="mb-1 text-xs font-medium fg-secondary">
+          <div className="flex min-h-0 flex-1 flex-col gap-1">
+            <div className="text-xs font-medium fg-secondary inline-flex items-center gap-2">
               Output
-              {!terminal && <LoadingSpinner tone="active" className="ml-2" />}
+              {!terminal && <LoadingSpinner tone="active" />}
             </div>
-            {capturedOnly ? (
-              <Notice
-                intent="attention"
-                className="mb-2"
-                title="Showing captured output only"
-                data-testid="bg-process-output-notice"
-              >
-                The output file couldn&apos;t be read.
-              </Notice>
-            ) : null}
-            {truncated ? (
-              <Notice intent="attention" className="mb-2">
-                Showing the latest output only.
-              </Notice>
-            ) : null}
-            <SearchBar
-              query={search.query}
-              onQueryChange={search.setQuery}
-              currentIndex={search.currentIndex}
-              totalCount={search.totalCount}
-              onNext={search.goToNext}
-              onPrevious={search.goToPrevious}
-              inputRef={searchInputRef}
-              className="mb-2"
-            />
-            {loading ? (
-              <Surface variant="inset" className="flex flex-1">
-                <div className="flex flex-1 items-center justify-center py-8 text-s fg-secondary">
-                  Loading output…
-                </div>
-              </Surface>
-            ) : shownLines.length === 0 ? (
-              <Surface variant="inset" className="flex flex-1">
-                <div className="flex flex-1 items-center justify-center py-8 text-s fg-secondary">
-                  No output available
-                </div>
-              </Surface>
-            ) : (
-              <AnsiOutput
-                lines={shownLines}
-                className="min-h-0 flex-1"
-                style={{ maxHeight: '40vh' }}
-                searchQuery={search.ansiSearchQuery}
-                activeMatchIndex={search.ansiActiveMatchIndex}
-                onMatchCountChange={search.ansiOnMatchCountChange}
+            <div className="flex min-h-0 flex-1 flex-col gap-2">
+              {capturedOnly ? (
+                <Notice
+                  intent="attention"
+                  title="Showing captured output only"
+                  data-testid="bg-process-output-notice"
+                >
+                  The output file couldn&apos;t be read.
+                </Notice>
+              ) : null}
+              {truncated ? (
+                <Notice intent="attention">
+                  Showing the latest output only.
+                </Notice>
+              ) : null}
+              <SearchBar
+                query={search.query}
+                onQueryChange={search.setQuery}
+                currentIndex={search.currentIndex}
+                totalCount={search.totalCount}
+                onNext={search.goToNext}
+                onPrevious={search.goToPrevious}
+                inputRef={searchInputRef}
               />
-            )}
-          </>
+              {loading ? (
+                <Surface variant="inset" className="flex flex-1">
+                  <div className="flex flex-1 items-center justify-center py-8 text-s fg-secondary">
+                    Loading output…
+                  </div>
+                </Surface>
+              ) : shownLines.length === 0 ? (
+                <Surface variant="inset" className="flex flex-1">
+                  <div className="flex flex-1 items-center justify-center py-8 text-s fg-secondary">
+                    No output available
+                  </div>
+                </Surface>
+              ) : (
+                <AnsiOutput
+                  lines={shownLines}
+                  className="min-h-0 flex-1"
+                  style={{ maxHeight: '40vh' }}
+                  searchQuery={search.ansiSearchQuery}
+                  activeMatchIndex={search.ansiActiveMatchIndex}
+                  onMatchCountChange={search.ansiOnMatchCountChange}
+                />
+              )}
+            </div>
+          </div>
         )}
       </div>
     </DialogModal>

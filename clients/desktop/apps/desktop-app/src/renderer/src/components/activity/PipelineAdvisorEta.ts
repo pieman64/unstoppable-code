@@ -4,7 +4,7 @@ import type {
   ExecutionSummary,
   PipelineAdvisorReport,
   PipelineAdvisorSnapshot,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { isPipelineExecutionActiveStatus } from './utils';
 
 const ADVISOR_ETA_TICK_MS = 30_000;

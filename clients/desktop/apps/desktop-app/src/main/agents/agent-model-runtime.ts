@@ -13,7 +13,7 @@ import {
   isAgentDefaultBaseModel,
   parseAgentRouteModelId,
   type AgentModelDefinition,
-} from '@canopy/desktop-shared/types/agent-models';
+} from '@canopy/execution-engine/types/agent-models';
 import { mergePluginSelections } from '../lib/plugin-selection-utils';
 import { resolveAgentDestinationDefaultModel } from './agent-default-model';
 import { getAgentModel } from './agent-model-store';

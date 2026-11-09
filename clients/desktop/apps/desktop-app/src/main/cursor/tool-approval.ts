@@ -5,7 +5,7 @@ import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-adviso
 import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   isLedgerInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   readToolPath,
   shellToolCommand,

@@ -1,5 +1,6 @@
+import { observeStoragePathSync } from '@canopy/core-platform/storage-path-observation';
 import { randomUUID } from 'node:crypto';
-import { existsSync, realpathSync, unlinkSync } from 'node:fs';
+import { unlinkSync } from 'node:fs';
 import {
   link,
   lstat,
@@ -11,7 +12,7 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type {
   PlatformProcessInspection,
@@ -400,9 +401,12 @@ async function register(
   await mkdir(requested, { recursive: true, mode: 0o700 }).catch(
     (error: unknown) => refuseCreate(error, requested),
   );
-  const root = await realpath(requested).catch((error: unknown) =>
-    refuseCreate(error, requested),
-  );
+  let root: string;
+  try {
+    root = observeStoragePathSync(requested).canonicalPath;
+  } catch (error) {
+    return refuseCreate(error, requested);
+  }
   const existing = byCanonical.get(root);
   if (existing) return existing;
   // Two spellings of one root registering at once share one member file.
@@ -427,7 +431,7 @@ async function continueReadOnly(
   unwritable: W5HostCohortUnwritable,
   options: W5HostRegistrationOptions,
 ): Promise<W5HostRegistration> {
-  const root = await realpath(requested).catch(() => requested);
+  const root = observeStoragePathSync(requested).canonicalPath;
   for (let attempt = 0; ; attempt += 1) {
     options.signal?.throwIfAborted();
     if (await maintenanceClear(join(root, 'runtime'), options)) break;
@@ -447,12 +451,12 @@ export async function registerW5Host(
   options: W5HostRegistrationOptions,
 ): Promise<W5HostRegistration> {
   const requested = resolve(options.dataRoot);
+  if (maintenanceHolds > 0)
+    throw new W5HostCohortRefusedError('maintenance-process');
   if (isWindows()) {
     byRequested.set(requested, { root: requested, file: null });
     return { kind: 'registered' };
   }
-  if (maintenanceHolds > 0)
-    throw new W5HostCohortRefusedError('maintenance-process');
   if (byRequested.has(requested)) return { kind: 'registered' };
   let pending = registering.get(requested);
   if (!pending) {
@@ -475,13 +479,6 @@ export async function registerW5Host(
   return { kind: 'registered' };
 }
 
-/** Canonical spelling of a root that may not exist yet. */
-function canonicalRoot(path: string): string {
-  return existsSync(path)
-    ? realpathSync(path)
-    : join(canonicalRoot(dirname(path)), basename(path));
-}
-
 /**
  * The atomic-file backstop for shared (`desktop_cli`) W5 writes: the process
  * must be registered for its own data root. Tests fail; production registers
@@ -489,13 +486,17 @@ function canonicalRoot(path: string): string {
  * the cohort.
  */
 export async function ensureW5HostMembership(): Promise<void> {
-  if (isWindows()) return;
+  if (isWindows()) {
+    if (maintenanceHolds > 0)
+      throw new W5HostCohortRefusedError('maintenance-process');
+    return;
+  }
   // Lazy: atomic-file imports this module, and its importers must not load
   // canopy-paths (or their mocks of it) at module load.
   const { getCanopyDataDir } = await import('../../canopy-paths');
   const requested = resolve(getCanopyDataDir());
   if (byRequested.has(requested)) return;
-  const root = canonicalRoot(requested);
+  const root = observeStoragePathSync(requested).canonicalPath;
   const canonical = byCanonical.get(root);
   if (canonical) {
     byRequested.set(requested, canonical);
@@ -534,6 +535,8 @@ export interface W5MaintenanceExclusionOptions {
   /** Proves `runtime/hosts` private, ACLs included. */
   readonly secureFiles: Pick<PlatformSecureFileServices, 'permissions'>;
   readonly owner: { readonly pid: number; readonly startIdentity: string };
+  /** Offline migration only: coordination plus repeated native cold snapshots. */
+  readonly offlineMigration?: () => Promise<void>;
   readonly signal?: AbortSignal;
 }
 
@@ -705,10 +708,13 @@ async function anyMemberMayLive(
 export async function acquireW5MaintenanceExclusion(
   options: W5MaintenanceExclusionOptions,
 ): Promise<W5MaintenanceExclusion> {
-  if (isWindows()) throw new W5HostCohortRefusedError('platform-unsupported');
+  if (isWindows() && !options.offlineMigration)
+    throw new W5HostCohortRefusedError('platform-unsupported');
+  await options.offlineMigration?.();
   const { dataRoot, owner, signal } = options;
   if (
     byCanonical.has(dataRoot) ||
+    (isWindows() && byRequested.has(dataRoot)) ||
     registering.size > 0 ||
     readOnlyRoots.size > 0
   )
@@ -739,6 +745,7 @@ export async function acquireW5MaintenanceExclusion(
       options.inspect,
       signal,
     );
+    await options.offlineMigration?.();
     if (await anyMemberMayLive(join(runtime, 'hosts'), options))
       throw new W5HostCohortRefusedError('host-active');
     if (!(await isHeld()))

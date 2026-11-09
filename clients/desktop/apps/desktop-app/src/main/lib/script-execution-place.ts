@@ -1,6 +1,6 @@
 import type { RedeemedExecutionSecrets } from '@canopy/core-runtime/node/execution-secrets';
 import { lstat, mkdir } from 'node:fs/promises';
-import { setBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { setBrandEnv } from '@canopy/execution-engine/brand/env';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import type {
   WorkerScriptContext,

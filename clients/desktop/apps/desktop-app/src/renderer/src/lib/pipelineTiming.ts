@@ -2,7 +2,7 @@ import type {
   ExecutionState,
   JobResult,
   StepResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 // Timestamp and elapsed-time display helpers live in @canopy/ui-shared/lib so
 // the renderer and the shared pipeline popover share one implementation.

@@ -16,6 +16,7 @@ import {
   PlanModifiedBadge,
 } from '@canopy/ui-app';
 import {
+  Stack,
   BubbleCopyBadge,
   ChatComposerToolbarChip,
   ChatPreviewPopover,
@@ -121,27 +122,30 @@ interface ReviewSectionProps {
 function ReviewSection({ section, children }: ReviewSectionProps): JSX.Element {
   return (
     <Surface
+      gap="group"
       data-testid={`change-review-section-${section.id}`}
       as="section"
       variant="inset"
       padding="default"
       className="min-w-0"
     >
-      <Heading level={2} variant="title">
-        {section.title}
-      </Heading>
-      <p className="mt-1 text-xs leading-relaxed fg-secondary">
-        {section.summary}
-      </p>
-      <p className="mt-1 text-2xs fg-secondary">{section.reportedBy}</p>
-      <div className="mt-4 space-y-1">
+      <Stack gap="tight">
+        <Heading level={2} variant="title">
+          {section.title}
+        </Heading>
+        <p className="text-xs leading-relaxed fg-secondary">
+          {section.summary}
+        </p>
+        <p className="text-2xs fg-secondary">{section.reportedBy}</p>
+      </Stack>
+      <Stack gap="tight">
         <StageLabel>Before</StageLabel>
         <p className="text-xs leading-relaxed fg-secondary">{section.before}</p>
-      </div>
-      <div className="mt-4 space-y-2">
+      </Stack>
+      <Stack gap="inline">
         <StageLabel>After</StageLabel>
         <div className="min-w-0">{children}</div>
-      </div>
+      </Stack>
     </Surface>
   );
 }
@@ -155,19 +159,20 @@ function GitActionsAfter({ ready }: { ready: boolean }): JSX.Element {
     return <Caption>Seeding…</Caption>;
   }
   return (
-    <div className="flex flex-col gap-4">
+    <Stack gap="group">
       {GIT_ACTION_ROWS.map((row) => (
         <div
           key={row.worktreeId}
           data-testid={`change-review-git-action-${row.worktreeId}`}
+          className="flex flex-col gap-1.5"
         >
-          <div className="mb-1.5">
+          <div>
             <Caption>{row.caption}</Caption>
           </div>
           <HeaderGalleryRow worktreeId={row.worktreeId} />
         </div>
       ))}
-    </div>
+    </Stack>
   );
 }
 
@@ -179,17 +184,19 @@ function UserBubblesAfter(): JSX.Element {
   return (
     <Surface
       variant="inset"
+      gap="block"
       padding="default"
       data-testid="change-review-bubble-surface"
     >
-      <div className="space-y-5">
+      <div className="flex flex-col gap-5">
         {USER_BUBBLE_FIXTURES.map((fixture) => (
-          <div
+          <Stack
             key={fixture.id}
+            gap="inline"
             className="min-w-0"
             data-testid={`change-review-bubble-${fixture.id}`}
           >
-            <div className="mb-2">
+            <div>
               <Caption>{fixture.title}</Caption>
             </div>
             <ChatMessageItem
@@ -197,15 +204,16 @@ function UserBubblesAfter(): JSX.Element {
               chatPendingQuestions={[]}
               onResetToPoint={noopAsync}
             />
-          </div>
+          </Stack>
         ))}
         {QUEUED_BUBBLE_FIXTURES.map((fixture) => (
-          <div
+          <Stack
             key={fixture.id}
+            gap="inline"
             className="min-w-0"
             data-testid={`change-review-bubble-${fixture.id}`}
           >
-            <div className="mb-2">
+            <div>
               <Caption>{fixture.title}</Caption>
             </div>
             <QueuedMessageBubble
@@ -217,7 +225,7 @@ function UserBubblesAfter(): JSX.Element {
               onEdit={noop}
               canForce
             />
-          </div>
+          </Stack>
         ))}
         <Caption>
           The transcript has no sticky variant of its own on this page — the
@@ -263,7 +271,7 @@ function ActivityCardActionGlyph({
 
 function CardRows({ rows }: { rows: readonly string[] }): JSX.Element {
   return (
-    <ul className="space-y-1">
+    <ul className="flex flex-col gap-1">
       {rows.map((row) => (
         <Surface as="li" variant="group" size="small" key={row}>
           <div className="flex items-center min-h-8 px-2.5 text-xs fg-primary">
@@ -277,7 +285,7 @@ function CardRows({ rows }: { rows: readonly string[] }): JSX.Element {
 
 function ActivityCardsAfter(): JSX.Element {
   return (
-    <div className="space-y-3">
+    <Stack gap="item">
       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] items-start gap-3">
         {ACTIVITY_CARD_FIXTURES.map((card) => (
           <div
@@ -344,7 +352,7 @@ function ActivityCardsAfter(): JSX.Element {
         px of pointer movement (previously a 250ms press delay), so press and
         drag a card header there to rearrange.
       </Caption>
-    </div>
+    </Stack>
   );
 }
 
@@ -354,7 +362,7 @@ function ActivityCardsAfter(): JSX.Element {
 
 function SleepPausedPillAfter(): JSX.Element {
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       <Surface
         variant="group"
         className="relative overflow-hidden"
@@ -367,7 +375,7 @@ function SleepPausedPillAfter(): JSX.Element {
             <TerminalIcon size={14} />
             Panel
           </div>
-          <div className="space-y-2 px-3">
+          <div className="flex flex-col px-3 gap-2">
             <div className="h-2.5 w-3/5 rounded-full bg-subtle" />
             <div className="h-2.5 w-4/5 rounded-full bg-subtle" />
             <div className="h-2.5 w-2/5 rounded-full bg-subtle" />
@@ -392,7 +400,7 @@ function SleepPausedPillAfter(): JSX.Element {
         panel content like a toast. Clicking it opens those settings. Hover for
         the full explanation.
       </Caption>
-    </div>
+    </Stack>
   );
 }
 
@@ -432,7 +440,7 @@ function FixedLeaf({
   testId: string;
 }): JSX.Element {
   return (
-    <div className="space-y-1.5">
+    <div className="flex flex-col gap-1.5">
       <Caption>{label}</Caption>
       <div data-testid={testId} style={{ width: `${width}px` }}>
         <Surface variant="outline" className="overflow-hidden">
@@ -446,7 +454,7 @@ function FixedLeaf({
 function PanelMinWidthAfter(): JSX.Element {
   return (
     <div className="flex flex-wrap items-start gap-6">
-      <div className="space-y-1.5">
+      <div className="flex flex-col gap-1.5">
         <Caption>
           Drag the corner handle: the leaf stops at{' '}
           {DEFAULT_PANEL_LEAF_MINIMUM_WIDTH}px and the action stays visible.
@@ -483,7 +491,7 @@ function PanelMinWidthAfter(): JSX.Element {
 
 function PipelineRowChipsAfter(): JSX.Element {
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       <Surface variant="group" data-testid="change-review-badge-row">
         <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
           <PipelineRunStatusPill status="running" />
@@ -530,7 +538,7 @@ function PipelineRowChipsAfter(): JSX.Element {
         and Workflow (neutral), Try again (warning), Start over (destructive).
         Same height, radius, label size, and hairline ring within each shape.
       </Caption>
-    </div>
+    </Stack>
   );
 }
 
@@ -541,7 +549,7 @@ function PipelineRowChipsAfter(): JSX.Element {
 function ContextMeterAfter(): JSX.Element {
   const [seededUsage] = useState(buildSeededContextMeterUsage);
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       <div className="flex flex-wrap items-start gap-8">
         <div
           className="flex items-center gap-3"
@@ -571,7 +579,7 @@ function ContextMeterAfter(): JSX.Element {
         in-place model change, where it previously painted 0% with a dead
         popover.
       </Caption>
-    </div>
+    </Stack>
   );
 }
 
@@ -678,7 +686,7 @@ function DemoSidebarRow({
 function RichTooltipsAfter(): JSX.Element {
   const [fastMode, setFastMode] = useState<boolean | undefined>(undefined);
   return (
-    <div className="space-y-3">
+    <Stack gap="item">
       <Caption>
         Hover: tooltips now open instantly; previously native title tooltips
         took about a second.
@@ -705,11 +713,11 @@ function RichTooltipsAfter(): JSX.Element {
           />
         </div>
       </Surface>
-      <div className="space-y-1.5">
+      <div className="flex flex-col gap-1.5">
         <Caption>{TOOLTIP_SIDEBAR_ROW.caption}</Caption>
         <DemoSidebarRow fixture={TOOLTIP_SIDEBAR_ROW} />
       </div>
-    </div>
+    </Stack>
   );
 }
 
@@ -717,7 +725,7 @@ function UnreadAfterAnswerAfter(): JSX.Element {
   return (
     <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))] gap-4">
       {UNREAD_AFTER_ANSWER_ROWS.map((fixture) => (
-        <div key={fixture.id} className="space-y-1.5">
+        <div className="flex flex-col gap-1.5" key={fixture.id}>
           <DemoSidebarRow fixture={fixture} />
           <Caption>{fixture.caption}</Caption>
         </div>
@@ -791,8 +799,8 @@ function ChangeReviewContent(): JSX.Element {
     <section className="flex h-full flex-col" data-testid="page-change-review">
       <PageTitlebar />
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-12">
-        <div className="mx-auto max-w-5xl space-y-8">
-          <div className="space-y-2">
+        <div className="flex flex-col mx-auto max-w-5xl gap-8">
+          <Stack gap="inline">
             <Heading level={1} variant="page">
               Change review
             </Heading>
@@ -803,7 +811,7 @@ function ChangeReviewContent(): JSX.Element {
               mode from Settings to check both. This page is only reachable in
               dev and E2E builds.
             </p>
-          </div>
+          </Stack>
 
           {CHANGE_REVIEW_SECTIONS.map((section) => (
             <ReviewSection key={section.id} section={section}>

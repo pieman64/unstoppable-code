@@ -11,7 +11,7 @@ import type {
   OsNotificationPreferences,
   OsNotificationTopLevelSound,
 } from '@canopy/desktop-shared/types';
-import type { ToastCategory } from '@/stores/githubStore';
+import type { ToastCategory } from '@/stores/toastStore';
 import { brandText } from '@/lib/brand';
 import { noteOsNotificationOfferCompletion } from '@/lib/osNotificationOffer';
 
@@ -29,7 +29,7 @@ import { noteOsNotificationOfferCompletion } from '@/lib/osNotificationOffer';
  *   preference (e.g. gating automation toasts behind the "Workflow" toggle).
  * - In-app notifications fall back to the master toggle only:
  *   `shouldShowInAppNotification` returns `prefs.enabled`, so the toast
- *   still renders in-app (githubStore's `addToast` gates toast rendering on
+ *   still renders in-app (toastStore's `addToast` gates toast rendering on
  *   this check — failing closed here would silently swallow the toast
  *   entirely).
  *
@@ -279,7 +279,7 @@ export function shouldShowInAppNotification(category: ToastCategory): boolean {
 
   // Categories without a preference key (see CATEGORY_TO_PREF_KEY) have no
   // per-category toggle; only the in-app master toggle gates them. This must
-  // NOT fail closed: githubStore's addToast renders the in-app toast only
+  // NOT fail closed: toastStore's addToast renders the in-app toast only
   // when this returns true, so failing closed would swallow the toast.
   const prefKey = CATEGORY_TO_PREF_KEY[category];
   if (!prefKey) return true;

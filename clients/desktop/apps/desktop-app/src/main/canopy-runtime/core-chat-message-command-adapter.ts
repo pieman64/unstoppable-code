@@ -18,6 +18,7 @@ import type {
   ChatStateCommandPort,
 } from '@canopy/desktop-shared/types';
 import {
+  CanopyOperationError,
   canopyInvalidArgumentError,
   type CanopyHandlerContext,
 } from '@canopy/core-runtime';
@@ -448,8 +449,15 @@ export function createCoreChatMessageAdapter(
     return CORE_INSTRUCTION_DEFINITIONS[name].result.parse(await result);
   };
   const instructions: MessageHandlers = {
-    'core.chat.message.send': (params, context) =>
-      invoke(
+    'core.chat.message.send': (params, context) => {
+      if (params.attachments !== undefined)
+        throw new CanopyOperationError({
+          kind: 'capability_unavailable',
+          message: 'Attachment references are not available on this core.',
+          details: { unsupported: ['attachments'] },
+          retry: { kind: 'never' },
+        });
+      return invoke(
         'core.chat.message.send',
         params,
         params.origin
@@ -475,7 +483,8 @@ export function createCoreChatMessageAdapter(
                 : {}),
             },
         context,
-      ),
+      );
+    },
     'core.chat.queue.entry.cancel': (params, context) =>
       invoke(
         'core.chat.queue.entry.cancel',

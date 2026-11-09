@@ -6,7 +6,7 @@ import type {
   AgentAuditContextUsage,
   AgentAuditEntry,
   AgentAuditSubagentUsage,
-} from '@canopy/desktop-shared/types/observability';
+} from '@canopy/execution-engine/types/observability';
 import type { ChatContextUsageBreakdown } from '@canopy/desktop-shared/types';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
 import type { ProviderBillingAccountKind } from '../auth/provider-auth-state';

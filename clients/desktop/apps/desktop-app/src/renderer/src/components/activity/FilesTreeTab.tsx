@@ -24,6 +24,7 @@ import type {
   FileTreeRoot,
 } from '@canopy/desktop-shared/types';
 import {
+  Stack,
   Surface,
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
@@ -366,7 +367,7 @@ function InlineTreeEditorRow({
             : undefined
       }
     >
-      <span className="mt-1 w-3 shrink-0" aria-hidden="true" />
+      <span className="w-3 shrink-0" aria-hidden="true" />
       {isDirectory ? (
         <FolderIcon className="mt-0.5 shrink-0 fg-secondary" />
       ) : (
@@ -378,7 +379,7 @@ function InlineTreeEditorRow({
           />
         </span>
       )}
-      <div className="min-w-0 flex-1">
+      <Stack gap="tight" className="min-w-0 flex-1">
         <TextInput
           ref={inputRef}
           density="compact"
@@ -418,11 +419,11 @@ function InlineTreeEditorRow({
           }}
         />
         {interaction?.mutationError && (
-          <div className="mt-1" role="alert">
-            <FieldError id={errorId}>{interaction.mutationError}</FieldError>
-          </div>
+          <FieldError id={errorId} announce>
+            {interaction.mutationError}
+          </FieldError>
         )}
-      </div>
+      </Stack>
     </div>
   );
 }
@@ -3294,8 +3295,10 @@ export function FilesTreeTab({
       // Both data sets are required to key results by root. Before their first
       // requests dispatch, absence still means loading rather than empty.
       body = (
-        <DelayedLoadingPlaceholder>
-          <CenteredLoadingSpinner className="my-12" />
+        <DelayedLoadingPlaceholder className="">
+          <div className="box-content flex min-h-full flex-1 py-12">
+            <CenteredLoadingSpinner className="" />
+          </div>
         </DelayedLoadingPlaceholder>
       );
     } else if (filteredResults.matchCount === 0) {
@@ -3370,8 +3373,10 @@ export function FilesTreeTab({
     }
   } else if (rootsLoading && !renderedRootsEntry) {
     body = (
-      <DelayedLoadingPlaceholder>
-        <CenteredLoadingSpinner className="my-12" />
+      <DelayedLoadingPlaceholder className="">
+        <div className="box-content flex min-h-full flex-1 py-12">
+          <CenteredLoadingSpinner className="" />
+        </div>
       </DelayedLoadingPlaceholder>
     );
   } else if (rootsError && !renderedRootsEntry) {

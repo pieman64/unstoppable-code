@@ -9,7 +9,7 @@ import {
   type ChatModel,
   type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
-import { classifyAgentFailure } from '@canopy/desktop-shared/agent-failures';
+import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import { detectClaudeQuotaReached } from '@canopy/desktop-shared/portal/provider-usage-limit';
 import type { HelperTranscriptObserver } from '@canopy/desktop-shared/lib/helper-transcript';
 import {

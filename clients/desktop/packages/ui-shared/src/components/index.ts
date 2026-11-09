@@ -16,6 +16,7 @@ export * from './ShareAudienceLabel';
 export * from './ShareActionButton';
 export * from './DetailActionBar';
 export * from './EmailRecipientInput';
+export * from './ErrorFallback';
 export * from './AnsiOutput';
 export * from './Badge';
 export * from './FactList';
@@ -29,6 +30,7 @@ export * from './CapabilityPill';
 export * from './CapabilityTile';
 export * from './capability-tile-model';
 export * from './CanopyProxyErrorSummary';
+export * from './CanopyProxyErrorPresentation';
 export * from './AiCreditsStopLine';
 export * from './AppErrorDetails';
 export * from './ClaudeAiCreditsFallbackErrorNotice';
@@ -40,6 +42,7 @@ export * from './BillingHistoryTable';
 export * from './BillingStatusPill';
 export * from './CreditLedgerTable';
 export * from './DataTable';
+export * from './DetailFact';
 export * from './InvoicesTable';
 export * from './InvoiceDetailView';
 export * from './DialogModal';
@@ -279,6 +282,8 @@ export * from './AgentStateGlyph';
 export * from './WakeTurnBoundary';
 export * from './WakeParkedNotice';
 export * from './SidebarMoreRow';
+export * from './SidebarSectionToggle';
+export * from './SidebarToggleRow';
 export * from './SidebarRowAge';
 export * from './CometSpinner';
 export * from './spinner-style';
@@ -437,6 +442,7 @@ export * from './InlineTextSkeleton';
 export * from './Skeleton';
 export * from './CenteredLoadingSpinner';
 export * from './DelayedLoadingPlaceholder';
+export * from './LoadingRegion';
 export * from './SlowLoadNote';
 
 export * from './UsageGroup';
@@ -473,6 +479,7 @@ export * from './composer-tip-arbiter';
 
 export { StandardPresentationProvider } from './StandardPresentationProvider';
 export * from './RemoteControlMobileAppPromo';
+export * from './RemoteControlPairingCode';
 
 export * from './HomeSection';
 export * from './StartChatSummary';
@@ -483,5 +490,7 @@ export * from './ReferenceHoverCard';
 
 export * from './W5RecoveryNotice';
 
+export * from './Fieldset';
 export * from './SidebarSectionMenuItems';
 export * from './SidebarSelectionControls';
+export * from './SourceBranchCommitHint';

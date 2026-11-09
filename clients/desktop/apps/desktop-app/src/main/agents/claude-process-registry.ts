@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
-import { killProcessGroupByPid } from '@canopy/desktop-shared/node/lib/process-kill';
+import { killProcessGroupByPid } from '@canopy/execution-engine/node/lib/process-kill';
 import { getClaudeProcessPidsFilePath } from '../lib/paths';
 import { isRecord } from '../lib/type-guards';
 

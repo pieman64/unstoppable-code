@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BrowserDataJobs } from '@canopy/desktop-shared/node/browser-profiles/data-jobs';
 import type { DownloadItem, Session, WebContents } from 'electron';
-import type { BrowserSessionSnapshot } from '@canopy/desktop-shared/types/browser';
+import type { BrowserSessionSnapshot } from '@canopy/execution-engine/types/browser';
 import type { BrowserTaskScope } from '@canopy/protocol/browser-profiles';
 import {
   BrowserTaskFiles,

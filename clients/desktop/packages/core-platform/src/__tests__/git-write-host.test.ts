@@ -31,6 +31,95 @@ function refusalCode(refuse: () => unknown): string | undefined {
 }
 
 describe('Git write commands (CAN-4108)', () => {
+  it.each([
+    [
+      {
+        kind: 'worktree-add',
+        path: '/target',
+        branch: 'topic',
+        create: true,
+        startPoint: 'origin/main',
+      },
+      [
+        '-c',
+        'core.hooksPath=/dev/null',
+        'worktree',
+        'add',
+        '-b',
+        'topic',
+        '/target',
+        'origin/main',
+      ],
+    ],
+    [
+      {
+        kind: 'worktree-add',
+        path: '/target',
+        branch: 'topic',
+        create: false,
+        startPoint: null,
+      },
+      ['-c', 'core.hooksPath=/dev/null', 'worktree', 'add', '/target', 'topic'],
+    ],
+    [
+      { kind: 'worktree-remove', path: '/target' },
+      ['worktree', 'remove', '--force', '/target'],
+    ],
+    [{ kind: 'worktree-prune' }, ['worktree', 'prune']],
+  ])(
+    'CAN-5940 plans %o unbounded with forced non-interactive env',
+    (write, args) => {
+      expect(
+        gitWriteCommandFor('linux', write, {
+          ...environment,
+          GIT_TERMINAL_PROMPT: '1',
+          GCM_INTERACTIVE: 'always',
+        })('/usr/bin/git'),
+      ).toEqual({
+        file: '/usr/bin/git',
+        args,
+        env: {
+          ...environment,
+          GIT_TERMINAL_PROMPT: '0',
+          GCM_INTERACTIVE: 'never',
+        },
+        timeoutMs: undefined,
+      });
+      expect(
+        refusalCode(() => gitWriteCommandFor('win32', write, environment)),
+      ).toBe('unsupported_command');
+    },
+  );
+  it.each([
+    {
+      kind: 'worktree-add',
+      path: '../outside',
+      branch: 'topic',
+      create: true,
+      startPoint: null,
+    },
+    {
+      kind: 'worktree-add',
+      path: '/target',
+      branch: '-b',
+      create: true,
+      startPoint: null,
+    },
+    {
+      kind: 'worktree-add',
+      path: '/target',
+      branch: 'topic',
+      create: true,
+      startPoint: '--detach',
+    },
+    { kind: 'worktree-remove', path: '/tmp/x\0y' },
+    { kind: 'worktree-remove', path: '' },
+  ])('CAN-5940 refuses unsafe worktree command %o', (write) => {
+    expect(
+      refusalCode(() => gitWriteCommandFor('linux', write, environment)),
+    ).toBe('invalid_request');
+  });
+
   it('plans desktop argv with Git non-interactive switches added', () => {
     const plan = gitWriteCommandFor(
       'darwin',

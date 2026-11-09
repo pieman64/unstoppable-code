@@ -1,11 +1,14 @@
 import { deserialize, serialize } from 'node:v8';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import {
-  DEVICE_RELAY_DATA_FRAME_OVERHEAD_BYTES,
-  DEVICE_RELAY_MAX_FRAME_BYTES,
-} from '@canopy/protocol/device-relay';
-import { SECURE_CHANNEL_OVERHEAD_BYTES } from '../crypto/secure-channel';
-import { ENVELOPE_HEADER_BYTES } from './envelope';
+  MAX_FRAGMENT_BYTES,
+  MAX_MESSAGE_BYTES,
+  COMPRESSION_THRESHOLD_BYTES,
+} from '@canopy/protocol/remote-control';
+export {
+  MAX_FRAGMENT_BYTES,
+  MAX_MESSAGE_BYTES,
+} from '@canopy/protocol/remote-control';
 
 /**
  * Encodes session messages for the encrypted channel.
@@ -20,21 +23,6 @@ import { ENVELOPE_HEADER_BYTES } from './envelope';
  */
 const FLAG_FINAL = 0x01;
 const FLAG_COMPRESSED = 0x02;
-
-const FRAGMENT_FLAG_BYTES = 1;
-/**
- * Message bytes per fragment: a relay frame less the data frame, envelope,
- * secure channel and fragment headers.
- */
-export const MAX_FRAGMENT_BYTES =
-  DEVICE_RELAY_MAX_FRAME_BYTES -
-  DEVICE_RELAY_DATA_FRAME_OVERHEAD_BYTES -
-  ENVELOPE_HEADER_BYTES -
-  SECURE_CHANNEL_OVERHEAD_BYTES -
-  FRAGMENT_FLAG_BYTES;
-const COMPRESSION_THRESHOLD_BYTES = 8 * 1024;
-/** Hard ceiling for one reassembled, inflated message. */
-export const MAX_MESSAGE_BYTES = 256 * 1024 * 1024;
 
 export class MessageCodecError extends Error {
   constructor(message: string) {

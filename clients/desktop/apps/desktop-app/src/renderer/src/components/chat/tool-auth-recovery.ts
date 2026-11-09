@@ -1,6 +1,6 @@
 import type { AuthDependencyFailure } from '@canopy/protocol/auth-recovery';
 import { readAuthDependencyFailures } from '@canopy/protocol/auth-recovery';
-import { getCanonicalCanopyToolKey } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { getCanonicalCanopyToolKey } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { parseMcpToolName } from '@canopy/ui-shared/components';
 import {
   isMcpConnectionError,

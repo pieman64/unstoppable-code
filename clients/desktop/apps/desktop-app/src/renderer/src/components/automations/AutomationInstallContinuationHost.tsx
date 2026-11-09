@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import type { JSX } from 'react';
 import { Button, Notice } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
@@ -48,13 +49,14 @@ function AutomationInstallContinuationModal(): JSX.Element | null {
         onClose={closeAutomationInstallContinuation}
         dataTestId="install-shared-automation-modal"
       >
-        <div className="space-y-3">
+        <Stack gap="item">
           {state.status === 'loading' ? (
             <p>Refreshing the share and your projects…</p>
           ) : (
             <>
               <Notice intent="destructive">{state.error}</Notice>
               <Button
+                className="self-start"
                 variant="secondary"
                 onClick={(): void => {
                   void resumeAutomationInstall(state.continuation);
@@ -64,7 +66,7 @@ function AutomationInstallContinuationModal(): JSX.Element | null {
               </Button>
             </>
           )}
-        </div>
+        </Stack>
       </DialogModal>
     );
   const context = state.continuation.workspaceContext ?? scope.context;

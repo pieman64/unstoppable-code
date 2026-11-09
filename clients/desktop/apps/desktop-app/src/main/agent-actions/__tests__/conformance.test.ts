@@ -1,11 +1,16 @@
 import {
-  createPendingApproval,
   registerApprovalSecretConsumer,
   resolveApprovalSecretInput,
   resolveApproval,
   resolveApprovalFromMain,
   pendingApprovalRequests,
 } from '../../approvals/pending-approvals';
+import {
+  getDesktopApprovalBroker,
+  resetDesktopApprovalBrokerForTests,
+} from '../../approvals/approval-broker';
+import { windowApprovalPort } from '../../approvals/prompt-bridge';
+import { resetDesktopChatWaitsForTest } from '../../chat-waits/desktop-chat-waits';
 import { personalGatewayAccountFields } from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import {
   resolveModelGatewayIndex,
@@ -292,7 +297,7 @@ import { createDesktopRuntime } from '../../canopy-runtime/desktop-runtime';
 import {
   createDesktopEnvironmentPort,
   desktopEnvironmentPortDeps,
-  type DesktopRendererActionResult,
+  type DesktopChatWorktreeResult,
 } from '../desktop-environment-port';
 import {
   createDesktopAgentLineage,
@@ -677,48 +682,16 @@ function makeDesktopHost(world: ConformanceWorld): {
   });
 
   let created = 0;
-  let rendererSends = 0;
-  const rendererAction = (
-    action: Parameters<
-      ReturnType<typeof desktopEnvironmentPortDeps>['rendererAction']
-    >[0],
-  ): Promise<DesktopRendererActionResult> => {
-    if (action.type === 'worktree.create') {
-      created += 1;
-      const worktreeId = `agent-worktree-${created}`;
-      worktrees.get(workspaceId)?.push({
-        id: worktreeId,
-        branchName: worktreeId,
-        createdAt: CREATED_AT,
-        trackedBaseBranch: null,
-      });
-      return Promise.resolve({
-        ok: true,
-        result: { workspaceId, worktreeId },
-      });
-    }
-    if (
-      action.type === 'worktree-chat.send_message' &&
-      typeof action.worktreeId === 'string' &&
-      typeof action.chatId === 'string'
-    ) {
-      rendererSends += 1;
-      const userMessageId = `renderer-turn-${rendererSends}`;
-      findTab(workspaceId, action.worktreeId, action.chatId)?.messages.push(
-        textMessage(
-          userMessageId,
-          'user',
-          typeof action.text === 'string' ? action.text : '',
-        ),
-      );
-      submitTurn(
-        scope(workspaceId, action.worktreeId),
-        action.chatId,
-        userMessageId,
-      );
-      return Promise.resolve({ ok: true });
-    }
-    return Promise.resolve({ ok: false, error: { message: 'Unsupported.' } });
+  const createChatWorktree = (): Promise<DesktopChatWorktreeResult> => {
+    created += 1;
+    const worktreeId = `agent-worktree-${created}`;
+    worktrees.get(workspaceId)?.push({
+      id: worktreeId,
+      branchName: worktreeId,
+      createdAt: CREATED_AT,
+      trackedBaseBranch: null,
+    });
+    return Promise.resolve({ ok: true, worktreeId });
   };
 
   const lineage = createDesktopAgentLineage();
@@ -775,7 +748,7 @@ function makeDesktopHost(world: ConformanceWorld): {
           (message) => message.id === messageId,
         ) === true,
       ),
-    rendererAction,
+    createChatWorktree,
     listModels: () => Promise.resolve(models()),
     listWorkEntries: () => Promise.resolve([]),
     chatApprovalPolicy: (chat) =>
@@ -1104,40 +1077,57 @@ describe('AI gateway desktop action boundaries', () => {
       worktreeId: 'worktree',
       chatId: 'chat',
     };
-    const sender = {};
-    const requestId = '22222222-2222-4222-8222-222222222222';
+    resetDesktopChatWaitsForTest({ noClientMode: 'wait' });
+    resetDesktopApprovalBrokerForTests();
+    const sender = {
+      isCrashed: (): boolean => false,
+      isDestroyed: (): boolean => false,
+      send: jest.fn(),
+      mainFrame: { detached: false, isDestroyed: (): boolean => false },
+    };
+    const window = { isDestroyed: (): boolean => false, webContents: sender };
     const bindingId = '33333333-3333-4333-8333-333333333333';
-    const pending = createPendingApproval(
-      requestId,
-      'gateway-session',
-      sender,
-      identity,
-      {
+    const handle = getDesktopApprovalBroker().open({
+      owner: 'gateway-session',
+      scope: {
+        workspaceId: identity.projectId,
+        worktreeId: identity.worktreeId,
+        chatId: identity.chatId,
+      },
+      presentation: (id) => ({
         ...identity,
-        requestId,
+        requestId: id,
         provider: 'claude',
         title: 'Connect AI gateway gateway.example?',
         details: { kind: 'tool', toolName: 'settings.ai_gateway.connect' },
         secretInput: { kind: 'secret-input', bindingId, label: 'API key' },
-      },
-    );
+      }),
+      port: windowApprovalPort(() => window),
+      timeoutMs: null,
+      revalidate: () => Promise.resolve('prompt'),
+    });
+    const { requestId } = handle;
+    const responder = { id: 'webcontents:1', owners: [sender] };
     const consume = jest.fn<void, [string]>();
     expect(registerApprovalSecretConsumer(requestId, consume)).toBe(true);
+    const [card] = pendingApprovalRequests([sender]);
     const request = {
       ...identity,
       requestId,
       bindingId,
       secret: 'secret-input-test-key',
+      policyRevision: card?.policyRevision,
     };
-    expect(JSON.stringify(pendingApprovalRequests(sender))).not.toContain(
+    expect(JSON.stringify(pendingApprovalRequests([sender]))).not.toContain(
       request.secret,
     );
     expect(
       resolveApproval(
         requestId,
         { behavior: 'allow', scope: 'once' },
-        sender,
+        responder,
         identity,
+        request.policyRevision,
       ),
     ).toBe(false);
     expect(
@@ -1146,18 +1136,24 @@ describe('AI gateway desktop action boundaries', () => {
         scope: 'once',
       }),
     ).toBe(false);
-    expect(resolveApprovalSecretInput(request, {})).toBe(false);
     expect(
-      resolveApprovalSecretInput({ ...request, bindingId: requestId }, sender),
+      resolveApprovalSecretInput(request, { id: 'other', owners: [{}] }),
     ).toBe(false);
-    expect(resolveApprovalSecretInput(request, sender)).toBe(true);
-    await expect(pending).resolves.toEqual({
-      behavior: 'allow',
-      scope: 'once',
+    expect(
+      resolveApprovalSecretInput(
+        { ...request, bindingId: requestId },
+        responder,
+      ),
+    ).toBe(false);
+    expect(resolveApprovalSecretInput(request, responder)).toBe(true);
+    await expect(handle.settled).resolves.toMatchObject({
+      state: 'allowed',
+      decision: { behavior: 'allow', scope: 'once' },
     });
     expect(consume).toHaveBeenCalledWith(request.secret);
-    expect(resolveApprovalSecretInput(request, sender)).toBe(false);
-    expect(pendingApprovalRequests(sender)).toEqual([]);
+    expect(resolveApprovalSecretInput(request, responder)).toBe(false);
+    expect(pendingApprovalRequests([sender])).toEqual([]);
+    resetDesktopApprovalBrokerForTests();
   });
   it('settings:save-canopy-cloud-api-key retains separate Personal policy without adding it to team enforcement', () => {
     const fields = personalGatewayAccountFields({

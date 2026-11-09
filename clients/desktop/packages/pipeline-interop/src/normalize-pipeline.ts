@@ -295,12 +295,14 @@ const SUPPORTED_TRIGGER_TYPES = new Set([
   'dispatch',
   'plan_ready',
   'task_ready',
+  'workflow',
 ]);
 
 interface ExtractedTriggerInputs {
   dispatch?: Record<string, PipelineInputDef>;
   plan_ready?: Record<string, PipelineInputDef>;
   task_ready?: Record<string, PipelineInputDef>;
+  workflow?: Record<string, PipelineInputDef>;
 }
 
 function validateTriggerObject(
@@ -352,6 +354,7 @@ function extractTriggerInputs(on: PipelineTrigger): ExtractedTriggerInputs {
   validateTriggerObject(on.dispatch, 'dispatch');
   validateTriggerObject(on.plan_ready, 'plan_ready');
   validateTriggerObject(on.task_ready, 'task_ready');
+  validateTriggerObject(on.workflow, 'workflow');
 
   const result: ExtractedTriggerInputs = {};
 
@@ -365,6 +368,10 @@ function extractTriggerInputs(on: PipelineTrigger): ExtractedTriggerInputs {
 
   if (on.task_ready && typeof on.task_ready === 'object') {
     result.task_ready = on.task_ready.inputs;
+  }
+
+  if (on.workflow && typeof on.workflow === 'object') {
+    result.workflow = on.workflow.inputs;
   }
 
   return result;
@@ -1479,7 +1486,7 @@ export function normalizePipeline(
   const defaultShell = options.defaultShell ?? DEFAULT_SHELL;
   if (Object.prototype.hasOwnProperty.call(pipeline, 'inputs')) {
     throw new Error(
-      'Pipeline defines top-level "inputs" which is no longer supported. Move inputs under "on.<trigger>.inputs" (e.g., "on.dispatch.inputs", "on.plan_ready.inputs", or "on.task_ready.inputs").',
+      'Pipeline defines top-level "inputs" which is no longer supported. Move inputs under "on.<trigger>.inputs" (e.g., "on.dispatch.inputs", "on.plan_ready.inputs", "on.task_ready.inputs", or "on.workflow.inputs").',
     );
   }
 
@@ -1511,6 +1518,7 @@ export function normalizePipeline(
   const normalizedTaskReadyInputs = normalizePipelineInputs(
     extracted.task_ready,
   );
+  const normalizedWorkflowInputs = normalizePipelineInputs(extracted.workflow);
 
   let triggerInputs:
     | Partial<Record<PipelineTriggerType, Record<string, PipelineInputDef>>>
@@ -1519,7 +1527,8 @@ export function normalizePipeline(
   if (
     normalizedDispatchInputs ||
     normalizedPlanReadyInputs ||
-    normalizedTaskReadyInputs
+    normalizedTaskReadyInputs ||
+    normalizedWorkflowInputs
   ) {
     triggerInputs = {};
     if (normalizedDispatchInputs) {
@@ -1530,6 +1539,9 @@ export function normalizePipeline(
     }
     if (normalizedTaskReadyInputs) {
       triggerInputs.task_ready = normalizedTaskReadyInputs;
+    }
+    if (normalizedWorkflowInputs) {
+      triggerInputs.workflow = normalizedWorkflowInputs;
     }
   }
 

@@ -75,11 +75,14 @@ export function PipelineRunStepTree({
   onSelect,
 }: PipelineRunStepTreeProps): JSX.Element {
   return (
-    <div className="space-y-2 p-2" data-testid="pipeline-run-step-tree">
+    <div
+      className="flex flex-col gap-2 p-2"
+      data-testid="pipeline-run-step-tree"
+    >
       {groups.map((group) => (
         <div
           key={group.job_id}
-          className="space-y-0.5"
+          className="flex flex-col gap-0.5"
           data-testid={`pipeline-run-job-${group.job_id}`}
         >
           <div className="flex items-center justify-between gap-2 px-2 py-1">
@@ -102,7 +105,7 @@ export function PipelineRunStepTree({
           {group.variants.map((variant) => (
             <div
               key={variant.job_id}
-              className="space-y-0.5"
+              className="flex flex-col gap-0.5"
               data-testid={`pipeline-run-variant-${variant.job_id}`}
             >
               <div className="flex items-center justify-between gap-2 pl-4 pr-2 py-1">

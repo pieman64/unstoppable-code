@@ -1,3 +1,4 @@
+import type { InternalRootRepairPlan } from './internal-root-repairs';
 /** Offline core policy. Trusted workers supply paths and filesystem/process effects. */
 export interface InternalRootIdentity {
   readonly brandId: 'canopy' | 'unstoppable-code';
@@ -33,7 +34,7 @@ export interface InternalRootExternalSnapshot {
   readonly postimage?: string;
 }
 export interface InternalRootJournal {
-  readonly version: 6;
+  readonly version: 6 | 7;
   readonly transactionId: string;
   readonly identity: InternalRootIdentity;
   readonly internalDeclaration: boolean;
@@ -47,13 +48,16 @@ export interface InternalRootJournal {
   readonly publicationIdentity?: string;
   readonly publicationFingerprint?: string;
   /** Secure relocation is CAN-5786, never implied by root completion. */
-  readonly secureRelocation: 'pending';
+  readonly secureRelocation: 'pending' | 'complete';
+  readonly repairPlan?: InternalRootRepairPlan;
 }
 /** Lifetime-bound qualification issued only while migration coordination is held. */
 export interface InternalRootColdRecovery {
   readonly identity: InternalRootIdentity;
   readonly transactionId: string;
   readonly assertHeld: () => Promise<void>;
+  /** Native process/open-file snapshot; W5 checks its own claim/cohort separately. */
+  readonly assertCold?: () => Promise<void>;
 }
 export type InternalRootRefusal =
   | 'ownership-required'
@@ -88,6 +92,7 @@ export interface InternalRootRepairContext {
   readonly workingRoot: string;
   /** Exact journaled external write membership; preimages are saved before repair. */
   readonly externalFiles: readonly string[];
+  readonly repairPlan?: InternalRootRepairPlan;
 }
 export type InternalRootRepairResult =
   | { readonly kind: 'ok' }
@@ -114,10 +119,14 @@ export type InternalRootRepairResult =
  * retains publishing intent for journal/W5 recovery, never fresh preparation.
  */
 export interface InternalRootRepairs {
-  prepare(
-    context: InternalRootRepairContext,
-  ): Promise<
-    | { readonly kind: 'ready'; readonly externalFiles: readonly string[] }
+  /** Live composition freezes owner/Git evidence only after original-root W5 recovery. */
+  readonly settleSourceFirst?: boolean;
+  prepare(context: InternalRootRepairContext): Promise<
+    | {
+        readonly kind: 'ready';
+        readonly externalFiles: readonly string[];
+        readonly repairPlan?: InternalRootRepairPlan;
+      }
     | { readonly kind: 'refused'; readonly recovery: string }
   >;
   repair(context: InternalRootRepairContext): Promise<InternalRootRepairResult>;
@@ -191,6 +200,9 @@ export interface InternalRootMigrationWorker {
   assertExternalPostimages(journal: InternalRootJournal): Promise<void>;
   assertExternalPreimages(journal: InternalRootJournal): Promise<void>;
   restoreExternal(journal: InternalRootJournal): Promise<void>;
+  /** Called under coordination and repeated cold proof, after root publication. */
+  relocateSecure(journal: InternalRootJournal): Promise<void>;
+  validateSecureResume(journal: InternalRootJournal): Promise<void>;
   transactionId(): string;
 }
 export type InternalRootMigrationResult =
@@ -229,6 +241,59 @@ export async function migrateInternalRoot(
   }
   const prior = await worker.readJournal(identity);
   await worker.validateStaging(identity, prior);
+  if (
+    options.apply &&
+    identity.brandId === 'unstoppable-code' &&
+    !options.declareInternal
+  )
+    refuse(
+      'ownership-required',
+      'Declare the selected installation internal; stable installations must stay untouched.',
+    );
+  if (options.apply && prior?.phase === 'complete' && !options.rebuild) {
+    if (prior.secureRelocation === 'complete')
+      refuse(
+        'already-complete',
+        'Migration is complete. Never adopt the retained predecessor automatically. Explicit --apply --rebuild requires cold recovery and refuses nested secure storage.',
+      );
+    const release = await worker.coordinate(identity);
+    try {
+      if (
+        JSON.stringify(await worker.readJournal(identity)) !==
+        JSON.stringify(prior)
+      )
+        refuse(
+          'source-changed',
+          'Another invocation changed the journal; inventory again.',
+        );
+      await worker.proveCold(identity, prior.externalFiles);
+      await worker.validateSecureResume(prior);
+      const qualified = await repairs.qualifyPublished({
+        identity,
+        transactionId: prior.transactionId,
+        inventory: prior.inventory,
+        workingRoot: identity.destination,
+        externalFiles: prior.externalFiles,
+        repairPlan: prior.repairPlan,
+      });
+      if (qualified.kind !== 'ok') refuse('repair-refused', qualified.recovery);
+      await worker.relocateSecure(prior);
+      const journal: InternalRootJournal = {
+        ...prior,
+        version: 7,
+        secureRelocation: 'complete',
+      };
+      await worker.saveJournal(journal);
+      return {
+        kind: 'complete',
+        journal,
+        recovery:
+          'Root and secure relocation are complete. The retained predecessor is never automatically adopted again.',
+      };
+    } finally {
+      await release();
+    }
+  }
   const inventory = await worker.inventory(identity);
   if (!options.apply) {
     let coldProof: Extract<
@@ -271,14 +336,18 @@ export async function migrateInternalRoot(
   if (!inventory.sourceIdentity)
     refuse(
       'source-missing',
-      'No standard predecessor. Secure-only history needs CAN-5786; no root was created.',
+      'The selected source directory is missing. Check --source-dir, or use --skip-migration for an empty internal folder; no root was created.',
     );
   if (!prior && inventory.destinationIdentity)
     refuse(
       'destination-exists',
       'No merge or overwrite is supported. Preserve both installations.',
     );
-  if (prior?.phase === 'complete' && !options.rebuild)
+  if (
+    prior?.phase === 'complete' &&
+    prior.secureRelocation === 'complete' &&
+    !options.rebuild
+  )
     refuse(
       'already-complete',
       'Migration is complete. To restore from the old root, explicitly use --apply --rebuild while cold; this discards the recorded destination. Never start an old build.',
@@ -293,7 +362,9 @@ export async function migrateInternalRoot(
     inventory: journal?.inventory ?? inventory,
     workingRoot: worker.stagingRoot(identity),
     externalFiles: journal?.externalFiles ?? [],
+    repairPlan: journal?.repairPlan,
   });
+  let repairPlan = prior?.repairPlan;
   const prepare = async (
     journal?: InternalRootJournal,
   ): Promise<readonly string[]> => {
@@ -310,6 +381,7 @@ export async function migrateInternalRoot(
         'External repair membership is duplicate or changed. Retain the journal for recovery.',
       );
     await worker.validateExternal(identity, ready.externalFiles);
+    repairPlan = ready.repairPlan;
     return ready.externalFiles;
   };
   const needsFrozenEvidence =
@@ -327,7 +399,9 @@ export async function migrateInternalRoot(
   let externalFiles =
     needsFrozenEvidence && repairs !== unavailableInternalRootRepairs
       ? prior.externalFiles
-      : await prepare(prior ?? undefined);
+      : repairs.settleSourceFirst && (!prior || prior.phase === 'prepared')
+        ? (prior?.externalFiles ?? [])
+        : await prepare(prior ?? undefined);
   const release = await worker.coordinate(identity);
   try {
     const loaded = await worker.readJournal(identity);
@@ -346,7 +420,7 @@ export async function migrateInternalRoot(
     )
       refuse('source-changed', 'Inventory changed; run inventory again.');
     let journal: InternalRootJournal = loaded ?? {
-      version: 6,
+      version: 7,
       transactionId,
       identity,
       internalDeclaration: options.declareInternal,
@@ -355,6 +429,7 @@ export async function migrateInternalRoot(
       externalFiles,
       stagingRoot: worker.stagingRoot(identity),
       secureRelocation: 'pending',
+      repairPlan,
     };
     if (!loaded) await worker.saveJournal(journal);
     const advance = async (
@@ -381,7 +456,7 @@ export async function migrateInternalRoot(
     if (journal.phase === 'complete') {
       await worker.validateRebuild(journal);
       await worker.assertExternalPostimages(journal);
-      await advance('restoring-external');
+      await advance('restoring-external', { secureRelocation: 'pending' });
     }
     if (journal.phase === 'restoring-external') {
       await worker.proveCold(identity, externalFiles);
@@ -400,7 +475,8 @@ export async function migrateInternalRoot(
         publicationFingerprint: undefined,
         stagingIdentity: undefined,
       });
-      externalFiles = await prepare(journal);
+      externalFiles = await prepare({ ...journal, repairPlan: undefined });
+      await advance('source-settled', { repairPlan });
     }
     if (journal.phase === 'prepared') {
       if (current.destinationIdentity)
@@ -409,7 +485,13 @@ export async function migrateInternalRoot(
           'Destination must be absent before source recovery.',
         );
       await worker.recoverW5(journal);
+      if (repairs.settleSourceFirst) {
+        externalFiles = await prepare();
+        await worker.proveCold(identity, externalFiles);
+      }
       await advance('source-settled', {
+        externalFiles,
+        repairPlan,
         settledFingerprint: (await worker.inventory(identity)).fingerprint,
       });
     }
@@ -485,6 +567,11 @@ export async function migrateInternalRoot(
       if (qualified.kind !== 'ok')
         refuse('repair-refused', `${recovery} ${qualified.recovery}`);
       await advance('complete');
+    }
+    if (journal.secureRelocation !== 'complete') {
+      await worker.proveCold(identity, externalFiles);
+      await worker.relocateSecure(journal);
+      await advance('complete', { version: 7, secureRelocation: 'complete' });
     }
     return {
       kind: 'complete',

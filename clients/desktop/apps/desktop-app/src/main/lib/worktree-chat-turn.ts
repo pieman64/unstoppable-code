@@ -1,3 +1,4 @@
+import { assertCoworkChatRootPresent } from './cowork-folder-guard';
 import { detectAiCreditsNoBillingSource } from '../agents/ai-credits-quota-state';
 import {
   recordPresentationTurn,
@@ -76,17 +77,17 @@ import {
   type ThinkingLevel,
   type DeferredResourceSummary,
 } from '@canopy/desktop-shared/types';
-import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
-import { applyAgentSessionCodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
+import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
+import { applyAgentSessionCodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
 import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { buildCodeReviewPrompt } from '@canopy/desktop-shared/lib/code-review-prompt';
 import {
   appendUserOverallPreferencesBlock,
   buildUserOverallPreferencesBlock,
-} from '@canopy/desktop-shared/lib/global-instructions';
+} from '@canopy/execution-engine/lib/global-instructions';
 import type { DesktopExecutionObservabilityIngest } from '../observability/ingest';
 import type { SessionDiagnosticRecord } from '../observability/service';
-import type { PipelinePackageCapabilityOverlay } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/types/pipeline';
 import type {
   ChatQueueService,
   ChatQueueTerminalStatus,
@@ -128,7 +129,7 @@ import {
   resolveSessionWorkOwner,
 } from '../agents/work-owner';
 import { generateAndRenameBranch } from './branch-namer';
-import { readHelperUsage } from '@canopy/desktop-shared/lib/helper-usage';
+import { readHelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import { normalizeOrganizationExternalId } from '@canopy/desktop-shared/lib/org-memory';
 import { isCoworkWorkspace } from './workspace-registry';
 import { pairPendingAuthFailuresWithTool } from './auth-failure-event';
@@ -1472,6 +1473,7 @@ export async function prepareWorktreeTurnSession<
 ): Promise<PreparedWorktreeTurnSession> {
   const turnDispatchTiming =
     timing ?? options.turnDispatchTiming ?? new TurnDispatchTiming();
+  await assertCoworkChatRootPresent(options.projectId, options.worktreeId);
   const isCoworkChat = isCoworkWorkspace(options.projectId);
   const isLegacyStandalone = options.projectId === STANDALONE_CHAT_PROJECT_ID;
   const isPlanExplore = options.projectId === PLAN_EXPLORE_CHAT_PROJECT_ID;
@@ -1910,6 +1912,10 @@ export async function dispatchWorktreeChatTurn<
 >(
   requestedOptions: DispatchWorktreeChatTurnOptions<TBeforeResult>,
 ): Promise<void> {
+  await assertCoworkChatRootPresent(
+    requestedOptions.projectId,
+    requestedOptions.worktreeId,
+  );
   // Until the provider session owns the turn, nothing else proves this process
   // is running it: a snapshot read meanwhile (a watcher reading the chat, a
   // renderer refresh) would settle the starting runtime as interrupted by an
@@ -2193,6 +2199,7 @@ async function dispatchHeldWorktreeChatTurn<
       });
     }
 
+    await assertCoworkChatRootPresent(options.projectId, options.worktreeId);
     await turnDispatchTiming.measure('session_reuse', async () => {
       const recreate = shouldRecreateSessionOnNextTurn(
         options.projectId,
@@ -3779,6 +3786,7 @@ async function dispatchHeldWorktreeChatTurn<
       // `noteCodeReviewTurnEnd` runs in the terminal chat-event handler above.
       noteCodeReviewTurnStart(options.worktreeId);
     }
+    await assertCoworkChatRootPresent(options.projectId, options.worktreeId);
     // Take the plan-file turn lease with no await before the send, so a
     // cancelled preparation never takes one. Every exit below ends it: the
     // root terminal event, a rejected send, a session disposed at send, or

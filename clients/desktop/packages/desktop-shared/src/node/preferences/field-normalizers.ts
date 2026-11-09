@@ -16,6 +16,7 @@ import {
   PROFILE_ROLES,
   AI_CREDITS_ROUTING_MODES,
   CHAT_BILLING_FRAMEWORKS,
+  USAGE_DATA_KEYS,
   type BranchNamePrefixMode,
   type BrowserDrawerTabId,
   type ChatInterfaceMode,
@@ -35,6 +36,7 @@ import {
   type TerminalPreset,
   type TerminalPresetIcon,
   type TerminalShellProfileId,
+  type UsageDataPreferences,
 } from '../../types';
 import { BUILTIN_PLAN_DETECTION_RULE_IDS } from '../../plan-detection';
 import { normalizeStringArray } from '../../lib/string-array';
@@ -305,6 +307,27 @@ export function normalizeTelemetrySharing(
         ? metadata
         : normalizeTelemetrySharingVisibility(value.summaries),
   };
+}
+
+/**
+ * Every usage-data switch defaults on. A non-record value or a non-boolean
+ * field falls back to `true`; unknown fields are dropped.
+ */
+export function normalizeUsageData(value: unknown): UsageDataPreferences {
+  const record = isRecord(value) ? value : {};
+  const normalized: UsageDataPreferences = {
+    productAnalytics: true,
+    sessionReplay: true,
+    errorReports: true,
+    activeUseSignal: true,
+    featureFlagIdentity: true,
+    skillSafetyCheck: true,
+  };
+  for (const key of USAGE_DATA_KEYS) {
+    const field = record[key];
+    if (typeof field === 'boolean') normalized[key] = field;
+  }
+  return normalized;
 }
 
 export function normalizeString(value: unknown, fallback = ''): string {

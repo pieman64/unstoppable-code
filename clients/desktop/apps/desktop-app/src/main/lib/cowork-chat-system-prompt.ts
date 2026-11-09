@@ -1,5 +1,5 @@
 import { BRAND } from '@canopy/brand/current';
-import { getProviderToolName } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { getProviderToolName } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { buildCoworkInjectedToolPrompt } from '../canopy-tools/prompting';
 
 const LOCAL_MEMORY_PROMPT_NUDGE =

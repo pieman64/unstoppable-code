@@ -268,12 +268,24 @@ export function isLocalWindowCaller(
 export function evaluateReadRoute(
   input: ReadRouteInput,
 ): ReadRouteTarget | null {
-  const { operation, platform, caller, scope, lookups } = input;
+  const { operation, platform } = input;
   if (platform === null) return null;
   if (READ_ROUTE_PREREQUISITES[operation].kind !== 'eligible') return null;
   if (READ_ROUTE_TABLE[operation][platform].kind !== 'eligible') return null;
+  return evaluateLocalRouteTarget({
+    ...input,
+    shape: READ_ROUTE_SCOPE_SHAPES[operation],
+  });
+}
+
+/** Shared local caller/scope guard, also used by unselected mutation and watch routes. */
+export function evaluateLocalRouteTarget(
+  input: Pick<ReadRouteInput, 'caller' | 'senderId' | 'scope' | 'lookups'> & {
+    readonly shape: ReadRouteScopeShape;
+  },
+): ReadRouteTarget | null {
+  const { caller, scope, lookups, shape } = input;
   if (!isLocalWindowCaller(caller, input.senderId)) return null;
-  const shape = READ_ROUTE_SCOPE_SHAPES[operation];
   const { workspaceId, worktreeId, repoId } = scope;
   if (
     workspaceId === undefined ||

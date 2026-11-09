@@ -44,6 +44,7 @@ export const LEGACY_PIPELINES_TRIGGERS: readonly WorkflowTriggerKind[] = [
   'manual',
   'plan-approved',
   'task-ready',
+  'workflow',
 ];
 
 export function isWorkflowsTabId(page: NavigationPage): page is WorkflowsTabId {

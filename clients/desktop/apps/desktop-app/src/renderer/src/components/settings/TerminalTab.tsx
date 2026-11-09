@@ -31,11 +31,17 @@ import {
   loadTerminalShellProfiles,
   setCachedTerminalPanelPreferences,
 } from '@/lib/terminalShellProfiles';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { Tooltip } from '@canopy/ui-shared/components/Tooltip';
 import {
   Button,
-  Notice,
   SettingsSelect,
   Surface,
   ToggleSwitch,
@@ -189,7 +195,7 @@ export function TerminalTab(): JSX.Element {
   // A failure shows in the section whose change failed.
   const [error, setError] = useState<{
     readonly section: 'shells' | 'presets';
-    readonly message: string;
+    readonly failure: InlineFailure;
   } | null>(null);
 
   useEffect(() => {
@@ -205,7 +211,8 @@ export function TerminalTab(): JSX.Element {
         setRevision(preferences.revision);
         setLoaded(true);
       })
-      .catch(() => {
+      .catch((caught: unknown) => {
+        reportClientAppError(caught);
         if (!canceled) setLoadError(true);
       });
     return (): void => {
@@ -251,15 +258,17 @@ export function TerminalTab(): JSX.Element {
         setCachedTerminalPanelPreferences(saved);
       }
       if (!result.ok) {
-        setError({ section, message: result.error.message });
+        setError({ section, failure: { error: result.error.message } });
         return false;
       }
       return true;
-    } catch {
-      setError({
-        section,
-        message: 'Could not save Terminal settings. Try again.',
-      });
+    } catch (caught) {
+      const appError = toAppError(resolveClientAppError(caught));
+      if (appError)
+        setError({
+          section,
+          failure: inlineFailure(appError, "Couldn't save Terminal settings."),
+        });
       return false;
     } finally {
       setSaving(false);
@@ -314,14 +323,18 @@ export function TerminalTab(): JSX.Element {
     if (!isTerminalPresetImageMimeType(file.type)) {
       setError({
         section: 'presets',
-        message: 'Preset icons must be PNG, JPEG, GIF, WebP, or SVG images.',
+        failure: {
+          error: 'Preset icons must be PNG, JPEG, GIF, WebP, or SVG images.',
+        },
       });
       return;
     }
     if (file.size > getTerminalPresetImageMaxFileBytes(file.type)) {
       setError({
         section: 'presets',
-        message: 'Preset icons must be smaller than 1 MB after encoding.',
+        failure: {
+          error: 'Preset icons must be smaller than 1 MB after encoding.',
+        },
       });
       return;
     }
@@ -331,7 +344,9 @@ export function TerminalTab(): JSX.Element {
       if (!isTerminalPresetImageDataUrl(reader.result)) {
         setError({
           section: 'presets',
-          message: 'Could not read this preset icon. Try a different image.',
+          failure: {
+            error: "Couldn't read this preset icon. Try a different image.",
+          },
         });
         return;
       }
@@ -392,13 +407,21 @@ export function TerminalTab(): JSX.Element {
         description="Show or hide shells detected on this computer."
         dataTestId="terminal-settings-shells"
       >
-        {loadError ? (
-          <Notice intent="destructive">
-            Could not load Terminal settings.
-          </Notice>
-        ) : null}
+        <DesktopErrorBanner
+          className=""
+          // The Terminal settings golden reads this exact sentence.
+          error={loadError ? 'Could not load Terminal settings.' : null}
+          testId="terminal-settings-load-error"
+        />
         {error?.section === 'shells' ? (
-          <Notice intent="destructive">{error.message}</Notice>
+          <DesktopErrorBanner
+            className=""
+            error={error.failure.error}
+            {...(error.failure.details === undefined
+              ? {}
+              : { details: error.failure.details })}
+            onDismiss={(): void => setError(null)}
+          />
         ) : null}
         <SettingsGroup>
           {shellOptions.map((option) => {
@@ -441,7 +464,14 @@ export function TerminalTab(): JSX.Element {
         dataTestId="terminal-settings-presets"
       >
         {error?.section === 'presets' ? (
-          <Notice intent="destructive">{error.message}</Notice>
+          <DesktopErrorBanner
+            className=""
+            error={error.failure.error}
+            {...(error.failure.details === undefined
+              ? {}
+              : { details: error.failure.details })}
+            onDismiss={(): void => setError(null)}
+          />
         ) : null}
         <SettingsGroup>
           <SettingsRow

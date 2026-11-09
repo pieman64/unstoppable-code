@@ -1,6 +1,6 @@
 import type { MemorySearchFact } from '@canopy/protocol/memory';
 import type { AppliedOrgMemoryTurn } from '../types';
-import { normalizeUuid } from './workspace-owner';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 
 const MAX_FACTS_PER_TURN = 8;
 const MAX_FACT_TEXT_LENGTH = 500;

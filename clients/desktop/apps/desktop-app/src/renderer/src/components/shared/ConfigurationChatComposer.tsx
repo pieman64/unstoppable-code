@@ -43,7 +43,7 @@ import {
   DEFAULT_CODEX_SPEED,
   readCodexSpeedRecord,
   withCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   PlanModeIcon,
   CommandIcon,

@@ -327,9 +327,9 @@ export const ToolCallBlock = memo(function ToolCallBlock({
         result={toolResult}
         pendingSpinner={<ThinkingSpinner />}
         // A visual row offers its source in place of the raw input.
-        expandedSlot={
+        expandedAction={
           visualOwner ? (
-            <ChatVisualSourceButton owner={visualOwner} className="m-2" />
+            <ChatVisualSourceButton owner={visualOwner} />
           ) : undefined
         }
       />

@@ -1,3 +1,4 @@
+import { GIT_AUTHENTICATION_FAILURE_PATTERNS } from '../../lib/git-error-classification';
 import { randomUUID } from 'node:crypto';
 import {
   chmod,
@@ -330,16 +331,6 @@ const defaultDependencies: MaterializeCodeDependencies = {
       options,
     ),
 };
-
-const GIT_AUTHENTICATION_FAILURE_PATTERNS = [
-  /\bauth(?:entication)? failed\b/i,
-  /could not read (?:username|password)/i,
-  /terminal prompts disabled/i,
-  /invalid (?:username|password)/i,
-  /permission denied \(publickey\)/i,
-  /http basic: access denied/i,
-  /requested url returned error: (?:401|403)\b/i,
-] as const;
 
 function gitFailureOutput(error: unknown): string {
   if (!error || typeof error !== 'object') return String(error);

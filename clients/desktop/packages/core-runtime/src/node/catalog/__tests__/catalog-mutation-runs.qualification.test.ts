@@ -1,11 +1,25 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  CatalogPluginInstallResultSchema,
+  CatalogSkillCustomSaveResultSchema,
+  CatalogSkillRemoveResultSchema,
+  CatalogSkillUpdateResultSchema,
+  CatalogSourceDeleteResultSchema,
+  CatalogSourceUpsertResultSchema,
+  isBoundedCanopyJsonValue,
+} from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '../../../runtime/errors';
 import type { CanopyHandlerContext } from '../../../runtime/types';
 import { OperationService } from '../../operations';
 import { OperationLedger } from '../../operations/ledger';
-import { CatalogMutationRuns, type CatalogMutationRequest } from '..';
+import {
+  CORE_CATALOG_MUTATION_KINDS,
+  CatalogMutationRuns,
+  type CatalogMutationRequest,
+  type CoreCatalogMutationKind,
+} from '..';
 
 const context: CanopyHandlerContext = {
   requestId: 'r',
@@ -226,6 +240,109 @@ describe('catalog mutation receipts (CAN-4123)', () => {
       expect(items).toEqual([expect.objectContaining({ status: 'completed' })]);
     } finally {
       jest.useRealTimers();
+    }
+  });
+  it('records an outcome too large for the ledger as a failure (CAN-5898)', async () => {
+    const first = open();
+    const effect = jest.fn(
+      (): Promise<Result> => Promise.resolve({ value: 'x'.repeat(40_000) }),
+    );
+    const tooLarge = {
+      payload: {
+        kind: 'internal',
+        message:
+          'The catalog change finished, but its result was too large to record.',
+        retry: { kind: 'never' },
+      },
+    };
+    await expect(first.runs.run(request(effect))).rejects.toMatchObject(
+      tooLarge,
+    );
+
+    first.operations.close();
+    const second = open();
+    await expect(second.runs.run(request(effect))).rejects.toMatchObject(
+      tooLarge,
+    );
+    expect(effect).toHaveBeenCalledTimes(1);
+  });
+
+  it('every keyed catalog outcome fits the ledger or is bounded by its handler (CAN-5898)', () => {
+    const id = 'i'.repeat(512);
+    const both = ['claude', 'codex'];
+    const maximal: Record<
+      CoreCatalogMutationKind,
+      | { schema: { parse: (value: unknown) => unknown }; result: unknown }
+      | { boundedBy: string }
+    > = {
+      'core.catalog.selection.update': {
+        boundedBy: 'catalog-handlers: refuses a selection or refresh too large',
+      },
+      'core.catalog.source.upsert': {
+        schema: CatalogSourceUpsertResultSchema,
+        result: {
+          sourceId: id,
+          displayName: 'd'.repeat(256),
+          locator: {
+            kind: 'directory',
+            fileRootId: id,
+            relativePath: 'p'.repeat(4096),
+          },
+          providers: both,
+          enabled: true,
+          revision: Number.MAX_SAFE_INTEGER,
+          lastRefresh: {
+            state: 'failed',
+            operationId: id,
+            completedAt: '2026-11-08T00:00:00.000Z',
+            errorCode: 'e'.repeat(256),
+          },
+        },
+      },
+      'core.catalog.source.delete': {
+        schema: CatalogSourceDeleteResultSchema,
+        result: { sourceId: id, removedProviders: both, alreadyAbsent: false },
+      },
+      'core.catalog.source.refresh': {
+        boundedBy: 'catalog-handlers: refuses a selection or refresh too large',
+      },
+      'core.catalog.plugin.install': {
+        schema: CatalogPluginInstallResultSchema,
+        result: {
+          entryId: id,
+          providers: both,
+          installedProviders: both,
+          failedProviders: [],
+        },
+      },
+      'core.catalog.skill.install': {
+        boundedBy:
+          'skill-catalog-handlers: records a 600-skill install with a receipt that fits the ledger',
+      },
+      'core.catalog.skill.update': {
+        schema: CatalogSkillUpdateResultSchema,
+        result: { entryId: id },
+      },
+      'core.catalog.skill.remove': {
+        schema: CatalogSkillRemoveResultSchema,
+        result: { entryId: id },
+      },
+      'core.catalog.skill.custom.save': {
+        schema: CatalogSkillCustomSaveResultSchema,
+        result: { entryId: id, skillName: id },
+      },
+      'core.catalog.skill.updates.check': {
+        boundedBy:
+          'skill-catalog-handlers: records an updates check over 600 installed skills',
+      },
+    };
+    expect(Object.keys(maximal).sort()).toEqual(
+      [...CORE_CATALOG_MUTATION_KINDS].sort(),
+    );
+    for (const entry of Object.values(maximal)) {
+      if ('boundedBy' in entry) continue;
+      expect(entry.schema.parse(entry.result)).toEqual(entry.result);
+      expect(isBoundedCanopyJsonValue(entry.result)).toBe(true);
     }
   });
 });

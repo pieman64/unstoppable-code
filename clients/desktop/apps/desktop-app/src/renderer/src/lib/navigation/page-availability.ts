@@ -68,6 +68,10 @@ const FEATURE_FLAG_PAGE_GATES: Partial<
     label: 'Feed',
     flag: CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key,
   },
+  'cloud-chat': {
+    label: 'Cloud chats',
+    flag: CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key,
+  },
 };
 
 /**

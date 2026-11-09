@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import { useRef, useState, type JSX } from 'react';
 import { DialogModal } from './DialogModal';
 import { Button } from './Button';
@@ -119,7 +120,7 @@ export function UsageLimitedSessionsControl({
           initialFocusRef={firstSessionRef}
           dataTestId={`${testIdPrefix}-waiting-chooser`}
         >
-          <ul className="space-y-1" aria-busy={state.kind === 'loading'}>
+          <Stack as="ul" gap="tight" aria-busy={state.kind === 'loading'}>
             {sessions.map((session, index) => (
               <li key={session.id}>
                 <ListRow
@@ -142,7 +143,7 @@ export function UsageLimitedSessionsControl({
                 </ListRow>
               </li>
             ))}
-          </ul>
+          </Stack>
         </DialogModal>
       )}
     </>

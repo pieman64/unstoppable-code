@@ -1,7 +1,7 @@
 import {
   isLedgerInjectedToolKey,
   type CanopyInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 
 /**
  * Memory-tool exposure for a `claude-worker` MCP route. Workers always run

@@ -45,8 +45,10 @@ export function WorkflowEditNotFound({
         {backLabel}
       </Button>
       {loading ? (
-        <DelayedLoadingPlaceholder>
-          <CenteredLoadingSpinner className="my-8" />
+        <DelayedLoadingPlaceholder className="">
+          <div className="box-content flex min-h-full flex-1 py-8">
+            <CenteredLoadingSpinner className="" />
+          </div>
         </DelayedLoadingPlaceholder>
       ) : (
         <p className="text-s fg-secondary">{NOT_FOUND_COPY[kind]}</p>

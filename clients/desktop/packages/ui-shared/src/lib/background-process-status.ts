@@ -1,3 +1,4 @@
+import type { BadgeTone } from './badge';
 import { OPERATIONAL_STATUS_COLORS } from './operational-status-colors';
 
 /**
@@ -27,6 +28,22 @@ export function getBackgroundProcessStatusClassName(
       return `${OPERATIONAL_STATUS_COLORS.paused.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.paused.foreground}`;
     default:
       return `${OPERATIONAL_STATUS_COLORS.paused.backgroundSubtle} ${OPERATIONAL_STATUS_COLORS.paused.foregroundMuted}`;
+  }
+}
+
+/** Badge tone for a background-process status. */
+export function backgroundProcessStatusBadgeTone(
+  status: BackgroundProcessDisplayStatus,
+): BadgeTone {
+  switch (status) {
+    case 'completed':
+      return 'success';
+    case 'running':
+      return 'info';
+    case 'failed':
+      return 'danger';
+    default:
+      return 'neutral';
   }
 }
 

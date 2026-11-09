@@ -8,11 +8,13 @@ import { brandText } from '@/lib/brand';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useObservabilityEntriesInterest } from '@/lib/chat-interest';
 import {
+  Stack,
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   Heading,
   Notice,
   SegmentedControl,
+  SegmentsBar,
   type SegmentedControlOption,
   Surface,
 } from '@canopy/ui-shared/components';
@@ -124,7 +126,7 @@ function StatTile({
   accent: string;
 }): JSX.Element {
   return (
-    <Surface variant="card" padding="default">
+    <Surface variant="card" gap="item" padding="default">
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs font-medium fg-secondary">{label}</div>
         <span
@@ -133,8 +135,10 @@ function StatTile({
           style={{ backgroundColor: accent }}
         />
       </div>
-      <div className="mt-3 text-2xl font-semibold fg-primary">{value}</div>
-      <div className="mt-1 text-xs fg-secondary">{detail}</div>
+      <Stack gap="tight">
+        <div className="text-2xl font-semibold fg-primary">{value}</div>
+        <div className="text-xs fg-secondary">{detail}</div>
+      </Stack>
     </Surface>
   );
 }
@@ -160,21 +164,20 @@ function ActivityBar({
   const barRef = useRef<HTMLDivElement>(null);
   useFlipBox(barRef, BAR_FILL);
   return (
-    <div className="space-y-1">
+    <Stack gap="tight">
       <div className="flex items-center justify-between gap-3 text-xs">
         <span className="truncate fg-primary">{label}</span>
         <span className="shrink-0 tabular-nums fg-secondary">
           {formatNumber(value)}
         </span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-secondary">
-        <div
-          ref={barRef}
-          className="h-full origin-top-left rounded-full"
-          style={{ width: `${width}%`, backgroundColor: color }}
-        />
-      </div>
-    </div>
+      <SegmentsBar
+        segments={[{ key: label, value, color }]}
+        scale={width / 100}
+        size="large"
+        fillRef={barRef}
+      />
+    </Stack>
   );
 }
 
@@ -337,7 +340,10 @@ export function TodayStatisticsPanel(): JSX.Element {
   const detailBarColor = DETAIL_MODE_COLORS[mode];
 
   return (
-    <section className="space-y-4" data-testid="statistics-today-panel">
+    <section
+      className="flex flex-col gap-4"
+      data-testid="statistics-today-panel"
+    >
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <Heading level={2} variant="section">
@@ -397,7 +403,7 @@ export function TodayStatisticsPanel(): JSX.Element {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-            <Surface variant="card" padding="default">
+            <Surface variant="card" gap="group" padding="default">
               <div
                 className="mx-auto grid h-48 w-48 place-items-center rounded-full"
                 style={{ background: gradient }}
@@ -411,7 +417,7 @@ export function TodayStatisticsPanel(): JSX.Element {
                   </div>
                 </div>
               </div>
-              <div className="mt-4 grid gap-2 text-xs fg-secondary">
+              <div className="grid gap-2 text-xs fg-secondary">
                 {donutSegments.map((segment) => (
                   <div
                     key={segment.label}
@@ -432,7 +438,7 @@ export function TodayStatisticsPanel(): JSX.Element {
               </div>
             </Surface>
 
-            <Surface variant="card" padding="default">
+            <Surface variant="card" gap="group" padding="default">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <Heading level={3} variant="title">
                   Detail Explorer
@@ -446,7 +452,7 @@ export function TodayStatisticsPanel(): JSX.Element {
                   onChange={setMode}
                 />
               </div>
-              <div className="mt-4 space-y-3">
+              <Stack gap="item">
                 {activeRows.length === 0 ? (
                   <Surface variant="dashed" size="small">
                     <div className="px-4 py-8 text-center text-s fg-secondary">
@@ -466,7 +472,7 @@ export function TodayStatisticsPanel(): JSX.Element {
                       />
                     ))
                 )}
-              </div>
+              </Stack>
             </Surface>
           </div>
           {historyTruncated ? (

@@ -9,6 +9,7 @@ import type * as ResourceActionsModule from '../../canopy-tools/resource-actions
 import type * as ResolveWorktreeModule from '../../lib/resolve-worktree';
 
 jest.mock('electron', () => ({
+  app: { isPackaged: false },
   BrowserWindow: { getAllWindows: (): [] => [] },
   ipcMain: { on: jest.fn(), removeHandler: jest.fn(), handle: jest.fn() },
 }));

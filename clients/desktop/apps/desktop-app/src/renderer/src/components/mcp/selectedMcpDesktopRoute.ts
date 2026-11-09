@@ -1,4 +1,4 @@
-import type { DetectedMcpServerInfo } from '@canopy/desktop-shared/types/mcp-servers';
+import type { DetectedMcpServerInfo } from '@canopy/execution-engine/types/mcp-servers';
 
 export function isUnboundPlugin(server: DetectedMcpServerInfo): boolean {
   return (

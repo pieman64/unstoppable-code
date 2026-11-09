@@ -1,8 +1,10 @@
+import { Dot } from '@canopy/ui-shared/components/Badge';
 import { useCallback, useId, useRef, useState, type JSX } from 'react';
-import { isMcpOAuthBrowserScope } from '@canopy/desktop-shared/types/browser';
+import { isMcpOAuthBrowserScope } from '@canopy/execution-engine/types/browser';
 import type { BrowserSessionSnapshot } from '@canopy/desktop-shared/types';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import {
+  Surface,
   ActionMenuRowStyle,
   DropdownMenuDivider,
   DropdownMenuItem,
@@ -12,6 +14,7 @@ import {
   HeaderActionButton,
   NestedMenuFlyout,
   TextInput,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import {
   BackIcon,
@@ -88,296 +91,300 @@ export function BrowserAddressBar({
   const closeMenu = (): void => setMenuOpen(false);
 
   return (
-    <div
-      data-testid="browser-bar"
-      data-variant="address-bar"
-      className="flex shrink-0 flex-col border-b"
-    >
-      {/* The panel's title row keeps its controls 4px from the card's
+    <Surface variant="section" boundary="bottom" className="shrink-0">
+      <div
+        data-testid="browser-bar"
+        data-variant="address-bar"
+        className="flex shrink-0 flex-col"
+      >
+        {/* The panel's title row keeps its controls 4px from the card's
           edges; this row does too, so Back sits under the first tab and the
           last control under the panel's ✕. As a pane toolbar its controls
           take the tab row's nested corner radius (panels.css). */}
-      <div className="canopy-panel-toolbar flex h-11 min-w-0 items-center gap-1 px-1">
-        <HeaderActionButton
-          stateStyle="toolbar"
-          iconOnly
-          tone="neutral"
-          aria-label="Back"
-          data-testid="browser-back"
-          disabled={!snapshot.canGoBack}
-          onClick={actions.back}
-        >
-          <BackIcon size={16} aria-hidden="true" />
-        </HeaderActionButton>
-        <HeaderActionButton
-          stateStyle="toolbar"
-          iconOnly
-          tone="neutral"
-          aria-label="Forward"
-          data-testid="browser-forward"
-          disabled={!snapshot.canGoForward}
-          onClick={actions.forward}
-        >
-          <ForwardIcon size={16} aria-hidden="true" />
-        </HeaderActionButton>
-        {actions.isLoading ? (
+        <div className="canopy-panel-toolbar flex h-11 min-w-0 items-center gap-1 px-1">
           <HeaderActionButton
             stateStyle="toolbar"
             iconOnly
             tone="neutral"
-            aria-label="Stop loading"
-            data-testid="browser-stop"
-            onClick={actions.stop}
+            aria-label="Back"
+            data-testid="browser-back"
+            disabled={!snapshot.canGoBack}
+            onClick={actions.back}
           >
-            <StopIcon size={16} aria-hidden="true" />
+            <BackIcon size={16} aria-hidden="true" />
           </HeaderActionButton>
-        ) : (
           <HeaderActionButton
             stateStyle="toolbar"
             iconOnly
             tone="neutral"
-            aria-label="Reload"
-            data-testid="browser-refresh"
-            onClick={actions.refresh}
+            aria-label="Forward"
+            data-testid="browser-forward"
+            disabled={!snapshot.canGoForward}
+            onClick={actions.forward}
           >
-            <RefreshIcon size={16} aria-hidden="true" />
+            <ForwardIcon size={16} aria-hidden="true" />
           </HeaderActionButton>
-        )}
+          {actions.isLoading ? (
+            <HeaderActionButton
+              stateStyle="toolbar"
+              iconOnly
+              tone="neutral"
+              aria-label="Stop loading"
+              data-testid="browser-stop"
+              onClick={actions.stop}
+            >
+              <StopIcon size={16} aria-hidden="true" />
+            </HeaderActionButton>
+          ) : (
+            <HeaderActionButton
+              stateStyle="toolbar"
+              iconOnly
+              tone="neutral"
+              aria-label="Reload"
+              data-testid="browser-refresh"
+              onClick={actions.refresh}
+            >
+              <RefreshIcon size={16} aria-hidden="true" />
+            </HeaderActionButton>
+          )}
 
-        <div className="mx-1 flex min-w-0 flex-1">
-          <TextInput
-            ref={actions.urlInputRef}
-            density="compact"
-            align={editing ? 'start' : 'center'}
-            data-testid="browser-url-input"
-            value={editing ? actions.urlDraft : summary}
-            spellCheck={false}
-            placeholder={actions.urlPlaceholder}
-            onFocus={(event): void => {
-              setFocused(true);
-              // The field swaps the host for the full address on focus;
-              // select it once that value is in place.
-              const input = event.currentTarget;
-              requestAnimationFrame(() => input.select());
-            }}
-            onBlur={(): void => setFocused(false)}
-            onChange={(event): void => actions.setUrlDraft(event.target.value)}
-            onKeyDown={actions.handleKeyDown}
-            aria-label="Browser URL"
-            aria-invalid={actions.urlError !== null}
-            aria-describedby={actions.urlError !== null ? errorId : undefined}
-            className="min-w-0"
-          />
-        </div>
-
-        {fullTools && snapshot.recording ? (
-          <HeaderActionButton
-            stateStyle="toolbar"
-            iconOnly
-            tone="destructive"
-            aria-label="Stop recording"
-            data-testid="browser-stop-recording"
-            onClick={actions.toggleRecording}
-          >
-            <RecordIcon size={16} aria-hidden="true" />
-          </HeaderActionButton>
-        ) : null}
-        {fullTools ? (
-          <HeaderActionButton
-            stateStyle="toolbar"
-            iconOnly
-            tone="neutral"
-            aria-label={pickLabel}
-            aria-pressed={snapshot.pickMode}
-            data-testid="browser-pick"
-            onClick={actions.togglePick}
-          >
-            <PickIcon size={16} aria-hidden="true" />
-          </HeaderActionButton>
-        ) : null}
-        {fullTools ? <BrowserDownloadsButton browserId={browserId} /> : null}
-
-        <span className="relative inline-flex">
-          <HeaderActionButton
-            stateStyle="toolbar"
-            ref={moreRef}
-            iconOnly
-            tone="neutral"
-            aria-label="More browser actions"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            data-testid="browser-more"
-            onClick={(): void => setMenuOpen((current) => !current)}
-          >
-            <MoreHorizontalIcon size={16} aria-hidden="true" />
-          </HeaderActionButton>
-          {fullTools && errorCount > 0 && !inspectorOpen ? (
-            // Page errors: the sidebar's 6px status dot, on the control
-            // that leads to them.
-            <span
-              aria-hidden="true"
-              data-testid="browser-more-error-dot"
-              className="pointer-events-none absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-destructive"
+          <div className="flex min-w-0 flex-1 px-1">
+            <TextInput
+              ref={actions.urlInputRef}
+              density="compact"
+              align={editing ? 'start' : 'center'}
+              data-testid="browser-url-input"
+              value={editing ? actions.urlDraft : summary}
+              spellCheck={false}
+              placeholder={actions.urlPlaceholder}
+              onFocus={(event): void => {
+                setFocused(true);
+                // The field swaps the host for the full address on focus;
+                // select it once that value is in place.
+                const input = event.currentTarget;
+                requestAnimationFrame(() => input.select());
+              }}
+              onBlur={(): void => setFocused(false)}
+              onChange={(event): void =>
+                actions.setUrlDraft(event.target.value)
+              }
+              onKeyDown={actions.handleKeyDown}
+              aria-label="Browser URL"
+              aria-invalid={actions.urlError !== null}
+              aria-describedby={actions.urlError !== null ? errorId : undefined}
+              className="min-w-0"
             />
+          </div>
+
+          {fullTools && snapshot.recording ? (
+            <HeaderActionButton
+              stateStyle="toolbar"
+              iconOnly
+              tone="destructive"
+              aria-label="Stop recording"
+              data-testid="browser-stop-recording"
+              onClick={actions.toggleRecording}
+            >
+              <RecordIcon size={16} aria-hidden="true" />
+            </HeaderActionButton>
           ) : null}
-        </span>
-        <FloatingMenu
-          open={menuOpen}
-          onOpenChange={setMenuOpen}
-          anchorRef={moreRef}
-          placement="bottom-right"
-          aria-label="More browser actions"
-          data-testid="browser-more-menu"
-          // As wide as its rows need, like the other action menus.
-          className="w-max min-w-45 max-w-[calc(100vw-16px)]"
-        >
-          <ActionMenuRowStyle>
-            {fullTools ? (
-              <BrowserProfileSubmenu
-                snapshot={snapshot}
-                onDone={closeMenu}
-                onNeedsPicker={(reason): void => {
-                  setProfileReason(reason);
-                  setProfileOpen(true);
-                }}
+          {fullTools ? (
+            <HeaderActionButton
+              stateStyle="toolbar"
+              iconOnly
+              tone="neutral"
+              aria-label={pickLabel}
+              aria-pressed={snapshot.pickMode}
+              data-testid="browser-pick"
+              onClick={actions.togglePick}
+            >
+              <PickIcon size={16} aria-hidden="true" />
+            </HeaderActionButton>
+          ) : null}
+          {fullTools ? <BrowserDownloadsButton browserId={browserId} /> : null}
+
+          <span className="relative inline-flex">
+            <HeaderActionButton
+              stateStyle="toolbar"
+              ref={moreRef}
+              iconOnly
+              tone="neutral"
+              aria-label="More browser actions"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              data-testid="browser-more"
+              onClick={(): void => setMenuOpen((current) => !current)}
+            >
+              <MoreHorizontalIcon size={16} aria-hidden="true" />
+            </HeaderActionButton>
+            {fullTools && errorCount > 0 && !inspectorOpen ? (
+              // Page errors: the sidebar's 6px status dot, on the control
+              // that leads to them.
+              <Dot
+                tone="danger"
+                data-testid="browser-more-error-dot"
+                className="pointer-events-none absolute right-1 top-1"
               />
             ) : null}
-            <DropdownMenuItem
-              data-testid="browser-more-open-external"
-              disabled={!actions.canOpenExternally}
-              onClick={(): void => {
-                closeMenu();
-                actions.openExternally();
-              }}
-            >
-              <DropdownMenuItemIcon>
-                <ExternalIcon />
-              </DropdownMenuItemIcon>
-              <span className="min-w-0 flex-1 truncate">
-                Open in external browser
-              </span>
-            </DropdownMenuItem>
-            <DropdownMenuDivider />
-            <NestedMenuFlyout
-              label="Appearance"
-              leading={
-                snapshot.themeMode === 'dark' ? (
-                  <MoonIcon size={16} />
-                ) : (
-                  <SunIcon size={16} />
-                )
-              }
-              triggerTestId="browser-more-appearance"
-              menuTestId="browser-appearance-submenu"
-            >
-              {(
-                [
-                  ['system', 'System'],
-                  ['light', 'Light'],
-                  ['dark', 'Dark'],
-                ] as const
-              ).map(([mode, label]) => (
-                <DropdownMenuItem
-                  key={mode}
-                  role="menuitemradio"
-                  aria-checked={snapshot.themeMode === mode}
-                  data-testid={`browser-theme-${mode}`}
-                  onClick={(): void => {
-                    closeMenu();
-                    actions.setTheme(mode);
+          </span>
+          <FloatingMenu
+            open={menuOpen}
+            onOpenChange={setMenuOpen}
+            anchorRef={moreRef}
+            placement="bottom-right"
+            aria-label="More browser actions"
+            data-testid="browser-more-menu"
+            // As wide as its rows need, like the other action menus.
+            className="w-max min-w-45 max-w-[calc(100vw-16px)]"
+          >
+            <ActionMenuRowStyle>
+              {fullTools ? (
+                <BrowserProfileSubmenu
+                  snapshot={snapshot}
+                  onDone={closeMenu}
+                  onNeedsPicker={(reason): void => {
+                    setProfileReason(reason);
+                    setProfileOpen(true);
                   }}
-                >
-                  {/* The check leads, in the icon column, like the profile
-                    submenu's rows. */}
-                  <DropdownMenuItemIcon tone="secondary">
-                    {snapshot.themeMode === mode ? (
-                      <CheckIcon size={16} />
-                    ) : null}
-                  </DropdownMenuItemIcon>
-                  <span className="min-w-0 flex-1 truncate">{label}</span>
-                </DropdownMenuItem>
-              ))}
-            </NestedMenuFlyout>
-            {fullTools ? (
-              <>
-                <DropdownMenuDivider />
-                <DropdownMenuItem
-                  data-testid="browser-more-record"
-                  onClick={(): void => {
-                    closeMenu();
-                    actions.toggleRecording();
-                  }}
-                >
-                  <DropdownMenuItemIcon
-                    tone={snapshot.recording ? 'destructive' : undefined}
+                />
+              ) : null}
+              <DropdownMenuItem
+                data-testid="browser-more-open-external"
+                disabled={!actions.canOpenExternally}
+                onClick={(): void => {
+                  closeMenu();
+                  actions.openExternally();
+                }}
+              >
+                <DropdownMenuItemIcon>
+                  <ExternalIcon />
+                </DropdownMenuItemIcon>
+                <span className="min-w-0 flex-1 truncate">
+                  Open in external browser
+                </span>
+              </DropdownMenuItem>
+              <DropdownMenuDivider />
+              <NestedMenuFlyout
+                label="Appearance"
+                leading={
+                  snapshot.themeMode === 'dark' ? (
+                    <MoonIcon size={16} />
+                  ) : (
+                    <SunIcon size={16} />
+                  )
+                }
+                triggerTestId="browser-more-appearance"
+                menuTestId="browser-appearance-submenu"
+              >
+                {(
+                  [
+                    ['system', 'System'],
+                    ['light', 'Light'],
+                    ['dark', 'Dark'],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <DropdownMenuItem
+                    key={mode}
+                    role="menuitemradio"
+                    aria-checked={snapshot.themeMode === mode}
+                    data-testid={`browser-theme-${mode}`}
+                    onClick={(): void => {
+                      closeMenu();
+                      actions.setTheme(mode);
+                    }}
                   >
-                    <RecordIcon />
-                  </DropdownMenuItemIcon>
-                  <span className="min-w-0 flex-1 truncate">
-                    {snapshot.recording ? 'Stop recording' : 'Record actions'}
-                  </span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  data-testid="browser-more-screenshot"
-                  onClick={(): void => {
-                    closeMenu();
-                    actions.screenshot();
-                  }}
-                >
-                  <DropdownMenuItemIcon>
-                    <CameraIcon />
-                  </DropdownMenuItemIcon>
-                  <span className="min-w-0 flex-1 truncate">
-                    Take screenshot
-                  </span>
-                </DropdownMenuItem>
-                <DropdownMenuDivider />
-                <DropdownMenuItem
-                  data-testid="browser-more-details"
-                  onClick={(): void => {
-                    closeMenu();
-                    onToggleInspector();
-                  }}
-                >
-                  <DropdownMenuItemIcon>
-                    <CodeBracketsIcon />
-                  </DropdownMenuItemIcon>
-                  <span className="min-w-0 flex-1 truncate">
-                    {inspectorOpen
-                      ? 'Hide console and network'
-                      : 'Console and network'}
-                  </span>
-                  {errorCount > 0 ? (
-                    <DropdownMenuItemTrailing
-                      tone="destructive"
-                      className="ml-3"
+                    {/* The check leads, in the icon column, like the profile
+                    submenu's rows. */}
+                    <DropdownMenuItemIcon tone="secondary">
+                      {snapshot.themeMode === mode ? (
+                        <CheckIcon size={16} />
+                      ) : null}
+                    </DropdownMenuItemIcon>
+                    <span className="min-w-0 flex-1 truncate">{label}</span>
+                  </DropdownMenuItem>
+                ))}
+              </NestedMenuFlyout>
+              {fullTools ? (
+                <>
+                  <DropdownMenuDivider />
+                  <DropdownMenuItem
+                    data-testid="browser-more-record"
+                    onClick={(): void => {
+                      closeMenu();
+                      actions.toggleRecording();
+                    }}
+                  >
+                    <DropdownMenuItemIcon
+                      tone={snapshot.recording ? 'destructive' : undefined}
                     >
-                      {errorCount > 99 ? '99+' : errorCount}{' '}
-                      {errorCount === 1 ? 'error' : 'errors'}
-                    </DropdownMenuItemTrailing>
-                  ) : null}
-                </DropdownMenuItem>
-              </>
-            ) : null}
-          </ActionMenuRowStyle>
-        </FloatingMenu>
-        {fullTools ? (
-          <BrowserProfilePicker
-            snapshot={snapshot}
-            control={{
-              open: profileOpen,
-              onOpenChange: onProfileOpenChange,
-              anchorRef: moreRef,
-              reason: profileReason,
-            }}
-          />
-        ) : null}
-      </div>
-      {actions.urlError !== null && (
-        <div id={errorId} className="px-3 pb-1.5 text-xs fg-destructive">
-          {actions.urlError}
+                      <RecordIcon />
+                    </DropdownMenuItemIcon>
+                    <span className="min-w-0 flex-1 truncate">
+                      {snapshot.recording ? 'Stop recording' : 'Record actions'}
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    data-testid="browser-more-screenshot"
+                    onClick={(): void => {
+                      closeMenu();
+                      actions.screenshot();
+                    }}
+                  >
+                    <DropdownMenuItemIcon>
+                      <CameraIcon />
+                    </DropdownMenuItemIcon>
+                    <span className="min-w-0 flex-1 truncate">
+                      Take screenshot
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuDivider />
+                  <DropdownMenuItem
+                    data-testid="browser-more-details"
+                    onClick={(): void => {
+                      closeMenu();
+                      onToggleInspector();
+                    }}
+                  >
+                    <DropdownMenuItemIcon>
+                      <CodeBracketsIcon />
+                    </DropdownMenuItemIcon>
+                    <span className="min-w-0 flex-1 truncate">
+                      {inspectorOpen
+                        ? 'Hide console and network'
+                        : 'Console and network'}
+                    </span>
+                    {errorCount > 0 ? (
+                      <DropdownMenuItemTrailing
+                        tone="destructive"
+                        className="ml-3"
+                      >
+                        {errorCount > 99 ? '99+' : errorCount}{' '}
+                        {errorCount === 1 ? 'error' : 'errors'}
+                      </DropdownMenuItemTrailing>
+                    ) : null}
+                  </DropdownMenuItem>
+                </>
+              ) : null}
+            </ActionMenuRowStyle>
+          </FloatingMenu>
+          {fullTools ? (
+            <BrowserProfilePicker
+              snapshot={snapshot}
+              control={{
+                open: profileOpen,
+                onOpenChange: onProfileOpenChange,
+                anchorRef: moreRef,
+                reason: profileReason,
+              }}
+            />
+          ) : null}
         </div>
-      )}
-    </div>
+        {actions.urlError !== null && (
+          <div className="px-3 pb-1.5">
+            <FieldError id={errorId}>{actions.urlError}</FieldError>
+          </div>
+        )}
+      </div>
+    </Surface>
   );
 }

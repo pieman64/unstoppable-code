@@ -229,6 +229,30 @@ it('a stopping lineage parent keeps the subagent run inside its cancellation', a
   }
 });
 
+it('only a core.agent.subagent.run is a subagent run (CAN-6000)', async () => {
+  const h = compose(join(root, 'ledger.sqlite'), undefined, {
+    holdSubagents: true,
+  });
+  try {
+    const run = await h.subagents.begin(subagent(null));
+    const { operation: pipeline } = await h.operations.admit({
+      kind: 'core.pipeline.run',
+      status: 'running',
+      origin: { kind: 'client', sourceId: 'test' },
+      owner: { kind: 'system', id: 'test' },
+      scope: { workspaceId: 'ws', worktreeId: 'wt' },
+    });
+
+    expect(await h.subagents.isSubagentRun(run.ref.operationId)).toBe(true);
+    expect(await h.subagents.isSubagentRun(pipeline.operationId)).toBe(false);
+    expect(await h.subagents.isSubagentRun('missing')).toBe(false);
+    h.endSubagent('completed');
+    await run.settled;
+  } finally {
+    h.close();
+  }
+});
+
 describe('native stop (CAN-4112)', () => {
   const cancel = { reason: 'Stop', requestedBy: 'test' };
 

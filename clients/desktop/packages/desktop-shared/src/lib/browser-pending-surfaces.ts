@@ -1,4 +1,4 @@
-import type { BrowserActionError } from '../types/browser';
+import type { BrowserActionError } from '@canopy/execution-engine/types/browser';
 
 /**
  * What `browser.handle_dialog` means for a pending file chooser. Chooser ids

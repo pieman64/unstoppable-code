@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type {
   ExecutionEvent,
   ExecutionSummary,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { summaryFromState } from '@/stores/pipelineRunsStore';
 
 /**

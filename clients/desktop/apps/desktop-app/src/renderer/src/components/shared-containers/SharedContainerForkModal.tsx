@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 /**
  * Fork a shared container into a private local copy (CAN-2552).
  *
@@ -55,9 +56,9 @@ import type {
   SharedContainerType,
 } from '@canopy/protocol/shared-containers';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
-import { workspaceOwnerMatchesContext } from '@canopy/desktop-shared/lib/workspace-owner';
+import { workspaceOwnerMatchesContext } from '@canopy/execution-engine/lib/workspace-owner';
 import { formatCapabilityPackageForkDisclosure } from '@canopy/ui-shared/sharing';
-import { workspaceContextDisplayLabel } from '@canopy/desktop-shared/lib/automation-context-copy';
+import { workspaceContextDisplayLabel } from '@canopy/execution-engine/lib/automation-context-copy';
 import { Button } from '@/components/shared/Button';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { brandText } from '@/lib/brand';
@@ -646,7 +647,7 @@ function SharedContainerForkReview({
             )}
 
             {kind === 'existing' && candidates.length > 0 && (
-              <div className="ml-6">
+              <div className="pl-6">
                 <DialogFormField
                   htmlFor="shared-container-fork-workspace"
                   label={
@@ -756,17 +757,19 @@ function SharedContainerForkReview({
                 {capabilityDisclosure !== null &&
                   capabilityDisclosure.scripts.length > 0 && (
                     <li data-testid="shared-container-fork-scripts">
-                      Scripts that can run on this computer:
-                      <ul className="mt-1 flex flex-col gap-0.5">
-                        {capabilityDisclosure.scripts.map((script) => (
-                          <li
-                            key={script}
-                            className="break-all font-mono fg-primary"
-                          >
-                            {script}
-                          </li>
-                        ))}
-                      </ul>
+                      <Stack gap="tight">
+                        Scripts that can run on this computer:
+                        <ul className="flex flex-col gap-0.5">
+                          {capabilityDisclosure.scripts.map((script) => (
+                            <li
+                              key={script}
+                              className="break-all font-mono fg-primary"
+                            >
+                              {script}
+                            </li>
+                          ))}
+                        </ul>
+                      </Stack>
                     </li>
                   )}
               </ul>

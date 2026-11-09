@@ -52,7 +52,7 @@ import type {
   PipelineAgentChatAddress,
   PipelineChatSendRecord,
   PipelineExecutionInitiator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { ResolvedActionRuntime } from '../action-resolver';
 import {
   createSetupWithdrawal,
@@ -485,7 +485,7 @@ function hostStepTimeoutMs(
 }
 
 /** `<executionsDir>/<executionId>/host/<sha256(idempotencyKey)>`: no user text in the path. */
-function hostArtifactsDir(
+export function hostArtifactsDir(
   executionsDir: string,
   executionId: string,
   idempotencyKey: string,
@@ -505,7 +505,7 @@ async function appendHostLog(logFile: string, line: string): Promise<void> {
 
 /** A finalizer that throws falls back to the generic timeout; the error is logged, never the request. */
 async function runTimeoutFinalizer(
-  finalize: (() => Promise<PipelineHostActionResult>) | undefined,
+  finalize: (() => Promise<PipelineHostActionResult | undefined>) | undefined,
   logFile: string,
   label: string,
 ): Promise<PipelineHostActionResult | undefined> {
@@ -532,7 +532,9 @@ async function callHostWithDeadline(
   logFile: string,
   label: string,
 ): Promise<HostCallOutcome> {
-  let finalizer: (() => Promise<PipelineHostActionResult>) | undefined;
+  let finalizer:
+    | (() => Promise<PipelineHostActionResult | undefined>)
+    | undefined;
   // The deadline and the withdrawal timer start together, so the host's
   // `deadlineAt` is the instant the executor withdraws.
   const controls: PipelineHostActionControls = {

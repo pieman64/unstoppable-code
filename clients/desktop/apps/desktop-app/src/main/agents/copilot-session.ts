@@ -18,14 +18,14 @@ import type { BrowserWindow } from 'electron';
 import {
   getRawCopilotModelId,
   isCopilotModel,
-} from '@canopy/desktop-shared/lib/copilot-models';
+} from '@canopy/execution-engine/lib/copilot-models';
 import {
   hasAnySelections,
   STANDALONE_CHAT_PROJECT_ID,
-  SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
   type ApprovalMode,
+  type McpQuestionAnswer,
 } from '@canopy/desktop-shared/types';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { cursorCanopyMcpServerNames } from '@canopy/desktop-shared/lib/cursor-mcp-tool-call';
 import {
   emptyCursorCapabilityProjection,
@@ -53,7 +53,6 @@ import {
   CopilotToolReceipts,
   copilotReceiptText,
 } from '@canopy/copilot-recipient/tool-receipts';
-import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import { clampThinkingLevelToDeclared } from '@canopy/protocol/thinking';
 import type { TurnBinding } from '@canopy/protocol/canopy-core';
 import {
@@ -61,10 +60,11 @@ import {
   type ApprovalSessionHandle,
 } from '../approvals/approval-service';
 import {
-  openManagedCopilotRuntime,
   assertCopilotConnectionGeneration,
   assertCopilotModelAvailable,
 } from '../copilot/connection';
+import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
+import { getCopilotWorkerRuntime } from '../agent-runs/copilot-worker-runtime';
 import { authorizeCopilotNativeTool } from '../copilot/tool-approval';
 import { buildCopilotMcpServers } from '../copilot/mcp-servers';
 import { authorizeCursorMcpTool } from '../cursor/tool-approval';
@@ -164,6 +164,19 @@ function listNames(names: readonly string[]): string {
   return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
 }
 
+/** Copilot's reply to its user-input question: one string for the answer. */
+export function copilotUserInputAnswer(answer: McpQuestionAnswer | undefined): {
+  answer: string;
+  wasFreeform: boolean;
+} {
+  const selected = answer?.selectedOptions ?? [];
+  // A picked option keeps the text typed beside it (REG-3133).
+  return {
+    answer: [...selected, answer?.freeformText].filter(Boolean).join(', '),
+    wasFreeform: selected.length === 0 && !!answer?.freeformText,
+  };
+}
+
 /** SDK-backed desktop provider; canonical transcript ownership remains in chat state. */
 export class CopilotProvider implements AgentProvider {
   createSession(
@@ -171,6 +184,7 @@ export class CopilotProvider implements AgentProvider {
     onEvent: (event: unknown) => void | Promise<void>,
     getWindow: () => BrowserWindow | null,
   ): AgentSession {
+    assertAgentWorkerContext('CopilotProvider.createSession');
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const lifecycleScope = {
       projectId: opts.projectId,
@@ -307,11 +321,10 @@ export class CopilotProvider implements AgentProvider {
         serverMode !== 'app-advisor'
       )
         throw new Error('Copilot is not available for this assistant surface.');
-      const runtime = await openManagedCopilotRuntime({
-        signal: abort.signal,
-        cwd: opts.cwd,
-        workspaceId: opts.projectId,
-      });
+      const runtime = await getCopilotWorkerRuntime().openSessionRuntime(
+        'CopilotSession.run',
+        { signal: abort.signal, cwd: opts.cwd, workspaceId: opts.projectId },
+      );
       const proxy = getMcpHttpProxyService();
       const receipts = new CopilotToolReceipts();
       const turnEmit = (event: Record<string, unknown>): void | Promise<void> =>
@@ -816,8 +829,7 @@ export class CopilotProvider implements AgentProvider {
               observedDuringTurnId: turnId,
             });
           },
-          onSetAutoArchive: (enabled) =>
-            turnEmit({ type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE, enabled }),
+          autoArchiveAvailable: true,
           authorizeToolCall: (toolKey, args, call) => {
             const tool =
               serverMode === 'app-advisor'
@@ -946,7 +958,7 @@ export class CopilotProvider implements AgentProvider {
               return;
             assertCopilotConnectionGeneration(runtime.generation);
             if (
-              deferredToolsReloadCoordinator.markToolResultDelivered(
+              getCopilotWorkerRuntime().acknowledgeToolResult(
                 {
                   projectId: opts.projectId,
                   worktreeId: opts.worktreeId,
@@ -1152,14 +1164,7 @@ export class CopilotProvider implements AgentProvider {
                 observedDuringTurnId: turnId,
               });
             }
-            const answer = answers[0];
-            return {
-              answer:
-                answer?.freeformText ??
-                answer?.selectedOptions.join(', ') ??
-                '',
-              wasFreeform: !!answer?.freeformText,
-            };
+            return copilotUserInputAnswer(answers[0]);
           },
         };
         const capabilitySnapshot = createCopilotCapabilitySnapshot({

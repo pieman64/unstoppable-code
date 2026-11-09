@@ -1,5 +1,68 @@
-import type { JSX } from 'react';
-import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';
+import type { JSX, ReactNode } from 'react';
+import { ClaudeLogo, CodexLogo } from '../icons';
+import {
+  parseProviderSourceLabel,
+  sourceLabelProvider,
+  type UnifiedPluginEntry,
+} from '../lib/unified-plugin-entry';
+import { Tooltip } from './Tooltip';
+
+function entrySourceProvider(
+  entry: UnifiedPluginEntry,
+): 'Claude' | 'Codex' | undefined {
+  if (entry.kind !== 'plugin') return undefined;
+  if (entry.origin === 'shared') return entry.sharedSourceProvider;
+  if (entry.origin !== 'marketplace') return undefined;
+  return sourceLabelProvider(entry.sourceLabel);
+}
+
+/**
+ * A marketplace source line without the provider its logo already names:
+ * `Claude · PostHog` reads `PostHog`, and `Codex official` reads nothing. A row
+ * with no logo, such as a plugin's bundled skill, keeps the full line.
+ */
+export function entrySourceTextWithoutProvider(
+  entry: UnifiedPluginEntry,
+  text: string,
+): string {
+  if (
+    entrySourceProvider(entry) === undefined ||
+    entry.origin !== 'marketplace' ||
+    text !== entry.sourceLabel?.trim()
+  )
+    return text;
+  return parseProviderSourceLabel(text)?.rest ?? text;
+}
+
+/**
+ * The provider a marketplace plugin's source line names, as a small logo with
+ * a tooltip, so same-named plugins read as different packages rather than
+ * duplicates. The source label leads with its provider (`pluginSourceLabel`).
+ * It sits inside the Customize row's button, so it is not focusable itself;
+ * its label is part of the row's accessible name.
+ */
+export function EntrySourceProviderMark({
+  entry,
+}: {
+  entry: UnifiedPluginEntry;
+}): JSX.Element | null {
+  const provider = entrySourceProvider(entry);
+  if (provider === undefined) return null;
+  const Logo = provider === 'Claude' ? ClaudeLogo : CodexLogo;
+  const tooltip = `${provider} marketplace`;
+  return (
+    <Tooltip label={tooltip}>
+      <Logo
+        width={12}
+        height={12}
+        role="img"
+        aria-label={tooltip}
+        data-testid={`entry-source-provider-${entry.id}`}
+        className="shrink-0 fg-secondary"
+      />
+    </Tooltip>
+  );
+}
 
 /**
  * Where a plugin row comes from (`Claude · slackapi`, `Codex official`), as
@@ -30,10 +93,30 @@ export function EntrySourceLabel({
   if (!showsEntrySourceLabel(entry)) return null;
   return (
     <span
-      data-testid={testId}
-      className={`${shrinkable ? 'min-w-0 shrink truncate' : 'shrink-0'} text-xs fg-tertiary`}
+      className={`${shrinkable ? 'min-w-0 shrink' : 'shrink-0'} inline-flex items-center gap-1`}
     >
-      {entry.sourceLabel}
+      <EntrySourceProviderMark entry={entry} />
+      <span
+        data-testid={testId}
+        className={`${shrinkable ? 'min-w-0 shrink truncate' : 'shrink-0'} text-xs fg-tertiary`}
+      >
+        {entrySourceTextWithoutProvider(entry, entry.sourceLabel ?? '')}
+      </span>
+    </span>
+  );
+}
+
+/** Routine workflow provenance, shared by desktop and paired Portal pickers. */
+export function PipelineSourceLabel({
+  children,
+  'data-testid': testId,
+}: {
+  readonly children: ReactNode;
+  readonly 'data-testid'?: string;
+}): JSX.Element {
+  return (
+    <span data-testid={testId} className="shrink-0 text-2xs fg-tertiary">
+      {children}
     </span>
   );
 }

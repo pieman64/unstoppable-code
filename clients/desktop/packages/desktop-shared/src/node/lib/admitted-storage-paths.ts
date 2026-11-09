@@ -6,7 +6,7 @@ import type {
 import {
   registeredCanopyDataRootResolver,
   registeredCanopySecureRootResolver,
-} from './canopy-data-root-registration';
+} from '@canopy/execution-engine/node/lib/canopy-data-root-registration';
 
 type OwnershipRow = (typeof STORAGE_OWNERSHIP)[number];
 

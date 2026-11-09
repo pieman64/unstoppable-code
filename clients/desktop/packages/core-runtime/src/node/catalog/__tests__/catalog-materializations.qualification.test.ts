@@ -19,6 +19,10 @@ import {
 } from '../../../runtime/local-worker-transport';
 import { createWorkerExecutorReceipts } from '../../../runtime/worker-executor-receipts';
 import { serializingWorkerPair } from '../../../runtime/__tests__/serializing-worker-pair';
+import {
+  ExecutionSecretGrants,
+  refusingExecutionSecretSource,
+} from '../../execution-secrets';
 import { LocalWorkerExecution, OperationService } from '../../operations';
 import { OperationLedger } from '../../operations/ledger';
 import {
@@ -67,6 +71,10 @@ class MemoryWorkerHost implements WorkerCatalogHost {
   }
 
   lookupSkill(): Promise<WorkerCatalogSkillInstall | null> {
+    return Promise.resolve(null);
+  }
+
+  lookupMcpServer(): Promise<null> {
     return Promise.resolve(null);
   }
 }
@@ -153,6 +161,7 @@ function harness(
   const host = new MemoryWorkerHost();
   const handlers = createWorkerCatalogHandlers({
     host,
+    secrets: refusingExecutionSecretSource,
     ...(maxRecords !== undefined ? { maxRecords } : {}),
   });
   const receipts = createWorkerExecutorReceipts(instructions);
@@ -223,6 +232,9 @@ function harness(
         operations,
         localWorker,
         resolver,
+        secrets: new ExecutionSecretGrants({
+          reader: { read: () => Promise.resolve([]) },
+        }),
       }),
     };
   };
@@ -316,45 +328,6 @@ describe('catalog materialization (CAN-4123)', () => {
           code: 'worker.catalog.invalidState',
         });
         expect(h.host.lookups).toBe(0);
-      });
-
-      it('the worker refuses MCP server items until CAN-4125 materializes them', async () => {
-        h = harness(kind, join(root, 'ledger.sqlite'), []);
-        h.host.installs.set('market/a', install('/plugins/a'));
-        const items: CatalogMaterializationItemDescriptor[] = [
-          plugin('a'),
-          {
-            kind: 'mcp_server',
-            entryId: 'mcp_server:server/config',
-            serverId: 'server',
-            configId: 'config',
-            transport: 'stdio',
-            binding: 'device',
-            configRevision: catalogSha256('config'),
-            secretRefs: [],
-          },
-        ];
-        const { materializationId, fingerprint } =
-          catalogMaterializationIdentity(items, scope);
-        const error = await rejection(
-          h.transport.instruction(
-            'worker.catalog.materialize',
-            {
-              materializationId,
-              scope,
-              itemDescriptors: items,
-              expectedFingerprint: fingerprint,
-              _meta: { idempotencyKey: materializationId },
-            },
-            { metadata: { idempotencyKey: 'mcp' } },
-          ),
-        );
-        expect(error.payload).toMatchObject({
-          kind: 'capability_unavailable',
-          message: 'This worker does not materialize MCP servers yet.',
-        });
-        expect(h.host.lookups).toBe(0);
-        expect(h.handlers.reader.resolve(materializationId)).toBeNull();
       });
 
       it('materializes once per id and never rewrites it', async () => {

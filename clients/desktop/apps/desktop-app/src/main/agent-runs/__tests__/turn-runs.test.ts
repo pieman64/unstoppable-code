@@ -18,7 +18,7 @@ import { stopChatTurnExactly } from '../../canopy-runtime/chat-turn-stop';
 import { stopChatTurn } from '../../lib/chat-turn-stop';
 import { cancelStandaloneChat } from '../../services/standalone-chat-service';
 import { CanopyOperationError } from '@canopy/core-runtime';
-import type { AgentSessionOptions } from '../../agents/types';
+import type { AgentProvider, AgentSessionOptions } from '../../agents/types';
 import {
   setWorkerProviderRuntimeForTests,
   workerProviderRuntimeFor,
@@ -493,6 +493,53 @@ describe('replayed dispatch of an acknowledged Claude turn', () => {
     );
     await expect(replay).rejects.toBeInstanceOf(CanopyOperationError);
     await expect(replay).rejects.toMatchObject({
+      payload: { code: 'core.chat.turnRunActive' },
+    });
+    expect(createSession).toHaveBeenCalledTimes(1);
+    run.settle('completed');
+    await settledRecords();
+  });
+});
+
+describe('Copilot sessions on a replayed dispatch (CAN-4119)', () => {
+  afterEach(() => {
+    setWorkerProviderRuntimeForTests('copilot', undefined);
+  });
+
+  it('a replayed dispatch of an acknowledged turn constructs no second Copilot session', async () => {
+    const createSession = jest.fn();
+    const provider: AgentProvider = { createSession };
+    setWorkerProviderRuntimeForTests('copilot', {
+      harness: 'copilot',
+      providerFor: () => Promise.resolve(provider),
+    });
+    const copilotRequest = { ...request, providerId: 'copilot' };
+    const opts: AgentSessionOptions = {
+      projectId: 'ws',
+      worktreeId: 'wt',
+      chatId: 'chat',
+      cwd: root,
+    };
+    const run = await beginChatTurnRun(copilotRequest);
+    await run.execute(async () => {
+      const runtime = await workerProviderRuntimeFor('copilot');
+      if (!runtime) throw new Error('No Copilot worker runtime is registered.');
+      const copilot = await runtime.providerFor('copilot', () => null);
+      return copilot.createSession(
+        opts,
+        () => undefined,
+        () => null,
+      );
+    });
+    run.accepted();
+    let replay: unknown;
+    try {
+      await beginChatTurnRun(copilotRequest);
+    } catch (error) {
+      replay = error;
+    }
+    expect(replay).toBeInstanceOf(CanopyOperationError);
+    expect(replay).toMatchObject({
       payload: { code: 'core.chat.turnRunActive' },
     });
     expect(createSession).toHaveBeenCalledTimes(1);

@@ -412,7 +412,7 @@ function ConnectedSetup({
       </div>
       {errorMessage && <Notice intent="destructive">{errorMessage}</Notice>}
       {options.length > 0 && (
-        <div className="space-y-1 text-s fg-secondary">
+        <div className="flex flex-col gap-1 text-s fg-secondary">
           <p>
             {options.filter((option) => option.selected).length}{' '}
             {options.filter((option) => option.selected).length === 1
@@ -527,7 +527,7 @@ function ConnectedSetup({
             {recentAttempts.map((attempt) => (
               <div
                 key={attempt.creationKey}
-                className="space-y-1 text-s fg-secondary"
+                className="flex flex-col gap-1 text-s fg-secondary"
               >
                 <p>
                   Recent shared project (
@@ -535,6 +535,7 @@ function ConnectedSetup({
                   {statusText(attempt.state)}
                 </p>
                 <Button
+                  className="self-start"
                   size="compact"
                   variant="secondary"
                   disabled={state.busy}

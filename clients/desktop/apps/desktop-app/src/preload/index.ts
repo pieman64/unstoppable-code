@@ -1,4 +1,13 @@
-import type { ApprovalSecretInputRequest } from '@canopy/desktop-shared/types';
+import {
+  resolveIpcAppError,
+  resolveIpcCoworkFolderMissing,
+  resolveIpcOperationFailure,
+  restoreIpcAppError,
+} from './ipc-app-errors';
+import type {
+  ApprovalSecretInputRequest,
+  UsageDataPolicySnapshot,
+} from '@canopy/desktop-shared/types';
 import {
   CORE_SHARED_MULTI_REPO_QUERIES,
   CORE_SHARED_MULTI_REPO_INSTRUCTIONS,
@@ -25,7 +34,8 @@ import type {
   ForeignActivityProjection,
   ForeignActivityStopRequest,
 } from '@canopy/protocol/foreign-activity';
-import type { PostHogSessionState } from '@canopy/desktop-shared/types/observability';
+import type { PostHogSessionState } from '@canopy/execution-engine/types/observability';
+import { isCloudProjectSetupProgress } from '@canopy/desktop-shared/lib/cloud-project-setup';
 import {
   isOrgProjectSetupProgress,
   type OrgProjectDeepLinkOpenEvent,
@@ -73,6 +83,7 @@ import { contextBridge, webFrame, webUtils } from 'electron';
 import { ipcRenderer, remoteWindowContext } from './ipc-router';
 import { createChatStateApi } from './api/chat-state-api';
 import { createChatEventSubscription } from './api/chat-event-api';
+import { createCanopyClientTransport } from './api/canopy-client-transport-api';
 import { createCodexSpeedApi } from './api/codex-speed-api';
 import { createW5RecoveryApi } from './api/w5-recovery-api';
 import { createBackgroundServiceApi } from './api/background-service-api';
@@ -85,6 +96,7 @@ import {
 } from './api/remote-control-api';
 import { electronAPI } from '@electron-toolkit/preload';
 import {
+  restoreOptionalRemoteControlFlag,
   CLIENT_FEATURE_FLAGS,
   isLabsExperimentFlagKey,
 } from '@canopy/protocol/feature-flags';
@@ -285,7 +297,7 @@ import {
 } from '@canopy/protocol/org-projects';
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import { isCodeGraphGenerationQueueSnapshot } from './code-graph-validation';
-import type { AgentModelRegistryEntry } from '@canopy/desktop-shared/types/agent-models';
+import type { AgentModelRegistryEntry } from '@canopy/execution-engine/types/agent-models';
 import type {
   CommitPushProgressEvent,
   DependentBaseBranchesUpdatedEvent,
@@ -502,6 +514,12 @@ const exposedPlatform = remoteWindowContext?.platform ?? localPlatform;
 
 // One `chat:event` IPC listener for this page, shared by every subscriber.
 const subscribeToChatEvents = createChatEventSubscription(ipcRenderer);
+
+// The portable CanopyClient's transport, limited to the adapter's channels.
+const canopyClientTransport = createCanopyClientTransport(
+  ipcRenderer,
+  subscribeToChatEvents,
+);
 
 // ---------------------------------------------------------------------------
 // Load models from package.json (preload has full Node.js access).
@@ -1040,6 +1058,7 @@ function isFeatureFlagSnapshot(value: unknown): value is FeatureFlagSnapshot {
     return false;
   }
   const values = value.values;
+  restoreOptionalRemoteControlFlag(values);
   const status = value.status;
   const allFlagsValid = Object.values(CLIENT_FEATURE_FLAGS).every(
     ({ key, launchDarklyEnabledUnavailableValue }) =>
@@ -1932,9 +1951,12 @@ const platformOllamaApi: OllamaApiSurface = isOllamaSupportedOnPlatform()
           .invoke(IPC_CHANNELS.ollamaSetConfiguration, update)
           .then((state) => assertPayload(state, isOllamaState));
       },
-      testOllamaConnection: (port) =>
+      testOllamaConnection: (port, options) =>
         ipcRenderer
-          .invoke(IPC_CHANNELS.ollamaTestConnection, { port })
+          .invoke(IPC_CHANNELS.ollamaTestConnection, {
+            port,
+            background: options?.background,
+          })
           .then((result) =>
             assertPayload(result, isOllamaConnectionTestResult),
           ),
@@ -2320,6 +2342,9 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.preferencesUpdateSuggestions, update),
   updateOnboardingTips: (update) =>
     ipcRenderer.invoke(IPC_CHANNELS.preferencesUpdateOnboardingTips, update),
+  getClaudeMods: (args) => ipcRenderer.invoke(IPC_CHANNELS.claudeModsGet, args),
+  updateClaudeMods: (update) =>
+    ipcRenderer.invoke(IPC_CHANNELS.claudeModsUpdate, update),
   setApprovalDefaultPreference: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.preferencesSetApprovalDefault, request),
   createPrimaryDataDir: () =>
@@ -3223,6 +3248,19 @@ const canopyApi: CanopyApi = {
     ),
   refreshCanopyCloudEnforcedSettings: () =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsRefreshCanopyCloudEnforcedSettings),
+  onCanopyCloudSessionStatus: (callback) => {
+    const handler = (): void => callback();
+    ipcRenderer.on(
+      IPC_CHANNELS.settingsCanopyCloudSessionStatusChanged,
+      handler,
+    );
+    return (): void => {
+      ipcRenderer.removeListener(
+        IPC_CHANNELS.settingsCanopyCloudSessionStatusChanged,
+        handler,
+      );
+    };
+  },
   loadCanopyCloudApiKey: () =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCanopyCloudApiKey),
   saveCanopyCloudApiKey: (request) =>
@@ -4007,6 +4045,12 @@ const canopyApi: CanopyApi = {
     },
   },
   chatProject: {
+    rollbackUnstartedSend: (req) =>
+      ipcRenderer.invoke(IPC_CHANNELS.chatProjectRollbackUnstartedSend, req),
+    checkFolder: (req) =>
+      ipcRenderer.invoke(IPC_CHANNELS.chatProjectCheckFolder, req),
+    revealFolderLocation: (req) =>
+      ipcRenderer.invoke(IPC_CHANNELS.chatProjectRevealFolderLocation, req),
     list: () => ipcRenderer.invoke(IPC_CHANNELS.chatProjectList),
     ensureOrgDefaultCoworkWorkspace: (organizationId) =>
       ipcRenderer.invoke(
@@ -4374,6 +4418,21 @@ const canopyApi: CanopyApi = {
       return () => {
         ipcRenderer.removeListener(
           IPC_CHANNELS.observabilityPostHogSessionUpdate,
+          handler,
+        );
+      };
+    },
+    getUsageDataPolicy: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.observabilityGetUsageDataPolicy),
+    onUsageDataPolicyChanged: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        snapshot: UsageDataPolicySnapshot,
+      ): void => callback(snapshot);
+      ipcRenderer.on(IPC_CHANNELS.observabilityUsageDataPolicyChanged, handler);
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.observabilityUsageDataPolicyChanged,
           handler,
         );
       };
@@ -5673,11 +5732,37 @@ const canopyApi: CanopyApi = {
   },
   accountOrganizationSettings:
     createAccountOrganizationSettingsApi(ipcRenderer),
+  cloudChats: {
+    reconnect: () => ipcRenderer.invoke(IPC_CHANNELS.cloudChatsReconnect),
+    uploadAttachment: (target, file) =>
+      ipcRenderer.invoke(IPC_CHANNELS.cloudChatsUploadAttachment, target, file),
+  },
   cloudProjects: {
     findLink: (workspaceId) =>
       ipcRenderer.invoke(IPC_CHANNELS.cloudProjectsFindLink, workspaceId),
     link: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.cloudProjectsLink, request),
+    setupCatalog: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.cloudProjectsSetupCatalog),
+    setupOptions: (projectId) =>
+      ipcRenderer.invoke(IPC_CHANNELS.cloudProjectsSetupOptions, projectId),
+    startSetup: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.cloudProjectsStartSetup, request),
+    onSetupProgress: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: unknown,
+      ): void => {
+        if (isCloudProjectSetupProgress(data)) callback(data);
+      };
+      ipcRenderer.on(IPC_CHANNELS.cloudProjectsSetupProgress, handler);
+      return (): void => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.cloudProjectsSetupProgress,
+          handler,
+        );
+      };
+    },
   },
   orgProjects: {
     sharedMultiRepo: {
@@ -6210,10 +6295,28 @@ const canopyApi: CanopyApi = {
 
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI);
+    contextBridge.exposeInMainWorld('electron', {
+      ...electronAPI,
+      ipcRenderer: {
+        ...electronAPI.ipcRenderer,
+        invoke: (
+          ...args: Parameters<typeof electronAPI.ipcRenderer.invoke>
+        ): Promise<unknown> =>
+          electronAPI.ipcRenderer.invoke(...args).catch(restoreIpcAppError),
+      },
+    });
+    contextBridge.exposeInMainWorld('appErrors', {
+      resolve: resolveIpcAppError,
+      resolveCoworkFolderMissing: resolveIpcCoworkFolderMissing,
+      resolveOperationFailure: resolveIpcOperationFailure,
+    });
     contextBridge.exposeInMainWorld('platform', exposedPlatform);
     contextBridge.exposeInMainWorld('localPlatform', localPlatform);
     contextBridge.exposeInMainWorld('api', canopyApi);
+    contextBridge.exposeInMainWorld(
+      'canopyClientTransport',
+      canopyClientTransport,
+    );
     contextBridge.exposeInMainWorld(
       'canopyCore',
       createCanopyCoreRelayApi(ipcRenderer),
@@ -6251,10 +6354,25 @@ if (process.contextIsolated) {
     console.error(error);
   }
 } else {
-  window.electron = electronAPI;
+  window.electron = {
+    ...electronAPI,
+    ipcRenderer: {
+      ...electronAPI.ipcRenderer,
+      invoke: (
+        ...args: Parameters<typeof electronAPI.ipcRenderer.invoke>
+      ): Promise<unknown> =>
+        electronAPI.ipcRenderer.invoke(...args).catch(restoreIpcAppError),
+    },
+  };
+  window.appErrors = {
+    resolve: resolveIpcAppError,
+    resolveCoworkFolderMissing: resolveIpcCoworkFolderMissing,
+    resolveOperationFailure: resolveIpcOperationFailure,
+  };
   window.platform = exposedPlatform;
   window.localPlatform = localPlatform;
   window.api = canopyApi;
+  window.canopyClientTransport = canopyClientTransport;
   window.canopyCore = createCanopyCoreRelayApi(ipcRenderer);
   window.bundles = createBundlesAPI();
   window.collections = createCollectionsAPI();

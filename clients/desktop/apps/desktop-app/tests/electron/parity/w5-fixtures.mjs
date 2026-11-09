@@ -312,7 +312,10 @@ export async function quitGracefullyKeepingData(
   const exited = new Promise((resolve) => {
     electronApp.once('close', () => resolve('exited'));
   });
-  await electronApp.evaluate(({ app }) => app.quit()).catch(() => undefined);
+  // close() quits the app, then detaches Playwright's Node inspector. A quit
+  // sent through evaluate() leaves it attached, and Electron then waits at exit
+  // for that debugger to disconnect. close() never forces a kill.
+  void electronApp.close().catch(() => undefined);
   let deadline;
   const outcome = await Promise.race([
     exited,

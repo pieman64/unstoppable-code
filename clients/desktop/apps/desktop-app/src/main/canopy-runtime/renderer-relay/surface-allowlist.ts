@@ -22,7 +22,7 @@ const ADMIN_PREFIXES: readonly string[] = [
   'core.workspaceRecords.',
 ];
 
-function isAdminMethod(method: string): boolean {
+export function isAdminMethod(method: string): boolean {
   return (
     ADMIN_METHODS.has(method) ||
     ADMIN_PREFIXES.some((prefix) => method.startsWith(prefix))

@@ -34,6 +34,7 @@ import {
   type LiveBackgroundTaskWorktreeTarget,
 } from '../liveBackgroundTaskStore';
 import { useGitHubStore } from '../githubStore';
+import { toastStack } from '../toastStore';
 import { findWorktreeRemovalRefusal } from '@/lib/worktreeRemovalAdmission';
 
 /** Tooltip on the disabled tab × while delegates keep the chat open. */
@@ -193,11 +194,10 @@ export function notifyCloseBlocked(
 ): void {
   const notice = closeBlockedNotice(blockers);
   if (notice === null) return;
-  const github = useGitHubStore.getState();
-  if (github.toasts.some((toast) => toast.message === notice)) {
+  if (toastStack.getSnapshot().some((toast) => toast.message === notice)) {
     return;
   }
-  github.addToast(notice, 'info', undefined, {
+  useGitHubStore.getState().addToast(notice, 'info', undefined, {
     // Feedback to the user's own close gesture, not a notification.
     forceInApp: true,
     suppressOsNotification: true,

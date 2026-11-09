@@ -119,7 +119,7 @@ export function isCuratedPipelineSummary(
     text(value.shortDescription, 256) &&
     text(value.icon, 128) &&
     text(value.version, 64) &&
-    strings(value.triggerTypes, 3, 32) &&
+    strings(value.triggerTypes, API_PIPELINE_TRIGGER_TYPES.length, 32) &&
     value.triggerTypes.length > 0 &&
     value.triggerTypes.every((item) =>
       API_PIPELINE_TRIGGER_TYPES.some((valid) => valid === item),
@@ -158,6 +158,54 @@ export function isCuratedPipelineDetail(
       MAX_CURATED_PIPELINE_BYTES
   );
 }
+/**
+ * A catalog entry with any trigger type this build doesn't know dropped, so
+ * a newer server can add one without the whole list failing validation here.
+ */
+function withKnownTriggerTypes(value: unknown): unknown {
+  if (!record(value) || !Array.isArray(value.triggerTypes)) return value;
+  return {
+    ...value,
+    triggerTypes: value.triggerTypes.filter((item) =>
+      API_PIPELINE_TRIGGER_TYPES.some((valid) => valid === item),
+    ),
+  };
+}
+
+function hasNoTriggerTypes(value: unknown): boolean {
+  return (
+    record(value) &&
+    Array.isArray(value.triggerTypes) &&
+    value.triggerTypes.length === 0
+  );
+}
+
+/**
+ * Reads a catalog list response tolerantly: unknown trigger types are
+ * dropped from each entry, and an entry left with none is skipped. Any other
+ * invalid entry still rejects the response.
+ */
+export function readCuratedPipelineListResponse(
+  value: unknown,
+): CuratedPipelineListResponse | undefined {
+  if (!record(value) || !Array.isArray(value.data)) return undefined;
+  const candidate = {
+    ...value,
+    data: value.data
+      .map(withKnownTriggerTypes)
+      .filter((item) => !hasNoTriggerTypes(item)),
+  };
+  return isCuratedPipelineListResponse(candidate) ? candidate : undefined;
+}
+
+/** Reads one catalog entry's content, dropping unknown trigger types. */
+export function readCuratedPipelineDetail(
+  value: unknown,
+): CuratedPipelineDetail | undefined {
+  const candidate = withKnownTriggerTypes(value);
+  return isCuratedPipelineDetail(candidate) ? candidate : undefined;
+}
+
 export function isCuratedPipelineListResponse(
   value: unknown,
 ): value is CuratedPipelineListResponse {

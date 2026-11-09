@@ -27,6 +27,31 @@ let plugin;
 async function loadPlugin() {
   plugin ??= await loadOpenCodeV2FixturePlugin(config, {
     missingSession: (id) => id === 'missing',
+    accounts: async () => {
+      const providerId = (config.model ?? 'fixture/model').split('/')[0];
+      const connection = process.env.OPENCODE_FIXTURE_CONNECTION_FILE
+        ? JSON.parse(
+            await readFile(
+              process.env.OPENCODE_FIXTURE_CONNECTION_FILE,
+              'utf8',
+            ),
+          )
+        : {
+            type: 'credential',
+            id: process.env.OPENCODE_FIXTURE_CONNECTION_ID ?? 'cred_fixture',
+            label:
+              process.env.OPENCODE_FIXTURE_CONNECTION_LABEL ??
+              'Fixture account',
+            method: 'oauth',
+          };
+      return {
+        providers: [{ id: providerId, name: 'Fixture' }],
+        integrations: [
+          { id: providerId, connections: connection ? [connection] : [] },
+        ],
+        active: { [providerId]: connection },
+      };
+    },
   });
 }
 if (!process.env.OPENCODE_FIXTURE_LAZY_PLUGIN) await loadPlugin();

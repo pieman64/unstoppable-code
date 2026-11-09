@@ -24,7 +24,7 @@ import type {
   SharedAgentDetail,
   SharedAgentPublicShareInfo,
   UpdateSharedAgentRequest,
-} from '@canopy/desktop-shared/types/agent-models';
+} from '@canopy/execution-engine/types/agent-models';
 import {
   requestCanopyCloudBinary,
   requestCanopyCloudJson,

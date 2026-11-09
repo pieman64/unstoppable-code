@@ -14,7 +14,7 @@ import {
   type ExecutionOptions,
   type ExecutionState,
 } from '@canopy/desktop-shared/node/pipelines/executor';
-import type { PipelineScalar } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineScalar } from '@canopy/execution-engine/types/pipeline';
 import { resolveEnvironmentForRuntime } from '@canopy/desktop-shared/lib/user-environment';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';

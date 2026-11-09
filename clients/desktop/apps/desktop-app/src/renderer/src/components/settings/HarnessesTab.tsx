@@ -43,7 +43,6 @@ import {
   FLOATING_MENU_GAP,
   FloatingMenu,
   ModelGroupHeader,
-  Notice,
 } from '@canopy/ui-shared';
 import {
   ActionMenuItems,
@@ -60,6 +59,7 @@ import {
 import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { getProviderLabel } from '@/lib/providerLabels';
 import { BrandLogo } from '@/components/BrandLogo';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { brandText } from '@/lib/brand';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import {
@@ -390,15 +390,15 @@ export function HarnessesTab(): JSX.Element {
         on the group surface instead of a row inside one.
       */}
       <SettingsSection description="You can change the harness when starting a new chat. Active chats keep the harness they started with.">
-        {saveFailed && (
-          <Notice
-            intent="destructive"
-            title="Couldn’t save that harness change"
-            data-testid="harness-save-error"
-          >
-            The previous assignment was restored.
-          </Notice>
-        )}
+        <DesktopErrorBanner
+          className=""
+          error={
+            saveFailed
+              ? 'Couldn’t save that harness change. The previous assignment was restored.'
+              : null
+          }
+          testId="harness-save-error"
+        />
 
         {loading && <SettingsLoading dataTestId="harness-loading" />}
 
@@ -538,13 +538,13 @@ function HarnessColumn({
       aria-labelledby={headingId}
       data-testid={`harness-column-${harness}`}
       data-drop-highlight={highlighted ? 'true' : undefined}
-      className={`rounded-lg bg-secondary p-3 transition-colors ${
+      className={`flex flex-col gap-2 rounded-lg bg-secondary p-3 transition-colors ${
         highlighted
           ? 'ring-1 ring-line-accent'
           : 'ring-[length:var(--border-hairline)] ring-line-base'
       }`}
     >
-      <div className="mb-2 flex items-center gap-2 px-2">
+      <div className="flex items-center gap-2 px-2">
         <ModelProviderIcon provider={harness} central size="sm" />
         <Heading level={2} variant="title" id={headingId}>
           {harnessLabel(harness)}

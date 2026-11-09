@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { markIpcOperationPayload } from '@canopy/desktop-shared/ipc/operation-failure';
 import type { CanopyErrorPayload } from '@canopy/protocol/canopy-core';
 import {
   McpRefRewriteResultSchema,
@@ -110,7 +111,8 @@ function failurePayload(failure?: Failure): CanopyErrorPayload {
   };
 }
 
-/** Internal representation only; the legacy adapter never transports this envelope. */
+/** Internal representation; the legacy adapter keeps its rejection and only
+ * marks it so IPC can carry the retry directive and effects beside the text. */
 export async function captureMcpRefRewriteOutcome(
   run: () => Promise<McpRefRewriteResult>,
 ): Promise<McpRefRewriteOutcome> {
@@ -148,5 +150,5 @@ export function unwrapMcpRefRewriteOutcome(
 ): McpRefRewriteResult {
   if (outcome.ok) return outcome.value;
   if ('legacyValue' in outcome) return outcome.legacyValue;
-  throw outcome.legacyError;
+  throw markIpcOperationPayload(outcome.legacyError, outcome.error);
 }

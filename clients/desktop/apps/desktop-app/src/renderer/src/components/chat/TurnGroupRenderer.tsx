@@ -630,7 +630,7 @@ function RevertedTurnWrapper({
 }): JSX.Element {
   return (
     <div
-      className="-ml-3 space-y-2 border-l-2 border-line-attention/40 pl-3 opacity-60"
+      className="flex flex-col -ml-3 border-l-2 border-line-attention/40 pl-3 opacity-60 gap-2"
       aria-label="Reverted turn"
     >
       {children}

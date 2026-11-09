@@ -118,6 +118,7 @@ export const ORG_ENFORCED_POLICY_KINDS = [
   'telemetry-sync',
   'model-policy',
   'model-gateway',
+  'usage-data',
 ] as const;
 export type OrgEnforcedPolicyKind = (typeof ORG_ENFORCED_POLICY_KINDS)[number];
 
@@ -193,10 +194,31 @@ export interface ModelGatewayEnforcedPolicy {
   promptCachePassthrough: boolean;
 }
 
+/**
+ * Usage-data flows an organization turns off for members while they work in
+ * that organization on desktop. Independent of the data-sharing master switch,
+ * and emitted only when at least one flag is true. Prohibitions only narrow:
+ * `false` leaves the member's own choice in place. Clients read each flag as
+ * `=== true` and ignore unknown keys, so a newer server can add flows.
+ */
+export interface UsageDataProhibitedFlows {
+  productAnalytics: boolean;
+  errorReports: boolean;
+  sessionReplay: boolean;
+  activeUseSignal: boolean;
+  featureFlagIdentity: boolean;
+}
+
+export interface UsageDataEnforcedPolicy {
+  kind: 'usage-data';
+  prohibited: UsageDataProhibitedFlows;
+}
+
 export type CanopyOrgEnforcedPolicy =
   | TelemetrySyncEnforcedPolicy
   | ModelPolicyEnforcedPolicy
-  | ModelGatewayEnforcedPolicy;
+  | ModelGatewayEnforcedPolicy
+  | UsageDataEnforcedPolicy;
 
 // Enforced policies for one org the signed-in user belongs to.
 export interface CanopyOrgEnforcedSettings {

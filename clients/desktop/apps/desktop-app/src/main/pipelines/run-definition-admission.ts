@@ -9,7 +9,7 @@ import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/exe
 import type {
   Pipeline,
   PipelineData,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { getDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { withPipelinePresentation } from './pipeline-definition-presentation';

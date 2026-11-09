@@ -1,5 +1,7 @@
 'use client';
 import {
+  Fieldset,
+  Stack,
   Button,
   buttonClassName,
   FormField,
@@ -11,6 +13,7 @@ import {
   ToggleSwitch,
   Tooltip,
   Heading,
+  FieldError,
 } from '@canopy/ui-shared/components';
 
 import { useEffect, useMemo, useState, type JSX } from 'react';
@@ -195,31 +198,35 @@ export function PublicProfileSection({
           variant="raised"
           data-testid="public-profile-empty-state"
         >
-          <div className="flex flex-col items-center p-8 text-center">
-            {/* Deliberately NOT `SETTINGS_CARD_ICON_CLASS`. This is a full-width
+          <div className="flex flex-col items-center gap-6 p-8 text-center">
+            <Stack gap="item" align="center" className="w-full">
+              <Stack gap="inline" align="center" className="w-full">
+                <Stack gap="group" align="center">
+                  {/* Deliberately NOT `SETTINGS_CARD_ICON_CLASS`. This is a full-width
               centred hero, not a card heading row: it keeps the larger 48px
               disc it has always had, and omits `mt-0.5`/`shrink-0`, which are
               written for a horizontal `items-start` row and would push the
               glyph off centre here. */}
-            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-              <Globe size={22} aria-hidden="true" />
-            </span>
-            <Heading level={2} variant="section" className="mt-4">
-              Set up your public profile
-            </Heading>
-            <p className="mt-2 max-w-md text-s fg-secondary">
-              Your public profile is a shareable page that showcases your
-              impact, activity, and published work. Claim a username to publish
-              it and share your work with anyone.
-            </p>
-
-            <ErrorBanner
-              className="mt-3 w-full max-w-md"
-              error={editor.error?.copy}
-              details={editor.error?.details}
-            />
-
-            <div className="mt-6 w-full max-w-md text-left">
+                  <span className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-subtle fg-accent">
+                    <Globe size={22} aria-hidden="true" />
+                  </span>
+                  <Heading level={2} variant="section">
+                    Set up your public profile
+                  </Heading>
+                </Stack>
+                <p className="max-w-md text-s fg-secondary">
+                  Your public profile is a shareable page that showcases your
+                  impact, activity, and published work. Claim a username to
+                  publish it and share your work with anyone.
+                </p>
+              </Stack>
+              <ErrorBanner
+                className="w-full max-w-md"
+                error={editor.error?.copy}
+                details={editor.error?.details}
+              />
+            </Stack>
+            <div className="w-full max-w-md text-left">
               <UsernameField
                 currentUsername={null}
                 busy={editor.busy}
@@ -264,89 +271,94 @@ export function PublicProfileSection({
         subtitle="Your name, picture, and handle as they appear to anyone who visits your profile."
         testId="public-profile-header-card"
       >
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex min-w-0 flex-1 items-center gap-4">
-            <AvatarEditor
-              name={name}
-              image={image}
-              busy={identityEditor.busy}
-              error={identityEditor.error}
-              onPick={handlePickAvatar}
-              onRemove={handleRemoveAvatar}
-            />
-            <div className="min-w-0 flex-1">
-              <NameEditor
-                name={name}
-                busy={identityEditor.busy}
-                error={identityEditor.error}
-                onOpen={identityEditor.clearError}
-                onSave={handleSaveName}
-              />
-              {showUsernameEdit ? (
-                <div className="mt-1 max-w-sm">
-                  <UsernameField
-                    currentUsername={claimedUsername}
-                    busy={editor.busy}
-                    check={editor.checkUsername}
-                    hideLabel
-                    onClaim={(username) => {
-                      void apply({ username });
-                      setShowUsernameEdit(false);
-                    }}
-                    onCancel={() => setShowUsernameEdit(false)}
+        <Stack gap="item">
+          <Stack gap="group">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex min-w-0 flex-1 items-center gap-4">
+                <AvatarEditor
+                  name={name}
+                  image={image}
+                  busy={identityEditor.busy}
+                  error={identityEditor.error}
+                  onPick={handlePickAvatar}
+                  onRemove={handleRemoveAvatar}
+                />
+                <div
+                  className={`flex min-w-0 flex-1 flex-col ${showUsernameEdit ? 'gap-1' : ''}`}
+                >
+                  <NameEditor
+                    name={name}
+                    busy={identityEditor.busy}
+                    error={identityEditor.error}
+                    onOpen={identityEditor.clearError}
+                    onSave={handleSaveName}
                   />
+                  {showUsernameEdit ? (
+                    <div className="max-w-sm">
+                      <UsernameField
+                        currentUsername={claimedUsername}
+                        busy={editor.busy}
+                        check={editor.checkUsername}
+                        hideLabel
+                        onClaim={(username) => {
+                          void apply({ username });
+                          setShowUsernameEdit(false);
+                        }}
+                        onCancel={() => setShowUsernameEdit(false)}
+                      />
+                    </div>
+                  ) : (
+                    <p className="flex items-center gap-1.5 text-s fg-secondary">
+                      <span
+                        className={withPrivacyClass('truncate', blockClassName)}
+                      >
+                        @{claimedUsername}
+                      </span>
+                      <Tooltip label="Change username">
+                        <Button
+                          size="compact"
+                          variant="ghost"
+                          iconOnly
+                          onClick={() => setShowUsernameEdit(true)}
+                          aria-label="Change username"
+                          data-testid="public-profile-change-username"
+                        >
+                          <Pencil size={14} aria-hidden="true" />
+                        </Button>
+                      </Tooltip>
+                    </p>
+                  )}
                 </div>
-              ) : (
-                <p className="flex items-center gap-1.5 text-s fg-secondary">
-                  <span
-                    className={withPrivacyClass('truncate', blockClassName)}
-                  >
-                    @{claimedUsername}
-                  </span>
-                  <Tooltip label="Change username">
-                    <Button
-                      size="compact"
-                      variant="ghost"
-                      iconOnly
-                      onClick={() => setShowUsernameEdit(true)}
-                      aria-label="Change username"
-                      data-testid="public-profile-change-username"
-                    >
-                      <Pencil size={14} aria-hidden="true" />
-                    </Button>
-                  </Tooltip>
-                </p>
-              )}
+              </div>
+              <div className="flex items-center gap-3">
+                <span
+                  className={`text-s font-medium ${enabled ? 'fg-success' : 'fg-secondary'}`}
+                >
+                  {enabled ? 'Published' : 'Hidden'}
+                </span>
+                <ToggleSwitch
+                  checked={enabled}
+                  disabled={editor.busy}
+                  label="Publish profile"
+                  onChange={(next) => void apply({ enabled: next })}
+                  dataTestId="public-profile-enabled-toggle"
+                />
+              </div>
             </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <span
-              className={`text-s font-medium ${enabled ? 'fg-success' : 'fg-secondary'}`}
-            >
-              {enabled ? 'Published' : 'Hidden'}
-            </span>
-            <ToggleSwitch
-              checked={enabled}
-              disabled={editor.busy}
-              label="Publish profile"
-              onChange={(next) => void apply({ enabled: next })}
-              dataTestId="public-profile-enabled-toggle"
-            />
-          </div>
-        </div>
 
-        {!enabled && (
-          <p className="mt-4 text-s fg-secondary">
-            Your profile is hidden — nobody can see it. Turn it back on to edit
-            and share it.
-          </p>
-        )}
-
-        <ErrorBanner
-          className="mt-3"
-          error={editor.error?.copy}
-          details={editor.error?.details}
-        />
+            {!enabled && (
+              <p className="text-s fg-secondary">
+                Your profile is hidden — nobody can see it. Turn it back on to
+                edit and share it.
+              </p>
+            )}
+          </Stack>
+          <ErrorBanner
+            className=""
+            error={editor.error?.copy}
+            details={editor.error?.details}
+          />
+        </Stack>
       </SettingsCard>
 
       {enabled && (
@@ -391,35 +403,41 @@ export function PublicProfileSection({
                 onChange={(links) => setDraft((prev) => ({ ...prev, links }))}
               />
 
-              <fieldset className="flex flex-col gap-3">
-                <legend className="text-xs font-medium fg-secondary">
-                  Stats on your profile
-                </legend>
-                <div className="mt-2 flex items-center justify-between gap-3">
-                  <span className="text-s fg-primary">
-                    Cost & subscription savings
+              <Fieldset
+                gap="inline"
+                legend={
+                  <span className="text-xs font-medium fg-secondary">
+                    Stats on your profile
                   </span>
-                  <ToggleSwitch
-                    checked={draft.showCost}
-                    label="Show cost & subscription savings"
-                    onChange={(next) =>
-                      setDraft((prev) => ({ ...prev, showCost: next }))
-                    }
-                    dataTestId="public-profile-show-cost"
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-s fg-primary">Activity heatmap</span>
-                  <ToggleSwitch
-                    checked={draft.showHeatmap}
-                    label="Show activity heatmap"
-                    onChange={(next) =>
-                      setDraft((prev) => ({ ...prev, showHeatmap: next }))
-                    }
-                    dataTestId="public-profile-show-heatmap"
-                  />
-                </div>
-              </fieldset>
+                }
+              >
+                <Stack gap="item">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-s fg-primary">
+                      Cost & subscription savings
+                    </span>
+                    <ToggleSwitch
+                      checked={draft.showCost}
+                      label="Show cost & subscription savings"
+                      onChange={(next) =>
+                        setDraft((prev) => ({ ...prev, showCost: next }))
+                      }
+                      dataTestId="public-profile-show-cost"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-s fg-primary">Activity heatmap</span>
+                    <ToggleSwitch
+                      checked={draft.showHeatmap}
+                      label="Show activity heatmap"
+                      onChange={(next) =>
+                        setDraft((prev) => ({ ...prev, showHeatmap: next }))
+                      }
+                      dataTestId="public-profile-show-heatmap"
+                    />
+                  </div>
+                </Stack>
+              </Fieldset>
 
               <div className="flex items-center justify-end gap-3 border-t pt-4">
                 {saved && !dirty && (
@@ -573,9 +591,9 @@ function UsernameField({
         {availability !== 'checking' &&
           availability !== 'available' &&
           availability !== 'unknown' && (
-            <p className="text-xs fg-destructive">
+            <FieldError id="public-profile-username-error">
               {USERNAME_HINT[availability]}
-            </p>
+            </FieldError>
           )}
       </div>
       <Button

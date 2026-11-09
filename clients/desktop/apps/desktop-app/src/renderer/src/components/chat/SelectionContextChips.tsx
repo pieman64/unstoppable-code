@@ -1,3 +1,4 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import { memo, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { fileViewerKey, useFileViewerStore } from '@canopy/app-state';
@@ -207,26 +208,29 @@ export const SelectionContextChips = memo(function SelectionContextChips({
                 : '';
         const badge =
           selection.capturedDirty && freshness === 'fresh' ? (
-            <span
+            <Badge
+              tone="warning"
+              size="compact"
               data-testid="selection-context-chip-unsaved"
-              className="shrink-0 rounded-sm bg-warning-subtle px-1 text-3xs fg-warning"
             >
               unsaved
-            </span>
+            </Badge>
           ) : freshness === 'checking' ? (
-            <span
+            <Badge
+              tone="warning"
+              size="compact"
               data-testid="selection-context-chip-checking"
-              className="shrink-0 rounded-sm bg-warning-subtle px-1 text-3xs fg-warning"
             >
               checking
-            </span>
+            </Badge>
           ) : freshness === 'stale' || freshness === 'missing' ? (
-            <span
+            <Badge
+              tone="warning"
+              size="compact"
               data-testid="selection-context-chip-stale"
-              className="shrink-0 rounded-sm bg-warning-subtle px-1 text-3xs fg-warning"
             >
               {freshness === 'missing' ? 'missing' : 'stale'}
-            </span>
+            </Badge>
           ) : null;
         return (
           <div key={selection.id} className="group relative shrink-0">

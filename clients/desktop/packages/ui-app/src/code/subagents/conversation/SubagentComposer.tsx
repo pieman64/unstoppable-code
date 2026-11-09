@@ -57,7 +57,11 @@ import {
   useSubagentComposerStore,
 } from './subagent-composer-store';
 import { useSubagentMessageQueue } from './useSubagentMessageQueue';
-import { StatusLabel, ErrorBanner } from '@canopy/ui-shared/components';
+import {
+  ErrorBanner,
+  Notice,
+  NoticeButton,
+} from '@canopy/ui-shared/components';
 
 export interface SubagentComposerProps {
   /** Root chat whose tree owns this subagent. */
@@ -400,10 +404,10 @@ export function SubagentComposer({
   return (
     <div
       data-testid="subagent-composer"
-      className="relative shrink-0 px-4 pb-4 pt-2"
+      className="relative shrink-0 px-4 pb-4 pt-2 flex flex-col gap-2"
     >
       {node.kind === 'managed' && draft.queue.length > 0 ? (
-        <div className="mx-auto mb-2 flex max-w-3xl flex-col gap-2">
+        <div className="mx-auto flex max-w-3xl flex-col gap-2 w-full">
           {draft.queue.map((queued, index) => {
             const isLocked =
               queued.state === 'sending' || queued.state === 'interrupting';
@@ -456,20 +460,20 @@ export function SubagentComposer({
                   }
                 />
                 {queued.error ? (
-                  <div
-                    className="flex max-w-full items-center gap-2 text-xs"
-                    role="alert"
+                  <Notice
+                    intent="destructive"
+                    liveRegionScope="content"
+                    actions={
+                      <NoticeButton
+                        onClick={(): void => queueActions.retryDraft(queued.id)}
+                        data-testid="subagent-queue-retry"
+                      >
+                        {SUBAGENT_QUEUE_RETRY_LABEL}
+                      </NoticeButton>
+                    }
                   >
-                    <StatusLabel>{queued.error}</StatusLabel>
-                    <Button
-                      size="compact"
-                      variant="secondary"
-                      onClick={(): void => queueActions.retryDraft(queued.id)}
-                      data-testid="subagent-queue-retry"
-                    >
-                      {SUBAGENT_QUEUE_RETRY_LABEL}
-                    </Button>
-                  </div>
+                    {queued.error}
+                  </Notice>
                 ) : statusLabel ? (
                   <span className="text-2xs fg-tertiary" role="status">
                     {statusLabel}
@@ -480,12 +484,16 @@ export function SubagentComposer({
           })}
         </div>
       ) : null}
+
       {onlyReadOnlyNotice ? (
-        <p className="mx-auto max-w-3xl text-xs fg-secondary" role="status">
+        <p
+          className="mx-auto max-w-3xl text-xs fg-secondary w-full"
+          role="status"
+        >
           {SUBAGENT_COMPOSER_READ_ONLY_NOTICE}
         </p>
       ) : (
-        <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
+        <div className="mx-auto flex max-w-3xl flex-col gap-1.5 w-full">
           <ChatComposerShell>
             <div className="flex min-h-16 flex-col gap-2 px-4 pb-1 pt-3">
               {!selfRecipient ? (

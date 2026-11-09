@@ -1,33 +1,9 @@
-import {
-  resolveBillingSeed,
-  resolveDefaultChatInterfaceMode,
-  resolveDeferredToolsAllowedDefault,
-  resolveTabDefaults,
-} from '../defaults';
+import { resolveTabDefaults } from '../defaults';
 import { type ChatTab, type WorktreeChatState } from '../types';
-import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { fromPersistedTab, relabelFileTabs } from '../persisted-tabs';
 import { buildHandoffConversationText } from '../messages';
 import { type Descendant } from 'slate';
-import {
-  type ArchivedChatSummary,
-  type PersistedChatTab,
-} from '@canopy/desktop-shared/types';
-import {
-  buildClosedTabsState,
-  emptyWorktreeChat,
-  getDefaultPlugins,
-} from '../tab-utils';
-import {
-  isAppAdvisorChatTarget,
-  isAppAdvisorWindowFocused,
-  withRequiredPluginSelectionsForTarget,
-} from '../surface';
-import { pruneUnreadWorktreeKey } from '../hydration';
-import { clearChatScrollPosition } from '@/lib/tab-scroll-positions';
-import { getVisibleWorktreeKey } from '../notifications';
-import { isVisiblePlanExploreChat } from '../plan-explore-registry';
-import { isVisibleCodeReviewChat } from '../code-review-registry';
+import { type PersistedChatTab } from '@canopy/desktop-shared/types';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatArchiveSlice } from '../state';
 
@@ -150,118 +126,6 @@ ${trimmedSummary}
       { type: 'paragraph', children: [{ text: handoffDraft }] },
     ];
     get().saveTabDraft(newTabId, draft);
-  },
-
-  autoArchiveChatTab: async (
-    projectId,
-    worktreeId,
-    chatId,
-    unread,
-  ): Promise<boolean> => {
-    const key = `${projectId}/${worktreeId}`;
-    const tab = get().worktreeChats[key]?.tabs.find((t) => t.id === chatId);
-    if (!tab || tab.kind === 'file') {
-      return true;
-    }
-
-    // Archive with the session kept alive so a resumed turn can still stream
-    // events (which will un-archive the chat). Persist the unread state so the
-    // archive icon/rows can render the unread color.
-    let summaries: ArchivedChatSummary[];
-    try {
-      summaries = await window.api.chat.archiveTab({
-        projectId,
-        worktreeId,
-        tabId: chatId,
-        ...(unread ? { unread: true } : {}),
-        keepSession: true,
-      });
-    } catch (error: unknown) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to auto-archive chat', error);
-      return false;
-    }
-
-    set((state) => {
-      const wc = state.worktreeChats[key];
-      if (!wc) {
-        return { archivedChats: { ...state.archivedChats, [key]: summaries } };
-      }
-      const remaining = wc.tabs.filter((t) => t.id !== chatId);
-      let updated: WorktreeChatState;
-      if (remaining.length === 0) {
-        const {
-          model: defaultModel,
-          thinkingLevel: defaultThinking,
-          modelConfig: defaultModelConfig,
-        } = resolveTabDefaults(projectId, state.modelDefaults);
-        updated = emptyWorktreeChat({
-          pluginSelections: withRequiredPluginSelectionsForTarget(
-            projectId,
-            worktreeId,
-            getDefaultPlugins(
-              projectId,
-              worktreeId,
-              state.worktreeDefaultPlugins,
-            ),
-          ),
-          model: defaultModel,
-          thinkingLevel: defaultThinking,
-          defaultChatInterfaceMode: resolveDefaultChatInterfaceMode(
-            projectId,
-            state.modelDefaults,
-          ),
-          modelConfig: defaultModelConfig,
-          deferredToolsAllowed: resolveDeferredToolsAllowedDefault(
-            projectId,
-            worktreeId,
-            state.deferredToolsDefaults,
-          ),
-          billingSeed: resolveBillingSeed(state.modelDefaults, projectId),
-          ...newChatPluginDefaultsStamp(projectId),
-        });
-      } else {
-        // Auto-archiving a background hook chat must not steal focus: only move
-        // the active tab if the archived chat was the active one.
-        const archivedActiveTab = wc.activeTabId === chatId;
-        const activeTabId = archivedActiveTab
-          ? remaining[remaining.length - 1].id
-          : wc.activeTabId;
-        const archivedChatVisible =
-          archivedActiveTab &&
-          !state.hiddenChatTabIds.has(chatId) &&
-          (isAppAdvisorChatTarget(projectId, worktreeId)
-            ? isAppAdvisorWindowFocused()
-            : isVisiblePlanExploreChat(projectId, worktreeId) ||
-              isVisibleCodeReviewChat(projectId, worktreeId) ||
-              getVisibleWorktreeKey(state.selectedWorktree) === key);
-        // Falling through to a sibling only counts as viewing it when the
-        // archived chat was actually on screen. Background worktrees and
-        // collapsed chat panels preserve the sibling's unread state.
-        const dismissedAt = Date.now();
-        const tabs = archivedChatVisible
-          ? remaining.map((tab) =>
-              tab.id === activeTabId
-                ? { ...tab, unread: false, attentionDismissedAt: dismissedAt }
-                : tab,
-            )
-          : remaining;
-        updated = buildClosedTabsState(wc, tabs, activeTabId);
-      }
-      return {
-        worktreeChats: { ...state.worktreeChats, [key]: updated },
-        archivedChats: { ...state.archivedChats, [key]: summaries },
-        unreadWorktreeKeys: pruneUnreadWorktreeKey(
-          state.unreadWorktreeKeys,
-          key,
-          updated.tabs,
-        ),
-      };
-    });
-    get().clearTabDraft(chatId);
-    get().clearPendingEditorSelections(chatId);
-    clearChatScrollPosition(chatId);
-    return true;
   },
 
   setAutoArchiveForActiveTurn: (target, enabled): void => {

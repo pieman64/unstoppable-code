@@ -1,5 +1,5 @@
-import type { CodexSpeedRouteFacts } from './codex-speed-availability';
-import type { ReadCodexSpeedRouteRequest } from '../types/codex-speed-capabilities';
+import type { CodexSpeedRouteFacts } from '@canopy/execution-engine/lib/codex-speed-availability';
+import type { ReadCodexSpeedRouteRequest } from '@canopy/execution-engine/types/codex-speed-capabilities';
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null) return false;

@@ -6,8 +6,8 @@ import type {
   UsageLimitedPipelineSessionItem,
   UsageLimitedSessionItem,
 } from '@canopy/desktop-shared/types';
-import type { PipelineStatusReason } from '@canopy/desktop-shared/types/pipeline';
-import { computeUsageLimitResumePrompt } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import type { PipelineStatusReason } from '@canopy/execution-engine/types/pipeline';
+import { computeUsageLimitResumePrompt } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import { getModelCatalogProviderLabel } from '@canopy/ui-shared';
 import { useAutomationsStore } from '@/stores/automationsStore';
 import { useChatStore } from '@/stores/chatStore';

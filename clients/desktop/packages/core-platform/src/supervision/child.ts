@@ -20,10 +20,11 @@ function invalid(key: string): Error {
   return new Error(`Invalid child environment ${key}`);
 }
 
-/** Windows names are case-insensitive: a selected key with differing values fails closed. */
+/** Windows names are case-insensitive; never choose between conflicting values. */
 function selector(
   os: PlatformOperatingSystem,
   source: Source,
+  conflict: 'reject' | 'omit' = 'reject',
 ): (key: string) => string | undefined {
   const name = (key: string): string =>
     os === 'win32' ? key.toUpperCase() : key;
@@ -34,7 +35,10 @@ function selector(
           value !== undefined && name(candidate) === name(key),
       )
       .map(([, value]) => value);
-    if (new Set(found).size > 1) throw invalid(key);
+    if (new Set(found).size > 1) {
+      if (conflict === 'omit') return undefined;
+      throw invalid(key);
+    }
     return found[0];
   };
 }
@@ -104,6 +108,19 @@ export function createChildServices(
       required('USERPROFILE');
       required('APPDATA');
       for (const key of ['LOCALAPPDATA', 'TEMP', 'TMP']) take(key);
+      // Bad optional discovery hints must not prevent daemon startup.
+      const readGitInput = selector(os, source, 'omit');
+      for (const key of [
+        'ProgramFiles',
+        'ProgramFiles(x86)',
+        'CANOPY_GIT_EXECUTABLE',
+      ]) {
+        const value = readGitInput(key);
+        // Preserve rejected overrides for facts; execution validation stays with Git selection.
+        const check = (candidate: string): boolean =>
+          key === 'CANOPY_GIT_EXECUTABLE' || absolute(candidate);
+        if (value && safe(value, check)) env[key] = value;
+      }
     } else {
       required('HOME');
       take('TMPDIR');

@@ -17,6 +17,7 @@ import {
 } from '../bubble-badge';
 import { Button } from '../Button';
 import { Notice } from '../Notice';
+import { Surface } from '../Surface';
 import { MessageEditCard } from './MessageEditCard';
 
 /**
@@ -210,20 +211,29 @@ export function MessageEditSurface({
   ...props
 }: Omit<HTMLAttributes<HTMLDivElement>, 'className'> & {
   readonly onEdit?: MessageEditHandler;
-  /** Retains the existing quiet draft surface alongside ordinary message bubbles. */
+  /** Drafts use the shared neutral group; ordinary message bubbles retain their tone. */
   readonly variant?: 'message' | 'draft';
   readonly tone?: 'default' | 'info';
 }): JSX.Element {
   const gesture = useDoubleClickToEdit(onEdit);
+  if (variant === 'draft') {
+    return (
+      <Surface
+        {...props}
+        {...gesture}
+        variant="group"
+        padding="compact"
+        className="relative"
+      >
+        <div className="text-s fg-secondary">{children}</div>
+      </Surface>
+    );
+  }
   return (
     <div
       {...props}
       {...gesture}
-      className={
-        variant === 'draft'
-          ? `relative rounded-lg ${tone === 'info' ? 'bg-info-subtle' : 'bg-fg-primary/[0.08]'} p-3 text-s fg-secondary`
-          : `relative ${tone === 'info' ? BUBBLE_INFO_SURFACE_CLASS : BUBBLE_SURFACE_CLASS} text-s fg-secondary`
-      }
+      className={`relative ${tone === 'info' ? BUBBLE_INFO_SURFACE_CLASS : BUBBLE_SURFACE_CLASS} text-s fg-secondary`}
     >
       {children}
     </div>
@@ -289,8 +299,8 @@ export function MessageEditNotice({
 }: MessageEditNoticeProps): JSX.Element {
   return (
     <Notice
+      intent="destructive"
       data-testid="message-edit-notice"
-      role="alert"
       onDismiss={onDismiss}
       dismissTestId="message-edit-notice-dismiss"
     >

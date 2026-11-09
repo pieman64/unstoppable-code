@@ -1,9 +1,10 @@
+import { portablePipelineTriggerTypes } from '@canopy/protocol/pipelines';
 import { browserHandoffs } from '../browser/browser-handoffs';
 import { agentHiddenOwnedPipelineIds } from '../automations/owned-pipeline';
 import type {
   BrowserSavePdfRequest,
   BrowserTransferStatus,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import type { BrowserPostDispatchUnknown } from '@canopy/desktop-shared/types';
 import { openShareDialog } from './sharing-runtime';
 import { filterProjectPipelineContexts } from '../pipelines/pipeline-install-context';
@@ -18,7 +19,6 @@ import {
   type BrowserProfileSelection,
 } from '@canopy/protocol/browser-profiles';
 import { getBrowserProfileService } from '../browser/browser-profile-service';
-import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
@@ -87,7 +87,7 @@ import {
   type PipelineInputDef,
   type PipelinePreferenceLocator,
   type PipelineTriggerType,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { PipelineExecutionScope } from '@canopy/protocol/pipelines';
 import {
   DEFAULT_PIPELINE_SCOPES,
@@ -108,6 +108,7 @@ import {
 import {
   listExecutionSummaries,
   loadExecutionState,
+  relativeToExecutionsDir,
 } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import type {
   ExecutionEvent,
@@ -116,6 +117,11 @@ import type {
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { isPathInside } from '../lib/path-safety';
+import {
+  getExecutionPlanPath,
+  readExecutionArtifact,
+  resolveAllowedPath,
+} from './execution-artifacts';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
 import type { BrowserWindow } from 'electron';
@@ -681,6 +687,8 @@ export interface WorktreeActionRuntime {
    */
   allowedActionTypes?: readonly string[];
   pipelineInitiationSource?: 'automation' | 'portal';
+  /** Who a tracked plan import is attributed to; App Advisor passes its own. */
+  planInitiationSource?: 'app_advisor';
   portalCommandId?: string;
   getWindow: () => BrowserWindow | null;
   browserTargetId?: string;
@@ -774,43 +782,22 @@ async function createWorktreeExecutionRuntime(): Promise<PipelineExecutionRuntim
   return createElectronExecutionRuntime();
 }
 
-function resolveAllowedPath(
-  filePath: string | undefined,
-  baseDir: string,
-  allowedRoots: string[],
-): string | null {
-  if (!filePath?.trim()) return null;
-  const resolvedPath = path.isAbsolute(filePath)
-    ? path.resolve(filePath)
-    : path.resolve(baseDir, filePath);
-  return allowedRoots.some((root) => isPathInside(root, resolvedPath))
-    ? resolvedPath
-    : null;
-}
-
-async function readFileOrNull(resolvedPath: string): Promise<string | null> {
-  try {
-    return await readFile(resolvedPath, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return null;
-    }
-    throw error;
-  }
-}
-
 interface PipelineRunModeRow {
   mode: PipelineTriggerType;
   inputCount: number | null;
 }
 
+// `workflow` starts only from the Workflows page, never an agent run, so it
+// is never listed as a run mode (CAN-5782).
 function pipelineRunModes(pipeline: PipelineData): PipelineRunModeRow[] {
-  return getTriggerTypes(pipeline.content.on).map((mode) => ({
-    mode,
-    inputCount: Object.keys(
-      getTriggerInputDefs(pipeline.content.on, mode) ?? {},
-    ).length,
-  }));
+  return portablePipelineTriggerTypes(getTriggerTypes(pipeline.content.on)).map(
+    (mode) => ({
+      mode,
+      inputCount: Object.keys(
+        getTriggerInputDefs(pipeline.content.on, mode) ?? {},
+      ).length,
+    }),
+  );
 }
 
 function pipelineInputDetails(
@@ -939,10 +926,9 @@ async function loadPipelineRows(
     filePath: '',
     // Catalog and share listings carry no trigger definitions; call
     // pipeline.get to resolve input details for a selected pipeline.
-    runModes: (info.triggerTypes ?? []).map((mode) => ({
-      mode,
-      inputCount: null,
-    })),
+    runModes: portablePipelineTriggerTypes(info.triggerTypes ?? []).map(
+      (mode) => ({ mode, inputCount: null }),
+    ),
   });
   const hydrated = await Promise.all([
     ...listed
@@ -1184,14 +1170,6 @@ function rejectUnavailableWorktreeAction(
   );
 }
 
-function getExecutionPlanPath(state: ExecutionState): string | null {
-  return (
-    state.event_data?.plan_ready?.plan_path ??
-    state.event_data?.task_ready?.plan_path ??
-    null
-  );
-}
-
 /**
  * Whether a run with no project was started by exactly this chat. Only the
  * initiating agent chat may reach it; a matching owner grants nothing.
@@ -1235,8 +1213,8 @@ async function executionPathBelongsToRuntime(
   executionsDir: string,
   runtime: WorktreeActionRuntime,
 ): Promise<boolean> {
-  if (!isPathInside(executionsDir, resolvedPath)) return false;
-  const relative = path.relative(path.resolve(executionsDir), resolvedPath);
+  const relative = relativeToExecutionsDir(executionsDir, resolvedPath);
+  if (relative === null) return false;
   const [executionId] = relative.split(path.sep);
   if (!executionId || executionId === '..' || executionId.includes(path.sep)) {
     return false;
@@ -1565,20 +1543,14 @@ async function readReport(
   state: ExecutionState,
   maxChars: number | undefined,
 ): Promise<AppAdvisorJson | null> {
-  const filePath =
-    state.report_outputs?.report_file ?? state.report_outputs?.report_json_file;
-  if (!filePath) return null;
-  const runtime = await createWorktreeExecutionRuntime();
-  const resolvedPath = path.resolve(filePath);
-  if (!isPathInside(runtime.executionsDir, resolvedPath)) return null;
-  const content = await readFileOrNull(resolvedPath);
-  if (content === null) return null;
-  const truncated = truncateContent(content, maxChars) as Record<
+  const report = await readExecutionArtifact(state, { kind: 'report' });
+  if (!report) return null;
+  const truncated = truncateContent(report.content, maxChars) as Record<
     string,
     unknown
   >;
   return {
-    filePath: resolvedPath,
+    filePath: report.filePath,
     ...truncated,
   };
 }
@@ -1587,22 +1559,14 @@ async function readPlan(
   state: ExecutionState,
   maxChars: number | undefined,
 ): Promise<AppAdvisorJson | null> {
-  const planPath = getExecutionPlanPath(state);
-  if (!planPath) return null;
-  const executionRuntime = await createWorktreeExecutionRuntime();
-  const resolvedPath = resolveAllowedPath(planPath, state.cwd, [
-    executionRuntime.executionsDir,
-    state.cwd,
-  ]);
-  if (!resolvedPath) return null;
-  const content = await readFileOrNull(resolvedPath);
-  if (content === null) return null;
-  const truncated = truncateContent(content, maxChars) as Record<
+  const plan = await readExecutionArtifact(state, { kind: 'plan' });
+  if (!plan) return null;
+  const truncated = truncateContent(plan.content, maxChars) as Record<
     string,
     unknown
   >;
   return {
-    filePath: resolvedPath,
+    filePath: plan.filePath,
     ...truncated,
   };
 }
@@ -1688,7 +1652,9 @@ async function getPipeline(
       (total, job) => total + job.steps.length,
       0,
     ),
-    runModes: getTriggerTypes(pipeline.content.on).map((mode) => ({
+    runModes: portablePipelineTriggerTypes(
+      getTriggerTypes(pipeline.content.on),
+    ).map((mode) => ({
       mode,
       inputs: pipelineInputDetails(
         getTriggerInputDefs(pipeline.content.on, mode),
@@ -2941,6 +2907,9 @@ async function importTrackedPlanAction(
     worktreeId: runtime.worktreeId,
     filePath: action.filePath,
     repoId: action.repoId,
+    ...(runtime.planInitiationSource
+      ? { initiationSource: runtime.planInitiationSource }
+      : {}),
   });
   sendToWindow(runtime.getWindow(), IPC_CHANNELS.trackedPlansUpdated, {
     projectId: runtime.projectId,

@@ -1,5 +1,6 @@
 import { useMemo, type JSX } from 'react';
 import {
+  Stack,
   CheckStatusBadge,
   LoadingSpinner,
   type CheckStatusBadgeStatus,
@@ -88,15 +89,15 @@ export function CheckDetailsList({
   ).length;
 
   return (
-    <div>
-      <p className="mb-1 text-3xs font-semibold fg-secondary">
+    <Stack gap="tight">
+      <p className="text-3xs font-semibold fg-secondary">
         Checks ({passingCount}/{checkDetails.length} passing)
       </p>
       <div
         className={
           scrollable
-            ? `${scrollMaxHeightClassName} space-y-1 overflow-y-auto pr-1`
-            : 'space-y-1 pr-1'
+            ? `${scrollMaxHeightClassName} grid grid-cols-1 content-start gap-1 overflow-y-auto pr-1`
+            : 'grid grid-cols-1 content-start gap-1 pr-1'
         }
       >
         {sortedChecks.map((check, index) => (
@@ -123,6 +124,6 @@ export function CheckDetailsList({
           </div>
         ))}
       </div>
-    </div>
+    </Stack>
   );
 }

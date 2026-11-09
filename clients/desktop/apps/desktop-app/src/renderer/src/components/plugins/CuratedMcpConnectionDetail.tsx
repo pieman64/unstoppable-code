@@ -22,7 +22,7 @@ import type {
   McpServerDataView,
   McpServerIndexEntry,
   McpServerStatusEntry,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   Button,
   MCP_SIGN_IN_WAITING_LABEL,
@@ -96,6 +96,8 @@ type McpConnectionSource =
   | { entry?: undefined; localServer: McpServerIndexEntry };
 
 type CuratedMcpConnectionDetailProps = McpConnectionSource & {
+  /** Tells the page when the sign-in browser opens, so it can widen. */
+  onSignInBrowserChange?: (open: boolean) => void;
   installedServerId: string | null;
   autoConnect?: boolean;
   /**
@@ -305,6 +307,7 @@ function ProviderOnlyConnectionDetail({
         <DetailPageActions secondary={secondary} primary={primary} />
       )}
       <CuratedDetail
+        flush
         entry={entry}
         installedServerId={null}
         statusContent={statusContent}
@@ -392,6 +395,7 @@ function AppMcpConnectionDetail({
   onEditorOpenChange,
   onBusyChange,
   onDeleted,
+  onSignInBrowserChange,
   statusContent,
 }: CuratedMcpConnectionDetailProps): JSX.Element {
   // The cloud account never connects a desktop-only server (REG-3035), so an
@@ -485,6 +489,13 @@ function AppMcpConnectionDetail({
   const statusGeneration = useRef(0);
   const [toolsRevision, setToolsRevision] = useState(0);
   const oauth = useMarketplaceOAuth();
+  const signInBrowserOpen = Boolean(oauth.url);
+  useEffect(() => {
+    if (!signInBrowserOpen) return undefined;
+    onSignInBrowserChange?.(true);
+    // Leaving this view with the browser open must not leave the page wide.
+    return (): void => onSignInBrowserChange?.(false);
+  }, [onSignInBrowserChange, signInBrowserOpen]);
   const { pending, finish, start, url: authorizationUrl } = oauth;
   const detailBusy =
     saving ||
@@ -1249,6 +1260,7 @@ function AppMcpConnectionDetail({
         }
       >
         <CuratedDetail
+          flush
           entry={
             entry ?? {
               name: server?.definition.name ?? localServer.name,
@@ -1274,8 +1286,8 @@ function AppMcpConnectionDetail({
           statusContent={statusContent}
           renderManagement={
             server || accountConnection
-              ? (tools): ReactNode => (
-                  <div className="max-w-2xl">
+              ? (): ReactNode => (
+                  <div>
                     <DesktopMcpManagementSections
                       key={accountConnection?.id ?? server?.definition.id}
                       server={accountConnection ? null : server}
@@ -1304,16 +1316,14 @@ function AppMcpConnectionDetail({
                         setMoveEditorOpen(true);
                       }}
                       onBusyChange={onManagementBusyChange}
-                      tools={tools}
                     />
                   </div>
                 )
               : undefined
           }
           connectionContent={
-            <div className="max-w-2xl">
+            <div>
               <PluginAccountConnection
-                headingLevel={providerConnections ? 4 : 3}
                 status={connection}
                 connected={statusConnected}
                 description={

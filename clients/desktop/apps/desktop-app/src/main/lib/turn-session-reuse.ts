@@ -164,6 +164,8 @@ const SETTINGS_HELD_CHANGE_BY_CAUSE: Readonly<
   managedDelegationMode: 'delegation',
   managed_delegation: 'delegation',
   codex_preferences: 'codex_preferences',
+  // Mods belong to plugins, so a held send names the plugin change.
+  claude_mods: 'plugins',
   authGeneration: 'account',
   routing: 'account',
   account: 'account',

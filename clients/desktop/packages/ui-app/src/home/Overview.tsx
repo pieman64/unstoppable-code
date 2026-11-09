@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import { useMemo, type JSX, type ReactNode } from 'react';
 import {
   selectAwaitingApprovalWorktrees,
@@ -139,7 +140,9 @@ function Section({
           {emptyLabel ?? 'Nothing to show.'}
         </p>
       ) : (
-        <div className="max-h-96 space-y-1.5 overflow-y-auto">{children}</div>
+        <div className="max-h-96 grid grid-cols-1 content-start gap-1.5 overflow-y-auto">
+          {children}
+        </div>
       )}
     </section>
   );
@@ -249,16 +252,14 @@ export function Overview({
                 }
                 badge={
                   worktree.awaitingApproval ? (
-                    <span
-                      className="inline-flex items-center rounded-full border border-line-attention bg-warning-subtle px-2 py-0.5 text-3xs font-medium fg-warning"
+                    <Badge
+                      tone="warning"
                       data-testid="overview-unread-chat-review-plan-badge"
                     >
                       Review plan
-                    </span>
+                    </Badge>
                   ) : (
-                    <span className="inline-flex items-center rounded-full border border-fg-info/40 bg-info-subtle px-2 py-0.5 text-3xs font-medium fg-info">
-                      Unread
-                    </span>
+                    <Badge tone="info">Unread</Badge>
                   )
                 }
                 onClick={(): void =>
@@ -315,10 +316,10 @@ export function Overview({
                   summary?.planMode ? <PlanModeIcon size="sm" /> : undefined
                 }
                 badge={
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-fg-info/40 bg-info-subtle px-2 py-0.5 text-3xs font-medium fg-info">
+                  <Badge tone="info">
                     <LoadingSpinner sizePx={12} />
                     Streaming
-                  </span>
+                  </Badge>
                 }
                 onClick={(): void =>
                   onSelectWorktree(worktree.workspaceLocalId, worktree.localId)

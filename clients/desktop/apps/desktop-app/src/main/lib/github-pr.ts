@@ -1397,7 +1397,7 @@ export async function fetchRepoPrTrackingData(
   return fetchRepoPrTrackingDataForRemote(remote, branchName, options);
 }
 
-async function fetchRepoPrTrackingDataForRemote(
+export async function fetchRepoPrTrackingDataForRemote(
   remote: GitHubRepositoryRef,
   branchName: string,
   options?: PrTrackingReadOptions,

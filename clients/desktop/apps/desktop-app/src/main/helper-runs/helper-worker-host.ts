@@ -14,7 +14,7 @@ import {
 import {
   readHelperUsage,
   type HelperUsage,
-} from '@canopy/desktop-shared/lib/helper-usage';
+} from '@canopy/execution-engine/lib/helper-usage';
 import { getStructuredHelperQueryErrorUsage } from '@canopy/desktop-shared/lib/structured-helper-query';
 import { runInHelperWorker } from './helper-worker-context';
 

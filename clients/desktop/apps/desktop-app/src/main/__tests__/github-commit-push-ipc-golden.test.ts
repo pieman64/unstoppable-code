@@ -690,6 +690,22 @@ describe('github:commit-and-push baseline', () => {
     );
   });
 
+  // CAN-5953: a Try again asks main never to push a clean repository's
+  // pending commits on its own; they wait for the bar's Push.
+  it('skipCleanPush leaves already-committed changes unpushed', async () => {
+    const path = checkout('ship-existing-retry');
+    const before = remoteHead('ship-existing-retry');
+    const tip = commit(path, 'already.txt');
+    exact(await ship('ship-existing-retry', { skipCleanPush: true }), {
+      repos: [],
+      skippedRepos: [{ ...identity, reason: 'commits_not_pushed' }],
+      failedRepos: [],
+      agentResolutionRepos: [],
+    });
+    expect(remoteHead('ship-existing-retry')).toBe(before);
+    expect(git(path, ['rev-parse', 'HEAD'])).toBe(tip);
+  });
+
   it('does not commit when there are no changes or no upstream', async () => {
     const path = checkout('empty');
     const before = git(path, ['rev-parse', 'HEAD']);

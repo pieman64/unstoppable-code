@@ -1856,6 +1856,11 @@ export function getOrgProjectSetupsDir(): string {
   return join(getDataDir(), 'org-project-setups');
 }
 
+/** Journals for cloud project setups on this device (CAN-5192). */
+export function getProjectSetupsDir(): string {
+  return join(getDataDir(), 'project-setups');
+}
+
 export function getOrgSharedMultiRepoCreationsDir(): string {
   return join(getDataDir(), 'org-shared-multi-repo-creations');
 }

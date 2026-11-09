@@ -16,6 +16,7 @@ import {
   createContext,
   Fragment,
   memo,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -60,11 +61,18 @@ import { CollapsibleBlock } from './CollapsibleBlock';
 import { ToolCallBlock } from './ToolCallBlock';
 import {
   ChatVisualBlock,
+  ClaudeModsSkippedNoticeView,
   GitHubReferencePreview,
   LinearReferencePreview,
   ManagedDelegationCard,
   type ChatVisualOwner,
 } from '@canopy/ui-app';
+import type {
+  ClaudeModPluginDetailsTarget,
+  ClaudeModsChatContext,
+} from '@canopy/protocol/claude-mods';
+import { useChatTabRenderState } from '@/stores/chatStore';
+import { openClaudeModPluginDetails } from './open-claude-mod-plugin-details';
 import type { ToolResult } from './types';
 import { TurnTimer } from './TurnTimer';
 import type { DisplayBlock } from './types';
@@ -333,7 +341,7 @@ const ChatImageBlock = memo(function ChatImageBlock({
       src={src}
       alt={alt}
       onError={() => setSrc(null)}
-      className="max-h-[70vh] max-w-full rounded-lg object-contain shadow-sm"
+      className="max-h-[70vh] max-w-full self-start rounded-lg object-contain shadow-sm"
     />
   );
 });
@@ -827,6 +835,52 @@ function builtinGhChatBannerCopy(
       };
   }
 }
+
+/**
+ * The skipped-Mod notice for this chat: its context names the chat and the
+ * repository it has selected, so the desktop finds the chat's skills folder.
+ */
+const ClaudeModsSkippedBlockView = memo(function ClaudeModsSkippedBlockView({
+  block,
+}: {
+  block: Extract<DisplayBlock, { type: 'claude_mods_skipped' }>;
+}): JSX.Element {
+  const source = useContext(DelegationTranscriptSourceContext);
+  const projectId = source?.projectId;
+  const worktreeId = source?.worktreeId;
+  const chatId = source?.chatId;
+  const chatTarget = useMemo(
+    () =>
+      projectId !== undefined &&
+      worktreeId !== undefined &&
+      chatId !== undefined
+        ? { projectId, worktreeId, chatId }
+        : null,
+    [projectId, worktreeId, chatId],
+  );
+  const repoId = useChatTabRenderState(chatTarget, ({ tab }) =>
+    tab && tab.kind !== 'file' ? tab.selectedRepoId : undefined,
+  );
+  const context = useMemo<ClaudeModsChatContext | undefined>(
+    () =>
+      chatTarget
+        ? { ...chatTarget, ...(repoId !== undefined ? { repoId } : {}) }
+        : undefined,
+    [chatTarget, repoId],
+  );
+  const onOpenDetails = useCallback(
+    (details: ClaudeModPluginDetailsTarget): void =>
+      openClaudeModPluginDetails(details),
+    [],
+  );
+  return (
+    <ClaudeModsSkippedNoticeView
+      mods={block.mods}
+      {...(context !== undefined ? { context } : {})}
+      onOpenDetails={onOpenDetails}
+    />
+  );
+});
 
 function copyNativeSessionId(id: string): void {
   void copyTextToClipboard(id);
@@ -1467,21 +1521,23 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
             <span className="flex-shrink-0">
               <SkillIcon />
             </span>
-            <span>
-              Using skill{' '}
-              {skillTarget ? (
-                <InvocableDetailsButton target={skillTarget}>
-                  {skillName}
-                </InvocableDetailsButton>
-              ) : (
-                <code className="rounded bg-fg-primary/[0.08] px-1 py-0.5 font-mono text-2xs">
-                  {skillName}
-                </code>
+            <span className="inline-flex items-center gap-2.5">
+              <span>
+                Using skill{' '}
+                {skillTarget ? (
+                  <InvocableDetailsButton target={skillTarget}>
+                    {skillName}
+                  </InvocableDetailsButton>
+                ) : (
+                  <code className="rounded bg-fg-primary/[0.08] px-1 py-0.5 font-mono text-2xs">
+                    {skillName}
+                  </code>
+                )}
+              </span>
+              {!block.result && (
+                <ThinkingSpinner tone="accent" className="flex-shrink-0" />
               )}
             </span>
-            {!block.result && (
-              <ThinkingSpinner tone="accent" className="ml-1 flex-shrink-0" />
-            )}
           </div>
         );
       }
@@ -1735,6 +1791,9 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         />
       );
 
+    case 'claude_mods_skipped':
+      return <ClaudeModsSkippedBlockView block={block} />;
+
     case 'compaction_info': {
       // Compaction banner copy is keyed off both provider and interface mode
       // so native Codex events do not inherit the Claude-specific fallback;
@@ -1810,7 +1869,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
           }
         >
           {requestCount === 0 ? null : (
-            <ul className="list-none space-y-0.5">
+            <ul className="flex flex-col list-none gap-0.5">
               {block.titles.map((title, titleIndex) => (
                 <li
                   key={`${titleIndex}:${title}`}
@@ -1905,7 +1964,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         <Surface variant="group">
           <div className="flex items-start gap-2 px-3 py-1.5 text-xs fg-secondary">
             <AppCatalogInfoIcon size="sm" className="mt-0.5 flex-shrink-0" />
-            <div className="space-y-0.5">
+            <div className="flex flex-col gap-0.5">
               <div>
                 Chat initiated by <strong>{source}</strong> at {localTime}
               </div>

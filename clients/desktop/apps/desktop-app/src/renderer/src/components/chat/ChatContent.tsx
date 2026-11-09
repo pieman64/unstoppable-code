@@ -1,4 +1,5 @@
 import {
+  Surface,
   ComposerTrayProvider,
   TranscriptPagingControls,
   ErrorBanner,
@@ -641,13 +642,15 @@ export function ChatContent({
               />
             </Suspense>
             {scheduledMessageError && (
-              <div className="border-t px-4 py-2">
-                <ErrorBanner
-                  error={scheduledMessageError}
-                  className=""
-                  testId="chat-scheduled-message-error"
-                />
-              </div>
+              <Surface variant="section" boundary="top">
+                <div className="px-4 py-2">
+                  <ErrorBanner
+                    error={scheduledMessageError}
+                    className=""
+                    testId="chat-scheduled-message-error"
+                  />
+                </div>
+              </Surface>
             )}
           </div>
           {recoveryScope && (

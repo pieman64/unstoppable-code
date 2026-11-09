@@ -1,5 +1,5 @@
 import { execFile, type ChildProcess } from 'node:child_process';
-import { startWindowsProcessTreeKill } from '@canopy/desktop-shared/node/lib/process-kill';
+import { startWindowsProcessTreeKill } from '@canopy/execution-engine/node/lib/process-kill';
 
 function hasErrnoCode(error: unknown, code: string): boolean {
   return (
@@ -23,12 +23,19 @@ export async function drainOwnedProcess(
         'The tracked process ownership changed before archive cleanup.',
       );
   };
+  let ownershipReleased = false;
   const exists = (target: number): boolean => {
+    // Once the tracked root reports exit, never probe a potentially reused PID;
+    // the root leads its group, so the -pid probe still covers it if alive.
+    if (ownershipReleased && target === pid) return false;
     try {
       process.kill(target, 0);
       return true;
     } catch (error) {
       if (hasErrnoCode(error, 'ESRCH')) return false;
+      // A group member the signal could not end leaves nothing to wait for;
+      // EPERM on the owned root itself is unexpected, so it still throws.
+      if (target < 0 && hasErrnoCode(error, 'EPERM')) return false;
       throw error;
     }
   };
@@ -77,14 +84,19 @@ export async function drainOwnedProcess(
   }
   const deadline = Date.now() + 5_000;
   while (true) {
-    // Once the tracked root reports exit, never probe a potentially reused PID.
-    // The process-group signal above already covered its owned descendants.
-    if (!isOwned()) return;
+    // The root can report exit while its SIGKILLed descendants are still
+    // exiting, so keep waiting for the process group: its ID stays reserved
+    // while any member remains.
+    ownershipReleased ||= !isOwned();
     if (!exists(pid) && (process.platform === 'win32' || !exists(-pid))) break;
-    if (Date.now() >= deadline)
+    if (Date.now() >= deadline) {
+      // Only a still-owned root fails the drain; an unreaped zombie can hold
+      // the group until the deadline, which then ends the wait as before.
+      if (ownershipReleased) return;
       throw new Error(
         'An owned worktree process did not exit; archive cleanup remains pending.',
       );
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }

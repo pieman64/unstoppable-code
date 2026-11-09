@@ -51,6 +51,8 @@ export type WorkerGitRepositorySelector = z.output<
 export const WorkerGitBranchListParamsSchema = z.strictObject({
   scope: CanopyWorkspaceScopeSchema,
   repository: WorkerGitRepositorySelectorSchema,
+  /** Opt into the additive result; legacy callers retain their closed shape. */
+  includeHeadState: z.literal(true).optional(),
   /** Advisory remote knowledge; never authorizes repository access or writes. */
   defaultBranchHint: z
     .strictObject({
@@ -83,6 +85,8 @@ export const WorkerGitBranchListResultSchema = z.strictObject({
   branches: z.array(WorkerGitBranchSchema),
   defaultBranch: z.string().nullable(),
   defaultBranchSource: z.enum(WORKER_GIT_DEFAULT_BRANCH_SOURCES).nullable(),
+  /** True: verified unborn source branch; false: verified commit; absent: unknown. */
+  headUnborn: z.boolean().optional(),
 });
 
 export type WorkerGitBranchListResult = z.output<

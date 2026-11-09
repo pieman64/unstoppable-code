@@ -802,6 +802,7 @@ export type {
   FeedbackDialogReportType,
   FeedbackDialogSubmission,
 } from './feedback/FeedbackDialog';
+export * from './feedback/AppErrorBoundary';
 export * from './feedback/FeedbackReportDialogEntry';
 export * from './feedback/ReportThisAction';
 
@@ -970,6 +971,18 @@ export {
   type LinkCloudProjectTarget,
   type LinkCloudProjectUnavailableReason,
 } from './cloud-projects/LinkCloudProjectDialog';
+export {
+  CloudProjectSetupPanel,
+  cloudProjectSetupErrorMessage,
+  cloudProjectSetupUnavailableMessage,
+  type CloudProjectSetupErrorCode,
+  type CloudProjectSetupListEntry,
+  type CloudProjectSetupPanelProps,
+  type CloudProjectSetupPanelState,
+  type CloudProjectSetupProgressLine,
+  type CloudProjectSetupRepository,
+  type CloudProjectSetupUnavailableReason,
+} from './cloud-projects/CloudProjectSetupPanel';
 export {
   OrgRepositoryOwnerNotice,
   orgRepositoryOwnerNoticeCopy,

@@ -1,4 +1,4 @@
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import type { GitHubTokenProviderResult } from '@github/copilot-sdk';
 import type { CopilotAccount } from '@canopy/desktop-shared/types';
 import {

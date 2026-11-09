@@ -5,6 +5,7 @@ import * as yaml from 'js-yaml';
 import { BRAND } from '@canopy/brand/current';
 import {
   CANOPY_COMPATIBILITY_VERSION,
+  claudeModCodexWarning,
   comparePluginPaths,
   createGeneratedSkillName,
   normalizePluginCategory,
@@ -19,6 +20,7 @@ import { safeReadJson, safeReadText } from '../lib/fs-utils';
 import { parseFrontmatter, parseFrontmatterAndBody } from '../lib/frontmatter';
 import { isPathInside } from '../lib/path-safety';
 import { getCodexCompatibilityCacheRootDir } from '../lib/paths';
+import { scanPluginMods } from './plugin-scanner';
 import {
   discoverPluginMarkdownMembers,
   discoverPluginSkills,
@@ -483,7 +485,11 @@ export function ensureCodexCompatibleClaudePlugin(
       cacheDir,
       pluginName: source.pluginName,
       category: normalizePluginCategory(source.category),
-      warnings: [...source.warnings],
+      // The projection's own warnings are not cached, so repeat its Mod notice.
+      warnings:
+        scanPluginMods(source.pluginPath, source.manifest).length > 0
+          ? [...source.warnings, claudeModCodexWarning(source.pluginName)]
+          : [...source.warnings],
       freshness,
       extraEnv,
     };

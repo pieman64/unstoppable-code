@@ -37,6 +37,7 @@
  * render seams ARE the export surface (same posture as registry.tsx).
  */
 /* eslint-disable react-refresh/only-export-components */
+import { Dot } from '@canopy/ui-shared/components/Badge';
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import type { PanelTabModel } from '@canopy/ui-shared/panels';
 import {
@@ -499,10 +500,7 @@ function ChatPanelTabIcon({ chatTabId }: { chatTabId: string }): JSX.Element {
         data-testid={`panel-tab-tool-approval-${chatTabId}`}
         {...unreadProps}
       >
-        <span
-          className="h-2 w-2 rounded-full bg-fg-warning"
-          aria-hidden="true"
-        />
+        <Dot tone="attention" />
       </span>
     );
   }
@@ -948,29 +946,35 @@ function FillChatPanelTabTrailing({
           the orange needs-input dot the sidebar row uses; one dot covers
           either. */}
       {awaitingQuestion ? null : awaitingToolApproval ? (
-        <span
-          aria-label="Approval needed"
-          title="Approval needed"
-          data-testid={`panel-tab-tool-approval-${chatTabId}`}
-          className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-fg-warning"
-        />
+        <span title="Approval needed" className="inline-flex shrink-0">
+          <Dot
+            tone="attention"
+            label="Approval needed"
+            data-testid={`panel-tab-tool-approval-${chatTabId}`}
+          />
+        </span>
       ) : awaitingApproval ? (
-        <span
-          aria-label="Plan waiting for review"
-          title="Plan waiting for review"
-          data-testid={`panel-tab-plan-review-${chatTabId}`}
-          className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-fg-warning"
-        />
+        <span title="Plan waiting for review" className="inline-flex shrink-0">
+          <Dot
+            tone="attention"
+            label="Plan waiting for review"
+            data-testid={`panel-tab-plan-review-${chatTabId}`}
+          />
+        </span>
       ) : null}
       {unread ? (
         <span
-          aria-label="Unread"
           title="Unread"
-          data-testid={`panel-tab-unread-dot-${chatTabId}`}
           // The tab bar reads it to dot ⌄ while this tab is out of view.
           {...{ [PANEL_TAB_UNREAD_ATTRIBUTE]: 'true' }}
-          className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${OPERATIONAL_STATUS_COLORS.unread.background}`}
-        />
+          className="inline-flex shrink-0"
+        >
+          <Dot
+            tone="unread"
+            label="Unread"
+            data-testid={`panel-tab-unread-dot-${chatTabId}`}
+          />
+        </span>
       ) : null}
       {tab.readOnly === true ? <ReadOnlyLockGlyph /> : null}
     </>
@@ -991,11 +995,15 @@ function FilePanelTabTrailing({
   // box, so it drops the classic leading margin.
   return (
     <span
-      aria-label="Unsaved changes"
       title="Unsaved changes"
-      className={`${fillTabs ? '' : 'ml-0.5 '}inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-warning`}
-      data-testid={`panel-tab-dirty-${fileTabId}`}
-    />
+      className={`${fillTabs ? '' : 'ml-0.5 '}inline-flex shrink-0`}
+    >
+      <Dot
+        tone="attention"
+        label="Unsaved changes"
+        data-testid={`panel-tab-dirty-${fileTabId}`}
+      />
+    </span>
   );
 }
 

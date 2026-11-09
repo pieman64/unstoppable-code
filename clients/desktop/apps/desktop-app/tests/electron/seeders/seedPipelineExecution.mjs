@@ -35,7 +35,7 @@ import { writeJson } from './fsHelpers.mjs';
  *     (sanitize collapses `[^A-Za-z0-9._-]+` to `_`). This is the "transcript
  *     sidecar" the detail modal's step output panel reads.
  *
- * Shapes (`packages/desktop-shared/src/types/pipeline.ts`):
+ * Shapes (`packages/execution-engine/src/types/pipeline.ts`):
  *   - `ExecutionState` { version: 5, id, pipeline_id, pipeline_snapshot
  *       (NormalizedPipeline), status, jobs (Record<string, JobResult>),
  *       started_at, cwd, env, inputs, ... } — the detail modal reads
@@ -61,25 +61,25 @@ import { writeJson } from './fsHelpers.mjs';
  * @param {string} [options.execution.id] execution id; defaults to a seeded id
  * @param {string} [options.execution.pipelineId]
  * @param {string} [options.execution.pipelineName]
- * @param {import('@canopy/desktop-shared/types/pipeline').ExecutionState['status']} [options.execution.status]
+ * @param {import('@canopy/execution-engine/types/pipeline').ExecutionState['status']} [options.execution.status]
  *   defaults to `'success'`.
  * @param {string} [options.execution.startedAt] ISO timestamp
  * @param {string} [options.execution.completedAt] ISO timestamp
  * @param {string} [options.execution.cwd]
  * @param {Array<{ id?: string, name?: string, steps?: Array<{ id?: string, name?: string, run?: string }> }>} [options.execution.jobs]
  *   job/step skeleton; defaults to a single `build` job with one step.
- * @param {Record<string, Partial<import('@canopy/desktop-shared/types/pipeline').StepResult>>} [options.execution.stepResults]
+ * @param {Record<string, Partial<import('@canopy/execution-engine/types/pipeline').StepResult>>} [options.execution.stepResults]
  *   per-step result overrides keyed by `"{jobId}.{stepId}"` (timestamps, status,
  *   exit codes, etc.). Merged over the status-derived defaults.
- * @param {{ jobId?: string, stepId?: string, title?: string, message?: string, fields?: import('@canopy/desktop-shared/types/pipeline').PauseInputField[] }} [options.execution.pendingInput]
+ * @param {{ jobId?: string, stepId?: string, title?: string, message?: string, fields?: import('@canopy/execution-engine/types/pipeline').PauseInputField[] }} [options.execution.pendingInput]
  *   when set, persists `state.pending_input` and marks the target step/job
  *   `paused`. Omit `fields` (or pass `[]`) for a formless pause.
  * @param {boolean} [options.execution.retryActiveAdvisor]
  *   convenience flag: produces a running job with one `retry_history` attempt
  *   and a default running advisor snapshot.
- * @param {Partial<import('@canopy/desktop-shared/types/pipeline').ExecutionState>} [options.execution.stateOverrides]
+ * @param {Partial<import('@canopy/execution-engine/types/pipeline').ExecutionState>} [options.execution.stateOverrides]
  *   shallow overrides merged last onto the built `ExecutionState`.
- * @param {Partial<import('@canopy/desktop-shared/types/pipeline').PipelineAdvisorSnapshot> | true} [options.advisorSnapshot]
+ * @param {Partial<import('@canopy/execution-engine/types/pipeline').PipelineAdvisorSnapshot> | true} [options.advisorSnapshot]
  *   when truthy, writes `pipeline-advisor.json`. Pass `true` for defaults or an
  *   object to override fields.
  * @param {Array<{ jobId: string, stepId: string, attempt?: number, iteration?: number, lines: string[] }>} [options.stepLogs]
@@ -182,13 +182,13 @@ export function seedPipelineExecution(options) {
     });
   }
 
-  /** @type {import('@canopy/desktop-shared/types/pipeline').NormalizedPipeline} */
+  /** @type {import('@canopy/execution-engine/types/pipeline').NormalizedPipeline} */
   const pipelineSnapshot = {
     name: pipelineName,
     jobs: snapshotJobs,
   };
 
-  /** @type {import('@canopy/desktop-shared/types/pipeline').ExecutionState} */
+  /** @type {import('@canopy/execution-engine/types/pipeline').ExecutionState} */
   const state = {
     version: 5,
     id: executionId,

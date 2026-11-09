@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import type {
   CapabilityTileLiveState,

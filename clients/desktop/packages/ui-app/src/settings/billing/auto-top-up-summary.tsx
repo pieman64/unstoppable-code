@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX, ReactNode } from 'react';
-import { ProgressBar } from '@canopy/ui-shared/components';
+import { Stack, ProgressBar } from '@canopy/ui-shared/components';
 import { formatUsd } from '@canopy/ui-shared/lib';
 import {
   AI_CREDIT_AUTO_TOP_UP_DEFAULT_AMOUNT_USD,
@@ -73,7 +73,11 @@ export function AutoTopUpSettingsDetails({
   return (
     <>
       {/* Month-to-date spend meter */}
-      <div className="mt-4" data-testid={tid('credits-auto-top-up-meter')}>
+      <Stack
+        gap="tight"
+        className="mt-4"
+        data-testid={tid('credits-auto-top-up-meter')}
+      >
         <div className="flex items-center justify-between text-xs fg-secondary">
           <span>
             {formatUsd(monthlySpentUsd)} spent
@@ -88,13 +92,12 @@ export function AutoTopUpSettingsDetails({
         </div>
         {cap !== null ? (
           <ProgressBar
-            className="mt-1"
             value={pct}
             label="Month-to-date auto top-up spend"
             hideLabel
           />
         ) : null}
-      </div>
+      </Stack>
 
       {/* Current settings summary + adjust */}
       <div className="mt-4 flex items-center justify-between gap-3">

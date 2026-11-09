@@ -12,7 +12,7 @@ import type {
   ChangedFileStatus,
   FileDiffSource,
 } from '@canopy/desktop-shared/types';
-import { DiffLineCounts } from '@canopy/ui-shared/components';
+import { Surface, DiffLineCounts } from '@canopy/ui-shared/components';
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -676,20 +676,22 @@ export function DiffFileTree({
 
   if (collapsed) {
     return (
-      <div
-        data-testid="diff-file-tree"
-        className="flex w-10 shrink-0 flex-col items-center border-r py-2"
-      >
-        <Button
-          variant="ghost"
-          size="compact"
-          iconOnly
-          onClick={onToggleCollapsed}
-          aria-label="Expand file tree"
+      <Surface variant="section" boundary="right" className="w-10 shrink-0">
+        <div
+          data-testid="diff-file-tree"
+          className="flex shrink-0 flex-col items-center py-2"
         >
-          <AppCatalogChevronRightMediumIcon size="sm" />
-        </Button>
-      </div>
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
+            onClick={onToggleCollapsed}
+            aria-label="Expand file tree"
+          >
+            <AppCatalogChevronRightMediumIcon size="sm" />
+          </Button>
+        </div>
+      </Surface>
     );
   }
 
@@ -705,26 +707,28 @@ export function DiffFileTree({
         className="flex shrink-0 flex-col border-r"
       >
         {!hideHeader && (
-          <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
-            <div className="flex min-w-0 items-center gap-1">
-              <span
-                className="truncate text-3xs font-medium fg-secondary"
-                data-testid="diff-file-tree-header-count"
+          <Surface variant="section" boundary="bottom" className="shrink-0">
+            <div className="flex shrink-0 items-center justify-between px-3 py-2">
+              <div className="flex min-w-0 items-center gap-1">
+                <span
+                  className="truncate text-3xs font-medium fg-secondary"
+                  data-testid="diff-file-tree-header-count"
+                >
+                  {`${totalFiles} File${totalFiles === 1 ? '' : 's'}${visibleFiles < totalFiles ? ` (${visibleFiles})` : ''}`}
+                </span>
+                {headerAccessory}
+              </div>
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
+                onClick={onToggleCollapsed}
+                aria-label="Collapse file tree"
               >
-                {`${totalFiles} File${totalFiles === 1 ? '' : 's'}${visibleFiles < totalFiles ? ` (${visibleFiles})` : ''}`}
-              </span>
-              {headerAccessory}
+                <AppCatalogChevronLeftMediumIcon size="sm" />
+              </Button>
             </div>
-            <Button
-              variant="ghost"
-              size="compact"
-              iconOnly
-              onClick={onToggleCollapsed}
-              aria-label="Collapse file tree"
-            >
-              <AppCatalogChevronLeftMediumIcon size="sm" />
-            </Button>
-          </div>
+          </Surface>
         )}
         {/* `overflow-auto` (both axes): deeply nested paths are never
             truncated — the rows size to `w-max` and scroll horizontally

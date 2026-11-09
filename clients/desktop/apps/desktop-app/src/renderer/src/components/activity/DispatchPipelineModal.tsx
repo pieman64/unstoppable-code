@@ -8,7 +8,7 @@ import type { PipelineWatcherSelection } from './usePipelineRunWatcher';
 import type {
   PipelineData,
   PipelineExecutionScope,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   PipelineRunContextFields,
   type PipelineRunLocation,

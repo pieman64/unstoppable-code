@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { AgentProviderAuthStatus } from '@canopy/desktop-shared/types';
+import {
+  beginRuntimeAuthProbe,
+  observeRuntimeAuthProbe,
+} from '@/lib/runtime-probe-outcomes';
 
 interface CachedAuthStatus {
   status: AgentProviderAuthStatus;
@@ -77,6 +81,7 @@ export function useCodexAuthStatus(
     }
     if (!pending) {
       const activeRequestVersion = requestVersion;
+      const probe = beginRuntimeAuthProbe();
       const promise = window.api
         // A deliberate refresh (post-sign-in / cache invalidation) bypasses the
         // main-process TTL cache too so the re-probe reflects the new state.
@@ -88,6 +93,11 @@ export function useCodexAuthStatus(
             s.probeFailed !== true
           ) {
             cache = { status: s, cachedAtMs: Date.now() };
+          }
+          // Observed per request, so consumers sharing it count once. A rejected
+          // invoke lands in the catch below and is never an observation.
+          if (activeRequestVersion === requestVersion) {
+            observeRuntimeAuthProbe('codex', probe, s);
           }
           return s;
         })

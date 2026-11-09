@@ -11,6 +11,7 @@ import {
   hasMarkdownDescriptionText,
 } from '@canopy/ui-shared';
 import {
+  Stack,
   Button,
   DetailPageActions,
   ExecutionActionButton,
@@ -138,14 +139,14 @@ export function CollectionReadDetail({
         }
       />
 
-      <div>
-        <p className="mb-1.5 text-s fg-secondary">Name</p>
+      <div className="flex flex-col gap-1.5">
+        <p className="text-s fg-secondary">Name</p>
         <Surface variant="group">
           <p className="px-3 py-2 text-s fg-primary">{collection.name}</p>
         </Surface>
       </div>
-      <div>
-        <p className="mb-1.5 text-s fg-secondary">Description</p>
+      <div className="flex flex-col gap-1.5">
+        <p className="text-s fg-secondary">Description</p>
         <Surface variant="group">
           <div className="px-3 py-2 text-s fg-primary">
             {hasMarkdownDescriptionText(collection.description) ? (
@@ -166,8 +167,13 @@ export function CollectionReadDetail({
         const refs = collection.memberRefs.filter((ref) => ref.kind === kind);
         if (refs.length === 0) return null;
         return (
-          <section key={kind} data-testid={`collection-read-group-${kind}`}>
-            <Heading level={2} variant="label" className="mb-2">
+          <Stack
+            as="section"
+            gap="inline"
+            key={kind}
+            data-testid={`collection-read-group-${kind}`}
+          >
+            <Heading level={2} variant="label">
               {label} ({refs.length})
             </Heading>
             <Surface variant="outline" className="overflow-hidden">
@@ -232,7 +238,7 @@ export function CollectionReadDetail({
                 })}
               </div>
             </Surface>
-          </section>
+          </Stack>
         );
       })}
     </div>

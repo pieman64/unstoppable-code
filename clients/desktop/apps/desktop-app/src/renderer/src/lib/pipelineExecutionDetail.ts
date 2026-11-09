@@ -1,6 +1,6 @@
 import type { DisplayMessage } from '@/components/chat/types';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
-import type { StepResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
+import type { StepResult } from '@canopy/execution-engine/types/pipeline';
 
 export type PipelineLogViewMode = 'plain' | 'rich';
 

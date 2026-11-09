@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { BrandLogo } from '@/components/BrandLogo';
+import { Surface } from '@canopy/ui-shared/components';
 
 /**
  * Full-viewport branded loading screen shown by App.tsx between the moment the
@@ -16,14 +17,16 @@ import { BrandLogo } from '@/components/BrandLogo';
 export function AppLoadingScreen(): JSX.Element {
   return (
     // The window's whole content in place of the shell, not a layer over it.
-    <div
-      className="flex h-screen w-full items-center justify-center bg-base"
+    <Surface
+      variant="pane"
+      extent="viewport"
+      className="flex w-full items-center justify-center"
       data-testid="app-loading-screen"
     >
       <BrandLogo
         size={96}
         className="onboarding-logo-pulse select-none fg-accent"
       />
-    </div>
+    </Surface>
   );
 }

@@ -21,11 +21,11 @@ import type {
   McpServerToolsCacheEntry,
   McpServerToolsCacheFile,
   McpServersIndexFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   isMcpServersIndexFile,
   normalizeMcpServerFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import {
   getMcpServerFilePath,
   getMcpServersIndexFilePath,

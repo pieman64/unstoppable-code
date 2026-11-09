@@ -19,7 +19,10 @@ import {
   PIPELINE_DEFINITION_QUERY_DEFINITIONS,
   PIPELINE_GRANTS,
 } from '@canopy/protocol/canopy-core';
-import type { PipelineIndexEntry, PipelineInfo } from '../../types/pipeline';
+import type {
+  PipelineIndexEntry,
+  PipelineInfo,
+} from '@canopy/execution-engine/types/pipeline';
 import {
   removeStoredPipeline,
   writeStoredPipeline,

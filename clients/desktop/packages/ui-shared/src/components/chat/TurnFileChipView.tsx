@@ -169,7 +169,7 @@ export const TurnFileChipView = memo(function TurnFileChipView({
         className={
           clean
             ? `focus-ring focus-ring-stretched inline-flex min-h-8 min-w-0 max-w-3/5 shrink items-center rounded-sm text-left before:absolute ${presentation === 'summary' ? 'before:inset-1 before:rounded-lg' : 'focus-ring-inset before:inset-0 before:rounded-[calc(var(--radius-xl)-5px)]'} aria-disabled:cursor-default pointer-coarse:min-h-11`
-            : 'focus-ring focus-ring-stretched min-w-0 max-w-3/5 cursor-default rounded-md px-2 py-1.5 text-left before:absolute before:inset-0 before:rounded-[calc(var(--radius-xl)-5px)] aria-disabled:cursor-default'
+            : 'focus-ring focus-ring-stretched min-w-0 max-w-3/5 rounded-md px-2 py-1.5 text-left before:absolute before:inset-0 before:rounded-[calc(var(--radius-xl)-5px)] aria-disabled:cursor-default'
         }
       >
         <FileLabel filename={filename} />

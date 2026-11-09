@@ -42,6 +42,8 @@ export interface WorkerGitRepositoryReads {
   readBranchRefs: GitBranchListSources<unknown>['readBranchRefs'];
   readWorktreeList: GitBranchListSources<unknown>['readWorktreeList'];
   defaultBranchFacts: GitDefaultBranchFacts;
+  /** Older/unsupported hosts omit this advisory read. */
+  readHeadUnborn?(): Promise<boolean | undefined>;
 }
 
 /**
@@ -146,18 +148,24 @@ export function createWorkerGitBranchListHandlers<Repository>(
                 Promise.resolve(params.defaultBranchHint ?? null),
             };
       const now = host.now();
-      const listed = await listGitBranches(
-        {
-          readBranchRefs: reads.readBranchRefs,
-          readWorktreeList: reads.readWorktreeList,
-          resolveDefaultBranch: () => selectGitDefaultBranch(facts, { now }),
-        },
-        (selection) => selection.defaultBranch,
-      );
+      const [listed, headUnborn] = await Promise.all([
+        listGitBranches(
+          {
+            readBranchRefs: reads.readBranchRefs,
+            readWorktreeList: reads.readWorktreeList,
+            resolveDefaultBranch: () => selectGitDefaultBranch(facts, { now }),
+          },
+          (selection) => selection.defaultBranch,
+        ),
+        params.includeHeadState
+          ? reads.readHeadUnborn?.().catch(() => undefined)
+          : undefined,
+      ]);
       return {
         branches: listed.branches,
         defaultBranch: listed.defaultBranch.defaultBranch,
         defaultBranchSource: listed.defaultBranch.source,
+        ...(headUnborn === undefined ? {} : { headUnborn }),
       };
     },
   };

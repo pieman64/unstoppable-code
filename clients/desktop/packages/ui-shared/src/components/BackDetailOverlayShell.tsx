@@ -1,6 +1,7 @@
 import type { JSX, ReactNode } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { DialogModal } from './DialogModal';
+import { SPACE_ROLE_GAP_CLASS, type SpaceRole } from './Stack';
 
 const CONTENT_CLASS = 'px-6 pb-6';
 
@@ -15,6 +16,7 @@ export function BackDetailOverlayShell({
   titleId,
   onBack,
   badge,
+  badgeGap,
   children,
   blockContentFromReplay = false,
 }: {
@@ -22,6 +24,8 @@ export function BackDetailOverlayShell({
   titleId: string;
   onBack: () => void;
   badge?: ReactNode;
+  /** Opt-in title-to-badge gap for a badge without an outer margin. */
+  badgeGap?: SpaceRole;
   children: ReactNode;
   /**
    * Mark only the scrolling content area with the session-replay block class,
@@ -35,7 +39,9 @@ export function BackDetailOverlayShell({
       onClose={onBack}
       title={
         badge ? (
-          <span className="flex min-w-0 items-center gap-2">
+          <span
+            className={`flex min-w-0 items-center ${SPACE_ROLE_GAP_CLASS[badgeGap ?? 'inline']}`}
+          >
             <span className="truncate">{title}</span>
             {badge}
           </span>

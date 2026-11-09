@@ -12,7 +12,7 @@ import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal'
 import type {
   Pipeline,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   usePipelineEditor,
   type MainView,
@@ -369,6 +369,10 @@ export function usePipelineEditorSession(
         rawYamlBaselineRef.current = text;
       },
       applyRawYaml: () => applyRawYamlRef.current(),
+      adoptSaved: (savedPipeline, info): void => {
+        editorRef.current.adoptSaved(savedPipeline, info);
+        savedPipelineRef.current = savedPipeline;
+      },
     };
     registerEditorController(adapter);
     return (): void => {

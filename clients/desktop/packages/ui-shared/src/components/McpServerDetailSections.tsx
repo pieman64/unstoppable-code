@@ -1,3 +1,5 @@
+import { Badge } from './Badge';
+import { Stack } from './Stack';
 import type { JSX } from 'react';
 
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
@@ -108,7 +110,7 @@ function PluginSectionCard({
 }): JSX.Element {
   const author = pluginSectionAuthor(server, context.plugin);
   return (
-    <div className="rounded-lg border bg-secondary/20 px-4 py-3">
+    <div className="flex flex-col gap-2 rounded-lg border bg-secondary/20 px-4 py-3">
       {/* One label width for both lists, so their values line up. */}
       <FactList labelWidth="6rem" rowGap="2" labelTone="secondary">
         <Fact label="Plugin">
@@ -152,13 +154,7 @@ function PluginSectionCard({
           </Fact>
         )}
       </FactList>
-      <FactList
-        labelWidth="6rem"
-        rowGap="2"
-        labelTone="secondary"
-        divided
-        placement="mt-2"
-      >
+      <FactList labelWidth="6rem" rowGap="2" labelTone="secondary" divided>
         <Fact label="Marketplace">
           {context.marketplace?.name ?? server.marketplaceId ?? '—'}
         </Fact>
@@ -202,29 +198,31 @@ export function PluginSection({
   context: McpPluginSectionContext | null;
 }): JSX.Element {
   return (
-    <div data-testid="mcp-server-details-plugin-section">
-      <Heading level={3} variant="title" className="mb-2">
+    <Stack gap="inline" data-testid="mcp-server-details-plugin-section">
+      <Heading level={3} variant="title">
         Plugin & marketplace
       </Heading>
-      {loading && (
-        <DelayedLoadingPlaceholder slowNote="Still loading the plugin…">
-          <Skeleton
-            loading
-            label="Loading plugin"
-            testId="mcp-server-details-plugin-loading"
-          >
-            <PluginSectionCard
-              server={SAMPLE_PLUGIN_SERVER}
-              context={SAMPLE_PLUGIN_CONTEXT}
-            />
-          </Skeleton>
-        </DelayedLoadingPlaceholder>
-      )}
-      <ErrorBanner className="" error={error} />
-      {!loading && !error && context && (
-        <PluginSectionCard server={server} context={context} />
-      )}
-    </div>
+      <div>
+        {loading && (
+          <DelayedLoadingPlaceholder slowNote="Still loading the plugin…">
+            <Skeleton
+              loading
+              label="Loading plugin"
+              testId="mcp-server-details-plugin-loading"
+            >
+              <PluginSectionCard
+                server={SAMPLE_PLUGIN_SERVER}
+                context={SAMPLE_PLUGIN_CONTEXT}
+              />
+            </Skeleton>
+          </DelayedLoadingPlaceholder>
+        )}
+        <ErrorBanner className="" error={error} />
+        {!loading && !error && context && (
+          <PluginSectionCard server={server} context={context} />
+        )}
+      </div>
+    </Stack>
   );
 }
 
@@ -345,31 +343,25 @@ function StandaloneConfigCards({
   configs: readonly McpStandaloneConfig[];
 }): JSX.Element {
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       {configs.map((config) => (
         <div
           key={config.id}
-          className="rounded-lg border bg-secondary/20 px-3 py-2"
+          className="rounded-lg border bg-secondary/20 px-3 py-2 flex flex-col gap-1"
         >
-          <div className="mb-1 flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <span className="text-s font-medium fg-primary">{config.name}</span>
-            <span
-              className={`rounded px-1.5 py-0.5 text-3xs font-medium ${
-                config.enabled
-                  ? 'bg-success-subtle fg-success'
-                  : 'bg-secondary fg-secondary'
-              }`}
-            >
+            <Badge tone={config.enabled ? 'success' : 'neutral'}>
               {config.enabled ? 'Enabled' : 'Disabled'}
-            </span>
+            </Badge>
           </div>
           {config.description && (
-            <p className="mb-1 text-xs fg-secondary">{config.description}</p>
+            <p className="text-xs fg-secondary">{config.description}</p>
           )}
           <McpConfigFacts config={config} />
         </div>
       ))}
-    </div>
+    </Stack>
   );
 }
 
@@ -387,32 +379,34 @@ export function StandaloneConfigsSection({
   serverData: McpStandaloneConfigsData | null;
 }): JSX.Element {
   return (
-    <div>
-      <Heading level={3} variant="title" className="mb-2">
+    <Stack gap="inline">
+      <Heading level={3} variant="title">
         Configurations
         {serverData ? ` (${serverData.configs.length})` : ''}
       </Heading>
-      {loading && (
-        <DelayedLoadingPlaceholder slowNote="Still loading configurations…">
-          <Skeleton
-            loading
-            label="Loading configurations"
-            testId="mcp-server-details-configs-loading"
-          >
-            <StandaloneConfigCards configs={SAMPLE_CONFIGS} />
-          </Skeleton>
-        </DelayedLoadingPlaceholder>
-      )}
-      <ErrorBanner className="" error={error} />
-      {!loading && !error && serverData && (
-        <>
-          {serverData.configs.length === 0 ? (
-            <p className="text-xs italic fg-secondary">No configurations.</p>
-          ) : (
-            <StandaloneConfigCards configs={serverData.configs} />
-          )}
-        </>
-      )}
-    </div>
+      <div>
+        {loading && (
+          <DelayedLoadingPlaceholder slowNote="Still loading configurations…">
+            <Skeleton
+              loading
+              label="Loading configurations"
+              testId="mcp-server-details-configs-loading"
+            >
+              <StandaloneConfigCards configs={SAMPLE_CONFIGS} />
+            </Skeleton>
+          </DelayedLoadingPlaceholder>
+        )}
+        <ErrorBanner className="" error={error} />
+        {!loading && !error && serverData && (
+          <>
+            {serverData.configs.length === 0 ? (
+              <p className="text-xs italic fg-secondary">No configurations.</p>
+            ) : (
+              <StandaloneConfigCards configs={serverData.configs} />
+            )}
+          </>
+        )}
+      </div>
+    </Stack>
   );
 }

@@ -27,7 +27,7 @@ import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS,
   type CanopyInjectedToolKey,
-} from './canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 
 export interface CursorMcpToolCall {
   server: string;

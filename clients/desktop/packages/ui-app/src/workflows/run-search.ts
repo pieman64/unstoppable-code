@@ -59,6 +59,7 @@ const STARTER_TOKENS: Readonly<Record<string, WorkflowRunStarter>> = {
   'plan-approved': 'plan-approved',
   task: 'task-ready',
   'task-ready': 'task-ready',
+  workflow: 'workflow',
   advisor: 'app-advisor',
   'app-advisor': 'app-advisor',
   remote: 'remote-control',

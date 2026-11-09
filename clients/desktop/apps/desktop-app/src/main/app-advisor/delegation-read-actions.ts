@@ -12,7 +12,8 @@ export type DelegationReadAction = Extract<
       | 'delegation.tree'
       | 'delegation.roots'
       | 'delegation.transcript'
-      | 'delegation.worktree_summary';
+      | 'delegation.worktree_summary'
+      | 'delegation.read_changes';
   }
 >;
 export function isDelegationReadAction(
@@ -23,6 +24,7 @@ export function isDelegationReadAction(
     'delegation.roots',
     'delegation.transcript',
     'delegation.worktree_summary',
+    'delegation.read_changes',
   ].includes(action.type);
 }
 /** Convert known portable DTOs without bypassing the action JSON contract. */
@@ -98,6 +100,46 @@ export async function dispatchDelegationReadAction(
               ok: false,
               error: { code: 'invalid_target', message: result.error },
             };
+      }
+      case 'delegation.read_changes': {
+        if (!/^[a-f0-9]{40,64}$/.test(action.revision))
+          return {
+            ok: false,
+            error: {
+              code: 'invalid_target',
+              message: 'Invalid starting revision.',
+            },
+          };
+        const changes = await service
+          .readManagedDelegationChangesForUser(
+            { projectId: action.projectId, worktreeId: action.worktreeId },
+            action.delegationId,
+            action.revision,
+            AbortSignal.timeout(30_000),
+          )
+          .catch(() => null);
+        if (!changes)
+          return {
+            ok: false,
+            error: {
+              code: 'execution_failed',
+              message: "Couldn't read the delegate's changes.",
+            },
+          };
+        return {
+          ok: true,
+          result: json({
+            files: changes.files.map((file) => ({
+              path: file.path,
+              change: file.change,
+              ...(file.diff === undefined ? {} : { diff: file.diff }),
+              ...(file.diffTruncated ? { diffTruncated: true } : {}),
+            })),
+            ...(changes.omittedFiles
+              ? { omittedFiles: changes.omittedFiles }
+              : {}),
+          }),
+        };
       }
       case 'delegation.worktree_summary': {
         if (!/^[a-f0-9]{40,64}$/.test(action.revision))

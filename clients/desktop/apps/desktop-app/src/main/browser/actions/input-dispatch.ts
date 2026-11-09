@@ -2,7 +2,7 @@ import type {
   BrowserJavaScriptDialog,
   BrowserKeyModifier,
   BrowserMouseButton,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import type { ActionLaneContext } from './action-lane';
 import { ActionLaneDispatchTimeoutError } from './action-lane';
 import {

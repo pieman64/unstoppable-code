@@ -20,7 +20,7 @@ import type {
   ArchivedGitRepositoryState,
   ArchivedPullRequestCapture,
 } from '@canopy/desktop-shared/types';
-import { killProcessGroupByPid } from '@canopy/desktop-shared/node/lib/process-kill';
+import { killProcessGroupByPid } from '@canopy/execution-engine/node/lib/process-kill';
 import type { Stats } from 'node:fs';
 import { assertArchiveWorktreeRemoval } from '../lib/archive-worktree-postconditions';
 import { renameArchiveQuarantine } from '../lib/archive-quarantine';

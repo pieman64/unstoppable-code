@@ -2,4 +2,4 @@ export type {
   NormalizedJob,
   NormalizedPipeline,
   NormalizedStep,
-} from '../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';

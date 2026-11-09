@@ -148,15 +148,11 @@ export function createCursorDelegationRunner(options: {
       // unrelated delegation callers do not eagerly load the ESM-only SDK.
       const { verifyCursorVersion } =
         await import('../../cursor/approval-check');
-      const { spawnProviderProcess } =
-        await import('../../agent-runs/provider-process-host');
-      const providerProcess: CursorProviderProcess = {
-        spawner: spawnProviderProcess,
-        owner: {
-          kind: 'subagent',
-          id: `${request.delegationId}:${request.runGeneration}`,
-        },
-      };
+      const { cursorProcessForWorkerRun } =
+        await import('../../agent-runs/cursor-worker-runtime');
+      const providerProcess: CursorProviderProcess = cursorProcessForWorkerRun(
+        'CursorDelegationRunner.start',
+      );
       await verifyCursorVersion(
         providerProcess,
         managed.launch,

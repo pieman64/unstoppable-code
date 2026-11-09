@@ -1,5 +1,12 @@
+import { PipelineSourceLabel } from '@canopy/ui-shared/components/EntrySourceLabel';
 import { pipelineSupportsExecutionScope } from '@/lib/pipelineExecutionScope';
-import { ErrorBanner, ErrorState, Surface } from '@canopy/ui-shared/components';
+import {
+  Stack,
+  ErrorBanner,
+  ErrorState,
+  Notice,
+  Surface,
+} from '@canopy/ui-shared/components';
 import {
   type JSX,
   type ReactNode,
@@ -43,12 +50,12 @@ import type {
   PipelinePreferenceLocator,
   PipelineTriggerType,
   ResolvePluginCollectionsResponse,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { DEFAULT_PIPELINE_SCOPES } from '@canopy/desktop-shared/pipelines/scope';
 import { isSharedPipelineLocalId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import type { PluginsCache } from '@canopy/desktop-shared/types/plugins';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
-import { getTriggerTypes } from '@canopy/desktop-shared/types/pipeline';
+import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import {
   resolvePipelineTriggerInputs,
   seedInitialInputValues,
@@ -96,7 +103,6 @@ import {
   SearchField,
   Tooltip,
 } from '@canopy/ui-shared';
-import { pipelineSourceBadgeClassName } from '@canopy/ui-shared/lib';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
 import {
   Button,
@@ -138,16 +144,6 @@ const SOURCE_LABEL: Record<PipelineInfo['source'], string> = {
   project: 'Project',
   shared: 'Shared',
   curated: 'Curated',
-};
-
-// One origin, one tone, on every surface (shared with `PIPELINE_SOURCE_META`,
-// the hook editor and the web plan-pipeline dialog).
-const SOURCE_BADGE_CLASS: Record<PipelineInfo['source'], string> = {
-  bundled: pipelineSourceBadgeClassName('bundled'),
-  user: pipelineSourceBadgeClassName('user'),
-  project: pipelineSourceBadgeClassName('project'),
-  shared: pipelineSourceBadgeClassName('shared'),
-  curated: pipelineSourceBadgeClassName('curated'),
 };
 
 const UNRESOLVED_REQUIRED_BLOCKING_MESSAGE =
@@ -332,27 +328,31 @@ function SharedPipelineSelector({
   const cloudReady = isCanopyCloudConnected(state.cloudAccount);
   if (!state.cloudLoading && !cloudReady) {
     return (
-      <div className="space-y-2 py-6 text-center text-s fg-secondary">
+      <div className="flex flex-col py-6 text-center text-s fg-secondary gap-2">
         <div>No {brandText.appName} Cloud account configured.</div>
-        <Button size="compact" onClick={onOpenAccountSettings}>
+        <Button
+          className="self-center"
+          size="compact"
+          onClick={onOpenAccountSettings}
+        >
           Open account settings
         </Button>
       </div>
     );
   }
   return (
-    <div data-testid="pipeline-trigger-modal-shared-selector">
+    <Stack gap="inline" data-testid="pipeline-trigger-modal-shared-selector">
       <div
         ref={containerRef}
         onScroll={onScroll}
-        className="max-h-72 space-y-1 overflow-y-auto"
+        className="flex flex-col max-h-72 overflow-y-auto gap-1 [&>*]:shrink-0"
       >
         {state.loading && state.rows.length === 0 && (
           <div className="py-6 text-center text-s fg-secondary">
             Loading shared workflows…
           </div>
         )}
-        <ErrorBanner error={state.error} className="" />
+        <ErrorBanner className="" error={state.error} />
         {state.loaded &&
           rows.length === 0 &&
           !state.error &&
@@ -411,8 +411,8 @@ function SharedPipelineSelector({
           </div>
         )}
       </div>
-      <ErrorBanner error={hydrateError} className="mt-2" />
-    </div>
+      <ErrorBanner className="" error={hydrateError} />
+    </Stack>
   );
 }
 
@@ -1951,12 +1951,9 @@ export function PipelineTriggerModal({
               (loadState.pipelines.length > 0 ||
                 loadState.curated.length > 0 ||
                 cloudReady) && (
-                <>
+                <Stack gap="item">
                   {showRepoDropdown && showTargetControls && repoChoices && (
-                    <div
-                      className="mb-3"
-                      data-testid="pipeline-trigger-modal-repo-select"
-                    >
+                    <div data-testid="pipeline-trigger-modal-repo-select">
                       <DialogFormField
                         label="Working directory"
                         htmlFor="pipeline-trigger-modal-repo"
@@ -1975,151 +1972,162 @@ export function PipelineTriggerModal({
                     </div>
                   )}
 
-                  <SearchField
-                    className="mb-2"
-                    value={searchQuery}
-                    onValueChange={setSearchQuery}
-                    aria-label="Search workflows"
-                    placeholder="Search workflows…"
-                    autoFocus
-                  />
-
-                  {sourceFilterOptions.length > 0 && (
-                    <div className="mb-2 flex">
-                      <SegmentedControl
-                        label="Workflow source"
-                        shape="capsule"
-                        width="content"
-                        value={sourceFilter}
-                        onChange={setSourceFilter}
-                        options={sourceFilterOptions.map((filter) => ({
-                          value: filter,
-                          label:
-                            filter === 'all' ? 'All' : SOURCE_LABEL[filter],
-                        }))}
+                  <Stack gap="item">
+                    <Stack gap="inline">
+                      <SearchField
+                        className=""
+                        value={searchQuery}
+                        onValueChange={setSearchQuery}
+                        aria-label="Search workflows"
+                        placeholder="Search workflows…"
+                        autoFocus
                       />
-                    </div>
-                  )}
 
-                  {sourceFilter === 'shared' ? (
-                    <SharedPipelineSelector
-                      state={triggerScopedSharedList}
-                      rows={scopedSharedRows}
-                      onSelect={handleSelectShared}
-                      onScroll={handleListScroll}
-                      onOpenAccountSettings={() => openCloudAccountSettings()}
-                      selectedId={selectedId}
-                      hydrating={sharedHydrating}
-                      hydrateError={sharedHydrateError}
-                      containerRef={sharedListContainerRef}
-                    />
-                  ) : (
-                    <div data-testid="pipeline-trigger-modal-selector">
-                      {scopedRows.length === 0 && !sharedHasPendingOrRows ? (
-                        <div className="py-6 text-center text-s fg-secondary">
-                          {hiddenOnlyByScope
-                            ? NO_PIPELINES_FOR_CONTEXT_MESSAGE
-                            : 'No workflows match your search'}
-                        </div>
-                      ) : (
-                        <div
-                          ref={sharedListContainerRef}
-                          onScroll={handleListScroll}
-                          className="max-h-72 space-y-1 overflow-y-auto"
-                        >
-                          {scopedRows.map((row) => {
-                            const isSelected = row.info.id === selectedId;
-                            const isHydrating =
-                              row.kind !== 'local' &&
-                              sharedHydrating === row.info.id;
-                            const onClick = (): void => {
-                              if (row.kind === 'local') {
-                                handleSelectPipeline(row.info.id);
-                                return;
-                              }
-                              if (row.kind === 'curated') {
-                                void handleSelectCurated(row.info);
-                                return;
-                              }
-                              void handleSelectShared(
-                                row.remoteId,
-                                row.info.id,
-                              );
-                            };
-                            return (
-                              <ListRow
-                                key={row.info.id}
-                                disabled={isHydrating}
-                                selected={isSelected}
-                                aria-current={isSelected ? 'true' : undefined}
-                                onClick={onClick}
-                                icon={<PipelineListIcon icon={row.info.icon} />}
-                                description={
-                                  row.info.description ? (
-                                    <span title={row.info.description}>
-                                      {row.info.description}
-                                    </span>
-                                  ) : undefined
-                                }
-                                trailing={
-                                  <span className="inline-flex items-center gap-2">
-                                    {row.info.source === 'shared' ? (
-                                      <PipelineShareLabel
-                                        shareScope={row.info.shareScope}
-                                        owner={row.info.owner}
-                                      />
-                                    ) : (
-                                      <span
-                                        className={`shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium leading-none ${SOURCE_BADGE_CLASS[row.info.source]}`}
-                                      >
-                                        {SOURCE_LABEL[row.info.source]}
-                                      </span>
-                                    )}
-                                    {isHydrating && <LoadingSpinner />}
-                                  </span>
-                                }
-                              >
-                                {row.info.name}
-                              </ListRow>
-                            );
-                          })}
-                          {shouldIncludeSharedRows(sourceFilter) &&
-                            sharedHasPendingOrRows &&
-                            scopedRows.length === 0 && (
-                              <div className="py-6 text-center text-s fg-secondary">
-                                Loading shared workflows…
-                              </div>
-                            )}
-                          {shouldIncludeSharedRows(sourceFilter) &&
-                            scopedRows.length > 0 &&
-                            anySharedLoadingMore && (
-                              <div className="py-2 text-center text-xs fg-secondary">
-                                Loading more…
-                              </div>
-                            )}
+                      {sourceFilterOptions.length > 0 && (
+                        <div className="flex">
+                          <SegmentedControl
+                            label="Workflow source"
+                            shape="capsule"
+                            width="content"
+                            value={sourceFilter}
+                            onChange={setSourceFilter}
+                            options={sourceFilterOptions.map((filter) => ({
+                              value: filter,
+                              label:
+                                filter === 'all' ? 'All' : SOURCE_LABEL[filter],
+                            }))}
+                          />
                         </div>
                       )}
-                      <ErrorBanner
-                        error={sharedHydrateError}
-                        className="mt-2"
-                      />
-                    </div>
-                  )}
 
-                  {selectedPipeline && selectedPipelineError && (
-                    <ErrorBanner
-                      error={`This workflow can’t run: ${selectedPipelineError}`}
-                      className="mt-3"
-                      testId="pipeline-trigger-modal-selection-error"
-                    />
-                  )}
-                </>
+                      {sourceFilter === 'shared' ? (
+                        <SharedPipelineSelector
+                          state={triggerScopedSharedList}
+                          rows={scopedSharedRows}
+                          onSelect={handleSelectShared}
+                          onScroll={handleListScroll}
+                          onOpenAccountSettings={() =>
+                            openCloudAccountSettings()
+                          }
+                          selectedId={selectedId}
+                          hydrating={sharedHydrating}
+                          hydrateError={sharedHydrateError}
+                          containerRef={sharedListContainerRef}
+                        />
+                      ) : (
+                        <Stack
+                          gap="inline"
+                          data-testid="pipeline-trigger-modal-selector"
+                        >
+                          {scopedRows.length === 0 &&
+                          !sharedHasPendingOrRows ? (
+                            <div className="py-6 text-center text-s fg-secondary">
+                              {hiddenOnlyByScope
+                                ? NO_PIPELINES_FOR_CONTEXT_MESSAGE
+                                : 'No workflows match your search'}
+                            </div>
+                          ) : (
+                            <div
+                              ref={sharedListContainerRef}
+                              onScroll={handleListScroll}
+                              className="flex flex-col max-h-72 overflow-y-auto gap-1 [&>*]:shrink-0"
+                            >
+                              {scopedRows.map((row) => {
+                                const isSelected = row.info.id === selectedId;
+                                const isHydrating =
+                                  row.kind !== 'local' &&
+                                  sharedHydrating === row.info.id;
+                                const onClick = (): void => {
+                                  if (row.kind === 'local') {
+                                    handleSelectPipeline(row.info.id);
+                                    return;
+                                  }
+                                  if (row.kind === 'curated') {
+                                    void handleSelectCurated(row.info);
+                                    return;
+                                  }
+                                  void handleSelectShared(
+                                    row.remoteId,
+                                    row.info.id,
+                                  );
+                                };
+                                return (
+                                  <ListRow
+                                    key={row.info.id}
+                                    disabled={isHydrating}
+                                    selected={isSelected}
+                                    aria-current={
+                                      isSelected ? 'true' : undefined
+                                    }
+                                    onClick={onClick}
+                                    icon={
+                                      <PipelineListIcon icon={row.info.icon} />
+                                    }
+                                    description={
+                                      row.info.description ? (
+                                        <span title={row.info.description}>
+                                          {row.info.description}
+                                        </span>
+                                      ) : undefined
+                                    }
+                                    trailing={
+                                      <span className="inline-flex items-center gap-2">
+                                        {row.info.source === 'shared' ? (
+                                          <PipelineShareLabel
+                                            shareScope={row.info.shareScope}
+                                            owner={row.info.owner}
+                                          />
+                                        ) : (
+                                          <PipelineSourceLabel>
+                                            {SOURCE_LABEL[row.info.source]}
+                                          </PipelineSourceLabel>
+                                        )}
+                                        {isHydrating && <LoadingSpinner />}
+                                      </span>
+                                    }
+                                  >
+                                    {row.info.name}
+                                  </ListRow>
+                                );
+                              })}
+                              {shouldIncludeSharedRows(sourceFilter) &&
+                                sharedHasPendingOrRows &&
+                                scopedRows.length === 0 && (
+                                  <div className="py-6 text-center text-s fg-secondary">
+                                    Loading shared workflows…
+                                  </div>
+                                )}
+                              {shouldIncludeSharedRows(sourceFilter) &&
+                                scopedRows.length > 0 &&
+                                anySharedLoadingMore && (
+                                  <div className="py-2 text-center text-xs fg-secondary">
+                                    Loading more…
+                                  </div>
+                                )}
+                            </div>
+                          )}
+                          <ErrorBanner
+                            className=""
+                            error={sharedHydrateError}
+                          />
+                        </Stack>
+                      )}
+                    </Stack>
+                    {selectedPipeline && selectedPipelineError && (
+                      <ErrorBanner
+                        className=""
+                        error={`This workflow can’t run: ${selectedPipelineError}`}
+                        testId="pipeline-trigger-modal-selection-error"
+                      />
+                    )}
+                  </Stack>
+                </Stack>
               )}
           </>
         )}
 
         {step === 'configure' && selectedPipeline && (
-          <>
+          <Stack gap="group">
             <CapabilityPackageReadiness
               readiness={packageReadiness}
               definitionOnly={
@@ -2132,13 +2140,13 @@ export function PipelineTriggerModal({
               size="compact"
               onClick={handleBack}
               disabled={isRunning}
-              className="mb-4"
+              className="self-start"
             >
               <AppCatalogChevronLeftMediumIcon size="sm" />
               Back to workflow list
             </Button>
 
-            <Surface variant="group" className="mb-4">
+            <Surface variant="group" className="">
               <div className="flex items-center gap-3 px-3 py-2.5">
                 <PipelineListIcon icon={selectedPipeline.info.icon} />
                 <div className="min-w-0 flex-1">
@@ -2157,93 +2165,96 @@ export function PipelineTriggerModal({
               </div>
             </Surface>
 
-            {runContext?.fields ? (
-              <div className="mb-4">{runContext.fields}</div>
-            ) : null}
+            {runContext?.fields ? <div>{runContext.fields}</div> : null}
 
-            <div
-              className="space-y-4"
-              data-testid="pipeline-trigger-modal-inputs"
-            >
-              {Object.entries(selectedInputDefs).map(([name, def]) => (
-                <InputField
-                  key={name}
-                  name={name}
-                  def={def}
-                  value={inputValues[name] ?? ''}
-                  error={inputErrors[name]}
-                  onChange={handleInputChange}
-                  disabled={isRunning}
-                />
-              ))}
-            </div>
+            {(hasInputs || hasAliases || hasCollections) && (
+              <Stack gap="item">
+                <Stack gap="group">
+                  {hasInputs && (
+                    <Stack
+                      gap="group"
+                      data-testid="pipeline-trigger-modal-inputs"
+                    >
+                      {Object.entries(selectedInputDefs).map(([name, def]) => (
+                        <InputField
+                          key={name}
+                          name={name}
+                          def={def}
+                          value={inputValues[name] ?? ''}
+                          error={inputErrors[name]}
+                          onChange={handleInputChange}
+                          disabled={isRunning}
+                        />
+                      ))}
+                    </Stack>
+                  )}
+                  {hasAliases && (
+                    <div>
+                      <PipelineModelAliasesSection
+                        aliases={pipelineAliases}
+                        preferences={aliasDraft}
+                        pluginCollections={
+                          selectedPipeline.content.plugin_collections ?? []
+                        }
+                        onPreferenceChange={handleAliasPreferenceChange}
+                      />
+                    </div>
+                  )}
 
-            {hasAliases && (
-              <div className="mt-4">
-                <PipelineModelAliasesSection
-                  aliases={pipelineAliases}
-                  preferences={aliasDraft}
-                  pluginCollections={
-                    selectedPipeline.content.plugin_collections ?? []
-                  }
-                  onPreferenceChange={handleAliasPreferenceChange}
-                />
-              </div>
-            )}
-
-            {hasCollections && (
-              <div className="mt-4">
-                <ErrorBanner error={collectionError} className="mb-2" />
-                <PipelinePluginCollectionsSection
-                  pipeline={selectedPipeline.content}
-                  previewItems={collectionPreview}
-                  preferences={collectionDraft}
-                  onPreferencesChange={handleCollectionPreferenceChange}
-                />
-              </div>
-            )}
-
-            {(hasCollections || hasAliases) && !collectionError && (
-              <div className="mt-3 flex items-center gap-3">
-                <Tooltip
-                  label="Change a selection to enable saving it as the default."
-                  suppressed={collectionDefaultsDirty || aliasDefaultsDirty}
-                >
-                  <Button
-                    size="compact"
-                    onClick={handleSaveDefaults}
-                    disabled={
-                      !canSaveDefaults ||
-                      !(collectionDefaultsDirty || aliasDefaultsDirty) ||
-                      collectionResolving
-                    }
-                    data-testid="pipeline-trigger-modal-save-defaults"
-                  >
-                    {saveDefaultsState.status === 'saving'
-                      ? 'Saving…'
-                      : hasCollections
-                        ? 'Save plugin selections as defaults'
-                        : 'Save model aliases as defaults'}
-                  </Button>
-                </Tooltip>
-                {saveDefaultsState.status === 'saved' && (
-                  <span
-                    className="text-xs fg-success-strong"
-                    data-testid="pipeline-trigger-modal-save-defaults-success"
-                  >
-                    {SAVE_DEFAULTS_SUCCESS_MESSAGE}
-                  </span>
+                  {hasCollections && (
+                    <div className="flex flex-col gap-2">
+                      <ErrorBanner className="" error={collectionError} />
+                      <PipelinePluginCollectionsSection
+                        pipeline={selectedPipeline.content}
+                        previewItems={collectionPreview}
+                        preferences={collectionDraft}
+                        onPreferencesChange={handleCollectionPreferenceChange}
+                      />
+                    </div>
+                  )}
+                </Stack>
+                {(hasCollections || hasAliases) && !collectionError && (
+                  <div className="flex items-center gap-3">
+                    <Tooltip
+                      label="Change a selection to enable saving it as the default."
+                      suppressed={collectionDefaultsDirty || aliasDefaultsDirty}
+                    >
+                      <Button
+                        size="compact"
+                        onClick={handleSaveDefaults}
+                        disabled={
+                          !canSaveDefaults ||
+                          !(collectionDefaultsDirty || aliasDefaultsDirty) ||
+                          collectionResolving
+                        }
+                        data-testid="pipeline-trigger-modal-save-defaults"
+                      >
+                        {saveDefaultsState.status === 'saving'
+                          ? 'Saving…'
+                          : hasCollections
+                            ? 'Save plugin selections as defaults'
+                            : 'Save model aliases as defaults'}
+                      </Button>
+                    </Tooltip>
+                    {saveDefaultsState.status === 'saved' && (
+                      <span
+                        className="text-xs fg-success-strong"
+                        data-testid="pipeline-trigger-modal-save-defaults-success"
+                      >
+                        {SAVE_DEFAULTS_SUCCESS_MESSAGE}
+                      </span>
+                    )}
+                    {saveDefaultsState.status === 'error' && (
+                      <ErrorBanner
+                        className=""
+                        error={saveDefaultsState.message}
+                      />
+                    )}
+                  </div>
                 )}
-                {saveDefaultsState.status === 'error' && (
-                  <ErrorBanner error={saveDefaultsState.message} className="" />
-                )}
-              </div>
+              </Stack>
             )}
-
-            <Tooltip
-              label="Fast mode consumes 2x usage."
-              className="mt-4 w-full"
-            >
+            <Tooltip label="Fast mode consumes 2x usage." className="w-full">
               <ChoiceField
                 checked={fastMode}
                 onChange={(event) => setFastMode(event.target.checked)}
@@ -2252,14 +2263,14 @@ export function PipelineTriggerModal({
                 description="Runs supported model providers in fast mode."
               />
             </Tooltip>
-          </>
+          </Stack>
         )}
       </div>
 
       {/* Footer */}
       <div className="flex flex-col gap-2 border-t px-6 py-3">
         {step === 'configure' && (
-          <ErrorBanner error={selectedPipelineError} className="" />
+          <ErrorBanner className="" error={selectedPipelineError} />
         )}
         {selectedPipeline && runContextBlockedReason && (
           <div
@@ -2272,18 +2283,18 @@ export function PipelineTriggerModal({
         {step === 'configure' &&
           hasCollections &&
           hasUnresolvedRequiredDefaults && (
-            <div
-              className="text-xs fg-destructive"
+            <Notice
+              intent="attention"
               data-testid="pipeline-trigger-modal-required-blocking"
             >
               {UNRESOLVED_REQUIRED_BLOCKING_MESSAGE}
-            </div>
+            </Notice>
           )}
         {step === 'configure' &&
         hasCollections &&
         !hasUnresolvedRequiredDefaults &&
         collectionValidation?.messages?.length ? (
-          <ul className="space-y-0.5 text-xs">
+          <ul className="flex flex-col text-xs gap-0.5">
             {collectionValidation.messages.map((m, idx) => (
               <li
                 key={`validation-${idx}`}
@@ -2297,22 +2308,22 @@ export function PipelineTriggerModal({
           </ul>
         ) : null}
         {step === 'configure' && hasAliases && aliasesBlocked && (
-          <div
-            className="text-xs fg-destructive"
+          <Notice
+            intent="attention"
             data-testid="pipeline-trigger-modal-alias-blocking"
           >
             Configure every required model alias before running this workflow.
-          </div>
+          </Notice>
         )}
         {packageSetupBlocked && (
-          <div
-            className="text-xs fg-destructive"
+          <Notice
+            intent="attention"
             data-testid="pipeline-trigger-modal-setup-blocking"
           >
             Complete the required setup above before running this workflow.
-          </div>
+          </Notice>
         )}
-        <ErrorBanner error={runError} className="" />
+        <ErrorBanner className="" error={runError} />
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             {watcherSupported && watcherRecipientGroups && (
@@ -2325,8 +2336,10 @@ export function PipelineTriggerModal({
                       : 'Notify a chat when this workflow completes.'
                   }
                 >
-                  <button
-                    type="button"
+                  <Button
+                    variant={watcherEnabled ? 'ghost-accent' : 'ghost'}
+                    size="sm"
+                    iconOnly
                     role="switch"
                     aria-checked={watcherEnabled}
                     aria-label="Notify a chat when this workflow completes"
@@ -2347,14 +2360,9 @@ export function PipelineTriggerModal({
                     }}
                     data-testid="pipeline-trigger-modal-watcher-toggle"
                     data-active={watcherEnabled ? 'true' : 'false'}
-                    className={`focus-ring inline-flex h-7 w-7 items-center justify-center rounded-lg border transition-colors ${
-                      watcherEnabled
-                        ? 'border-fg-info/30 bg-info-subtle fg-info hover:bg-info-subtle/80'
-                        : 'bg-popover fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-                    }`}
                   >
                     <WatcherEyeIcon size="sm" aria-hidden="true" />
-                  </button>
+                  </Button>
                 </ActionTooltip>
                 {watcherEnabled && (
                   <WatcherRecipientPicker

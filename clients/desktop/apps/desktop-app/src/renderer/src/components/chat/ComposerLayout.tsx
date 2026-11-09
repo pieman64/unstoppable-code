@@ -1,8 +1,5 @@
 import { type JSX } from 'react';
-import {
-  ChatComposerToolbarChip,
-  type ChatComposerToolbarChipConfig,
-} from '@canopy/ui-shared';
+import { type ChatComposerToolbarChipConfig } from '@canopy/ui-shared';
 import {
   AutoIcon,
   ChatIcon,
@@ -227,14 +224,4 @@ export function buildFastModeChip({
     variant: 'capsule',
     dataTestId: 'chat-input-fast-mode-button',
   };
-}
-
-/** The status row's fast mode toggle; its label folds in when turned on. */
-export function FastModeChip(props: {
-  on: boolean;
-  disabled: boolean;
-  compact: boolean;
-  onToggle: () => void;
-}): JSX.Element {
-  return <ChatComposerToolbarChip {...buildFastModeChip(props)} />;
 }

@@ -1,10 +1,13 @@
 import * as fs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
-import { damagedCopyPath, pruneDamagedCopies } from '../../lib/damaged-copies';
+import {
+  damagedCopyPath,
+  pruneDamagedCopies,
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import {
   ensurePrivateLockDirectory,
   withOwnerLockFile,
-} from '../../lib/owner-lock-file';
+} from '@canopy/execution-engine/node/lib/owner-lock-file';
 import { isKnownOrphanedExecution } from './owner-fence';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -15,10 +18,11 @@ import {
 } from './retry-utils';
 import { normalizeAgentModelConfig } from '../../../types';
 import type { AgentProviderType } from '../../../types';
-import { isModelHarness } from '../../../model-harnesses';
-import { brandEnvName } from '../../../brand/env';
-import { redactSecrets } from '../../../lib/redaction';
-import { validateId } from '../../lib/validation';
+import { isModelHarness } from '@canopy/execution-engine/model-harnesses';
+import { brandEnvName } from '@canopy/execution-engine/brand/env';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
+import { relativeInsideByNameOrRealpath } from '@canopy/execution-engine/node/lib/path-safety';
+import { validateId } from '@canopy/execution-engine/node/lib/validation';
 import { syncDirectory, writeFileAtomically } from '../../lib/atomic-file';
 import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
 import type {
@@ -48,9 +52,9 @@ import type {
   PipelinePauseCheckpoint,
   PipelineModelAliasPreference,
   RetryMatrixJobRequest,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { isPipelineJsonValue } from '@canopy/desktop-shared/pipelines/json-values';
-import { encodeMatrixIpcErrorMessage } from '@canopy/desktop-shared/types/pipeline';
+import { encodeMatrixIpcErrorMessage } from '@canopy/execution-engine/types/pipeline';
 import {
   refreshAllJobGroups,
   rematerializeJobDefinitions,
@@ -894,8 +898,7 @@ function normalizeRecoveryCheckpoint(
   let transcriptFile: string | undefined;
   if (typeof value.transcript_file === 'string' && value.transcript_file) {
     const resolved = path.resolve(value.transcript_file);
-    const relative = path.relative(executionOutputDir, resolved);
-    if (!relative.startsWith('..') && !path.isAbsolute(relative)) {
+    if (isInsideExecutionOutput(resolved, executionOutputDir)) {
       transcriptFile = resolved;
     }
   }
@@ -1654,15 +1657,40 @@ export async function saveExecutionStateIfUnchanged(
   );
 }
 
+/**
+ * `filePath` relative to the executions directory, or null outside it. The
+ * daemon's pipeline host records paths through the canonical data root, while
+ * Electron main reads the same store through the root it was given, which can
+ * be a symlink (CAN-5958): a path passes lexically as named, or by realpath.
+ */
+export function relativeToExecutionsDir(
+  executionsDir: string,
+  filePath: string,
+): string | null {
+  return relativeInsideByNameOrRealpath(executionsDir, filePath);
+}
+
+export function isPathInsideExecutionsDir(
+  executionsDir: string,
+  filePath: string,
+): boolean {
+  return relativeToExecutionsDir(executionsDir, filePath) !== null;
+}
+
+function isInsideExecutionOutput(
+  resolved: string,
+  executionOutputDir: string,
+): boolean {
+  return relativeInsideByNameOrRealpath(executionOutputDir, resolved) !== null;
+}
+
 function assertPathInsideExecution(
   filePath: string | undefined,
   executionOutputDir: string,
   label: string,
 ): void {
   if (!filePath) return;
-  const resolved = path.resolve(filePath);
-  const relative = path.relative(executionOutputDir, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  if (!isInsideExecutionOutput(path.resolve(filePath), executionOutputDir)) {
     throw new Error(`${label} escapes the execution output directory`);
   }
 }

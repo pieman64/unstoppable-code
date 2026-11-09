@@ -64,7 +64,7 @@ function DistributionTooltipContent({
         ? String(label)
         : '';
   return (
-    <div className="rounded bg-popover fg-primary p-2 shadow-md text-xs space-y-1">
+    <div className="flex flex-col rounded bg-popover fg-primary p-2 shadow-md text-xs gap-1">
       {labelStr ? <div className="font-semibold">{labelStr}</div> : null}
       {payload.map((raw, i) => {
         const entry = raw as DistributionTooltipEntry;

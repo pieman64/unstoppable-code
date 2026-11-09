@@ -1,5 +1,6 @@
 'use client';
 
+import { Stack } from '@canopy/ui-shared/components/Stack';
 import {
   useCallback,
   useEffect,
@@ -308,19 +309,22 @@ export function ApiKeysManager({
 
       {createdToken && (
         <Surface
+          gap="item"
           variant="group"
           size="small"
           padding="default"
           className="mb-3"
           aria-live="polite"
         >
-          <p className="text-s font-medium fg-primary">
-            Copy this API key now. It will not be shown again.
-          </p>
-          <p className="mt-1 text-xs fg-secondary">
-            Name: {createdToken.userApiKey.name}
-          </p>
-          <div className="mt-3 flex items-center gap-2">
+          <Stack gap="tight">
+            <p className="text-s font-medium fg-primary">
+              Copy this API key now. It will not be shown again.
+            </p>
+            <p className="text-xs fg-secondary">
+              Name: {createdToken.userApiKey.name}
+            </p>
+          </Stack>
+          <div className="flex items-center gap-2">
             <Surface
               variant="card"
               size="small"

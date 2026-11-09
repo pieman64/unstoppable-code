@@ -262,6 +262,7 @@ export const UserBubble = memo(function UserBubble({
           )
         }
         media={images.length > 0 ? <MessageImages images={images} /> : null}
+        footerGap="tight"
         footer={
           <>
             <MessageAttachments attachmentPaths={filePaths} />

@@ -4,10 +4,25 @@ import { build } from 'esbuild';
 
 const LINUX_SAFE_STORAGE_HELPER_FILE = 'linux-safe-storage-helper.cjs';
 
+/**
+ * Records the environment main started with before the bundle loads. Main's
+ * dependencies load as hoisted `require()` calls ahead of any bundled module,
+ * and one changes `process.env` when it loads (the Claude Agent SDK sets
+ * NoDefaultCurrentDirectoryInExePath). `getEnhancedEnv()` in
+ * packages/desktop-shared/src/pipelines/config-paths.ts reads this slot to
+ * give children the startup value instead.
+ */
+const RECORD_STARTUP_ENVIRONMENT = [
+  'Object.defineProperty(globalThis, Symbol.for("canopy.startupEnvironment"), {',
+  '  value: Object.freeze({ ...process.env }),',
+  '});',
+].join('\n');
+
 /** Select the helper before loading bytecode, its loader, or any app bootstrap. */
 export function isolatedMainEntrySource(normalSource) {
   return [
     '"use strict";',
+    RECORD_STARTUP_ENVIRONMENT,
     'if (process.env.CANOPY_LINUX_SAFE_STORAGE_HELPER_MODE === "1") {',
     `  require("./${LINUX_SAFE_STORAGE_HELPER_FILE}");`,
     '} else {',

@@ -1,10 +1,11 @@
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
+import { emptyChatTabPluginSelections } from '@canopy/desktop-shared/lib/app-advisor-chat-reads';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import type {
   McpHttpAuthHandler,
   McpHttpAuthPreference,
   McpHttpAuthTarget,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
 
 export const EMPTY_SELECTIONS: ChatTabPluginSelections = {
@@ -206,13 +207,7 @@ export function parseSelectionsJson(
 }
 
 export function createEmptySelections(): ChatTabPluginSelections {
-  return {
-    collectionIds: [],
-    skillRefs: [],
-    pluginRefs: [],
-    mcpServerRefs: [],
-    mcpHttpAuthPreferences: [],
-  };
+  return emptyChatTabPluginSelections();
 }
 
 function targetForSort(target: McpHttpAuthTarget): McpHttpAuthTarget {

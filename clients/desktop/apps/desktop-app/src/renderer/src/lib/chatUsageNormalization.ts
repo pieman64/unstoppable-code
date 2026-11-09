@@ -1,5 +1,5 @@
 import { isNativeOpenCodeSelection } from '@canopy/desktop-shared/lib/chat-model-selection';
-import { resolveGatewayModelEntry } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { resolveGatewayModelEntry } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   getEffectiveModelContextWindow,
   getListedModelContextWindow,

@@ -271,6 +271,11 @@ export const WorkerScriptExecutionCancelParamsSchema = z.strictObject({
   scriptKey: z.string().min(1).max(1024),
   /** Stop only this run; without it every run of the script key stops. */
   executionId: id.optional(),
+  /**
+   * End each run's whole process tree and answer once it has exited, not
+   * when its shell has (worktree removal, CAN-5839).
+   */
+  drain: z.literal(true).optional(),
 });
 export type WorkerScriptExecutionCancelParams = z.output<
   typeof WorkerScriptExecutionCancelParamsSchema

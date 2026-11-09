@@ -1,5 +1,5 @@
 import { type JSX, useEffect, useRef, useState } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import { Stack, Button } from '@canopy/ui-shared/components';
 import { CloseMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { brandText } from '@/lib/brand';
 import { GUEST_UPGRADE_NUDGE_BODY } from '@/lib/guest-cta-copy';
@@ -109,15 +109,15 @@ export function GuestUpgradeNudge(): JSX.Element | null {
       role="status"
       aria-live="polite"
       data-testid="guest-upgrade-nudge"
-      className="pointer-events-auto animate-slide-up rounded-xl bg-card/95 p-4 fg-primary shadow-lg backdrop-blur-sm"
+      className="flex flex-col pointer-events-auto animate-slide-up rounded-xl bg-card/95 p-4 fg-primary shadow-lg backdrop-blur-sm gap-3"
     >
       <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1 space-y-1">
+        <Stack gap="tight" className="min-w-0 flex-1">
           <p className="text-s font-medium fg-primary">
             Enjoying {brandText.appName}?
           </p>
           <p className="text-s fg-secondary">{GUEST_UPGRADE_NUDGE_BODY}</p>
-        </div>
+        </Stack>
         <Button
           variant="ghost"
           size="sm"
@@ -129,7 +129,7 @@ export function GuestUpgradeNudge(): JSX.Element | null {
           <CloseMediumIcon size={16} aria-hidden="true" />
         </Button>
       </div>
-      <div className="mt-3 flex items-center gap-2">
+      <div className="flex items-center gap-2">
         <Button
           size="sm"
           variant="primary"

@@ -48,7 +48,7 @@ import type {
   PreferencesData,
   WorktreeChatBadgesSummary,
 } from '@canopy/desktop-shared/types';
-import type { CodexContextWindowSetting } from '@canopy/desktop-shared/lib/codex-context-window';
+import type { CodexContextWindowSetting } from '@canopy/execution-engine/lib/codex-context-window';
 import type {
   TurnFeedbackRating,
   TurnFeedbackReason,
@@ -63,6 +63,7 @@ import type {
   AddEditorSelectionDetail,
   EditorSelectionContext,
 } from '@/lib/editorSelectionContext';
+import type { InlineFailure } from '@/lib/inline-app-error';
 import type {
   ChatActionTarget,
   ChatTab,
@@ -758,20 +759,6 @@ export interface ChatArchiveSlice {
     worktreeId: string,
     chatId: string,
   ) => Promise<void>;
-  /**
-   * Archive a live chat tab automatically once a marked turn finishes (the
-   * chat carries the `autoArchive` marker). Snapshots the tab, archives it
-   * (optionally unread) while keeping the provider session alive so a resumed
-   * turn can stream events, and removes it from the live strip. Returns false
-   * when the main process refuses the archive so a later terminal update can
-   * retry it.
-   */
-  autoArchiveChatTab: (
-    projectId: string,
-    worktreeId: string,
-    chatId: string,
-    unread: boolean,
-  ) => Promise<boolean>;
   /** Toggle auto-archive for the active turn after the marker was offered. */
   setAutoArchiveForActiveTurn: (
     target: { projectId: string; worktreeId: string; chatId: string },
@@ -839,6 +826,8 @@ export interface ChatMessagingSlice {
       userMessageId: string;
       attemptId: string;
       failure: ProvisionalFirstSendFailure;
+      /** Refused before dispatch: the failure replaces its dispatch claim. */
+      refusedBeforeDispatch?: boolean;
     },
   ) => boolean;
   /**
@@ -933,7 +922,21 @@ export interface ChatMessagingSlice {
   ) => void;
 }
 
+/**
+ * A failed attempt to edit a queued message, shown on that message's row.
+ * `worktreeKey` and `chatId` scope it so a chat keeps at most one.
+ */
+export interface QueuedMessageEditFailure extends InlineFailure {
+  worktreeKey: string;
+  chatId: string;
+  /** The row's text when it failed; a row whose text changed drops it. */
+  text: string;
+}
+
 export interface ChatQueueSlice {
+  /** Row-level edit failures, keyed by `queuedMessageEditFailureKey`. */
+  queuedMessageEditFailures: Readonly<Record<string, QueuedMessageEditFailure>>;
+  dismissQueuedMessageEditFailure: (entryKey: string) => void;
   clearQueuedMessage: (
     index: number,
     target?: { projectId: string; worktreeId: string; chatId: string },

@@ -3,6 +3,7 @@
 import { useState, type JSX } from 'react';
 import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
 import {
+  Stack,
   Button,
   DialogModal,
   RefreshSpinner,
@@ -73,11 +74,11 @@ export function SummarySectionBody({
           maxWidth="lg"
         >
           <div
-            className="space-y-5 overflow-y-auto"
+            className="grid grid-cols-1 content-start overflow-y-auto gap-5"
             data-testid="summary-detail-modal"
           >
             <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1">
+              <Stack gap="tight">
                 <Heading level={3} variant="section">
                   {summary.title}
                 </Heading>
@@ -87,7 +88,7 @@ export function SummarySectionBody({
                     ? ` · Full refresh ${formatRelativeTime(summary.lastFullRefreshAt)}`
                     : null}
                 </p>
-              </div>
+              </Stack>
               {refreshEnabled && onRefresh ? (
                 <Button
                   type="button"
@@ -109,11 +110,11 @@ export function SummarySectionBody({
             </p>
 
             {summary.highlights !== undefined ? (
-              <div className="space-y-3">
+              <Stack gap="item">
                 <Heading level={4} variant="label">
                   Highlights
                 </Heading>
-                <div className={`${REPLAY_BLOCK_CLASS} space-y-2`}>
+                <div className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-2`}>
                   {summary.highlights.map((highlight, index) => (
                     <Surface
                       variant="group"
@@ -132,15 +133,15 @@ export function SummarySectionBody({
                     </Surface>
                   ))}
                 </div>
-              </div>
+              </Stack>
             ) : null}
 
             {summary.repos && summary.repos.length > 0 ? (
-              <div className="space-y-3">
+              <Stack gap="item">
                 <Heading level={4} variant="label">
                   Repository summaries
                 </Heading>
-                <div className="space-y-2">
+                <Stack gap="inline">
                   {summary.repos.map((repo) => (
                     <Surface key={repo.name} variant="group" padding="compact">
                       <Heading level={5} variant="title">
@@ -153,8 +154,8 @@ export function SummarySectionBody({
                       </p>
                     </Surface>
                   ))}
-                </div>
-              </div>
+                </Stack>
+              </Stack>
             ) : null}
           </div>
         </DialogModal>

@@ -8,10 +8,11 @@ import {
 import type {
   NormalizedStep,
   StepResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { PipelineTimer } from '../PipelineTimer';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
+  Stack,
   Disclosure,
   SegmentedControl,
   Surface,
@@ -105,7 +106,7 @@ export function DetailSection({
 
   if (!collapsible) {
     return (
-      <div className="space-y-2">
+      <Stack gap="inline">
         <div className="flex items-center justify-between gap-2 text-xs font-medium fg-secondary">
           <span className="min-w-0">{title}</span>
           {headerAction ? (
@@ -113,7 +114,7 @@ export function DetailSection({
           ) : null}
         </div>
         {content}
-      </div>
+      </Stack>
     );
   }
 
@@ -209,14 +210,17 @@ function TimingField({
 }): JSX.Element {
   const text = typeof value === 'string' ? value : undefined;
   return (
-    <div className="min-w-0" data-testid="pipeline-timing-field">
+    <div
+      className="flex min-w-0 flex-col gap-1"
+      data-testid="pipeline-timing-field"
+    >
       <div
         className={`truncate fg-secondary ${compact ? 'text-3xs' : 'text-xs'}`}
       >
         {label}
       </div>
       <div
-        className={`mt-1 fg-primary/80 ${compact ? 'text-2xs' : 'text-s'} ${
+        className={`fg-primary/80 ${compact ? 'text-2xs' : 'text-s'} ${
           text === undefined ? 'whitespace-nowrap' : 'truncate'
         }`}
         title={text}
@@ -307,8 +311,8 @@ export function TimingSummaryCard({
   source?: PipelineTimingSource;
 }): JSX.Element {
   return (
-    <Surface variant="group" padding="compact">
-      <div className="mb-2 text-2xs font-medium fg-secondary">{title}</div>
+    <Surface variant="group" gap="inline" padding="compact">
+      <div className="text-2xs font-medium fg-secondary">{title}</div>
       <TimingSummaryGrid
         identity={identity}
         kind={kind}

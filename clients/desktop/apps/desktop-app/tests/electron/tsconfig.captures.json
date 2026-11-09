@@ -14,6 +14,6 @@
     "**/*.demo-spec.ts",
     "../../src/brand-defines.d.ts",
     "../../src/preload/index.d.ts",
-    "../../../../packages/desktop-shared/src/build-constants.d.ts"
+    "../../../../packages/execution-engine/src/build-constants.d.ts"
   ]
 }

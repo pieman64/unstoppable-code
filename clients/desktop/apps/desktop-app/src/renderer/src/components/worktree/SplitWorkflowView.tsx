@@ -1,4 +1,4 @@
-import { Divider, Heading, Surface } from '@canopy/ui-shared/components';
+import { Stack, Divider, Heading, Surface } from '@canopy/ui-shared/components';
 import { Button } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -32,7 +32,7 @@ const STEP_LABELS: Record<WorkflowStep, string> = {
 function StepRail({ active }: { active: WorkflowStep }): JSX.Element {
   const activeIndex = STEP_ORDER.indexOf(active);
   return (
-    <ol className="flex shrink-0 items-center gap-2 border-b px-5 py-3">
+    <ol className="flex shrink-0 items-center gap-3 border-b px-5 py-3">
       {STEP_ORDER.map((step, index) => {
         const isActive = step === active;
         const isDone = index < activeIndex;
@@ -41,28 +41,30 @@ function StepRail({ active }: { active: WorkflowStep }): JSX.Element {
             key={step}
             data-testid={`split-workflow-step-${step}`}
             data-active={isActive ? 'true' : 'false'}
-            className="flex items-center gap-2"
+            className="flex items-center gap-3"
           >
-            <span
-              className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-3xs font-semibold ${
-                isActive
-                  ? 'bg-accent-subtle fg-accent ring-1 ring-line-accent/40'
-                  : isDone
-                    ? 'bg-success-subtle fg-success-strong'
-                    : 'bg-fg-primary/[0.06] fg-secondary'
-              }`}
-            >
-              {isDone ? '✓' : index + 1}
-            </span>
-            <span
-              className={`text-xs font-medium ${
-                isActive ? 'fg-primary' : 'fg-secondary'
-              }`}
-            >
-              {STEP_LABELS[step]}
+            <span className="inline-flex items-center gap-2">
+              <span
+                className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-3xs font-semibold ${
+                  isActive
+                    ? 'bg-accent-subtle fg-accent ring-1 ring-line-accent/40'
+                    : isDone
+                      ? 'bg-success-subtle fg-success-strong'
+                      : 'bg-fg-primary/[0.06] fg-secondary'
+                }`}
+              >
+                {isDone ? '✓' : index + 1}
+              </span>
+              <span
+                className={`text-xs font-medium ${
+                  isActive ? 'fg-primary' : 'fg-secondary'
+                }`}
+              >
+                {STEP_LABELS[step]}
+              </span>
             </span>
             {index < STEP_ORDER.length - 1 && (
-              <Divider className="mx-1 w-6" aria-hidden />
+              <Divider className=" w-6" aria-hidden />
             )}
           </li>
         );
@@ -267,8 +269,8 @@ export function SplitWorkflowView({
           data-testid="split-workflow-finalize"
           className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-6"
         >
-          <div className="mx-auto w-full min-w-0 max-w-5xl space-y-4">
-            <div className="space-y-1">
+          <div className="flex flex-col mx-auto w-full min-w-0 max-w-5xl gap-4">
+            <Stack gap="tight">
               <Heading level={2} variant="section" tone="success">
                 Split complete
               </Heading>
@@ -280,7 +282,7 @@ export function SplitWorkflowView({
                   : ''}
                 .
               </p>
-            </div>
+            </Stack>
 
             {splitResult !== undefined && (
               <Surface

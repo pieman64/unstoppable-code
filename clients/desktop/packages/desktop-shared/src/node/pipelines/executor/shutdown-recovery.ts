@@ -2,14 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { parseAgentTranscriptLines } from '@canopy/agent-transcript';
-import { transcriptHasAgentActivity } from '../../../lib/usage-limit-resume-prompt';
-import { isRecord } from '../../lib/type-guards';
+import { transcriptHasAgentActivity } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
+import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import {
   getExecutionHarnessForModel,
   getProviderForModel,
 } from '../../../types';
-import type { AgentActionFailureMetadata } from '../../../agent-failures';
-import type { ExecutionState, NormalizedStep } from '../../../types/pipeline';
+import type { AgentActionFailureMetadata } from '@canopy/execution-engine/agent-failures';
+import type {
+  ExecutionState,
+  NormalizedStep,
+} from '@canopy/execution-engine/types/pipeline';
 import { beginExecutionPause } from './execution-pause-clock';
 
 export const APP_SHUTDOWN = 'app_shutdown';

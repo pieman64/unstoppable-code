@@ -7,39 +7,34 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type {
-  McpServerConfigData,
-  McpServerDefinitionData,
-} from '@canopy/desktop-shared/types/mcp-servers';
+import {
+  McpCredentialBroker,
+  type McpCredentialOwner,
+} from '@canopy/core-runtime/node/mcp-auth';
 import type * as CanopyCloudClientModule from '../../canopy-cloud/client';
 
-jest.mock('../oauth-client', () => ({
-  getValidMcpAccessToken: jest.fn(),
-  handleMcpOAuthCallback: jest.fn(),
-}));
 jest.mock('../../canopy-cloud/client', () => ({
   CanopyCloudClientError: jest.requireActual<typeof CanopyCloudClientModule>(
     '../../canopy-cloud/client',
   ).CanopyCloudClientError,
   resolveCanopyCloudCredentialContext: jest.fn(),
 }));
-jest.mock('../oauth-token-store', () => ({
-  invalidateMcpOAuthAccessToken: jest.fn(),
-}));
 jest.mock('../../lib/main-process-logging', () => ({
   logMainProcessError: jest.fn(),
 }));
 
 import { resolveCanopyCloudCredentialContext } from '../../canopy-cloud/client';
-import { getValidMcpAccessToken } from '../oauth-client';
-import { invalidateMcpOAuthAccessToken } from '../oauth-token-store';
 import * as pendingAuthFailures from '../pending-auth-failures';
 import { isAccountMcpReauthRequired } from '../account-route-status';
 import {
   AgentMcpConnections,
+  type AgentMcpRouteRegistration,
   type McpProxiedToolCallGate,
-  type McpProxyRouteRegistration,
 } from '../agent-mcp-connections';
+
+interface Subject {
+  scope: string;
+}
 
 interface RecordedRequest {
   method: string;
@@ -127,13 +122,22 @@ describe('agent MCP connections (CAN-4125)', () => {
   let front: Server;
   let frontBase: string;
   let connections: AgentMcpConnections;
+  let broker: McpCredentialBroker<Subject>;
+  const resolveToken = jest.fn<Promise<string | null>, [Subject]>();
+  const invalidate = jest.fn<Promise<void>, [Subject, string, string]>();
+  const owner: McpCredentialOwner<Subject> = {
+    scopeOf: (subject) => subject.scope,
+    resolve: (subject) => resolveToken(subject),
+    invalidate: (subject, token, upstreamUrl) =>
+      invalidate(subject, token, upstreamUrl),
+  };
 
   const proxyUrl = (routeId: string): string =>
     `${frontBase}/mcp-proxy/${encodeURIComponent(routeId)}`;
 
   const route = (
-    overrides: Partial<McpProxyRouteRegistration> = {},
-  ): McpProxyRouteRegistration => ({
+    overrides: Partial<AgentMcpRouteRegistration> = {},
+  ): AgentMcpRouteRegistration => ({
     sessionId: null,
     serverId: 'srv',
     configId: 'cfg',
@@ -145,9 +149,11 @@ describe('agent MCP connections (CAN-4125)', () => {
   });
 
   beforeEach(async () => {
-    jest.mocked(getValidMcpAccessToken).mockReset();
+    resolveToken.mockReset();
     jest.mocked(resolveCanopyCloudCredentialContext).mockReset();
-    jest.mocked(invalidateMcpOAuthAccessToken).mockReset();
+    invalidate.mockReset();
+    invalidate.mockResolvedValue(undefined);
+    broker = new McpCredentialBroker<Subject>({ owner });
     upstreamRequests = [];
     upstreamHandler = (_req, res): void => {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -171,6 +177,7 @@ describe('agent MCP connections (CAN-4125)', () => {
     connections = new AgentMcpConnections({
       proxyUrl,
       listening: (): boolean => true,
+      credentials: broker,
     });
     front = createServer((req, res) => {
       const id = decodeURIComponent(
@@ -341,12 +348,26 @@ describe('agent MCP connections (CAN-4125)', () => {
       pendingAuthFailures,
       'clearPendingAuthFailures',
     );
-    const first = await connections.register(route({ sessionId: 's1' }));
-    const second = await connections.register(route({ sessionId: 's1' }));
+    const first = await connections.register(
+      route({
+        sessionId: 's1',
+        oauthEnabled: true,
+        credential: broker.bind({ scope: 'd/c' }),
+      }),
+    );
+    const second = await connections.register(
+      route({
+        sessionId: 's1',
+        oauthEnabled: true,
+        credential: broker.bind({ scope: 'd/c' }),
+      }),
+    );
     const other = await connections.register(route({ sessionId: 's2' }));
     const probe = await connections.register(route({ sessionId: null }));
+    const bound = broker.size;
 
     connections.disconnectSession('s1');
+    expect(broker.size).toBe(bound - 2);
 
     expect((await send(proxyUrl(first), { body: '{}' })).status).toBe(404);
     expect((await send(proxyUrl(second), { body: '{}' })).status).toBe(404);
@@ -369,35 +390,31 @@ describe('agent MCP connections (CAN-4125)', () => {
   });
 
   it('an OAuth route answers 401 without a token, 503 when the token read fails, and invalidates a rejected token before relaying it', async () => {
-    const definition = { id: 'srv' } as unknown as McpServerDefinitionData;
-    const config = { id: 'cfg' } as unknown as McpServerConfigData;
+    const subject: Subject = { scope: 'd/c' };
     const id = await connections.register(
       route({
         oauthEnabled: true,
-        oauthDefinition: definition,
-        oauthConfig: config,
+        credential: broker.bind(subject),
       }),
     );
 
-    jest.mocked(getValidMcpAccessToken).mockResolvedValue(null);
+    resolveToken.mockResolvedValue(null);
     const missing = await send(proxyUrl(id), { body: '{}' });
     expect(missing.status).toBe(401);
     expect(JSON.parse(missing.body)).toMatchObject({ error: { code: -32001 } });
 
-    jest
-      .mocked(getValidMcpAccessToken)
-      .mockRejectedValue(new Error('store unreadable'));
+    resolveToken.mockRejectedValue(new Error('store unreadable'));
     const unavailable = await send(proxyUrl(id), { body: '{}' });
     expect(unavailable.status).toBe(503);
     expect(unavailable.headers['retry-after']).toBe('30');
     expect(upstreamRequests).toHaveLength(0);
 
-    jest.mocked(getValidMcpAccessToken).mockResolvedValue('tok');
+    resolveToken.mockResolvedValue('tok');
     await send(proxyUrl(id), { body: '{}' });
     expect(upstreamRequests[0]?.headers.authorization).toBe('Bearer tok');
 
     const order: string[] = [];
-    jest.mocked(invalidateMcpOAuthAccessToken).mockImplementation(
+    invalidate.mockImplementation(
       () =>
         new Promise<void>((resolve) => {
           setTimeout(() => {
@@ -413,9 +430,8 @@ describe('agent MCP connections (CAN-4125)', () => {
     const rejected = await send(proxyUrl(id), { body: '{}' });
     order.push('client');
     expect(rejected.status).toBe(401);
-    expect(invalidateMcpOAuthAccessToken).toHaveBeenCalledWith(
-      'srv',
-      'cfg',
+    expect(invalidate).toHaveBeenCalledWith(
+      subject,
       'tok',
       `${upstreamBase}/mcp`,
     );

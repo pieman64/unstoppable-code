@@ -1,7 +1,7 @@
 import type { PipelineHostActionCaller } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import { PipelineHostRefusal } from '@canopy/desktop-shared/pipelines/host-actions';
 import type { ProjectOwnerContext } from '@canopy/desktop-shared/types';
-import type { PipelineAgentChatAddress } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineAgentChatAddress } from '@canopy/execution-engine/types/pipeline';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
 
 /** A pipeline step acting through the explicit-target actions; built only by desktop main. */

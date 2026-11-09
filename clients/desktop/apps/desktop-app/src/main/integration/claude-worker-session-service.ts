@@ -23,10 +23,10 @@ import type { ClaudeTerminalHookCallbackBody } from '@canopy/desktop-shared/lib/
 import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   LEDGER_INJECTED_TOOL_KEYS,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { ApprovalRule } from '@canopy/desktop-shared/types';
 import type { LedgerToolsRuntime } from '../canopy-tools/ledger-tools-runtime';
-import type { HelperUsage } from '@canopy/desktop-shared/lib/helper-usage';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import { ensureClaudeWorkspaceTrust } from './claude-workspace-trust';
 import {
   buildClaudeTerminalLaunchConfig,
@@ -54,7 +54,7 @@ import {
   getEffectiveClaudeWorkerConcurrencyLimit,
   isClaudeTuiWorkersEnabled,
 } from '../lib/claude-tui-workers';
-import { spawnManagedTerminal } from '../services/terminal-service';
+import { spawnPlacedManagedTerminal } from '../services/terminal-service';
 import type { WorkerTerminalEvent } from '@canopy/core-runtime/node/terminal';
 import { workerTerminal } from '../terminal/worker-terminal';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
@@ -69,6 +69,10 @@ import {
   approvalCheckForClaudeTool,
   CLAUDE_PLAN_MODE_READ_ONLY_TOOLS,
 } from '../agents/claude-approval-adapter';
+import {
+  clearClaudeModAdmissionSessionRecords,
+  replaceClaudeModAdmissionSessionRecords,
+} from '../agents/claude-mod-admission-session';
 
 type EventSender = (
   channel:
@@ -472,6 +476,7 @@ export class DefaultClaudeWorkerSessionService {
     getDesktopIntegrationServer().unregisterMcpProxyRoutesForSession(
       record.sessionKey,
     );
+    clearClaudeModAdmissionSessionRecords(record.sessionKey);
     record.approvalSession?.dispose();
     record.approvalSession = undefined;
     await rm(record.runtimeDir, { recursive: true, force: true }).catch(
@@ -791,12 +796,17 @@ export class DefaultClaudeWorkerSessionService {
         preventClaudeNativeCaffeinate:
           preferences?.preventClaudeNativeCaffeinate !== false,
       });
+      replaceClaudeModAdmissionSessionRecords(
+        sessionKey,
+        config.claudeModAdmission?.skippedMods ?? [],
+      );
       if (!this.isCurrentLaunch(record, launchGeneration)) {
+        clearClaudeModAdmissionSessionRecords(sessionKey);
         server.unregisterCanopyWorktreeSessionRoute(sessionKey);
         server.unregisterMcpProxyRoutesForSession(sessionKey);
         return;
       }
-      const terminal = spawnManagedTerminal({
+      const terminal = await spawnPlacedManagedTerminal({
         projectId: record.card.projectId ?? DEFAULT_PROJECT_ID,
         worktreeId: record.card.worktreeId ?? DEFAULT_WORKTREE_ID,
         cwd: record.request.cwd,
@@ -813,8 +823,25 @@ export class DefaultClaudeWorkerSessionService {
           sessionKey,
         },
       });
+      // Cancelled or relaunched while the daemon started the terminal (CAN-5097).
+      if (!this.isCurrentLaunch(record, launchGeneration)) {
+        workerTerminal.kill(terminal.id, {
+          signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+        });
+        server.unregisterCanopyWorktreeSessionRoute(sessionKey);
+        server.unregisterMcpProxyRoutesForSession(sessionKey);
+        return;
+      }
       record.terminalId = terminal.id;
       this.terminalIndex.set(terminal.id, record.workerId);
+      if (!workerTerminal.get(terminal.id)) {
+        await this.settle(
+          record,
+          'failure',
+          new Error('The Claude worker terminal ended before it started.'),
+        );
+        return;
+      }
       this.updateCard(record, {
         terminalId: terminal.id,
         status: 'running',
@@ -1321,6 +1348,7 @@ export class DefaultClaudeWorkerSessionService {
     getDesktopIntegrationServer().unregisterMcpProxyRoutesForSession(
       record.sessionKey,
     );
+    clearClaudeModAdmissionSessionRecords(record.sessionKey);
     record.approvalSession?.dispose();
     record.approvalSession = undefined;
     // Hooks admitted before settlement may still be reading/writing the

@@ -11,20 +11,20 @@ import {
   type CodexConfig,
   codexServiceTierForModelConfig,
   mapThinkingToReasoningEffort,
-} from '@canopy/desktop-shared/lib/codex-model-config';
+} from '@canopy/execution-engine/lib/codex-model-config';
 import type { CodexThreadHandle } from '@canopy/desktop-shared/node/codex-runtime';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
-import type { HelperUsage } from '@canopy/desktop-shared/lib/helper-usage';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import {
   AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT,
   runWithTransientAgentRetry,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 import type { AccountProxyQuotaWait } from '../account-proxy/quota-wait';
 import { parseStructuredJsonResult } from '@canopy/desktop-shared/lib/claude-structured-output';
 import {
   claudeNativeMemoryOptions,
   codexNativeMemoryThreadConfig,
-} from '@canopy/desktop-shared/node/lib/native-memory';
+} from '@canopy/execution-engine/node/lib/native-memory';
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import {
@@ -38,7 +38,7 @@ import { spawnClaudeCodeProcessOffMain } from '../agents/claude-process-host-run
 import {
   DEFAULT_CODEX_SPEED,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   admitCodexSpeed,
   reportCodexSpeedTurnFailure,

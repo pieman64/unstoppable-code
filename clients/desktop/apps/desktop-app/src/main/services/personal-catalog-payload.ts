@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 export interface PersonalCatalogPayload {
   personalCatalogId: string;
   name: string;

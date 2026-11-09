@@ -13,7 +13,7 @@ import type {
   ApprovalRequestEvent,
   ChatIngestionLag,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
 import { backgroundTaskCount } from '@canopy/desktop-shared/lib/background-work';
 import {
   ledgerAgentIsResting,

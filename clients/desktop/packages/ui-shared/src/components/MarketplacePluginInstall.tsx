@@ -1,3 +1,4 @@
+import { Badge } from './Badge';
 import type { JSX } from 'react';
 import { CheckIcon, DownloadIcon, StopIcon } from '../icons';
 import { Button } from './Button';
@@ -54,13 +55,9 @@ export function MissingPluginsBadge({
   const label = `${count} ${count === 1 ? 'plugin' : 'plugins'} not installed`;
   return (
     <Tooltip label={label}>
-      <span
-        data-testid={testId}
-        className="inline-flex items-center gap-1 rounded bg-warning-subtle px-1.5 py-0.5 text-3xs font-medium fg-warning tabular-nums"
-      >
-        <DownloadIcon size="sm" />
+      <Badge tone="warning" icon={DownloadIcon} data-testid={testId}>
         {count}
-      </span>
+      </Badge>
     </Tooltip>
   );
 }

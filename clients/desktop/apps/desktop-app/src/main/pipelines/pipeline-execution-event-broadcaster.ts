@@ -1,7 +1,7 @@
 import { publishForeignPipelineActivity } from '../services/foreign-activity-sources';
 import { withPipelineTransientRetryState } from './transient-error-retry-scheduler';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
-import type { ExecutionEvent } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionEvent } from '@canopy/execution-engine/types/pipeline';
 import { sendToAllWindows } from '../lib/window-send';
 import { syncPipelineAttention } from './pipeline-attention';
 

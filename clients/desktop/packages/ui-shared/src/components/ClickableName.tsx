@@ -9,15 +9,22 @@ import type { JSX } from 'react';
 export function ClickableName({
   name,
   description,
+  mono = false,
   onClick,
 }: {
   name: string;
   description?: string;
+  /** For identifiers people type, like a command. */
+  mono?: boolean;
   onClick: () => void;
 }): JSX.Element {
   return (
     <button type="button" onClick={onClick} className="text-left group">
-      <span className="fg-primary font-medium group-hover:fg-accent transition-colors">
+      <span
+        className={`fg-primary font-medium group-hover:fg-accent transition-colors${
+          mono ? ' font-mono text-xs' : ''
+        }`}
+      >
         {name}
       </span>
       {description && (

@@ -11,7 +11,10 @@ import {
 } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { getModelHarnessOverridesFilePath } from '../../canopy-paths';
-import { damagedCopiesOf, pruneDamagedCopies } from '../lib/damaged-copies';
+import {
+  damagedCopiesOf,
+  pruneDamagedCopies,
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import {
   MODEL_HARNESS_OVERRIDES_VERSION,
   ModelHarnessPolicyError,
@@ -22,7 +25,7 @@ import {
   type ModelHarness,
   type ModelHarnessCatalog,
   type ModelHarnessOverridesFile,
-} from '../../model-harnesses';
+} from '@canopy/execution-engine/model-harnesses';
 
 export class UnsupportedModelHarnessOverridesVersionError extends Error {
   constructor(readonly version: number) {

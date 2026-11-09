@@ -1,6 +1,6 @@
 import type { CopilotClient } from '@github/copilot-sdk';
 import type { CopilotAccount } from '../../types/copilot-connection';
-import type { CopilotModelEntry } from '../../types/copilot-models';
+import type { CopilotModelEntry } from '@canopy/execution-engine/types/copilot-models';
 import type {
   CopilotTurnRequest,
   CopilotTurnResult,

@@ -49,6 +49,7 @@ import {
 import { prepareCodexCompatibilityPlugin } from '../plugins/plugin-service';
 import { fitListResult } from '../portal/adapters/result-budget';
 import { createPortalCaller } from '../portal/portal-caller';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { PortalServiceError } from './portal-service-error';
 import { buildFileIndexes } from './files-service';
 import { selectPortalFileReference } from '../portal/portal-file-reference-selection';
@@ -57,17 +58,33 @@ import type { PortalFileReferenceScope } from '../portal/portal-file-references'
 const MENTION_DEFAULT_LIMIT = 50;
 const MENTION_MAX_LIMIT = 200;
 
+/**
+ * Who a worktree read is attributed to: a Portal session, or an IPC caller
+ * (a controller reaching this computer without Portal, CAN-5985).
+ */
+export type EditorReadAttribution =
+  | { readonly sessionId: string }
+  | { readonly caller: CanopyCallerDescriptor };
+
+function editorReadCaller(
+  attribution: EditorReadAttribution,
+): CanopyCallerDescriptor {
+  return 'caller' in attribution
+    ? attribution.caller
+    : createPortalCaller(attribution, ['core.worktree.read']);
+}
+
 /** The worktree row through `core.worktree.get`; null when it can't be read. */
 async function readWorktree(
   projectId: string,
   worktreeId: string,
-  session: { sessionId: string },
+  session: EditorReadAttribution,
 ): Promise<WorktreeData | null> {
   try {
     const { legacyResult } =
       await getDesktopCanopyRuntime().queryWorktreeGetForLegacyIpc(
         { worktreeId, scope: { workspaceId: projectId } },
-        { caller: createPortalCaller(session, ['core.worktree.read']) },
+        { caller: editorReadCaller(session) },
       );
     return legacyResult;
   } catch {
@@ -84,7 +101,7 @@ async function readWorktree(
  */
 export async function listEditorSlashCommands(
   payload: PortalEditorListSlashCommandsPayload,
-  session: { sessionId: string },
+  session: EditorReadAttribution,
 ): Promise<PortalEditorSlashCommandOption[]> {
   validateId(payload.projectId, 'projectId');
   validateId(payload.worktreeId, 'worktreeId');
@@ -381,8 +398,8 @@ export async function listChatInvocables(input: {
   scope: InvocableChatScope;
   tab: PersistedChatTab;
   providerType?: InvocableInventoryProvider;
-  /** The Portal session the worktree read is attributed to. */
-  session: { sessionId: string };
+  /** Who the worktree read is attributed to. */
+  session: EditorReadAttribution;
 }): Promise<PortalEditorListInvocablesResult> {
   const { scope, tab } = input;
   const context = await resolveChatInvocableContext(

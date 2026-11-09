@@ -27,7 +27,7 @@ import {
   normalizeThinkingForProvider,
   defaultSummaryModel,
 } from '@canopy/desktop-shared/types';
-import { isGatewayRoutableModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isGatewayRoutableModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isModelBlocked } from '@canopy/desktop-shared/lib/model-policy';
 import { getRendererModelPolicy } from '@/stores/modelPolicyRuntime';
 import { useProviderAvailability } from '@/hooks/useProviderAvailability';

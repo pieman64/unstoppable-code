@@ -1,13 +1,35 @@
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
+import { parseClaudeJsonFile } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+import { isClaudeModPluginId } from '@canopy/desktop-shared/types/claude-mod-admission';
+import {
+  claudeMarketplaceNames,
+  type InheritedPluginMarketplace,
+} from './inherited-cursor-plugins';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isMissingFile(file: string): boolean {
+  try {
+    statSync(file);
+    return false;
+  } catch (error) {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'ENOENT'
+    );
+  }
+}
+
 function readJson(file: string): unknown {
   try {
-    return JSON.parse(readFileSync(file, 'utf8'));
+    // As Claude parses it, so a leading BOM does not hide installs or disables.
+    return parseClaudeJsonFile(readFileSync(file));
   } catch {
     return null;
   }
@@ -51,6 +73,12 @@ function enabledPluginsOf(settings: unknown): Record<string, unknown> {
   return isRecord(settings) && isRecord(settings.enabledPlugins)
     ? settings.enabledPlugins
     : {};
+}
+
+function configuredSources(
+  settingSources: readonly SettingSource[] | undefined,
+): readonly SettingSource[] {
+  return settingSources ?? ['user', 'project', 'local'];
 }
 
 /** User-scope disables apply to explicit selections as well as provider carryover. */
@@ -132,24 +160,33 @@ function scopeRank(scope: unknown): number {
 export function readClaudeEnabledPlugins(
   claudeConfigDir: string,
   projectPath?: string,
+  settingSources?: readonly SettingSource[],
 ): Map<string, string> | null {
-  const plugins = claudeInstalledPluginsMap(
-    readJson(path.join(claudeConfigDir, 'plugins', 'installed_plugins.json')),
+  const sources = configuredSources(settingSources);
+  if (sources.length === 0) return new Map();
+  const installedFile = path.join(
+    claudeConfigDir,
+    'plugins',
+    'installed_plugins.json',
   );
+  // With no install record Claude loads no installed plugin; only a record
+  // it cannot read leaves that unknown.
+  if (isMissingFile(installedFile)) return new Map();
+  const plugins = claudeInstalledPluginsMap(readJson(installedFile));
   if (!plugins) return null;
   const project =
     projectPath === undefined ? undefined : canonicalPath(projectPath);
-  const userSettings = enabledPluginsOf(
-    readJson(path.join(claudeConfigDir, 'settings.json')),
-  );
+  const userSettings = sources.includes('user')
+    ? enabledPluginsOf(readJson(path.join(claudeConfigDir, 'settings.json')))
+    : {};
   const projectSettings =
-    project === undefined
+    project === undefined || !sources.includes('project')
       ? {}
       : enabledPluginsOf(
           readJson(path.join(project, '.claude', 'settings.json')),
         );
   const localSettings =
-    project === undefined
+    project === undefined || !sources.includes('local')
       ? {}
       : enabledPluginsOf(
           readJson(path.join(project, '.claude', 'settings.local.json')),
@@ -182,6 +219,50 @@ export function readClaudeEnabledPlugins(
     if (best) enabled.set(key, best.installPath);
   }
   return enabled;
+}
+
+export type ClaudePluginInstallLookup =
+  | { status: 'unreadable' }
+  | { status: 'ok'; found: boolean; installPaths: readonly string[] };
+
+/** All extant install paths for one id, including distinct scoped copies. */
+export function readClaudePluginInstallPathsById(
+  claudeConfigDir: string,
+  pluginId: string,
+): ClaudePluginInstallLookup {
+  const installedPath = path.join(
+    claudeConfigDir,
+    'plugins',
+    'installed_plugins.json',
+  );
+  let parsed: unknown;
+  try {
+    parsed = parseClaudeJsonFile(readFileSync(installedPath));
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return { status: 'ok', found: false, installPaths: [] };
+    }
+    return { status: 'unreadable' };
+  }
+  const plugins = claudeInstalledPluginsMap(parsed);
+  if (!plugins) return { status: 'unreadable' };
+  if (!Object.prototype.hasOwnProperty.call(plugins, pluginId)) {
+    return { status: 'ok', found: false, installPaths: [] };
+  }
+  const entry = plugins[pluginId];
+  const candidates = Array.isArray(entry) ? entry : [entry];
+  const installPaths = new Set<string>();
+  for (const candidate of candidates) {
+    const installPath = installPathOf(candidate);
+    if (installPath !== undefined && isPluginInstallRoot(installPath)) {
+      installPaths.add(path.resolve(installPath));
+    }
+  }
+  return {
+    status: 'ok',
+    found: true,
+    installPaths: Array.from(installPaths),
+  };
 }
 
 /**
@@ -218,4 +299,30 @@ export function readClaudeMissingPluginInstalls(
     if (!present) missing.push(key);
   }
   return missing;
+}
+
+/**
+ * The id Claude keys a catalog plugin's native install under, trying the
+ * marketplace's registered name first, so consent matches what launches
+ * check. The id given when Claude has no install under any spelling.
+ */
+export function registeredClaudePluginId(
+  pluginId: string,
+  marketplaces: readonly InheritedPluginMarketplace[],
+  claudeConfigDir: string,
+): string {
+  const separator = pluginId.indexOf('@');
+  if (separator < 0) return pluginId;
+  const marketplace = marketplaces.find(
+    (entry) => entry.id === pluginId.slice(separator + 1),
+  );
+  if (!marketplace) return pluginId;
+  const name = pluginId.slice(0, separator);
+  for (const spelling of claudeMarketplaceNames(marketplace)) {
+    const candidate = `${name}@${spelling}`;
+    if (!isClaudeModPluginId(candidate)) continue;
+    const lookup = readClaudePluginInstallPathsById(claudeConfigDir, candidate);
+    if (lookup.status === 'ok' && lookup.found) return candidate;
+  }
+  return pluginId;
 }

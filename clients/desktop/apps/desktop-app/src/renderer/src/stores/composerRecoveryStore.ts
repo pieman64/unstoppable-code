@@ -6,7 +6,7 @@ import {
   type ComposerRecoveryTranscriptMessage,
 } from '@canopy/ui-app/composer-recovery';
 import type { AttachmentMeta } from '@canopy/desktop-shared/types';
-import { messageHasAgentActivity } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { messageHasAgentActivity } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
 import type { EditorSelectionContext } from '@/lib/editorSelectionContext';
 import { chatBannerKey } from '@/stores/aiCreditsBannerStore';
 import type {

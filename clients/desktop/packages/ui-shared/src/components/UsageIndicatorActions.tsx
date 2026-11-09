@@ -1,8 +1,6 @@
 import type { JSX, ReactNode } from 'react';
-import {
-  ChevronDownMediumIcon,
-  ChevronRightMediumIcon,
-} from '../icons/AppIcons';
+import { ChevronRightMediumIcon } from '../icons/AppIcons';
+import { DisclosureChevron, DisclosureToggle } from './Disclosure';
 import { USAGE_TOUCH_FLOOR_CLASS } from './usage-indicator-meter';
 
 /**
@@ -15,20 +13,54 @@ export const USAGE_DISCLOSURE_ROW_CLASS = `group focus-ring flex rounded-sm text
 export const USAGE_DISCLOSURE_INK_CLASS =
   'fg-secondary transition-colors group-hover:fg-primary';
 
-/** The expandable row's chevron, at the row's right edge. */
+/** Compatibility glyph slot; its 16px artwork and public export stay stable. */
 export function UsageDisclosureChevron({
   open,
 }: {
   open: boolean;
 }): JSX.Element {
   return (
-    <ChevronDownMediumIcon
-      size={16}
-      aria-hidden
-      className={`shrink-0 transition-transform motion-reduce:transition-none ${
-        open ? 'rotate-180' : ''
-      }`}
-    />
+    <DisclosureChevron direction={open ? 'up' : 'down'} size="md" animated />
+  );
+}
+
+/**
+ * An expandable row with its body further down the popover (Context, Cost):
+ * the name left, then the value and the chevron at the right edge. A bar can
+ * sit between the row and its body, so the host places the body.
+ */
+export function UsageExpandableRow({
+  label,
+  value,
+  open,
+  onToggle,
+  bodyId,
+  testId,
+}: {
+  label: string;
+  value: ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  /** The body's id, for `aria-controls`. */
+  bodyId: string;
+  testId?: string;
+}): JSX.Element {
+  return (
+    <DisclosureToggle
+      variant="row"
+      open={open}
+      bodyId={bodyId}
+      onClick={onToggle}
+      data-testid={testId}
+    >
+      <span className="whitespace-nowrap fg-primary">{label}</span>
+      <span
+        className={`flex items-center gap-1 whitespace-nowrap tabular-nums ${USAGE_DISCLOSURE_INK_CLASS}`}
+      >
+        {value}
+        <DisclosureChevron direction={open ? 'up' : 'down'} animated />
+      </span>
+    </DisclosureToggle>
   );
 }
 
@@ -145,7 +177,7 @@ export function UsageSectionHeader({
         aria-hidden="true"
         className="pointer-events-none ml-1 flex fg-secondary transition-colors peer-hover:fg-primary"
       >
-        <UsageDisclosureChevron open={expanded} />
+        <DisclosureChevron direction={expanded ? 'up' : 'down'} animated />
       </span>
     </div>
   );

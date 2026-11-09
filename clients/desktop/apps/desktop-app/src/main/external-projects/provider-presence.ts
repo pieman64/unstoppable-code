@@ -2,7 +2,7 @@ import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { BRAND } from '@canopy/brand/current';
 import {
-  getBrandDataDirCandidates,
+  getBrandOwnedDataDirRoots,
   getCanopySecureDataDir,
 } from '@canopy/desktop-shared/canopy-paths';
 import { isPathInside } from '../lib/path-safety';
@@ -79,11 +79,8 @@ async function defaultExcludedRoots(): Promise<string[]> {
   const roots = new Set<string>();
   for (const candidate of [
     getDataDir(),
-    // The credential store is a sibling of the data dir, not inside it.
     getCanopySecureDataDir(),
-    ...getBrandDataDirCandidates('prod'),
-    ...getBrandDataDirCandidates('dev'),
-    ...getBrandDataDirCandidates('rc'),
+    ...getBrandOwnedDataDirRoots(),
   ]) {
     roots.add(await safeRealpath(candidate));
     roots.add(path.resolve(candidate));

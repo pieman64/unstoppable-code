@@ -2,8 +2,8 @@ import { gatewayHostname } from '@canopy/protocol/model-gateway/discovery';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import type { ModelGatewayModel } from '@canopy/protocol/canopy-server';
 import type { CanopyCloudAccountPublicState } from '../types';
-import { resolveOrgGatewayOrganizationId } from './gateway-model-availability';
-import { normalizeUuid } from './workspace-owner';
+import { resolveOrgGatewayOrganizationId } from '@canopy/execution-engine/lib/gateway-model-availability';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 
 export interface OrganizationModelGateway {
   organizationName: string;

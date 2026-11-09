@@ -103,7 +103,6 @@ export async function dispatchLegacyChatCreation(
             },
       requestId,
       destination,
-      remoteFallbackSurfaces: surfaces,
       ...(boundTools ? { boundTools } : {}),
       ...(signal ? { signal } : {}),
     });

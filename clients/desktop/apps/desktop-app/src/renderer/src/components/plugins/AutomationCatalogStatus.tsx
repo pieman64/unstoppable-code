@@ -68,7 +68,7 @@ export function AutomationCatalogStatus({
   return (
     <div
       data-testid="automation-catalog-status"
-      className="mt-6 flex flex-col items-start gap-4"
+      className="flex flex-col items-start gap-4"
     >
       {hasMore && (
         <Button

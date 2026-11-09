@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import { writeFileAtomically } from '../lib/atomic-file';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { getSkillSuggestionFingerprintsFilePath } from '../lib/paths';

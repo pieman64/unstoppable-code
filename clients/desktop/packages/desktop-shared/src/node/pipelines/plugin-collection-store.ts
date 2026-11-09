@@ -6,18 +6,21 @@ import {
   writeFileAtomically,
   type AdmittedWriterTarget,
 } from '../lib/atomic-file';
-import { damagedCopyPath, pruneDamagedCopies } from '../lib/damaged-copies';
+import {
+  damagedCopyPath,
+  pruneDamagedCopies,
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import {
   ensurePrivateLockDirectory,
   withOwnerLockFile,
-} from '../lib/owner-lock-file';
+} from '@canopy/execution-engine/node/lib/owner-lock-file';
 import { normalizePluginSelections } from '../../lib/plugin-selections-normalization';
 import type { ChatTabPluginSelections } from '../../types';
 import type {
   PipelineModelAliasPreference,
   PipelinePluginCollectionPreference,
   PipelinePreferenceLocator,
-} from '../../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { serializePipelinePreferenceLocator } from '../../pipelines/plugin-collections';
 
 interface PipelinePreferenceEntry {

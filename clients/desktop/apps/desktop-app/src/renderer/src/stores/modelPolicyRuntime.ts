@@ -9,8 +9,8 @@ import {
   type ModelGatewayIndex,
   type ModelGatewayRequirement,
 } from '@canopy/desktop-shared/lib/org-model-gateway';
-import { resolveOrgGatewayOrganizationId } from '@canopy/desktop-shared/lib/gateway-model-availability';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { resolveOrgGatewayOrganizationId } from '@canopy/execution-engine/lib/gateway-model-availability';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 
 const NO_MODEL_POLICY: ReadonlySet<string> = new Set<string>();
 const EMPTY_POLICY_INDEX: ModelPolicyIndex = {

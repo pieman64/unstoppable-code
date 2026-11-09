@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { ExecutionState } from '../../../types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import {
   isExecutionCancellationRequested,
   loadExecutionStateRevision,

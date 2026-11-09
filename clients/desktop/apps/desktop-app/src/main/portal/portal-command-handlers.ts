@@ -93,6 +93,10 @@ import {
   handlePortalOnboardingTipsUpdate,
 } from './adapters/onboarding-tips-adapter';
 import {
+  handlePortalClaudeModsGet,
+  handlePortalClaudeModsUpdate,
+} from './adapters/claude-mods-adapter';
+import {
   handlePortalScriptCancel,
   handlePortalScriptLogRequest,
   handlePortalScriptRun,
@@ -578,6 +582,8 @@ const FEATURE_ADAPTERS: Partial<
   'portal.suggestions.update': handlePortalSuggestionsUpdate,
   'portal.onboarding_tips.get': handlePortalOnboardingTipsGet,
   'portal.onboarding_tips.update': handlePortalOnboardingTipsUpdate,
+  'portal.claude_mods.get': handlePortalClaudeModsGet,
+  'portal.claude_mods.update': handlePortalClaudeModsUpdate,
   // The census handler span below stays as on develop until the Portal
   // standalone chat slice moves it (CAN-3745); TypeScript 7 no longer needs
   // its cast.
@@ -823,12 +829,24 @@ function createAdapterContext(
         ),
       );
     },
-    fail: (command, code, message, retryable = false): void => {
+    fail: (
+      command,
+      code,
+      message,
+      retryable = false,
+      coworkFolderMissing,
+    ): void => {
       context.enqueueEvent(
         createPortalCommandEvent(
           command,
           'portal.command.failed',
-          createCommandFailedPayload(command, code, message, retryable),
+          createCommandFailedPayload(
+            command,
+            code,
+            message,
+            retryable,
+            coworkFolderMissing,
+          ),
         ),
       );
     },

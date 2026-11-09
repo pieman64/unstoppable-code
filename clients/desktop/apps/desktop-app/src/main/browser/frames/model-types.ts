@@ -1,7 +1,7 @@
 import type {
   BrowserRectangle,
   BrowserThemeMode,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import type { FrameRegistry, NodeIdentity } from './frame-registry';
 
 /** Computed visibility of one element, read in an isolated world. */

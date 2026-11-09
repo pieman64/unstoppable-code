@@ -7,7 +7,7 @@ import {
   TRY_AGAIN_LABEL,
 } from './shareCopy';
 import type { ShareBudgetPush } from './useSharePreview';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { Stack, ErrorBanner } from '@canopy/ui-shared/components';
 import { Button } from '@/components/shared/Button';
 
 export interface ShareBudgetPushActionProps {
@@ -37,7 +37,7 @@ export function ShareBudgetPushAction({
         ? GITHUB_PUSH_BLOCKED_LABEL
         : null;
   return (
-    <div className="space-y-1" aria-busy={pushing ? 'true' : undefined}>
+    <Stack gap="tight" aria-busy={pushing ? 'true' : undefined}>
       <ErrorBanner
         className=""
         error={failureLabel}
@@ -45,6 +45,7 @@ export function ShareBudgetPushAction({
       />
       {budgetPush.state !== 'push-blocked' && (
         <Button
+          className="self-start"
           variant="primary"
           size="compact"
           data-testid={dataTestId}
@@ -58,6 +59,6 @@ export function ShareBudgetPushAction({
               : PUSH_TO_GITHUB_LABEL}
         </Button>
       )}
-    </div>
+    </Stack>
   );
 }

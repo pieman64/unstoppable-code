@@ -2,7 +2,7 @@
 
 import { type JSX, type ReactNode } from 'react';
 import { useActivityStore, useCapabilities } from '@canopy/app-state';
-import { Button } from '@canopy/ui-shared/components';
+import { Surface, Button } from '@canopy/ui-shared/components';
 import { WorkspacesSidebarSections } from './WorkspacesSidebarSections';
 import { SidebarChrome } from './sidebar';
 import { partitionWorkspaces } from './workspace-sections-model';
@@ -97,22 +97,24 @@ export function WorktreeSidebar({
       data-testid="worktree-sidebar"
     >
       {(workspaceActions || onAddWorkspace || onCreateTask) && (
-        <div
-          className="flex flex-wrap gap-2 border-b p-2"
-          data-testid="worktree-sidebar-actions"
-        >
-          {workspaceActions}
-          {onAddWorkspace && (
-            <Button size="compact" onClick={onAddWorkspace}>
-              Add project
-            </Button>
-          )}
-          {onCreateTask && (
-            <Button size="compact" onClick={onCreateTask}>
-              Create task
-            </Button>
-          )}
-        </div>
+        <Surface variant="section" boundary="bottom">
+          <div
+            className="flex flex-wrap gap-2 p-2"
+            data-testid="worktree-sidebar-actions"
+          >
+            {workspaceActions}
+            {onAddWorkspace && (
+              <Button size="compact" onClick={onAddWorkspace}>
+                Add project
+              </Button>
+            )}
+            {onCreateTask && (
+              <Button size="compact" onClick={onCreateTask}>
+                Create task
+              </Button>
+            )}
+          </div>
+        </Surface>
       )}
       {!hasGitWorkspaces && (
         <div

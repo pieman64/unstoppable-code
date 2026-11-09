@@ -40,6 +40,7 @@ export {
   ScriptRunLogStore,
   toWorkerScriptExecution,
   type PersistedScriptRunFile,
+  type RunLogProcessLock,
   type ScriptRunCompletion,
   type ScriptRunInvocation,
   type ScriptRunLogPaths,

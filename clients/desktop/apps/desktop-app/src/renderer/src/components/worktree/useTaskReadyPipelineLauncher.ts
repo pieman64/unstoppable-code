@@ -8,7 +8,7 @@ import {
   WORKSPACE_ROOT_REPO_ID,
   WORKSPACE_ROOT_REPO_NAME,
 } from '@canopy/desktop-shared/types';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import type { PipelineExecutionScope } from '@canopy/protocol/pipelines';
 import type {
   PipelineRepoChoice,

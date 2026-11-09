@@ -14,6 +14,7 @@ import {
   type CSSProperties,
   type JSX,
   type KeyboardEvent,
+  type ReactNode,
 } from 'react';
 import { usePlanModeSuggestion } from './composer/usePlanModeSuggestion';
 import { usePlanModeHintStore } from './composer/PlanModeHintContext';
@@ -110,6 +111,24 @@ export interface ChatComposerProps {
   readonly fileTypeaheadMultiRepo?: boolean;
   /** True while the host is still building the file index. */
   readonly fileTypeaheadLoading?: boolean;
+  /** Host content above the editor (pending attachments). */
+  readonly aboveEditor?: ReactNode;
+  /** Toolbar controls a host composer adds; see `ChatComposerToolbar`. */
+  readonly leadingSlot?: ReactNode;
+  readonly modelSlot?: ReactNode;
+  readonly pluginsSlot?: ReactNode;
+  /** Keeps Send off while the editor stays usable (an upload in flight). */
+  readonly sendBlocked?: boolean;
+  /**
+   * `shell`: a host draws the box (`ChatComposerShell`), so the composer
+   * drops its own divider. Defaults to `divider`.
+   */
+  readonly chrome?: 'divider' | 'shell';
+  /**
+   * Puts the sent draft back when `onSend` rejects, ahead of anything typed
+   * since, so a refused send never loses the person's text.
+   */
+  readonly restoreDraftOnReject?: boolean;
 }
 
 // The editable owns the composer's min/max height, overflow, and padding, so
@@ -176,6 +195,13 @@ function ChatComposerContent({
   fileSearch,
   fileTypeaheadMultiRepo = false,
   fileTypeaheadLoading = false,
+  aboveEditor,
+  leadingSlot,
+  modelSlot,
+  pluginsSlot,
+  sendBlocked = false,
+  chrome = 'divider',
+  restoreDraftOnReject = false,
 }: ChatComposerProps): JSX.Element {
   // Remounting the editor (bumping the key + recreating the instance) is the
   // reliable way to clear an uncontrolled Slate editor after a send.
@@ -219,16 +245,33 @@ function ChatComposerContent({
 
   const send = useCallback((): void => {
     const trimmed = serializeEditorValue(valueRef.current).text.trim();
-    if (trimmed.length === 0 || onSend === undefined || disabled) {
+    if (
+      trimmed.length === 0 ||
+      onSend === undefined ||
+      disabled ||
+      sendBlocked
+    ) {
       return;
     }
+    const draft = valueRef.current;
     const sent = onSend(trimmed);
-    if (sent !== undefined) void sent.catch(() => undefined);
+    if (sent !== undefined)
+      void sent.catch(() => {
+        if (!restoreDraftOnReject) return;
+        const typed = valueRef.current;
+        const restored =
+          serializeEditorValue(typed).text.trim().length === 0
+            ? draft
+            : [...draft, ...typed];
+        valueRef.current = restored;
+        setValue(restored);
+        setEditorKey((key) => key + 1);
+      });
     const empty = createEmptyValue();
     valueRef.current = empty;
     setValue(empty);
     setEditorKey((key) => key + 1);
-  }, [onSend, disabled]);
+  }, [onSend, disabled, sendBlocked, restoreDraftOnReject]);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>): void => {
@@ -295,7 +338,8 @@ function ChatComposerContent({
         ?.querySelector<HTMLElement>('[contenteditable="true"]')
         ?.focus(),
   });
-  const canSend = draftText.length > 0 && onSend !== undefined && !disabled;
+  const canSend =
+    draftText.length > 0 && onSend !== undefined && !disabled && !sendBlocked;
 
   // `resolveComposerThinking` owns the provider fallback both hosts use (Codex
   // shows a stored `max` as `xhigh`), and the label comes from the shared
@@ -349,15 +393,26 @@ function ChatComposerContent({
       : undefined;
 
   return (
-    <div ref={hintRootRef} className="border-t p-2" data-testid="chat-composer">
+    <div
+      ref={hintRootRef}
+      className={
+        chrome === 'shell'
+          ? 'p-2 flex flex-col gap-1'
+          : 'border-t p-2 flex flex-col gap-1'
+      }
+      data-testid="chat-composer"
+    >
       {/* The composer's tip, as every host draws it. This plain box has no
           elevated surface for a top drawer to tuck under, so the tip's row
           sits on it directly. */}
       {hint.visible ? (
-        <div className="mb-1">
+        <div className="">
           <PlanModeHint hint={hint} />
         </div>
       ) : null}
+
+      {aboveEditor}
+
       <div className="relative">
         {/* The menus self-position (absolute bottom-full … mb-1), so they are
             rendered directly in this relative container — no wrapper — and are
@@ -400,8 +455,12 @@ function ChatComposerContent({
           typeToFocus={typeToFocus}
         />
       </div>
-      <div className="mt-1">
+
+      <div className="">
         <ChatComposerToolbar
+          leadingSlot={leadingSlot}
+          modelSlot={modelSlot}
+          pluginsSlot={pluginsSlot}
           planMode={planChip}
           thinking={thinkingChip}
           trailingSlot={

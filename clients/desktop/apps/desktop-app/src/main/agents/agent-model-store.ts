@@ -21,7 +21,7 @@ import {
   type SaveAgentModelRequest,
   type SharedAgentDetail,
   type SharedAgentDocument,
-} from '@canopy/desktop-shared/types/agent-models';
+} from '@canopy/execution-engine/types/agent-models';
 import {
   isAgentModel,
   isBaseModelSelectableForAgent,

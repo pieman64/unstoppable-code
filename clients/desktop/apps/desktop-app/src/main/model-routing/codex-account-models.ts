@@ -1,7 +1,7 @@
 import {
   CodexSpeedUnsupportedError,
   type CodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   CODEX_SPEED_CATALOG_TTL_MS,
   CODEX_SPEED_DENIAL_TTL_MS,
@@ -14,13 +14,13 @@ import {
   type CodexSpeedRejectionKind,
   type CodexSpeedRouteFacts,
   type CodexSpeedRouteProfile,
-} from '@canopy/desktop-shared/lib/codex-speed-availability';
+} from '@canopy/execution-engine/lib/codex-speed-availability';
 import type {
   CodexSpeedCatalog,
   CodexSpeedCatalogModel,
   CodexSpeedCatalogRoute,
   CodexSpeedRouteCatalog,
-} from '@canopy/desktop-shared/types/codex-speed-capabilities';
+} from '@canopy/execution-engine/types/codex-speed-capabilities';
 import {
   getCodexRuntimeService,
   onCodexRuntimeServiceReplaced,

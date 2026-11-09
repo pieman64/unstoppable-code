@@ -1,4 +1,4 @@
-import { SECRET_ASSIGNMENT_KEYS_SOURCE } from '@canopy/desktop-shared/lib/redaction';
+import { SECRET_ASSIGNMENT_KEYS_SOURCE } from '@canopy/execution-engine/lib/redaction';
 import { redactText, redactUrl } from './privacy';
 import { normalizePostHogEmailDomain } from './posthog-account';
 import { POSTHOG_CLICK_EVENTS } from './client/posthog-autocapture-options';

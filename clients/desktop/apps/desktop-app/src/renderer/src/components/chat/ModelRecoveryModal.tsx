@@ -1,3 +1,5 @@
+import { Button } from '@canopy/ui-shared/components/Button';
+import { LoadingButton } from '@canopy/ui-shared/components/LoadingButton';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type {
   AiCreditsScopeRequest,
@@ -13,7 +15,7 @@ import {
   hasHydratedModelRegistry,
   isModelHarness,
 } from '@canopy/desktop-shared/types';
-import { isGatewayRoutableModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isGatewayRoutableModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { lapsedOrgNames as lapsedOrgNamesFrom } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
 import {
@@ -55,6 +57,7 @@ import { AuthLoginModal } from '@/components/settings/AuthLoginModal';
 import type { ModelRecovery } from '@/lib/modelPickerRowGate';
 import type { GuestModelFallback } from '@/lib/guestModelFallback';
 import { ErrorBanner } from '@canopy/ui-shared/components';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { GetAiCreditsCta } from './GetAiCreditsCta';
 import { CreditsRecoveryView } from './CreditsRecoveryView';
 import {
@@ -149,18 +152,6 @@ type GuardedCommitOutcome =
  * does not name a cause — an IPC rejection tells us nothing about why — but the
  * action is the same as every other blocked commit: try again.
  */
-/**
- * The modal's two button weights. Both share one size, weight and padding so
- * no label renders smaller than its neighbours; only the fill differs. Each
- * state gives the solid accent to its one way forward (DESIGN.md: one solid
- * primary per surface). The dialog's X, Escape and the backdrop dismiss it, so
- * no state adds a Cancel or Close button.
- */
-const RECOVERY_BUTTON_BASE =
-  'flex w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-s font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60';
-const RECOVERY_BUTTON_PRIMARY = `${RECOVERY_BUTTON_BASE} bg-accent fg-emphasis hover:bg-accent/90`;
-const RECOVERY_BUTTON_SECONDARY = `${RECOVERY_BUTTON_BASE} border border-line-base fg-primary hover:bg-subtle`;
-
 /** The one line every no-credits state leads with. */
 const OUT_OF_CREDITS_COPY = "You're out of AI Credits.";
 /** Case C's lead: the chat keeps its current billing until credits exist. */
@@ -562,7 +553,8 @@ function ModelRecoveryAttempt({
         if (outcome.kind === 'redirected') return false;
         committedRef.current = true;
         return true;
-      } catch {
+      } catch (error) {
+        reportClientAppError(error);
         // A THROW is not a refusal, but it strands the user the same way, and
         // every caller here latches busy state before awaiting: an escaping
         // rejection would leave the modal on "Checking your account…", or Try
@@ -650,7 +642,9 @@ function ModelRecoveryAttempt({
       });
       try {
         account = await window.api.loadCanopyCloudAccount();
-      } catch {
+      } catch (error) {
+        // An unreadable account is unknown, never signed out; record it.
+        reportClientAppError(error);
         account = null;
       }
       // CAN-4028 — library access is its own server fact, read fresh alongside
@@ -967,7 +961,9 @@ function ModelRecoveryAttempt({
                 modelId: pending.model,
                 onResumed: settle,
               }));
-        } catch {
+        } catch (error) {
+          // The modal shows the failed unlock; record why it failed.
+          reportClientAppError(error);
           result = { outcome: 'failed' };
         }
         unlockOpeningRef.current = false;
@@ -1082,7 +1078,9 @@ function ModelRecoveryAttempt({
         return provider === 'claude'
           ? await window.api.getClaudeAuthStatus({ forceRefresh: true })
           : await window.api.getCodexAuthStatus({ forceRefresh: true });
-      } catch {
+      } catch (error) {
+        // No snapshot: the login flow treats auth as unknown. Record it.
+        reportClientAppError(error);
         return null;
       }
     },
@@ -1223,44 +1221,32 @@ function ModelRecoveryAttempt({
   ): JSX.Element | null => {
     if (!signInProvider) return null;
     return (
-      <button
-        type="button"
+      <LoadingButton
+        size="compact"
+        variant={weight}
+        className="w-full"
         data-testid="model-recovery-sign-in"
-        disabled={signInBusy}
+        loading={signInBusy}
+        spinnerTestId="model-recovery-sign-in-spinner"
         onClick={handleSignIn}
-        className={
-          weight === 'primary'
-            ? RECOVERY_BUTTON_PRIMARY
-            : RECOVERY_BUTTON_SECONDARY
-        }
       >
-        {signInBusy && (
-          <LoadingSpinner
-            dataTestId="model-recovery-sign-in-spinner"
-            decorative
-          />
-        )}
         {label}
-      </button>
+      </LoadingButton>
     );
   };
 
   const renderRetry = (): JSX.Element => (
-    <button
-      type="button"
+    <LoadingButton
+      size="compact"
+      variant="primary"
+      className="w-full"
       data-testid="model-recovery-try-again"
-      disabled={retryBusy}
+      loading={retryBusy}
+      spinnerTestId="model-recovery-try-again-spinner"
       onClick={handleRetry}
-      className={RECOVERY_BUTTON_PRIMARY}
     >
-      {retryBusy && (
-        <LoadingSpinner
-          dataTestId="model-recovery-try-again-spinner"
-          decorative
-        />
-      )}
       Try again
-    </button>
+    </LoadingButton>
   );
 
   const handleDismiss = (): void => {
@@ -1286,7 +1272,11 @@ function ModelRecoveryAttempt({
     >
       <div className="flex flex-col gap-4">
         <div className="text-s leading-relaxed fg-secondary">{body}</div>
-        {actions ? <div className="flex flex-col gap-2">{actions}</div> : null}
+        {actions ? (
+          <div className="flex flex-col gap-2 pointer-coarse:gap-4">
+            {actions}
+          </div>
+        ) : null}
       </div>
     </DialogModal>
   );
@@ -1312,14 +1302,15 @@ function ModelRecoveryAttempt({
         {`This chat uses ${lockedLabel} and can't switch to ${targetLabel}. Starting a new chat leaves this one unchanged.`}
       </span>,
       <>
-        <button
-          type="button"
+        <Button
+          size="compact"
+          variant="primary"
+          className="w-full"
           data-testid="model-recovery-start-new-chat"
           onClick={(): void => onStartNewChat?.(pending.model)}
-          className={RECOVERY_BUTTON_PRIMARY}
         >
           {`Start a new chat`}
-        </button>
+        </Button>
       </>,
     );
   }
@@ -1377,10 +1368,13 @@ function ModelRecoveryAttempt({
         </span>
       </span>,
       <>
-        <button
-          type="button"
+        <LoadingButton
+          size="compact"
+          variant="primary"
+          className="w-full"
           data-testid="model-recovery-commit-retry"
-          disabled={commitRetryBusy}
+          loading={commitRetryBusy}
+          spinnerTestId="model-recovery-commit-retry-spinner"
           onClick={(): void => {
             // Counter FIRST: a still-refused commit re-sets the same reason,
             // which React treats as no change, so this is the only thing that
@@ -1391,16 +1385,9 @@ function ModelRecoveryAttempt({
               if (mountedRef.current) setCommitRetryBusy(false);
             });
           }}
-          className={RECOVERY_BUTTON_PRIMARY}
         >
-          {commitRetryBusy && (
-            <LoadingSpinner
-              dataTestId="model-recovery-commit-retry-spinner"
-              decorative
-            />
-          )}
           Try again
-        </button>
+        </LoadingButton>
       </>,
     );
   }
@@ -1505,10 +1492,12 @@ function ModelRecoveryAttempt({
           onDismiss={(): void => {
             if (!commitInFlightRef.current) onCancel();
           }}
-          renderSignIn={(label, className): JSX.Element => (
-            <button
+          renderSignIn={(label): JSX.Element => (
+            <Button
+              size="compact"
+              variant="primary"
+              className="w-full"
               ref={guestSignInRef}
-              type="button"
               data-testid="model-recovery-account-sign-in"
               // The fallback is one outcome; a sign-in started over it would be a
               // second, competing one.
@@ -1541,10 +1530,9 @@ function ModelRecoveryAttempt({
                   () => {},
                 );
               }}
-              className={className}
             >
               {label}
-            </button>
+            </Button>
           )}
         />
       </DialogModal>
@@ -1575,43 +1563,31 @@ function ModelRecoveryAttempt({
       unlockRequestId === undefined ? modelLabel : unlockModelLabel,
     );
     const purchaseButton = (label: string): JSX.Element => (
-      <button
-        type="button"
+      <LoadingButton
+        size="compact"
+        variant="primary"
+        className="w-full"
         data-testid="model-recovery-unlock-purchase"
-        disabled={unlockAttempt.status === 'opening'}
+        loading={unlockAttempt.status === 'opening'}
+        spinnerTestId="model-recovery-unlock-purchase-spinner"
         onClick={handleUnlockPurchase}
-        className={RECOVERY_BUTTON_PRIMARY}
       >
-        {unlockAttempt.status === 'opening' && (
-          <LoadingSpinner
-            dataTestId="model-recovery-unlock-purchase-spinner"
-            decorative
-          />
-        )}
         {label}
-      </button>
+      </LoadingButton>
     );
     const checkNowButton = (primary: boolean): JSX.Element => (
-      <button
-        type="button"
+      <LoadingButton
+        size="compact"
+        variant={primary ? 'primary' : 'secondary'}
+        className="w-full"
         data-testid="model-recovery-unlock-check-now"
-        disabled={unlockCheckBusy}
-        aria-busy={unlockCheckBusy}
+        loading={unlockCheckBusy}
+        spinnerTestId="model-recovery-unlock-check-now-spinner"
+        loadingLabel={MODEL_LIBRARY_UNLOCK_COPY.checkingAction}
         onClick={handleUnlockCheckNow}
-        className={
-          primary ? RECOVERY_BUTTON_PRIMARY : RECOVERY_BUTTON_SECONDARY
-        }
       >
-        {unlockCheckBusy && (
-          <LoadingSpinner
-            dataTestId="model-recovery-unlock-check-now-spinner"
-            decorative
-          />
-        )}
-        {unlockCheckBusy
-          ? MODEL_LIBRARY_UNLOCK_COPY.checkingAction
-          : MODEL_LIBRARY_UNLOCK_COPY.checkNowAction}
-      </button>
+        {MODEL_LIBRARY_UNLOCK_COPY.checkNowAction}
+      </LoadingButton>
     );
 
     // The work belongs to an organization this user cannot fund. A personal
@@ -1643,23 +1619,19 @@ function ModelRecoveryAttempt({
           </span>
         </span>,
         <>
-          <button
-            type="button"
+          <LoadingButton
+            size="compact"
+            variant="primary"
+            className="w-full"
             data-testid="model-recovery-unlock-use-model"
-            disabled={unlockApplyBusy}
+            loading={unlockApplyBusy}
+            spinnerTestId="model-recovery-unlock-use-model-spinner"
             onClick={handleUnlockApplyRetry}
-            className={RECOVERY_BUTTON_PRIMARY}
           >
-            {unlockApplyBusy && (
-              <LoadingSpinner
-                dataTestId="model-recovery-unlock-use-model-spinner"
-                decorative
-              />
-            )}
             {unlockModelLabel === undefined
               ? MODEL_LIBRARY_UNLOCK_COPY.retrySelection
               : `Use ${unlockModelLabel}`}
-          </button>
+          </LoadingButton>
         </>,
       );
     }
@@ -1718,21 +1690,17 @@ function ModelRecoveryAttempt({
         </span>,
         <>
           {checkNowButton(true)}
-          <button
-            type="button"
+          <LoadingButton
+            size="compact"
+            variant="secondary"
+            className="w-full"
             data-testid="model-recovery-unlock-new-purchase"
-            disabled={openingNew}
+            loading={openingNew}
+            spinnerTestId="model-recovery-unlock-new-purchase-spinner"
             onClick={(): void => openUnlockCheckout(timedOutRequestId)}
-            className={RECOVERY_BUTTON_SECONDARY}
           >
-            {openingNew && (
-              <LoadingSpinner
-                dataTestId="model-recovery-unlock-new-purchase-spinner"
-                decorative
-              />
-            )}
             {MODEL_LIBRARY_UNLOCK_COPY.newPurchaseAction}
-          </button>
+          </LoadingButton>
         </>,
       );
     }
@@ -1859,9 +1827,8 @@ function ModelRecoveryAttempt({
           onGetCreditsClick={(): void => trackRecoveryClick('account_sign_in')}
           {...(aiCreditsScope ? { aiCreditsScope } : {})}
           dataTestId="model-recovery-get-credits"
-          buttonClassName={
-            signInProvider ? RECOVERY_BUTTON_SECONDARY : RECOVERY_BUTTON_PRIMARY
-          }
+          buttonVariant={signInProvider ? 'secondary' : 'primary'}
+          buttonSize="compact"
         />
       </>,
     );
@@ -1938,9 +1905,8 @@ function ModelRecoveryAttempt({
         onGetCreditsClick={trackPurchaseClick}
         {...(aiCreditsScope ? { aiCreditsScope } : {})}
         dataTestId="model-recovery-get-credits"
-        buttonClassName={
-          signInProvider ? RECOVERY_BUTTON_SECONDARY : RECOVERY_BUTTON_PRIMARY
-        }
+        buttonVariant={signInProvider ? 'secondary' : 'primary'}
+        buttonSize="compact"
       />
     </>,
   );

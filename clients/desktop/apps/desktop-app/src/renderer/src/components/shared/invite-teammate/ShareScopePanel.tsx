@@ -17,7 +17,12 @@ import type { UseSharePreviewResult } from './useSharePreview';
 import { useCanopyDesktopStartPageEnabled } from '@/hooks/useCanopyDesktopStartPageEnabled';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { openStartPageSettings } from '@/lib/start-page/save-start-page';
-import { Button, ErrorBanner, Surface } from '@canopy/ui-shared/components';
+import {
+  Stack,
+  Button,
+  ErrorBanner,
+  Surface,
+} from '@canopy/ui-shared/components';
 
 export interface ShareScopePanelProps {
   containerType: SharedContainerType;
@@ -83,8 +88,8 @@ export function ShareScopePanel({
     /* The budget renders as copy only once it is exceeded, so the raw
        counts stay available here for UI automation that drives the scope
        across the limit. The owner never reads them. */
-    <div
-      className="space-y-2"
+    <Stack
+      gap="inline"
       data-testid="shared-container-invite-modal-file-review"
       data-artifact-budget-used={String(share.artifactBudgetUsed)}
       data-artifact-budget-limit={String(share.artifactBudgetLimit)}
@@ -109,7 +114,7 @@ export function ShareScopePanel({
         blocks the invite needs the remedy alongside it.
       */}
       {share.artifactBudgetExceeded && (
-        <div className="space-y-2">
+        <Stack gap="inline">
           <ErrorBanner
             className=""
             testId="shared-container-invite-modal-artifact-budget"
@@ -122,48 +127,50 @@ export function ShareScopePanel({
             budgetPush={share.budgetPush}
             dataTestId="shared-container-invite-modal-artifact-budget-push"
           />
-        </div>
+        </Stack>
       )}
 
       {startPageEnabled && share.preview.startPage && (
         <Surface variant="outline" data-testid="shared-container-start-page">
-          <div className="px-3 py-2 text-xs fg-secondary">
-            <span>{`Opens to: ${share.preview.startPage.label}`}</span>
-            <span aria-hidden="true"> · </span>
-            <Button
-              variant="link"
-              onClick={() => {
-                const project = useProjectsStore
-                  .getState()
-                  .projects.find(
-                    (candidate) => candidate.id === share.projectId,
-                  );
-                if (project?.type === 'cowork') {
-                  openStartPageSettings(share.projectId, 'local');
-                  return;
-                }
-                void window.api
-                  .resolveProjectStartPage({
-                    projectId: share.projectId,
-                    worktreeId: share.worktreeId,
-                  })
-                  .then((resolved) =>
-                    openStartPageSettings(
-                      share.projectId,
-                      resolved?.source === 'source' ? 'source' : 'local',
-                      undefined,
-                      share.worktreeId,
-                    ),
-                  );
-              }}
-            >
-              Change
-            </Button>
+          <div className="flex flex-col gap-1 px-3 py-2 text-xs fg-secondary">
+            <div>
+              <span>{`Opens to: ${share.preview.startPage.label}`}</span>
+              <span aria-hidden="true"> · </span>
+              <Button
+                variant="link"
+                onClick={() => {
+                  const project = useProjectsStore
+                    .getState()
+                    .projects.find(
+                      (candidate) => candidate.id === share.projectId,
+                    );
+                  if (project?.type === 'cowork') {
+                    openStartPageSettings(share.projectId, 'local');
+                    return;
+                  }
+                  void window.api
+                    .resolveProjectStartPage({
+                      projectId: share.projectId,
+                      worktreeId: share.worktreeId,
+                    })
+                    .then((resolved) =>
+                      openStartPageSettings(
+                        share.projectId,
+                        resolved?.source === 'source' ? 'source' : 'local',
+                        undefined,
+                        share.worktreeId,
+                      ),
+                    );
+                }}
+              >
+                Change
+              </Button>
+            </div>
             {/* The layout wins over the start page while it is on, so the
               withheld note only decides anything once it is off. */}
             {!share.preferredLayoutEnabled &&
               share.preview.startPage.status === 'withheld' && (
-                <p className="mt-1">{START_PAGE_WITHHELD_LABEL}</p>
+                <p>{START_PAGE_WITHHELD_LABEL}</p>
               )}
           </div>
         </Surface>
@@ -211,6 +218,6 @@ export function ShareScopePanel({
         onRunSharingChange={share.handleRunSharingChange}
         onRunScriptScopeChange={share.handleRunScriptScopeChange}
       />
-    </div>
+    </Stack>
   );
 }

@@ -47,14 +47,13 @@ function LegalDocumentLink({
     return <span data-testid={testId}>{children}</span>;
   }
   return (
-    <button
-      type="button"
+    <Button
+      variant="link"
       data-testid={testId}
-      className="underline underline-offset-2 hover:fg-primary"
       onClick={(): void => openExternal(url)}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 

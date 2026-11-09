@@ -1,4 +1,4 @@
-import type { PipelineExecutionScope } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineExecutionScope } from '@canopy/execution-engine/types/pipeline';
 import { PIPELINE_EXECUTION_SCOPE_LABELS } from '@canopy/ui-shared/lib';
 import { brandText } from '@/lib/brand';
 

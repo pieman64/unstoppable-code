@@ -4,7 +4,7 @@ import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   getCanonicalCanopyToolKey,
   isCodeGraphInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { validateWorktreeCodeGraphLanguages } from '../code-graph/graph-reads';
 
 const getContextToolName =

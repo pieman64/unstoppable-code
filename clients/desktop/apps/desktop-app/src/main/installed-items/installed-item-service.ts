@@ -2,12 +2,13 @@ import { z } from 'zod';
 import { readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import {
+  INSTALLED_ITEM_MARKETPLACE_OWNED_REASON,
   canonicalInstalledItemRef,
   installedItemKey,
   parseInstalledItemKey,
   type InstalledItemRef,
 } from '@canopy/protocol/installed-items';
-import { normalizeMcpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
+import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import { isBuiltInPluginMarketplaceId } from '@canopy/protocol/plugins';
 import { claudeMarketplaceNames } from '../plugins/inherited-cursor-plugins';
 import { resolvePluginInfoPath } from '../plugins/plugin-resolver';
@@ -194,7 +195,7 @@ async function records(): Promise<InstalledItemRecord[]> {
               reason:
                 plugin.builtIn || isBuiltInPluginMarketplaceId(marketplace.id)
                   ? 'Bundled plugins cannot be uninstalled.'
-                  : 'This plugin uses its marketplace source. Remove it through the marketplace instead.',
+                  : INSTALLED_ITEM_MARKETPLACE_OWNED_REASON,
             }
           : {}),
         claudeIds: claude.ids,

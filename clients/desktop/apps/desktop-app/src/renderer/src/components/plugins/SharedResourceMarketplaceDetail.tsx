@@ -1,11 +1,12 @@
 import type { JSX } from 'react';
 import {
+  Stack,
   SettingsRowsGroup,
   SettingsRowsRow,
   SettingsRowsSection,
   SettingsRowsValue,
 } from '@canopy/ui-shared/components';
-import type { SharedAgentSummary } from '@canopy/desktop-shared/types/agent-models';
+import type { SharedAgentSummary } from '@canopy/execution-engine/types/agent-models';
 import type { DeepLinkShareOpenEvent } from '@canopy/desktop-shared/types';
 import type { SharedPluginSummary } from '@canopy/protocol/plugins';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol/workspace-templates';
@@ -71,7 +72,7 @@ export function SharedAgentMarketplaceDetail({
   agent,
 }: SharedAgentMarketplaceDetailProps): JSX.Element {
   return (
-    <div className="space-y-6" data-testid="shared-agent-marketplace-detail">
+    <Stack gap="section" data-testid="shared-agent-marketplace-detail">
       <InstallAction
         link={sharedResourceInstallLink({
           entity: 'agent',
@@ -92,7 +93,7 @@ export function SharedAgentMarketplaceDetail({
           </SettingsRowsGroup>
         </SettingsRowsSection>
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -105,16 +106,13 @@ export function SharedBlueprintMarketplaceDetail({
   blueprint,
 }: SharedBlueprintMarketplaceDetailProps): JSX.Element {
   return (
-    <div
-      className="space-y-6"
-      data-testid="shared-blueprint-marketplace-detail"
-    >
+    <Stack gap="section" data-testid="shared-blueprint-marketplace-detail">
       <InstallAction
         link={sharedBlueprintInstallLink(blueprint)}
         name={blueprint.name}
         testId="shared-blueprint-detail-add"
       />
-    </div>
+    </Stack>
   );
 }
 
@@ -130,7 +128,7 @@ export function SharedPluginMarketplaceDetail({
   plugin,
 }: SharedPluginMarketplaceDetailProps): JSX.Element {
   return (
-    <div className="space-y-6" data-testid="shared-plugin-marketplace-detail">
+    <Stack gap="section" data-testid="shared-plugin-marketplace-detail">
       <InstallAction
         link={sharedResourceInstallLink({
           entity: 'plugin',
@@ -157,6 +155,6 @@ export function SharedPluginMarketplaceDetail({
         Only a reference to this plugin is shared. Adding it installs the plugin
         from its source; credentials and configuration are yours to set up.
       </p>
-    </div>
+    </Stack>
   );
 }

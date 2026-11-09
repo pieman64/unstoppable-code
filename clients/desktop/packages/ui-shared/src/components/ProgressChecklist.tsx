@@ -1,5 +1,8 @@
+import { Badge, type BadgeTone } from './Badge';
+import { Stack } from './Stack';
 import type { JSX, ReactNode } from 'react';
-import { LoadingSpinner } from './LoadingSpinner';
+import { StatusGlyph } from './StatusGlyph';
+import type { StatusGlyphState } from '../lib/status-glyph';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 
@@ -49,30 +52,24 @@ export interface ProgressChecklistProps {
   size?: 'compact' | 'comfortable';
 }
 
+const STEP_STATES: Readonly<Record<ProgressStepStatus, StatusGlyphState>> = {
+  error: 'failed',
+  completed: 'done',
+  active: 'running',
+  pending: 'queued',
+};
+
 function StepIcon({ status }: { status: ProgressStepStatus }): JSX.Element {
-  if (status === 'error') {
-    return (
-      <span className={OPERATIONAL_STATUS_COLORS.failed.foreground}>{'✗'}</span>
-    );
-  }
-  if (status === 'completed') {
-    // The check replaces the spinner as a new element, so this entrance runs
-    // exactly when a step finishes rather than on every re-render.
-    return (
-      <span
-        className={`inline-block animate-scale-in motion-reduce:animate-none ${OPERATIONAL_STATUS_COLORS.success.foreground}`}
-      >
-        {'✓'}
-      </span>
-    );
-  }
-  if (status === 'active') {
-    return <LoadingSpinner tone="active" />;
-  }
-  // pending — static hollow dot, not a spinner
   return (
-    <span className="inline-flex h-2.5 w-2.5 items-center justify-center">
-      <span className="h-1.5 w-1.5 rounded-full border border-fg-secondary/40" />
+    <span
+      key={status}
+      className={
+        status === 'completed'
+          ? 'inline-flex animate-scale-in motion-reduce:animate-none'
+          : 'inline-flex'
+      }
+    >
+      <StatusGlyph state={STEP_STATES[status]} size={12} />
     </span>
   );
 }
@@ -84,15 +81,11 @@ function stepLabelClass(status: ProgressStepStatus): string {
   return 'fg-secondary';
 }
 
-function badgeClass(tone: ProgressChecklistBadgeTone): string {
-  if (tone === 'error') {
-    return `${OPERATIONAL_STATUS_COLORS.failed.borderSubtle} ${OPERATIONAL_STATUS_COLORS.failed.backgroundSubtle} ${OPERATIONAL_STATUS_COLORS.failed.foreground}`;
-  }
-  if (tone === 'success') {
-    return `${OPERATIONAL_STATUS_COLORS.success.borderSubtle} ${OPERATIONAL_STATUS_COLORS.success.backgroundSubtle} ${OPERATIONAL_STATUS_COLORS.success.foreground}`;
-  }
-  return `${OPERATIONAL_STATUS_COLORS.active.borderMuted} ${OPERATIONAL_STATUS_COLORS.active.backgroundSubtle} ${OPERATIONAL_STATUS_COLORS.active.foreground}`;
-}
+const BADGE_TONES: Readonly<Record<ProgressChecklistBadgeTone, BadgeTone>> = {
+  progress: 'info',
+  success: 'success',
+  error: 'danger',
+};
 
 function ChecklistSteps({
   steps,
@@ -103,9 +96,13 @@ function ChecklistSteps({
 }): JSX.Element {
   const comfortable = size === 'comfortable';
   return (
-    <div role="list" className={comfortable ? 'space-y-2.5' : 'space-y-1'}>
+    <div
+      role="list"
+      className={comfortable ? 'flex flex-col gap-2.5' : 'flex flex-col gap-1'}
+    >
       {steps.map((step) => (
-        <div
+        <Stack
+          gap="tight"
           key={step.key}
           role="listitem"
           {...step.dataAttributes}
@@ -135,14 +132,14 @@ function ChecklistSteps({
           {(step.detail || (step.substeps && step.substeps.length > 0)) && (
             // Indented past the icon column so nested content lines up with
             // the label it belongs to.
-            <div className="mt-1 space-y-1 pl-4">
-              {step.detail}
+            <div className="flex flex-col gap-1 pl-4">
+              <div className="min-w-0 empty:hidden">{step.detail}</div>
               {step.substeps && step.substeps.length > 0 && (
                 <ChecklistSteps steps={step.substeps} size={size} />
               )}
             </div>
           )}
-        </div>
+        </Stack>
       ))}
     </div>
   );
@@ -167,13 +164,7 @@ export function ProgressChecklist({
     <div className={className}>
       {badge && (
         <div className="mb-2 flex items-center gap-2">
-          <span
-            className={`inline-flex rounded-full border px-2 py-0.5 text-3xs font-medium ${badgeClass(
-              badge.tone,
-            )}`}
-          >
-            {badge.label}
-          </span>
+          <Badge tone={BADGE_TONES[badge.tone]}>{badge.label}</Badge>
         </div>
       )}
       <ChecklistSteps steps={steps} size={size} />

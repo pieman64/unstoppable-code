@@ -10,9 +10,13 @@
   "exports": {
     ".": "./src/index.ts",
     "./linux-migration": "./src/linux-migration.ts",
+    "./storage-path-observation": "./src/storage-path-observation.ts",
+    "./build-storage-startup": "./src/build-storage-startup.ts",
+    "./secure-storage-relocation": "./src/secure-storage-relocation.ts",
     "./host-platform": "./src/host-platform.ts",
     "./internal-migration-filesystem": "./src/internal-migration-filesystem.ts",
     "./directory-flush": "./src/directory-flush.ts",
+    "./windows-shells": "./src/windows-shells.ts",
     "./w5-process-file-lock": "./src/w5-process-file-lock.ts",
     "./w5-confined-read": "./src/w5-confined-read.ts",
     "./codex-mcp-launcher": "./src/codex-mcp-launcher/index.ts",

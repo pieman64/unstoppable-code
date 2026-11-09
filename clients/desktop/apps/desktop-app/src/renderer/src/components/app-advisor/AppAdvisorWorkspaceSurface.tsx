@@ -55,6 +55,7 @@ import { CoworkArchiveOverlay } from '@/components/standalone-chat/CoworkArchive
 import { AppAdvisorNav } from '@/components/app-advisor/AppAdvisorNav';
 import { AppAdvisorTitlebarCorner } from '@/components/app-advisor/AppAdvisorTitlebarCorner';
 import { AppAdvisorTopBar } from '@/components/app-advisor/AppAdvisorTopBar';
+import { WorktreeGitActionError } from '@/components/github/WorktreeGitActionError';
 import { AppAdvisorFloatingSurface } from '@/components/app-advisor/AppAdvisorFloatingSurface';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
@@ -490,17 +491,36 @@ export function AppAdvisorWorkspaceSurface({
   }
   return (
     <div
-      className="relative flex h-full min-h-0 w-full flex-1 overflow-hidden"
+      // The main window's inset layout (globals.css): the nav and top bar sit
+      // on the window material and each panel group below is its own card.
+      className="app-window-material relative flex h-full min-h-0 w-full flex-1 overflow-hidden"
       data-testid="app-advisor-workspace-surface"
+      data-window-layout="inset"
+      data-sidebar-hidden={navCollapsed ? 'true' : undefined}
     >
       <AppAdvisorNav collapsed={navCollapsed} />
       {/* The main column stays mounted across nav collapse/expand — the nav
           changes width only. */}
-      <section className="flex min-w-0 flex-1 flex-col">
+      <main
+        className="relative flex min-w-0 flex-1 flex-col"
+        data-main-frame="split"
+      >
         {ready && !containerViewerOpen && (
-          <AppAdvisorTopBar navCollapsed={navCollapsed} />
+          <>
+            <AppAdvisorTopBar navCollapsed={navCollapsed} />
+            {/* A failed git or GitHub action from this work entry's chats (a
+                watched pull request that couldn't open), under the bar as on
+                the worktree page. */}
+            <WorktreeGitActionError
+              projectId={APP_ADVISOR_PROJECT_ID}
+              worktreeId={activeWorkEntryId}
+            />
+          </>
         )}
-        <section className="relative flex min-h-55 min-w-0 flex-1 flex-col overflow-hidden bg-card/50">
+        <section
+          className="relative flex min-h-55 min-w-0 flex-1 flex-col overflow-hidden bg-card/50"
+          data-testid="app-advisor-content"
+        >
           {ready ? (
             <>
               <PanelGridSurface
@@ -525,7 +545,7 @@ export function AppAdvisorWorkspaceSurface({
             </div>
           )}
         </section>
-      </section>
+      </main>
       {/* Rendered LAST so its drag region and buttons paint above the nav
           and top bar (later drag rects beat earlier ones in Electron). */}
       <AppAdvisorTitlebarCorner

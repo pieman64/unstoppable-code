@@ -2,6 +2,8 @@ import type { CloneJobSnapshot } from '@canopy/desktop-shared/types';
 import { useCloneJobsStore } from '@/stores/cloneJobsStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { addFailureToast } from '@/stores/toastStore';
+import { unclassifiedToastError } from '@canopy/ui-shared/lib';
 
 // Background outcomes already announced in this renderer. Main keeps a
 // finished job until it is dismissed, so repeated broadcasts (or a remount)
@@ -55,14 +57,15 @@ export function announceBackgroundCloneOutcomes(
       })();
     } else if (job.status === 'failed' && !announcedOutcomes.has(key)) {
       announcedOutcomes.add(key);
-      useGitHubStore
-        .getState()
-        .addToast(
-          `Couldn't clone ${job.repoName}.`,
-          'error',
-          () => useCloneJobsStore.getState().open(),
-          { title: 'Clone failed', forceInApp: true },
-        );
+      addFailureToast({
+        message: `Couldn't clone ${job.repoName}.`,
+        error: unclassifiedToastError(),
+        origin: {
+          label: 'View clone progress',
+          open: (): void => useCloneJobsStore.getState().open(),
+        },
+        meta: { title: 'Clone failed', forceInApp: true },
+      });
     }
   }
 }

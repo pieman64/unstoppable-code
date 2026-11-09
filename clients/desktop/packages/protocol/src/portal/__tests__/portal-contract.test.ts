@@ -4,6 +4,7 @@ import {
   PORTAL_CAPABILITY_APP_ADVISOR,
   PORTAL_CAPABILITY_INVOCABLE_INVENTORY,
   PORTAL_CAPABILITY_PIPELINE_CHAT_FOLLOW_UP,
+  PORTAL_CAPABILITY_CLAUDE_MOD_ADMISSION,
   PORTAL_CAPABILITY_PIPELINE_CONTENT,
   PORTAL_PIPELINE_CONTENT_PAGE_MAX_CHARS,
   PORTAL_CAPABILITY_SIDEBAR_ACTIVITY_INVENTORY,
@@ -110,6 +111,12 @@ import {
 } from '../index';
 import * as portalContract from '../index';
 import * as portalPackageEntry from '@canopy/protocol/portal';
+import {
+  parseClaudeModsGetArgs,
+  parseClaudeModsState,
+  parseClaudeModsUpdate,
+  parseClaudeModsUpdateResult,
+} from '../../claude-mods';
 import type {
   PortalChangedFiles,
   PortalChangedFilesPageResult,
@@ -2215,6 +2222,80 @@ describe('pipeline content reads (CAN-3717)', () => {
     for (const value of [payload, result]) {
       expect(JSON.parse(JSON.stringify(value))).toEqual(value);
     }
+  });
+});
+
+describe('Claude Mod admission controls', () => {
+  const digest = `sha256:${'a'.repeat(64)}`;
+
+  it('pins the capability key and both small-RPC commands', () => {
+    expect(PORTAL_CAPABILITY_CLAUDE_MOD_ADMISSION).toBe(
+      'claude_mod_admission_v1',
+    );
+    for (const command of [
+      'portal.claude_mods.get',
+      'portal.claude_mods.update',
+    ] as const) {
+      expect(PORTAL_COMMAND_TYPES).toContain(command);
+      expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
+      expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
+    }
+  });
+
+  it('parses get and update payloads and refuses malformed ones', () => {
+    const get: PortalCommandPayloadMap['portal.claude_mods.get'] = {
+      pluginId: 'review@builtin/app',
+    };
+    expect(parseClaudeModsGetArgs(get)).toEqual(get);
+    expect(parseClaudeModsGetArgs({})).toEqual({});
+    expect(parseClaudeModsGetArgs({ pluginId: '../x@y' })).toBeNull();
+
+    const allow: PortalCommandPayloadMap['portal.claude_mods.update'] = {
+      action: 'allow',
+      pluginId: 'review@market',
+      contentDigest: digest,
+    };
+    expect(parseClaudeModsUpdate(allow)).toEqual(allow);
+    expect(
+      parseClaudeModsUpdate({
+        action: 'set-mods-disabled',
+        modsDisabled: true,
+      }),
+    ).toEqual({ action: 'set-mods-disabled', modsDisabled: true });
+    for (const malformed of [
+      { action: 'allow', pluginId: 'review@market' },
+      { action: 'allow', pluginId: 'review@market', contentDigest: 'sha1:x' },
+      { action: 'disallow', pluginId: 'review' },
+      { action: 'set-mods-disabled', modsDisabled: 'yes' },
+      { action: 'forget', pluginId: 'review@market' },
+    ]) {
+      expect(parseClaudeModsUpdate(malformed)).toBeNull();
+    }
+  });
+
+  it('round-trips state and typed update results', () => {
+    const state = {
+      enabled: true,
+      modsDisabled: false,
+      authorityUnreadable: false,
+      plugin: {
+        pluginId: 'review@market',
+        status: 'changed',
+        contentDigest: digest,
+      },
+    } as const;
+    const wire: unknown = JSON.parse(JSON.stringify({ ok: true, state }));
+    expect(parseClaudeModsUpdateResult(wire)).toEqual({ ok: true, state });
+    expect(
+      parseClaudeModsUpdateResult({ ok: false, code: 'digest-changed' }),
+    ).toEqual({ ok: false, code: 'digest-changed' });
+    expect(parseClaudeModsUpdateResult({ ok: false, code: 'nope' })).toBeNull();
+    expect(
+      parseClaudeModsState({
+        ...state,
+        plugin: { pluginId: 'x', status: 'allowed' },
+      }),
+    ).toBeNull();
   });
 });
 

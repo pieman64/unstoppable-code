@@ -3,6 +3,7 @@ import {
   type WorkerCatalogHost,
   type WorkerCatalogMaterializationReader,
 } from '@canopy/core-runtime/node/catalog';
+import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
 import { createDesktopWorkerCatalogHost } from './catalog-materialization-host';
 import type { DesktopDomainAdapter } from './desktop-runtime';
 
@@ -12,6 +13,7 @@ export function createWorkerCatalogAdapter(
 ): DesktopDomainAdapter & { reader: WorkerCatalogMaterializationReader } {
   const handlers = createWorkerCatalogHandlers({
     host: host ?? createDesktopWorkerCatalogHost(),
+    secrets: getDesktopExecutionSecrets(),
   });
   return {
     queries: {

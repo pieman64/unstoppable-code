@@ -1,4 +1,4 @@
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import { SecureStorageNotice } from './SecureStorageNotice';
 import { unknownSecureStorageFailure } from '@/lib/secureStorageNotice';
 import {
@@ -38,6 +38,7 @@ import { notifyGitHubConnectionChanged } from '@/lib/integrationConnectionEvents
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { subscriptionLabelForPlanType } from '@canopy/protocol/telemetry';
 import {
+  Stack,
   Button,
   FormField,
   Notice,
@@ -372,7 +373,9 @@ function TerminalProviderAuthPanel({
     );
   }
 
-  const containerSpacing = compact ? 'space-y-3' : 'space-y-4 mt-8 first:mt-0';
+  const containerSpacing = compact
+    ? 'flex flex-col gap-3'
+    : 'flex flex-col gap-4 mt-8 first:mt-0';
 
   return (
     <div className={containerSpacing} data-testid={`auth-panel-${provider}`}>
@@ -396,7 +399,7 @@ function TerminalProviderAuthPanel({
       {!status && <p className="text-s fg-secondary">{loadingText}</p>}
 
       {status?.authenticated && (
-        <div className="space-y-1">
+        <Stack gap="tight">
           <p className="text-s fg-secondary">{authenticatedText}</p>
           {status.accountLabel && (
             <p className="text-s fg-secondary">
@@ -414,7 +417,7 @@ function TerminalProviderAuthPanel({
             enabled={authenticated}
             refreshKey={refreshKey}
           />
-        </div>
+        </Stack>
       )}
 
       {status && !status.authenticated && (
@@ -870,7 +873,9 @@ function GitHubAuthPanel({
     );
   }
 
-  const containerSpacing = compact ? 'space-y-3' : 'space-y-4 mt-8';
+  const containerSpacing = compact
+    ? 'flex flex-col gap-3'
+    : 'flex flex-col gap-4 mt-8';
 
   return (
     <div className={containerSpacing} data-testid="auth-panel-github">
@@ -900,7 +905,7 @@ function GitHubAuthPanel({
 
       {/* CLI Managed (OAuth) view */}
       {ghMode === 'oauth' && (
-        <div className="space-y-3">
+        <Stack gap="item">
           {loading && (
             <p className="text-s fg-secondary">
               Checking GitHub CLI status&hellip;
@@ -920,7 +925,7 @@ function GitHubAuthPanel({
           {envOverrideNotice}
 
           {!loading && ghStatus?.authenticated && !ghStatus.envOverride && (
-            <div className="space-y-1">
+            <Stack gap="tight">
               <p className="text-s fg-secondary">
                 GitHub CLI is authenticated and ready.
               </p>
@@ -934,7 +939,7 @@ function GitHubAuthPanel({
                   </span>
                 </p>
               )}
-            </div>
+            </Stack>
           )}
 
           {!loading &&
@@ -952,7 +957,7 @@ function GitHubAuthPanel({
               It is hidden there when an env var masks the credential store, since
               `gh auth login` refuses to run while GH_TOKEN/GITHUB_TOKEN is set. */}
           {pendingClearNote}
-        </div>
+        </Stack>
       )}
 
       {/* PAT view */}
@@ -1055,7 +1060,7 @@ function GitHubPermissionsSection({
   }
 
   return (
-    <div className="space-y-2 pt-2">
+    <div className="flex flex-col pt-2 gap-2">
       <div className="text-s fg-secondary">Permissions</div>
       {message && <p className="text-xs fg-secondary">{message}</p>}
       {details}
@@ -1099,13 +1104,14 @@ interface PermissionRowProps {
 function PermissionRow({ permission }: PermissionRowProps): JSX.Element {
   return (
     <li className="flex items-start gap-2.5">
-      <span
-        className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full ${permissionDotClass(
-          permission.state,
-          permission.required,
-        )}`}
-        aria-hidden="true"
-      />
+      <span className="flex h-5 w-2 shrink-0 items-center" aria-hidden="true">
+        <span
+          className={`block h-2 w-2 rounded-full ${permissionDotClass(
+            permission.state,
+            permission.required,
+          )}`}
+        />
+      </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <code className="font-mono text-xs font-medium fg-primary">

@@ -4,7 +4,7 @@ import { ShareAudienceLabel } from '@canopy/ui-shared/components';
 import type {
   PipelineShareOwner,
   PipelineShareScope,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { normalizePipelineShareScope } from './pipeline-scope-badge-helpers';
 
 export interface PipelineShareLabelProps {

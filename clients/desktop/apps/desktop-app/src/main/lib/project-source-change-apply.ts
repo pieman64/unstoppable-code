@@ -1,3 +1,4 @@
+import type { SourceChangeGit } from '../canopy-runtime/worker-git-worktree-adapter';
 import { mkdir, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
@@ -29,11 +30,6 @@ import {
   readCanopyJson,
   writeCanopyJson,
 } from './canopy-json';
-import {
-  bestEffortPruneWorktrees,
-  createWorktree,
-  removeWorktree,
-} from './git';
 import { getWorktreeDataDir, getWorktreeDir } from './paths';
 import { resolveProjectReferenceRepoPath } from './project-reference-repo';
 import { startProjectWorktreePostCreateSetup } from './project-worktree-runtime';
@@ -173,14 +169,15 @@ function applyProjectManifestStartPage(
 }
 
 async function rollbackCreatedProjectWorktree(
+  git: SourceChangeGit,
   projectId: string,
   context: TargetProjectContext,
 ): Promise<void> {
   try {
-    await removeWorktree(context.referenceRepoPath, context.worktreePath);
+    await git.removeWorktree(context.referenceRepoPath, context.worktreePath);
   } catch {
     await rm(context.worktreePath, { recursive: true, force: true });
-    bestEffortPruneWorktrees(
+    git.bestEffortPruneWorktrees(
       context.referenceRepoPath,
       'project-source-change-apply rollbackCreatedProjectWorktree',
     );
@@ -213,6 +210,7 @@ async function appendTargetWorktree(
 }
 
 async function ensureTargetProjectWorktree(
+  git: SourceChangeGit,
   request: ProjectApplySourceChangesRequest,
   referenceRepoPath: string,
   transition?: SourceChangesTransition<ProjectApplySourceChangesResponse>,
@@ -253,7 +251,7 @@ async function ensureTargetProjectWorktree(
   await mkdir(getWorktreeDataDir(request.projectId, worktreeId), {
     recursive: true,
   });
-  const branchName = await createWorktree(
+  const branchName = await git.createWorktree(
     referenceRepoPath,
     worktreePath,
     worktreeId,
@@ -287,7 +285,11 @@ async function ensureTargetProjectWorktree(
           error.reason === 'unapplied-change')
       )
     )
-      await rollbackCreatedProjectWorktree(request.projectId, targetContext);
+      await rollbackCreatedProjectWorktree(
+        git,
+        request.projectId,
+        targetContext,
+      );
     throw error;
   }
 
@@ -307,16 +309,27 @@ function isRecoverableTargetManifestError(
 }
 
 export function applyProjectSourceChangesToWorktree(
-  ...args: Parameters<typeof applyAdmittedProjectSourceChanges>
+  request: ProjectApplySourceChangesRequest,
+  getWindow: () => BrowserWindow | null,
+  git: SourceChangeGit,
+  onApplied?: (event: ProjectSourceChangesAppliedEvent) => void,
+  transition?: SourceChangesTransition<ProjectApplySourceChangesResponse>,
 ): Promise<ProjectApplySourceChangesResponse> {
-  const [request] = args;
   return withStorageAdmission(
     request.target.mode === 'new' ? [WORKTREE_LIST_STORAGE] : [],
-    () => applyAdmittedProjectSourceChanges(...args),
+    () =>
+      applyAdmittedProjectSourceChanges(
+        git,
+        request,
+        getWindow,
+        onApplied,
+        transition,
+      ),
   );
 }
 
 async function applyAdmittedProjectSourceChanges(
+  git: SourceChangeGit,
   request: ProjectApplySourceChangesRequest,
   getWindow: () => BrowserWindow | null,
   onApplied?: (event: ProjectSourceChangesAppliedEvent) => void,
@@ -335,6 +348,7 @@ async function applyAdmittedProjectSourceChanges(
     config.repoPath,
   );
   const targetContext = await ensureTargetProjectWorktree(
+    git,
     request,
     referenceRepoPath,
     transition,
@@ -406,6 +420,7 @@ async function applyAdmittedProjectSourceChanges(
         ))
     ) {
       await rollbackCreatedProjectWorktree(
+        git,
         request.projectId,
         targetContext,
       ).catch(() => {});

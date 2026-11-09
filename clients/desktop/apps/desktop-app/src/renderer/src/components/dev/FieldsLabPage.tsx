@@ -636,9 +636,14 @@ const FIELD_ERROR_ROW: StateRow = {
   name: 'FieldError alone',
   cell: (state): ReactNode =>
     state === 'Invalid + error' ? (
-      <FieldError id="lab-error">
-        Enter a name. A longer message wraps under the glyph like this.
-      </FieldError>
+      <div className="flex flex-col gap-2">
+        <FieldError id="lab-error">
+          Enter a name. A longer message wraps under the glyph like this.
+        </FieldError>
+        <FieldError id="lab-error-announced" announce>
+          Couldn’t save. With announce, it is read out when it appears.
+        </FieldError>
+      </div>
     ) : (
       NOT_APPLICABLE
     ),

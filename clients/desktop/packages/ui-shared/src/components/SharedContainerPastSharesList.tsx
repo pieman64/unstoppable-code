@@ -100,7 +100,7 @@ function RemovedGroup({
   return (
     <section data-testid={`${TEST_ID}-removed`}>
       <GroupHeading>Removed</GroupHeading>
-      <div className="space-y-0.5">
+      <div className="flex flex-col gap-0.5">
         {items.map((item) => {
           const restoring = restoringIds.includes(item.id);
           return (
@@ -272,7 +272,7 @@ export function SharedContainerPastSharesList({
         {visibleAccepted.length > 0 && (
           <section data-testid={`${TEST_ID}-accepted`}>
             <GroupHeading>Accepted</GroupHeading>
-            <div className="space-y-0.5">
+            <div className="flex flex-col gap-0.5">
               {visibleAccepted.map((item) => (
                 <OverviewListRow
                   key={item.id}

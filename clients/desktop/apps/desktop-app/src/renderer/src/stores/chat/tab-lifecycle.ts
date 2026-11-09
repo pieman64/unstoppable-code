@@ -18,7 +18,7 @@ import {
   DEFAULT_CODEX_SPEED,
   mergeAgentModelConfig,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import { codexSpeedFields, withoutCodexSpeed } from './codex-speed';
 import type { ClaudeTerminalClientState } from '@/stores/claudeTerminalStore';
 import { useProjectsStore } from '../projectsStore';

@@ -1,3 +1,8 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useLinearAvailability } from '@/hooks/useLinearStatus';
 import { useContextScopedWorkspaces } from '@/hooks/useContextScopedWorkspaces';
@@ -31,10 +36,10 @@ import {
 } from './branch-options';
 import { ChatIcon, PipelineIcon, PlanModeIcon } from '@canopy/ui-shared/icons';
 import {
+  Stack,
   Button,
   DelayedLoadingPlaceholder,
   DialogFormField,
-  ErrorBanner,
   ListRow,
   SearchField,
   SegmentedControl,
@@ -98,8 +103,8 @@ function CreateFromPill({
   ];
 
   return (
-    <div>
-      <span className="mb-1.5 block text-xs fg-secondary">Create from</span>
+    <div className="flex flex-col items-start gap-1.5">
+      <span className="block text-xs fg-secondary">Create from</span>
       <SegmentedControl<CreateFromMode>
         label="Create from"
         value={mode}
@@ -125,11 +130,11 @@ function LinearTicketCard({
   return (
     <Surface variant="inset" padding="compact">
       <div className="flex items-start gap-2">
-        <div className="min-w-0 flex-1">
+        <Stack gap="inline" className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="rounded bg-fg-primary/[0.08] px-1.5 py-0.5 font-mono text-2xs fg-primary">
-              {ticket.identifier}
-            </span>
+            <Badge>
+              <span className="font-mono">{ticket.identifier}</span>
+            </Badge>
             <span className="min-w-0 flex-1 text-s font-medium fg-primary">
               <WordBoundaryTruncatedText
                 text={ticket.title}
@@ -139,7 +144,7 @@ function LinearTicketCard({
             </span>
           </div>
           {description.length > 0 && (
-            <p className="mt-2 line-clamp-6 whitespace-pre-wrap text-xs fg-secondary">
+            <p className="line-clamp-6 whitespace-pre-wrap text-xs fg-secondary">
               {description}
             </p>
           )}
@@ -147,11 +152,11 @@ function LinearTicketCard({
             href={ticket.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="mt-2 inline-block break-all text-xs fg-info hover:underline"
+            className="inline-block break-all text-xs fg-info hover:underline"
           >
             {ticket.url}
           </a>
-        </div>
+        </Stack>
         <Button size="compact" onClick={onClear}>
           Change ticket
         </Button>
@@ -165,6 +170,9 @@ interface LinearSearchProps {
   onQueryChange: (value: string) => void;
   results: LinearTicketSearchResult[];
   searching: boolean;
+  /** The last search failed; its results are not a "no match". */
+  error: InlineFailure | null;
+  onRetry: () => void;
   onSelect: (ticket: LinearTicketSearchResult) => void;
 }
 
@@ -173,6 +181,8 @@ function LinearSearch({
   onQueryChange,
   results,
   searching,
+  error,
+  onRetry,
   onSelect,
 }: LinearSearchProps): JSX.Element {
   const trimmedQuery = query.trim();
@@ -187,6 +197,8 @@ function LinearSearch({
           <LoadingSpinner />
         </div>
       );
+    } else if (error) {
+      dropdownContent = null;
     } else if (results.length === 0) {
       dropdownContent = (
         <p className="px-3 py-2 text-xs fg-secondary">No matching tickets</p>
@@ -223,7 +235,7 @@ function LinearSearch({
   }
 
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       <SearchField
         value={query}
         onValueChange={onQueryChange}
@@ -236,12 +248,23 @@ function LinearSearch({
           <div className="max-h-64 overflow-y-auto">{dropdownContent}</div>
         </Surface>
       )}
-    </div>
+      {trimmedQuery.length > 0 && !searching && (
+        <DesktopErrorBanner
+          className=""
+          error={error?.error}
+          details={error?.details}
+          onRetry={onRetry}
+          testId="create-task-linear-search-error"
+        />
+      )}
+    </Stack>
   );
 }
 
 interface BranchResultsProps {
   loading: boolean;
+  error: InlineFailure | null;
+  onRetry: () => void;
   options: BranchOption[];
   onSelect: (name: string) => void;
 }
@@ -279,7 +302,7 @@ const noop = (): void => undefined;
 function BranchResultList({
   options,
   onSelect,
-}: Omit<BranchResultsProps, 'loading'>): JSX.Element {
+}: Pick<BranchResultsProps, 'options' | 'onSelect'>): JSX.Element {
   return (
     <Surface variant="inset" className="overflow-hidden">
       <ul className="max-h-64 overflow-y-auto p-1">
@@ -304,6 +327,8 @@ function BranchResultList({
 
 function BranchResults({
   loading,
+  error,
+  onRetry,
   options,
   onSelect,
 }: BranchResultsProps): JSX.Element {
@@ -320,6 +345,17 @@ function BranchResults({
       </DelayedLoadingPlaceholder>
     );
   }
+  if (error) {
+    return (
+      <DesktopErrorBanner
+        className=""
+        error={error.error}
+        details={error.details}
+        onRetry={onRetry}
+        testId="create-from-branch-error"
+      />
+    );
+  }
   if (options.length === 0) {
     return (
       <Surface variant="inset">
@@ -332,7 +368,7 @@ function BranchResults({
 
 interface PrPreviewProps {
   resolving: boolean;
-  error: string | null;
+  error: InlineFailure | null;
   pr: ResolvePullRequestResponse | null;
 }
 
@@ -352,7 +388,12 @@ function PrPreview({
   }
   if (error) {
     return (
-      <ErrorBanner error={error} className="" testId="create-from-pr-error" />
+      <DesktopErrorBanner
+        className=""
+        error={error.error}
+        details={error.details}
+        testId="create-from-pr-error"
+      />
     );
   }
   if (!pr) {
@@ -362,17 +403,18 @@ function PrPreview({
     <Surface
       data-testid="create-from-pr-card"
       variant="inset"
+      gap="inline"
       padding="compact"
     >
       <div className="flex items-center gap-2">
-        <span className="rounded bg-fg-primary/[0.08] px-1.5 py-0.5 font-mono text-2xs fg-primary">
-          #{pr.number}
-        </span>
+        <Badge>
+          <span className="font-mono">#{pr.number}</span>
+        </Badge>
         <span className="min-w-0 flex-1 truncate text-s font-medium fg-primary">
           {pr.title}
         </span>
       </div>
-      <p className="mt-2 text-xs fg-secondary">
+      <p className="text-xs fg-secondary">
         Checks out <span className="font-mono">{pr.headRefName}</span> (into{' '}
         <span className="font-mono">{pr.baseRefName}</span>)
       </p>
@@ -409,13 +451,19 @@ export function CreateTaskModal({
     LinearTicketSearchResult[]
   >([]);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<InlineFailure | null>(null);
+  // Bumped by Try again to repeat a failed search or branch load.
+  const [searchAttempt, setSearchAttempt] = useState(0);
+  const [branchTargetsAttempt, setBranchTargetsAttempt] = useState(0);
+  const [branchTargetsError, setBranchTargetsError] =
+    useState<InlineFailure | null>(null);
   const [branchTargets, setBranchTargets] = useState<BranchEntry[]>([]);
   const [branchTargetsLoading, setBranchTargetsLoading] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState<string | null>(null);
   const [resolvedPr, setResolvedPr] =
     useState<ResolvePullRequestResponse | null>(null);
   const [prResolving, setPrResolving] = useState(false);
-  const [prError, setPrError] = useState<string | null>(null);
+  const [prError, setPrError] = useState<InlineFailure | null>(null);
   const [contextChanged, setContextChanged] = useState(false);
   const lastGeneratedTaskTextRef = useRef('');
 
@@ -455,6 +503,7 @@ export function CreateTaskModal({
       return;
     }
     const trimmed = referenceQuery.trim();
+    setSearchError(null);
     if (trimmed.length === 0) {
       // Skip the IPC call entirely when input is empty.
       searchSeqRef.current += 1;
@@ -468,15 +517,19 @@ export function CreateTaskModal({
     const timer = window.setTimeout(() => {
       void (async (): Promise<void> => {
         let results: LinearTicketSearchResult[] = [];
+        let failure: InlineFailure | null = null;
         try {
           results = await window.api.searchLinearIssues(trimmed);
-        } catch {
-          results = [];
+        } catch (error) {
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            failure = inlineFailure(appError, "Couldn't search Linear.");
         }
         if (searchSeqRef.current !== seq) {
           return;
         }
         setSearchResults(results);
+        setSearchError(failure);
         setSearching(false);
       })();
     }, SEARCH_DEBOUNCE_MS);
@@ -485,7 +538,7 @@ export function CreateTaskModal({
       searchSeqRef.current += 1;
       window.clearTimeout(timer);
     };
-  }, [mode, referenceQuery]);
+  }, [mode, referenceQuery, searchAttempt]);
 
   // Branch targets for the selected workspace power both the Branch-mode list
   // and the Linear existing-vs-new-branch decision.
@@ -493,6 +546,7 @@ export function CreateTaskModal({
     setSelectedBranch(null);
     setResolvedPr(null);
     setPrError(null);
+    setBranchTargetsError(null);
     if (!selectedWorkspaceId) {
       setBranchTargets([]);
       setBranchTargetsLoading(false);
@@ -506,8 +560,14 @@ export function CreateTaskModal({
         if (cancelled) return;
         setBranchTargets(response.supported ? response.branches : []);
       })
-      .catch(() => {
-        if (!cancelled) setBranchTargets([]);
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setBranchTargets([]);
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError)
+          setBranchTargetsError(
+            inlineFailure(appError, "Couldn't load branches."),
+          );
       })
       .finally(() => {
         if (!cancelled) setBranchTargetsLoading(false);
@@ -515,7 +575,7 @@ export function CreateTaskModal({
     return (): void => {
       cancelled = true;
     };
-  }, [selectedWorkspaceId]);
+  }, [selectedWorkspaceId, branchTargetsAttempt]);
 
   // Debounced PR resolution with a sequence guard (mirrors the Linear search).
   const prSeqRef = useRef(0);
@@ -539,9 +599,10 @@ export function CreateTaskModal({
           ? (workspace.sourceRepoPath ?? null)
           : null;
     if (!repoPath) {
-      setPrError(
-        'This project has no repository to resolve a pull request against.',
-      );
+      setPrError({
+        error:
+          'This project has no repository to resolve a pull request against.',
+      });
       setPrResolving(false);
       return;
     }
@@ -567,12 +628,12 @@ export function CreateTaskModal({
           lastGeneratedTaskTextRef.current = pr.title;
         } catch (error) {
           if (prSeqRef.current !== seq) return;
-          setPrError(
-            error instanceof Error
-              ? error.message
-              : 'Failed to resolve the pull request.',
-          );
           setPrResolving(false);
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setPrError(
+              inlineFailure(appError, "Couldn't find that pull request."),
+            );
         }
       })();
     }, SEARCH_DEBOUNCE_MS);
@@ -682,7 +743,7 @@ export function CreateTaskModal({
       maxWidth="lg"
       dataTestId="create-task-modal"
     >
-      <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4 text-s">
+      <div className="flex flex-col flex-1 overflow-y-auto px-6 py-4 text-s gap-4 [&>*]:shrink-0">
         {eligibleWorkspaces.length === 0 ? (
           <Surface variant="dashed" padding="default">
             <div className="text-s fg-secondary">
@@ -705,8 +766,8 @@ export function CreateTaskModal({
                 </p>
               </Surface>
             )}
-            <div>
-              <span className="mb-1.5 block text-xs fg-secondary">Project</span>
+            <div className="flex flex-col gap-1.5">
+              <span className="block text-xs fg-secondary">Project</span>
               <WorkspaceDropdown
                 workspaces={eligibleWorkspaces}
                 selectedWorkspaceId={selectedWorkspaceId}
@@ -722,7 +783,7 @@ export function CreateTaskModal({
             />
 
             {mode !== 'new' && mode !== 'linear' && (
-              <div className="space-y-2">
+              <Stack gap="inline">
                 <TextInput
                   type="text"
                   value={referenceQuery}
@@ -755,6 +816,8 @@ export function CreateTaskModal({
                   ) : (
                     <BranchResults
                       loading={branchTargetsLoading}
+                      error={branchTargetsError}
+                      onRetry={() => setBranchTargetsAttempt((n) => n + 1)}
                       options={branchOptions}
                       onSelect={setSelectedBranch}
                     />
@@ -766,12 +829,12 @@ export function CreateTaskModal({
                     pr={resolvedPr}
                   />
                 )}
-              </div>
+              </Stack>
             )}
 
             {mode === 'linear' && (
-              <div>
-                <span className="mb-1.5 block text-xs fg-secondary">
+              <div className="flex flex-col gap-1.5">
+                <span className="block text-xs fg-secondary">
                   Linear ticket
                 </span>
                 {selectedTicket ? (
@@ -785,6 +848,8 @@ export function CreateTaskModal({
                     onQueryChange={setReferenceQuery}
                     results={searchResults}
                     searching={searching}
+                    error={searchError}
+                    onRetry={() => setSearchAttempt((n) => n + 1)}
                     onSelect={(ticket) => {
                       setSelectedTicket(ticket);
                       const generatedTaskText = buildLinearTaskText(ticket);

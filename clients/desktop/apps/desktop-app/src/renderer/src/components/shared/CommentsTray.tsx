@@ -323,7 +323,7 @@ export function CommentsTray<T>({
           className={`${POSTHOG_REPLAY_BLOCK_CLASS} ${isCollapsed ? 'hidden' : 'block'}`}
         >
           {addingNote && !readOnly && (
-            <div className="px-3 pb-2">
+            <div className="flex flex-col px-3 pb-2 gap-1">
               <TextArea
                 aria-label="General comment"
                 value={noteDraft}
@@ -343,7 +343,7 @@ export function CommentsTray<T>({
                 autoFocus
                 data-testid={noteInputTestId}
               />
-              <div className="mt-1 flex items-center justify-end gap-1.5">
+              <div className="flex items-center justify-end gap-1.5">
                 <Button
                   size="compact"
                   onClick={(): void => {
@@ -367,14 +367,20 @@ export function CommentsTray<T>({
           )}
 
           {totalCount > 0 ? (
-            <div className="flex flex-col gap-2 px-3 pb-3">
-              {activeThreads.map(renderThread)}
+            <div
+              className={`flex flex-col gap-3 px-3 pb-3 ${activeThreads.length === 0 && archivedThreads.length > 0 ? 'pt-1' : ''}`}
+            >
+              {activeThreads.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  {activeThreads.map(renderThread)}
+                </div>
+              )}
               {archivedThreads.length > 0 && (
-                <>
+                <div className="flex flex-col gap-2">
                   <Button
                     variant="ghost"
                     size="compact"
-                    className="mt-1 self-start"
+                    className="self-start"
                     data-testid={archivedToggleTestId}
                     onClick={(): void => setArchivedOpen((prev) => !prev)}
                   >
@@ -382,7 +388,7 @@ export function CommentsTray<T>({
                     {archivedThreads.length})
                   </Button>
                   {archivedOpen && archivedThreads.map(renderThread)}
-                </>
+                </div>
               )}
             </div>
           ) : (

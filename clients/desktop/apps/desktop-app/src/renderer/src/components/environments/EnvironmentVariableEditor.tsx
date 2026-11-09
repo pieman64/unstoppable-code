@@ -1,4 +1,4 @@
-import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import {
   type ChangeEvent,
   type JSX,
@@ -21,6 +21,7 @@ import {
   serializeBulkEnvironment,
 } from '@canopy/desktop-shared/lib/user-environment';
 import {
+  Stack,
   Button,
   Checkbox,
   FieldError,
@@ -434,7 +435,10 @@ export function EnvironmentVariableEditor({
   );
 
   return (
-    <div data-testid={testId ?? 'environment-variable-editor'}>
+    <div
+      className="flex flex-col gap-3"
+      data-testid={testId ?? 'environment-variable-editor'}
+    >
       {!storageFailure && encryptionStatus === 'inline' && (
         <EncryptionStatusBanner encryptionAvailable={encryptionAvailable} />
       )}
@@ -466,9 +470,9 @@ export function EnvironmentVariableEditor({
         })}
       />
 
-      <div className="mt-3">
+      <div>
         {uiMode === 'key-value' ? (
-          <div className="space-y-3" data-testid="environment-editor-key-value">
+          <Stack gap="item" data-testid="environment-editor-key-value">
             {rows.length === 0 ? (
               <p
                 className="text-s fg-secondary"
@@ -507,6 +511,7 @@ export function EnvironmentVariableEditor({
             )}
 
             <Button
+              className="self-start"
               size="compact"
               variant="secondary"
               onClick={handleAddRow}
@@ -515,9 +520,9 @@ export function EnvironmentVariableEditor({
             >
               Add variable
             </Button>
-          </div>
+          </Stack>
         ) : (
-          <div className="space-y-2" data-testid="environment-editor-bulk">
+          <Stack gap="inline" data-testid="environment-editor-bulk">
             <TextArea
               mono
               value={bulkText}
@@ -554,7 +559,7 @@ export function EnvironmentVariableEditor({
                 {bulkMessage}
               </FieldError>
             )}
-          </div>
+          </Stack>
         )}
       </div>
     </div>
@@ -570,12 +575,12 @@ function EncryptionStatusBanner({
 }: EncryptionStatusBannerProps): JSX.Element {
   if (encryptionAvailable) {
     return (
-      <p className="mb-3 text-xs fg-secondary">
+      <p className="text-xs fg-secondary">
         <EnvironmentEncryptionStatusText />
       </p>
     );
   }
-  return <EnvironmentEncryptionUnavailableNotice className="mb-3" />;
+  return <EnvironmentEncryptionUnavailableNotice />;
 }
 
 /** The encryption status line, for a host's section description. */

@@ -13,6 +13,7 @@ import {
   TeamStatisticsVisibilitySection,
 } from '../team-usage-settings-section';
 import { TeamModelPolicySection } from '../team-model-policy-section';
+import { MemberUsageDataCard } from '../MemberUsageDataCard';
 import { TeamModelGatewaySection } from '../team-model-gateway-section';
 import { OrganizationAiGatewaySection } from '../../ai-gateway/OrganizationAiGatewaySection';
 import { TeamAiGatewayRequirementSection } from '../../ai-gateway/TeamAiGatewayRequirementSection';
@@ -190,6 +191,13 @@ export function TeamSettingsSection({
                 )}
               </>
             )}
+
+            {/*
+             * Outside the enforced-policies block on purpose: member usage
+             * data only narrows and has no plan gate, so a lapsed org's
+             * owners and admins keep it. The card checks the role itself.
+             */}
+            <MemberUsageDataCard detail={detail} />
 
             {/*
              * After the member policies and before feature config: what

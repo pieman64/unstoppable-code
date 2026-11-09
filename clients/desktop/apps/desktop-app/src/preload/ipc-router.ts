@@ -1,3 +1,4 @@
+import { restoreIpcAppError } from './ipc-app-errors';
 import {
   ipcRenderer as electronIpcRenderer,
   type IpcRenderer,
@@ -55,7 +56,7 @@ export interface PreloadIpcRenderer {
 function createLocalIpcRenderer(ipc: IpcRendererTransport): PreloadIpcRenderer {
   return {
     invoke: (channel: string, ...args: unknown[]): Promise<unknown> =>
-      ipc.invoke(channel, ...args),
+      ipc.invoke(channel, ...args).catch(restoreIpcAppError),
     send: (channel: string, ...args: unknown[]): void => {
       ipc.send(channel, ...args);
     },
@@ -131,9 +132,10 @@ export function createRemoteIpcRenderer(
 
   return {
     invoke: (channel: string, ...args: unknown[]): Promise<unknown> =>
-      isLocal(channel)
+      (isLocal(channel)
         ? ipc.invoke(channel, ...args)
-        : ipc.invoke(IPC_CHANNELS.remoteControlInvoke, channel, args),
+        : ipc.invoke(IPC_CHANNELS.remoteControlInvoke, channel, args)
+      ).catch(restoreIpcAppError),
     send: (channel: string, ...args: unknown[]): void => {
       if (isLocal(channel)) {
         ipc.send(channel, ...args);

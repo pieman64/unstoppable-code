@@ -29,7 +29,6 @@ import {
   AiCreditsArrivedNotice,
   UsageLimitNotice,
   NoticeButton,
-  noticeButtonClassName,
   usageLimitModelSwitchActionLabel,
   usageLimitModelSwitchFailureDetail,
   usageLimitModelSwitchMessage,
@@ -72,7 +71,6 @@ import {
  * A model that can't run on AI Credits gets no credits actions at all; its one
  * accent action is Continue on the credits model (CAN-4900).
  */
-const PRIMARY_BUTTON_CLASS = noticeButtonClassName('primary');
 
 /**
  * Scope of each offer action (CAN-5159), read by assistive technology after
@@ -826,7 +824,8 @@ export function AiCreditsUsageLimitBanner({
           // The CTA already fires `announceAiCreditsChanged()` on coverage,
           // which re-reads availability. Re-reading is all this needs to do.
           onCovered={refreshCoverage}
-          buttonClassName={PRIMARY_BUTTON_CLASS}
+          buttonVariant="primary"
+          buttonSize="sm"
           handoffLayout="compact"
           onHandoffChange={reportHandoff}
           billingDestination="browser"

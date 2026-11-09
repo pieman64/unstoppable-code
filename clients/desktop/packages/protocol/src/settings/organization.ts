@@ -374,6 +374,17 @@ export interface OrganizationConfigDetail {
    */
   enforceMemberDataSharing: boolean;
   /**
+   * Member usage data: flows the organization turns off for members' desktop
+   * app while they work in this organization. Narrowing only, no plan gate,
+   * independent of `enforceMemberDataSharing`. Absent from older servers ⇒
+   * `false`.
+   */
+  prohibitMemberProductAnalytics?: boolean;
+  prohibitMemberErrorReports?: boolean;
+  prohibitMemberSessionReplay?: boolean;
+  prohibitMemberActiveUseSignal?: boolean;
+  prohibitMemberFeatureFlagIdentity?: boolean;
+  /**
    * The org's STORED per-scope configuration, unfiltered by the org's billing
    * plan, so the settings UI can render an uncovered scope read-only while
    * still showing its stored value. Plan coverage is applied at projection
@@ -406,6 +417,11 @@ export interface UpdateOrganizationConfigRequest {
   modelGatewayEnforced?: boolean;
   modelGatewayPromptCachePassthrough?: boolean;
   enforcedSync?: EnforcedSyncScopes;
+  prohibitMemberProductAnalytics?: boolean;
+  prohibitMemberErrorReports?: boolean;
+  prohibitMemberSessionReplay?: boolean;
+  prohibitMemberActiveUseSignal?: boolean;
+  prohibitMemberFeatureFlagIdentity?: boolean;
 }
 
 export interface CreateOrganizationRequest {
@@ -625,6 +641,11 @@ export const organizationConfigDetailShape = z.looseObject({
   modelGatewayEnforced: z.boolean(),
   modelGatewayPromptCachePassthrough: z.boolean(),
   enforcedSync: enforcedSyncScopesShape,
+  prohibitMemberProductAnalytics: z.boolean().optional(),
+  prohibitMemberErrorReports: z.boolean().optional(),
+  prohibitMemberSessionReplay: z.boolean().optional(),
+  prohibitMemberActiveUseSignal: z.boolean().optional(),
+  prohibitMemberFeatureFlagIdentity: z.boolean().optional(),
 });
 
 export const organizationConfigDetailSchema =

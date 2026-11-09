@@ -4,7 +4,7 @@ import {
   TRY_IT_AUTH_INTENT_TTL_MS,
 } from '@canopy/protocol/try-it/continuation';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
-import type { AccountMcpConnectionSummary } from '@canopy/desktop-shared/types/mcp-servers';
+import type { AccountMcpConnectionSummary } from '@canopy/execution-engine/types/mcp-servers';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   readTryItContinuation,

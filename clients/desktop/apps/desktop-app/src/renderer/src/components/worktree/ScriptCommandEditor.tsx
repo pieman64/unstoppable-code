@@ -1,6 +1,6 @@
 import { useRef, type JSX } from 'react';
 import { SCRIPT_ENV_VISIBLE_VAR_DEFINITIONS } from '@canopy/desktop-shared/scripts';
-import { FormField, TextArea } from '@canopy/ui-shared/components';
+import { Stack, FormField, TextArea } from '@canopy/ui-shared/components';
 import {
   createScriptEnvVarInsertion,
   insertTextAtSelection,
@@ -75,7 +75,7 @@ export function ScriptCommandEditor({
   };
 
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       <FormField label={label}>
         {(control) => (
           <TextArea
@@ -97,6 +97,6 @@ export function ScriptCommandEditor({
         variables={SCRIPT_ENV_VISIBLE_VAR_DEFINITIONS}
         onInsert={insertVariable}
       />
-    </div>
+    </Stack>
   );
 }

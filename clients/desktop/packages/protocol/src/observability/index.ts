@@ -370,6 +370,26 @@ export type AgentAuditSubagentKind = 'claude_task' | 'codex_agent';
  */
 export type AgentAuditSubagentInclusion = 'included' | 'additional';
 
+/**
+ * Which interface lease answered one agent tool call of the turn (CAN-5828).
+ * Identifiers and kinds only, never the call's input, reply or error text.
+ */
+export interface AgentAuditInterfaceToolCall {
+  callId: string;
+  /** The interface tool catalog name, for example `ui.show_files`. */
+  toolName: string;
+  leaseId: string;
+  /** The window that served it: `main` or `app-advisor`. */
+  surface: string;
+  interfaceKind: string;
+  /** The remote-control controller whose window served it; absent for this computer's own. */
+  audience?: string;
+  /** `answered`, or the kind of the failure that settled the call. */
+  outcome: string;
+  deliveredAt: string;
+  settledAt: string;
+}
+
 /** A provider-native subagent a turn started, with the usage it reported. */
 export interface AgentAuditSubagentUsage {
   id: string;
@@ -502,7 +522,7 @@ export interface AgentAuditEntry {
    * Service tier the turn requested — the same string the app-server client
    * sends as `TurnStartParams.serviceTier` (for example `'default'` for
    * Regular or `'priority'` for Fast), produced by `codexServiceTierForModelConfig`
-   * (`packages/desktop-shared/src/lib/codex-model-config.ts`). This is request
+   * (`packages/execution-engine/src/lib/codex-model-config.ts`). This is request
    * evidence, not the tier the provider served: the bundled Codex runtime
    * reports no served tier, so never copy this echo into a served-tier field.
    * Load-bearing for Fast-mode pricing. When absent, the cost calculator uses
@@ -597,6 +617,11 @@ export interface AgentAuditEntry {
   compactions?: AgentAuditCompaction[];
   /** Provider-native subagents the turn started. Absent when there were none. */
   subagents?: AgentAuditSubagentUsage[];
+  /**
+   * The interface lease that answered each agent tool call of the turn, up
+   * to the first 64. Absent when the turn made none.
+   */
+  interfaceToolCalls?: AgentAuditInterfaceToolCall[];
   /** Present only on `managed_delegation` entries. */
   delegation?: AgentAuditDelegationLineage;
   /**

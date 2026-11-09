@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { Pipeline, Step } from '@canopy/desktop-shared/types/pipeline';
+import type { Pipeline, Step } from '@canopy/execution-engine/types/pipeline';
 import { listBuiltinActions, resolveAction } from '../action-resolver';
 import {
   getProjectActionsDir,
@@ -76,9 +76,10 @@ describe('classifyDaemonPipeline', () => {
     const steps: Step[] = [
       { run: 'echo hi' },
       { run: 'console.log(1)', shell: 'node' },
-      { uses: 'builtin/notify' },
       { uses: 'builtin/git-workspace-details' },
       { uses: 'builtin/hello-world-py' },
+      // Electron main shows its desktop notification (CAN-5868).
+      { uses: 'builtin/notify' },
     ];
     for (const step of steps) {
       expect(classifyDaemonPipeline(oneStep(step), context)).toEqual({
@@ -220,6 +221,28 @@ describe('classifyDaemonPipeline', () => {
         stepIndex: 0,
         uses: 'project/wrap',
       });
+
+      writeComposite(
+        'wrap',
+        '    - run: echo a\n    - uses: builtin/create-worktree\n',
+      );
+      for (const options of [
+        undefined,
+        { modelSteps: 'claude_codex' as const },
+      ])
+        expect(
+          classifyDaemonPipeline(
+            oneStep({ uses: 'project/wrap' }),
+            withRepo,
+            options,
+          ),
+        ).toEqual({
+          eligible: false,
+          reason: 'host_step',
+          jobId: 'j',
+          stepIndex: 0,
+          uses: 'project/wrap',
+        });
 
       writeComposite('wrap', '    - run: echo a\n');
       expect(

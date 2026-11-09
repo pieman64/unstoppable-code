@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react';
 import {
+  Stack,
   LoadingSpinner,
   OrgTeamPicker,
   ShareAudienceSelector,
@@ -987,11 +988,7 @@ export function InviteTeammateModal({
   const organizationSelector =
     (eligibleOrganizations.length >= 2 || !organizationId) &&
     !(sharedContainersEnabled && (ownerFixed || audience === 'public')) ? (
-      <div
-        className="space-y-1"
-        role="group"
-        aria-labelledby={organizationLabelId}
-      >
+      <Stack gap="tight" role="group" aria-labelledby={organizationLabelId}>
         <p id={organizationLabelId} className="text-xs fg-secondary">
           Organization
         </p>
@@ -1015,7 +1012,7 @@ export function InviteTeammateModal({
           disabled={isBusy}
           dataTestId="shared-container-invite-modal-organization"
         />
-      </div>
+      </Stack>
     ) : selectedOrganizationName ? (
       <p
         className="text-s fg-primary"
@@ -1042,6 +1039,7 @@ export function InviteTeammateModal({
   const audienceSelector =
     sharedContainersEnabled && eligibility !== null ? (
       <ShareAudienceSelector
+        contentGap="inline"
         offered={offeredAudiences}
         availability={audienceAvailability}
         value={selectedAudience}
@@ -1051,7 +1049,7 @@ export function InviteTeammateModal({
         hint={
           publicHint || teamHint ? (
             <p
-              className="mt-2 text-xs fg-secondary"
+              className="text-xs fg-secondary"
               data-testid="shared-container-invite-scope-hint"
             >
               {[teamHint, publicHint].filter(Boolean).join(' ')}
@@ -1066,7 +1064,7 @@ export function InviteTeammateModal({
     sharedContainersEnabled &&
     audience === 'team' &&
     organizationTeams.length > 0 ? (
-      <div className="space-y-1" role="group" aria-label={TEAM_LABEL}>
+      <Stack gap="tight" role="group" aria-label={TEAM_LABEL}>
         <p className="text-xs fg-secondary">{TEAM_LABEL}</p>
         <OrgTeamPicker
           kind="team"
@@ -1088,7 +1086,7 @@ export function InviteTeammateModal({
         {selectedTeam === null ? (
           <p className="text-xs fg-secondary">Choose a team.</p>
         ) : null}
-      </div>
+      </Stack>
     ) : null;
 
   const ineligibleCopy =
@@ -1362,13 +1360,13 @@ export function InviteTeammateModal({
 
   if (gate && contextChangedLabel) {
     gate = (
-      <div className="space-y-3">
+      <Stack gap="item">
         <ContextChangedNotice
           label={contextChangedLabel}
           data-testid="shared-container-invite-context-changed"
         />
         {gate}
-      </div>
+      </Stack>
     );
   }
 

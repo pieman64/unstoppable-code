@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
 import { SettingsChartLoading } from '../../pages/loading-skeletons';
 import {
   lazy,
@@ -174,27 +175,13 @@ interface TeamStatisticsSectionProps {
 
 const PIPELINE_TYPE_BADGE: Record<
   PipelineUsageType,
-  { label: string; className: string }
+  { label: string; tone: BadgeTone }
 > = {
-  bundled: { label: 'Bundled', className: 'bg-info-subtle fg-info' },
-  shared: { label: 'Shared', className: 'bg-success-subtle fg-success' },
-  project: { label: 'Project', className: 'bg-warning-subtle fg-warning' },
-  private: {
-    label: 'Private',
-    className: 'bg-secondary fg-primary',
-  },
+  bundled: { label: 'Bundled', tone: 'info' },
+  shared: { label: 'Shared', tone: 'success' },
+  project: { label: 'Project', tone: 'warning' },
+  private: { label: 'Private', tone: 'neutral' },
 };
-
-function PipelineTypeBadge({ type }: { type: PipelineUsageType }): JSX.Element {
-  const { label, className } = PIPELINE_TYPE_BADGE[type];
-  return (
-    <span
-      className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${className}`}
-    >
-      {label}
-    </span>
-  );
-}
 
 type MetricTab =
   | 'overview'
@@ -921,11 +908,13 @@ function TabContent({
               {
                 key: 'type',
                 header: 'Type',
-                render: (row) => (
-                  <PipelineTypeBadge
-                    type={classifyPipelineType(row.clientPipelineId)}
-                  />
-                ),
+                render: (row) => {
+                  const { label, tone } =
+                    PIPELINE_TYPE_BADGE[
+                      classifyPipelineType(row.clientPipelineId)
+                    ];
+                  return <Badge tone={tone}>{label}</Badge>;
+                },
               },
               {
                 key: 'runs',

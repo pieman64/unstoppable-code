@@ -5,7 +5,7 @@ import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-
 import {
   damagedCopyPath,
   pruneDamagedCopiesSync,
-} from '@canopy/desktop-shared/node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import type { PluginProvider } from '@canopy/desktop-shared/types/plugins';
 import { getBuiltInPluginMarketplacesFilePath } from '../lib/paths';
 import { logMainProcessWarn } from '../lib/main-process-logging';

@@ -1,16 +1,18 @@
 import { create } from 'zustand';
+import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import type {
   CanopyApi,
   RemoteControlApi,
   RemoteControlContext,
   RemoteControlForgetDeviceRequest,
+  RemoteControlOpenPairingWindowResult,
   RemoteControlRespondToPairingRequest,
   RemoteControlState,
 } from '@canopy/desktop-shared/types';
 
 /**
- * Renderer-side cache of device-to-device remote access ("Remote access" in
- * the UI; distinct from the Portal's Remote Control).
+ * Renderer-side cache of device-to-device Remote Control: the single opt-in,
+ * pairings, and the pairing link window (CAN-5985).
  *
  * Main is the source of truth. The renderer receives copies through
  * `window.api.remoteControl.getState()` (initial fetch) and
@@ -21,8 +23,9 @@ import type {
  * window that shows another computer: those channels never tunnel. `context`
  * says which computer this window shows.
  *
- * Pairing codes are render-only, like the Portal's: never persisted, logged,
- * or copied anywhere.
+ * Pairing codes and pairing links are render-only, like the Portal's: never
+ * persisted, logged, or copied anywhere except to the person's clipboard on
+ * request.
  */
 
 /**
@@ -38,7 +41,7 @@ export function getRemoteControlApi(): RemoteControlApi | null {
 function requireRemoteControlApi(): RemoteControlApi {
   const api = getRemoteControlApi();
   if (!api) {
-    throw new Error('Remote access is not available in this window.');
+    throw new Error(`${REMOTE_CONTROL_LABEL} isn't available in this window.`);
   }
   return api;
 }
@@ -66,6 +69,7 @@ export function defaultRemoteControlState(): RemoteControlState {
     discoverable: [],
     outgoingPairing: null,
     incomingPairings: [],
+    pairingWindow: null,
   };
 }
 
@@ -92,6 +96,11 @@ interface RemoteControlStoreState {
   /** Opens or focuses a computer's window; `null` is this computer. */
   openMachine: (deviceId: string | null) => Promise<void>;
   setAllowIncoming: (allow: boolean) => Promise<void>;
+  /**
+   * Opens, or replaces, the pairing link window. The link is returned to the
+   * caller only; it is never cached here.
+   */
+  openPairingWindow: () => Promise<RemoteControlOpenPairingWindowResult>;
   startPairing: (deviceId: string) => Promise<void>;
   cancelPairing: () => Promise<void>;
   respondToPairing: (
@@ -141,6 +150,8 @@ export const useRemoteControlStore = create<RemoteControlStoreState>((set) => {
     },
     setAllowIncoming: (allow): Promise<void> =>
       apply((api) => api.setAllowIncoming(allow)),
+    openPairingWindow: (): Promise<RemoteControlOpenPairingWindowResult> =>
+      requireRemoteControlApi().openPairingWindow(),
     startPairing: (deviceId): Promise<void> =>
       apply((api) => api.startPairing(deviceId)),
     cancelPairing: (): Promise<void> => apply((api) => api.cancelPairing()),

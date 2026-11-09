@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { Plus } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -213,25 +214,27 @@ export function PublishedArtifactsManager(): JSX.Element {
               className="flex flex-wrap items-center justify-between gap-3"
               data-testid={`featured-row-${item.kind}-${item.id}`}
             >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="shrink-0 rounded-full border px-2 py-0.5 text-2xs font-medium fg-secondary">
-                    {KIND_LABELS[item.kind]}
-                  </span>
-                  <p className="truncate text-s font-medium fg-primary">
-                    {item.title}
+              <div className="min-w-0 flex flex-col gap-1">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Badge>{KIND_LABELS[item.kind]}</Badge>
+                    <p className="truncate text-s font-medium fg-primary">
+                      {item.title}
+                    </p>
+                  </div>
+
+                  <p className="mt-0.5 text-xs fg-secondary">
+                    Featured {formatDate(item.publishedAt)}
+                    {item.publishedStale && (
+                      <span className="ml-2 fg-warning">
+                        Source changed since — update the snapshot
+                      </span>
+                    )}
                   </p>
                 </div>
-                <p className="mt-0.5 text-xs fg-secondary">
-                  Featured {formatDate(item.publishedAt)}
-                  {item.publishedStale && (
-                    <span className="ml-2 fg-warning">
-                      Source changed since — update the snapshot
-                    </span>
-                  )}
-                </p>
+
                 {item.kind === 'skills' && item.sharePath && (
-                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     {/* A share page is outside settings: hosts without the
                         web router open it in the browser. */}
                     <SettingsLink

@@ -12,7 +12,7 @@ import {
   defineChatTabMetadataProperty,
   isSafeChatTabMetadataKey,
 } from '@canopy/desktop-shared/chat-tab-metadata';
-import { mergeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
+import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 
 export interface CanonicalChatState {
   tabsFile: ChatTabsFile;

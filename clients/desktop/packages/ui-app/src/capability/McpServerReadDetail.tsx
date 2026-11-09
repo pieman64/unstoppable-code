@@ -1,7 +1,13 @@
 'use client';
 
 import { Fragment, type JSX, type ReactNode } from 'react';
-import { Fact, FactList, Heading } from '@canopy/ui-shared/components';
+import {
+  DetailEntityType,
+  Stack,
+  Fact,
+  FactList,
+  Heading,
+} from '@canopy/ui-shared/components';
 import type { PortalMcpServerDetail } from '@canopy/protocol/portal';
 import {
   Button,
@@ -63,18 +69,21 @@ export function McpServerReadDetail({
       data-testid="mcp-server-read-detail"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+        <Stack gap="tight" className="min-w-0">
           <Heading level={3} variant="section">
-            {server.name}
+            <span className="inline-flex flex-wrap items-baseline gap-x-2">
+              {server.name}
+              <DetailEntityType />
+            </span>
           </Heading>
           {server.description && (
-            <p className="mt-1 text-s fg-secondary">{server.description}</p>
+            <p className="text-s fg-secondary">{server.description}</p>
           )}
-          <p className="mt-1 text-xs fg-secondary">
+          <p className="text-xs fg-secondary">
             {server.type === 'http' ? 'HTTP' : 'Command (stdio)'}
             {server.updatedAt ? ` · Updated ${server.updatedAt}` : null}
           </p>
-        </div>
+        </Stack>
         {onConfigure && (
           <Button
             type="button"
@@ -87,9 +96,12 @@ export function McpServerReadDetail({
         )}
       </div>
 
-      {statusSection}
-      {managementSection}
-      <FactList rowGap="2" labelTone="secondary">
+      {/* Facts stay one list: Status, Health, Placement. */}
+      <div className="flex flex-col gap-1 empty:hidden">
+        {statusSection}
+        {managementSection}
+      </div>
+      <FactList labelWidth="9rem" size="s" rowGap="2" labelTone="secondary">
         <Fact label="Transport">
           {server.type === 'http' ? 'HTTP' : 'Command (stdio)'}
         </Fact>
@@ -166,8 +178,8 @@ export function McpServerReadDetail({
       </FactList>
 
       {server.curated !== undefined && (
-        <section data-testid="mcp-server-read-curated">
-          <Heading level={4} variant="label" className="mb-2">
+        <Stack as="section" gap="inline" data-testid="mcp-server-read-curated">
+          <Heading level={4} variant="label">
             Curated catalog
           </Heading>
           <FactList rowGap="2" labelTone="secondary">
@@ -216,22 +228,21 @@ export function McpServerReadDetail({
               </>
             )}
           </FactList>
-        </section>
+        </Stack>
       )}
 
-      <section aria-labelledby="mcp-server-configs-heading">
-        <Heading
-          level={4}
-          variant="label"
-          id="mcp-server-configs-heading"
-          className="mb-2"
-        >
+      <Stack
+        as="section"
+        gap="inline"
+        aria-labelledby="mcp-server-configs-heading"
+      >
+        <Heading level={4} variant="label" id="mcp-server-configs-heading">
           Configurations
         </Heading>
         {server.configs.length === 0 ? (
           <p className="text-xs fg-secondary">No configurations.</p>
         ) : (
-          <div className="space-y-2">
+          <Stack gap="inline">
             {server.configs.map((config) => {
               const feedback = configToggleFeedback?.[config.id];
               return (
@@ -242,7 +253,7 @@ export function McpServerReadDetail({
                   data-testid="mcp-server-read-config"
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex flex-col gap-1">
                       <p className="text-s font-medium fg-primary">
                         {config.name}
                       </p>
@@ -251,7 +262,7 @@ export function McpServerReadDetail({
                           {config.description}
                         </p>
                       )}
-                      <p className="mt-1 text-2xs fg-secondary">
+                      <p className="text-2xs fg-secondary">
                         Environment variables:{' '}
                         {config.envVarNames.length > 0
                           ? config.envVarNames.join(', ')
@@ -302,9 +313,9 @@ export function McpServerReadDetail({
                 </Surface>
               );
             })}
-          </div>
+          </Stack>
         )}
-      </section>
+      </Stack>
     </div>
   );
 }

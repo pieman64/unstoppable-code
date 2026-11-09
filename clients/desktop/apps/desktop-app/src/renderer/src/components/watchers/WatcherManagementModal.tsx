@@ -17,7 +17,13 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { Fact, FactList, Surface } from '@canopy/ui-shared/components';
+import {
+  Stack,
+  Fact,
+  FactList,
+  FieldError,
+  Surface,
+} from '@canopy/ui-shared/components';
 import {
   ChoiceField,
   DialogModal,
@@ -313,16 +319,18 @@ export function WatcherManagementModal({
         <div className="p-2">
           {add && (
             <div
-              className="border-b border-line-tertiary px-3 py-3"
+              className="flex flex-col border-b border-line-tertiary px-3 py-3 gap-2"
               data-testid="watcher-management-add-section"
             >
-              <div className="text-xs font-semibold fg-secondary">
-                {add.heading ?? 'Add a watcher'}
-              </div>
-              {add.description && (
-                <p className="mt-1 text-2xs fg-secondary">{add.description}</p>
-              )}
-              <div className="mt-2 flex flex-col gap-2">
+              <Stack gap="tight">
+                <div className="text-xs font-semibold fg-secondary">
+                  {add.heading ?? 'Add a watcher'}
+                </div>
+                {add.description && (
+                  <p className="text-2xs fg-secondary">{add.description}</p>
+                )}
+              </Stack>
+              <Stack gap="inline">
                 <div className="flex items-center gap-2">
                   <span className="w-20 shrink-0 text-2xs fg-secondary">
                     Notify
@@ -347,13 +355,13 @@ export function WatcherManagementModal({
                 />
                 <div className="flex items-center justify-between gap-2">
                   {addError ? (
-                    <span
-                      role="alert"
+                    <FieldError
+                      id="watcher-management-add-error"
+                      announce
                       data-testid="watcher-management-add-error"
-                      className="text-2xs fg-destructive"
                     >
                       {addError}
-                    </span>
+                    </FieldError>
                   ) : (
                     <span />
                   )}
@@ -369,7 +377,7 @@ export function WatcherManagementModal({
                     stopKeyDownPropagation={false}
                   />
                 </div>
-              </div>
+              </Stack>
             </div>
           )}
           <div className="flex min-h-0 flex-col">
@@ -406,41 +414,46 @@ export function WatcherManagementModal({
                       variant="group"
                       padding="compact"
                     >
-                      <div className="flex min-w-0 flex-col gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div
-                            className={`${watcherTitleReplayClass(watcher.target)} break-words text-s font-normal fg-primary`}
-                          >
-                            {watcher.label || target.title}
-                          </div>
-                          <div className="mt-0.5 break-words text-xs fg-tertiary">
-                            {triggerTitle(watcher.trigger)}
-                          </div>
-                          {watcher.localProgress && (
-                            <div
-                              className="mt-1 text-xs fg-secondary"
-                              data-testid={`local-watcher-progress-${watcher.id}`}
-                            >
-                              {localWatcherProgressLabel(watcher)}
+                      <Stack gap="item" className="min-w-0">
+                        <div className="flex min-w-0 flex-1 flex-col gap-2">
+                          <Stack gap="tight">
+                            <div>
+                              <div
+                                className={`${watcherTitleReplayClass(watcher.target)} break-words text-s font-normal fg-primary`}
+                              >
+                                {watcher.label || target.title}
+                              </div>
+                              <div className="mt-0.5 break-words text-xs fg-tertiary">
+                                {triggerTitle(watcher.trigger)}
+                              </div>
                             </div>
-                          )}
+                            {watcher.localProgress && (
+                              <div
+                                className="text-xs fg-secondary"
+                                data-testid={`local-watcher-progress-${watcher.id}`}
+                              >
+                                {localWatcherProgressLabel(watcher)}
+                              </div>
+                            )}
+                          </Stack>
                           <FactList
                             labelWidth="6.5rem"
                             columnGap="3"
                             rowGap="1"
-                            placement="mt-2"
                           >
                             <Fact label="Watching">
-                              <span
-                                className={`${watcherTitleReplayClass(watcher.target)} font-medium`}
-                              >
-                                {target.title}
-                              </span>
-                              {target.subtitle && (
-                                <span className="ml-1 fg-secondary">
-                                  · {target.subtitle}
+                              <span className="inline-flex flex-wrap items-baseline gap-1">
+                                <span
+                                  className={`${watcherTitleReplayClass(watcher.target)} font-medium`}
+                                >
+                                  {target.title}
                                 </span>
-                              )}
+                                {target.subtitle && (
+                                  <span className="fg-secondary">
+                                    · {target.subtitle}
+                                  </span>
+                                )}
+                              </span>
                             </Fact>
                             <Fact
                               label="Subscribed chat"
@@ -488,7 +501,7 @@ export function WatcherManagementModal({
                             (github.filters.length > 0 ||
                               github.sample.length > 0) && (
                               <div
-                                className="mt-2 flex flex-col gap-1"
+                                className="flex flex-col gap-1"
                                 data-testid={`watcher-management-github-${watcher.id}`}
                               >
                                 {github.filters.length > 0 && (
@@ -534,9 +547,9 @@ export function WatcherManagementModal({
                             )}
                           {(watcher.followUpInstruction ||
                             allowEditFollowUp) && (
-                            <div className="mt-2 text-xs">
+                            <div className="text-xs">
                               {editingId === watcher.id ? (
-                                <div className="flex flex-col gap-1">
+                                <Stack gap="tight">
                                   <FormField label="Follow-up instruction">
                                     {(control) => (
                                       <TextArea
@@ -552,13 +565,13 @@ export function WatcherManagementModal({
                                     )}
                                   </FormField>
                                   {editError && (
-                                    <span
-                                      role="alert"
+                                    <FieldError
+                                      id={`watcher-management-edit-error-${watcher.id}`}
+                                      announce
                                       data-testid={`watcher-management-edit-error-${watcher.id}`}
-                                      className="text-2xs fg-destructive"
                                     >
                                       {editError}
-                                    </span>
+                                    </FieldError>
                                   )}
                                   <div className="flex items-center gap-2">
                                     <ExecutionActionButton
@@ -584,7 +597,7 @@ export function WatcherManagementModal({
                                       stopKeyDownPropagation={false}
                                     />
                                   </div>
-                                </div>
+                                </Stack>
                               ) : (
                                 <div className="flex items-start justify-between gap-2">
                                   <div className="min-w-0">
@@ -686,7 +699,7 @@ export function WatcherManagementModal({
                             />
                           )}
                         </div>
-                      </div>
+                      </Stack>
                     </Surface>
                   );
                 })}

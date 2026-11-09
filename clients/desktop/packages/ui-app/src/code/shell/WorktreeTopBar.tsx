@@ -51,6 +51,7 @@ import type {
   PortalScriptDescriptor,
   PortalScriptRunProjection,
 } from '@canopy/protocol/portal';
+import { Button } from '@canopy/ui-shared/components/Button';
 import {
   BranchIcon,
   ChevronDownIcon,
@@ -340,17 +341,18 @@ export function WorktreeTopBar({
                 <div
                   className={`${statusActions == null ? 'ml-auto ' : ''}electron-no-drag`}
                 >
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    className="electron-no-drag"
                     data-testid="worktree-top-open"
                     onClick={onOpenWorktreeMenu}
                     aria-haspopup="menu"
                     aria-expanded={openMenuExpanded === true}
-                    className="electron-no-drag focus-ring flex items-center gap-1 rounded-md px-2 py-1 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
                   >
                     Open
                     <ChevronDownIcon size="sm" className="shrink-0" />
-                  </button>
+                  </Button>
                 </div>
               )}
             </div>
@@ -363,8 +365,10 @@ export function WorktreeTopBar({
           <div className="flex items-center gap-1.5">
             {showStop && (
               <Tooltip label={stopping ? 'Stopping scripts' : 'Stop scripts'}>
-                <button
-                  type="button"
+                <Button
+                  variant="ghost-destructive"
+                  size="compact"
+                  className="electron-no-drag"
                   data-testid="worktree-top-stop"
                   onClick={(): void => {
                     if (launchRun != null && onCancelScript != null) {
@@ -377,11 +381,10 @@ export function WorktreeTopBar({
                     stopping
                   }
                   aria-label={stopping ? 'Stopping scripts' : 'Stop scripts'}
-                  className="electron-no-drag focus-ring flex h-6.5 items-center gap-1.5 rounded-md border border-line-destructive px-2.5 text-2xs font-medium fg-destructive transition-colors hover:bg-destructive-subtle"
                 >
                   <LoadingSpinner />
                   {stopping ? 'Stopping' : 'Stop'}
-                </button>
+                </Button>
               </Tooltip>
             )}
             {showLaunch && (

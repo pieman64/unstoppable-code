@@ -1,6 +1,7 @@
 import type { JSX, ReactNode } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { DialogModal } from './DialogModal';
+import { SPACE_ROLE_GAP_CLASS, type SpaceRole } from './Stack';
 
 /** The kind of notification, which tints the message box's border and fill. */
 export type NotificationDetailsTone = 'error' | 'info' | 'success' | 'warning';
@@ -34,6 +35,8 @@ export interface NotificationDetailsDialogProps {
   readonly leading?: ReactNode;
   /** Rendered below the message. */
   readonly trailing?: ReactNode;
+  /** Space around margin-free metadata and actions; omitted retains legacy placement. */
+  readonly slotGap?: SpaceRole;
   /** Test ID on the dialog card; the message box gets `<id>-body`. */
   readonly dataTestId?: string;
   /** Move focus into the dialog and return it to the opener on close. */
@@ -54,6 +57,7 @@ export function NotificationDetailsDialog({
   tone,
   leading,
   trailing,
+  slotGap,
   dataTestId,
   trapFocus,
 }: NotificationDetailsDialogProps): JSX.Element {
@@ -66,7 +70,9 @@ export function NotificationDetailsDialog({
       dataTestId={dataTestId}
       trapFocus={trapFocus}
     >
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div
+        className={`flex flex-1 flex-col overflow-hidden${slotGap === undefined ? '' : ` ${SPACE_ROLE_GAP_CLASS[slotGap]}`}`}
+      >
         {leading}
         <div
           data-testid={

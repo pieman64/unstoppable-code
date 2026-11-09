@@ -8,7 +8,7 @@ import {
 } from '../_lib/agent-transcript';
 import { withClaudeSessionStartupTimeout } from '../_lib/agent-session-startup';
 import { runWithActionEnvironment } from '../_lib/action-env';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import { setOutput, setOutputPathOrWriteFile } from '../_lib/output';
 import {
   buildQueryOptions,

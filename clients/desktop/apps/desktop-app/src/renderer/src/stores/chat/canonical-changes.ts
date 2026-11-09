@@ -25,7 +25,7 @@ import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
 import {
   mergeAgentModelConfig,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   defineChatTabMetadataProperty,
   isSafeChatTabMetadataKey,

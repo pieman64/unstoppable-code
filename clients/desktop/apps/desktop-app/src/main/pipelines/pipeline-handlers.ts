@@ -23,7 +23,7 @@ import {
   filterProjectPipelineContexts,
 } from './pipeline-install-context';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
-import type { ResourceContextInput } from '@canopy/desktop-shared/lib/resource-context-policy';
+import type { ResourceContextInput } from '@canopy/execution-engine/lib/resource-context-policy';
 import {
   assertPipelineContext,
   assertPipelineContextSnapshot,
@@ -46,7 +46,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import * as path from 'node:path';
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import {
   CANOPY_CLOUD_DISPLAY_NAME,
   CANOPY_CLOUD_SERVER_ID,
@@ -57,6 +57,14 @@ import {
 } from '../canopy-cloud/client';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import { registerIpcHandler } from '../ipc/register';
+import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
+import { isDaemonPipelineExecutionHandle } from './daemon-pipeline-execution';
+import {
+  isOwnRendererSender,
+  withDaemonPipelineRoute,
+  type DaemonPipelineRouteContext,
+} from './daemon-pipeline-route-context';
+import type { RendererSurfaceWindow } from '../lib/renderer-surface';
 import { isPathInside } from '../lib/path-safety';
 import { isWorkEntryWorkspace } from '../lib/workspace-registry';
 import { withWorkspaceTargetRuntimeStartReservation } from '../lib/workspace-target-exclusion';
@@ -82,6 +90,12 @@ import {
 } from './canopy-server-client';
 import { getProjectPipelinesDirCandidates } from './config-paths';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
+import type {
+  PortalPipelineExecutionListResult,
+  PortalPipelineGetResult,
+  PortalPipelineRun,
+  PortalPipelineSummary,
+} from '@canopy/protocol/portal';
 import type {
   ListPipelineCapabilityRefsRequest,
   ListPipelineCapabilityRefsResponse,
@@ -130,12 +144,12 @@ import type {
   SharedPipelineWriteRequest,
   StoredPipelineLookupRequest,
   PipelineExecutionInitiator,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { UsageInitiationSource } from '@canopy/desktop-shared/types';
 import {
   encodeMatrixIpcErrorMessage,
   getTriggerTypes,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import { buildSharedPipelineId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import {
@@ -150,6 +164,7 @@ import {
   getGlobalExecutionWorkspaceDir,
   getStepLogFilePath,
   isKnownOrphanedExecution,
+  isPathInsideExecutionsDir,
   isTopLevelGlobalRun,
   listExecutionSummaries,
   loadExecutionState,
@@ -203,6 +218,13 @@ import {
   recordUserPipelineOwner,
   setUserPipelineAgentAuthor,
 } from './pipeline-local-metadata-store';
+import {
+  WORKFLOW_DUPLICATE_FAILED,
+  copyWorkflowNameToSchedules,
+  copyWorkflowPageFacts,
+  withWorkflowPageInfo,
+  workflowPageDuplicateRefusal,
+} from '../automations/workflow-schedules';
 import {
   getUserPipelineOwner,
   isLocalUserPipeline,
@@ -434,6 +456,19 @@ function trackExecutionWithAdvisor(
   onSettled?: () => void,
   reservationId: string = handle.id,
 ): void {
+  if (isDaemonPipelineExecutionHandle(handle)) {
+    // A daemon run is mirrored, not tracked: quitting the app never pauses
+    // it, and it settles through its own events (CAN-5086 D12).
+    releaseExecutionReservation(reservationId);
+    followExecutionHandle(handle);
+    getPipelineAdvisorService().watchExecution({ handle, runtime, getWindow });
+    attachPipelineRunObservers(handle);
+    void handle.waitForCompletion().then(
+      () => onSettled?.(),
+      () => onSettled?.(),
+    );
+    return;
+  }
   trackExecution(handle, onSettled, reservationId);
   // A started, resumed or replayed execution's subscribers and run record
   // follow its handle.
@@ -986,6 +1021,180 @@ function persistPipelineRemoteMetadata(
     : undefined;
 }
 
+/**
+ * Saves a pipeline the editor holds, as the editor's Save button does: core
+ * validates it and refuses a stale revision. The Pipeline Editor's agent
+ * saves run this too (CAN-5822), so they keep its owner rules.
+ */
+export async function saveEditorPipeline(
+  input: PipelineSaveInput,
+): Promise<IPCResult<PipelineInfo>> {
+  if (pipelineResourceContextEnabled() && input.id) {
+    try {
+      await assertStoredPipelineContext(input.id);
+    } catch (error) {
+      return { success: false, error: toErrorMessage(error) };
+    }
+  }
+  // An existing pipeline keeps its owner; a new one takes the selected one.
+  const existingUserPipelineId =
+    input.id && isLocalUserPipeline(input.id) ? input.id : undefined;
+  const ownerContext =
+    existingUserPipelineId !== undefined
+      ? await getUserPipelineOwner(existingUserPipelineId)
+      : await selectedOwnerContext();
+  // Saving in the editor as the user records the owner of a new pipeline
+  // and clears any agent marker.
+  const recordUserSave = (savedId: string): void => {
+    if (existingUserPipelineId === undefined)
+      recordUserPipelineOwner(savedId, ownerContext);
+    setUserPipelineAgentAuthor(savedId, null);
+  };
+  if (input.sourceRemoteId) {
+    // Core reads and validates the share itself, never the renderer's
+    // copy, and installs it with its receipt (with resource contexts on)
+    // and subscription.
+    try {
+      validateId(input.sourceRemoteId, 'sourceRemoteId');
+      const installed = await importRemotePipeline({
+        remoteDefinitionId: buildSharedPipelineId(
+          CANOPY_CLOUD_SERVER_ID,
+          input.sourceRemoteId,
+        ),
+        expectedRemoteVersion: null,
+        nameOverride: input.name,
+        ...(input.id ? { definitionId: input.id } : {}),
+      });
+      recordUserSave(installed.id);
+      return { success: true, data: installed };
+    } catch (error) {
+      return { success: false, error: pipelineWriteErrorMessage(error) };
+    }
+  }
+  const ownerRefusal = await validatePipelineOwnerTargetsOnSave(
+    input.content,
+    ownerContext,
+  );
+  if (ownerRefusal !== null) return { success: false, error: ownerRefusal };
+  // Core validates, refuses a stale revision, and runs the store's
+  // effects; this projection keeps the legacy result and owner records.
+  const result = await withPipelineCrudTelemetry(
+    {
+      action: input.id ? 'update' : 'create',
+      source: 'user',
+      hasPipelineId: Boolean(input.id),
+    },
+    (): Promise<IPCResult<PipelineInfo>> =>
+      saveUserPipeline({
+        ...(input.id ? { id: input.id } : {}),
+        ...(input.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: input.expectedRevision }),
+        name: input.name,
+        description: input.description,
+        icon: input.icon,
+        content: input.content,
+        ...(input.rawContent === undefined
+          ? {}
+          : { rawContent: input.rawContent }),
+      }),
+  );
+  if (result.success && result.data) {
+    recordUserSave(result.data.id);
+    // Decision 6 (CAN-5782): a workflow page's schedules take its name.
+    if (existingUserPipelineId !== undefined)
+      await copyWorkflowNameToSchedules(result.data.id, input.name);
+  }
+  return result;
+}
+
+/** Updates a shared pipeline the editor holds, as the editor's Save button does. */
+export async function updateSharedPipelineFromEditor(
+  request: SharedPipelineWriteRequest & { remoteId: string },
+): Promise<
+  | { success: true; data: SharedPipelineDetail }
+  | { success: false; error: string; failure: ShareFailure }
+> {
+  return withPipelineCrudTelemetry(
+    { action: 'shared_update', source: 'shared', hasPipelineId: true },
+    async () => {
+      const outcome = await runClassifiedShare(async () => {
+        const options = {
+          expectedContentHash: request.expectedContentHash,
+          shareScope: request.shareScope,
+          teamId: request.teamId,
+          organizationId: request.organizationId,
+          distributionMode: request.distributionMode,
+          committedPackageUploadId: request.committedPackageUploadId,
+          revokePublicShare: request.revokePublicShare,
+        };
+        const updated = request.distributionMode
+          ? await updateSharedPipeline(
+              request.remoteId,
+              request.rawPipeline,
+              options,
+            )
+          : await updateSharedPipelinePreservingPackage(
+              request.remoteId,
+              request.rawPipeline,
+              undefined,
+              options,
+            );
+        const detail = hydrateSharedPipelineDetailScopes(updated);
+        const linked = persistPipelineRemoteMetadata(request, detail);
+        if (linked && !linked.success) {
+          throw new Error(
+            linked.error ?? 'Failed to store workflow share link.',
+          );
+        }
+        return detail;
+      });
+      return outcome.ok
+        ? { success: true, data: outcome.value }
+        : {
+            success: false,
+            error: toErrorMessage(outcome.error),
+            failure: outcome.failure,
+          };
+    },
+  );
+}
+
+/** A worktree a hosted controller reads pipelines in, by local IDs. */
+interface WorktreePipelineScope {
+  projectId: string;
+  worktreeId: string;
+}
+
+function worktreePipelineScope(value: unknown): WorktreePipelineScope;
+function worktreePipelineScope(
+  value: unknown,
+  options: { optionalWorktree: true },
+): { projectId: string; worktreeId?: string };
+function worktreePipelineScope(
+  value: unknown,
+  options: { optionalWorktree?: true } = {},
+): { projectId: string; worktreeId?: string } {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('projectId' in value) ||
+    typeof value.projectId !== 'string'
+  ) {
+    throw new Error('A project is required.');
+  }
+  validateId(value.projectId, 'projectId');
+  const worktreeId = 'worktreeId' in value ? value.worktreeId : undefined;
+  if (worktreeId === undefined && options.optionalWorktree === true) {
+    return { projectId: value.projectId };
+  }
+  if (typeof worktreeId !== 'string') {
+    throw new Error('A worktree is required.');
+  }
+  validateId(worktreeId, 'worktreeId');
+  return { projectId: value.projectId, worktreeId };
+}
+
 export function registerPipelineHandlers(): void {
   registerCuratedPipelineHandlers();
   app.once('will-quit', stopManagedCuratedPipelineSync);
@@ -1007,6 +1216,9 @@ export function registerPipelineHandlers(): void {
         } catch (error) {
           return { success: false, error: pipelineWriteErrorMessage(error) };
         }
+        // CAN-5782: the Workflow page reads a pipeline's schedule facts
+        // from the list, so they exist with zero schedules.
+        rows = await withWorkflowPageInfo(rows);
         if (!pipelineResourceContextEnabled())
           return { success: true, data: rows };
         return {
@@ -1113,82 +1325,8 @@ export function registerPipelineHandlers(): void {
       );
     },
   );
-  registerIpcHandler(
-    PIPELINE_CHANNELS.SAVE,
-    async (_, input: PipelineSaveInput) => {
-      if (pipelineResourceContextEnabled() && input.id) {
-        try {
-          await assertStoredPipelineContext(input.id);
-        } catch (error) {
-          return { success: false, error: toErrorMessage(error) };
-        }
-      }
-      // An existing pipeline keeps its owner; a new one takes the selected one.
-      const existingUserPipelineId =
-        input.id && isLocalUserPipeline(input.id) ? input.id : undefined;
-      const ownerContext =
-        existingUserPipelineId !== undefined
-          ? await getUserPipelineOwner(existingUserPipelineId)
-          : await selectedOwnerContext();
-      // Saving in the editor as the user records the owner of a new pipeline
-      // and clears any agent marker.
-      const recordUserSave = (savedId: string): void => {
-        if (existingUserPipelineId === undefined)
-          recordUserPipelineOwner(savedId, ownerContext);
-        setUserPipelineAgentAuthor(savedId, null);
-      };
-      if (input.sourceRemoteId) {
-        // Core reads and validates the share itself, never the renderer's
-        // copy, and installs it with its receipt (with resource contexts on)
-        // and subscription.
-        try {
-          validateId(input.sourceRemoteId, 'sourceRemoteId');
-          const installed = await importRemotePipeline({
-            remoteDefinitionId: buildSharedPipelineId(
-              CANOPY_CLOUD_SERVER_ID,
-              input.sourceRemoteId,
-            ),
-            expectedRemoteVersion: null,
-            nameOverride: input.name,
-            ...(input.id ? { definitionId: input.id } : {}),
-          });
-          recordUserSave(installed.id);
-          return { success: true, data: installed };
-        } catch (error) {
-          return { success: false, error: pipelineWriteErrorMessage(error) };
-        }
-      }
-      const ownerRefusal = await validatePipelineOwnerTargetsOnSave(
-        input.content,
-        ownerContext,
-      );
-      if (ownerRefusal !== null) return { success: false, error: ownerRefusal };
-      // Core validates, refuses a stale revision, and runs the store's
-      // effects; this projection keeps the legacy result and owner records.
-      const result = await withPipelineCrudTelemetry(
-        {
-          action: input.id ? 'update' : 'create',
-          source: 'user',
-          hasPipelineId: Boolean(input.id),
-        },
-        (): Promise<IPCResult<PipelineInfo>> =>
-          saveUserPipeline({
-            ...(input.id ? { id: input.id } : {}),
-            ...(input.expectedRevision === undefined
-              ? {}
-              : { expectedRevision: input.expectedRevision }),
-            name: input.name,
-            description: input.description,
-            icon: input.icon,
-            content: input.content,
-            ...(input.rawContent === undefined
-              ? {}
-              : { rawContent: input.rawContent }),
-          }),
-      );
-      if (result.success && result.data) recordUserSave(result.data.id);
-      return result;
-    },
+  registerIpcHandler(PIPELINE_CHANNELS.SAVE, (_, input: PipelineSaveInput) =>
+    saveEditorPipeline(input),
   );
   // Core deletes the definition with its preferences, local metadata,
   // subscription ledger entry and package install.
@@ -1234,6 +1372,10 @@ export function registerPipelineHandlers(): void {
           }
 
           const sourceId = duplicateSourceId(request);
+          if (sourceId !== undefined && isLocalUserPipeline(sourceId)) {
+            const refusal = await workflowPageDuplicateRefusal(sourceId);
+            if (refusal) return { success: false, error: refusal };
+          }
           if (sourceId !== undefined)
             return duplicatePipelineDefinition(sourceId, {});
           if (!isProjectPipelineRequest(request))
@@ -1257,8 +1399,25 @@ export function registerPipelineHandlers(): void {
           });
         },
       );
-      if (duplicated.success && duplicated.data)
+      if (duplicated.success && duplicated.data) {
         recordUserPipelineOwner(duplicated.data.id, copyOwner);
+        const sourceId = duplicateSourceId(request);
+        // A copy whose workflow facts didn't persist is removed: an
+        // Orchestrator copy would otherwise show its prompt to agents.
+        if (sourceId !== undefined && isLocalUserPipeline(sourceId)) {
+          const copied = await copyWorkflowPageFacts(
+            sourceId,
+            duplicated.data.id,
+          ).catch((error: unknown): false => {
+            logMainProcessError('Failed to copy a workflow’s facts', error);
+            return false;
+          });
+          if (!copied) {
+            await deleteUserPipeline(duplicated.data.id, null);
+            return { success: false, error: WORKFLOW_DUPLICATE_FAILED };
+          }
+        }
+      }
       return duplicated;
     },
   );
@@ -1510,57 +1669,8 @@ export function registerPipelineHandlers(): void {
   );
   registerIpcHandler(
     PIPELINE_CHANNELS.SHARED_UPDATE,
-    async (
-      _event,
-      request: SharedPipelineWriteRequest & { remoteId: string },
-    ): Promise<
-      | { success: true; data: SharedPipelineDetail }
-      | { success: false; error: string; failure: ShareFailure }
-    > => {
-      return withPipelineCrudTelemetry(
-        { action: 'shared_update', source: 'shared', hasPipelineId: true },
-        async () => {
-          const outcome = await runClassifiedShare(async () => {
-            const options = {
-              expectedContentHash: request.expectedContentHash,
-              shareScope: request.shareScope,
-              teamId: request.teamId,
-              organizationId: request.organizationId,
-              distributionMode: request.distributionMode,
-              committedPackageUploadId: request.committedPackageUploadId,
-              revokePublicShare: request.revokePublicShare,
-            };
-            const updated = request.distributionMode
-              ? await updateSharedPipeline(
-                  request.remoteId,
-                  request.rawPipeline,
-                  options,
-                )
-              : await updateSharedPipelinePreservingPackage(
-                  request.remoteId,
-                  request.rawPipeline,
-                  undefined,
-                  options,
-                );
-            const detail = hydrateSharedPipelineDetailScopes(updated);
-            const linked = persistPipelineRemoteMetadata(request, detail);
-            if (linked && !linked.success) {
-              throw new Error(
-                linked.error ?? 'Failed to store workflow share link.',
-              );
-            }
-            return detail;
-          });
-          return outcome.ok
-            ? { success: true, data: outcome.value }
-            : {
-                success: false,
-                error: toErrorMessage(outcome.error),
-                failure: outcome.failure,
-              };
-        },
-      );
-    },
+    (_event, request: SharedPipelineWriteRequest & { remoteId: string }) =>
+      updateSharedPipelineFromEditor(request),
   );
   registerIpcHandler(
     PIPELINE_CHANNELS.SHARED_DELETE,
@@ -3755,20 +3865,37 @@ async function rerunOnLocalWorker(
 
 export function registerExecutionHandlers(
   getWindow: () => BrowserWindow | null,
+  getAppAdvisorSurface: () => RendererSurfaceWindow | null = () => null,
 ): void {
   setPipelineExecutionFanOut(pipelineExecutionFanOut(getWindow));
   registerIpcHandler(
     PIPELINE_CHANNELS.EXECUTE,
     async (
-      _event,
+      event: Pick<IpcMainInvokeEvent, 'sender'> | null | undefined,
       pipeline: Pipeline,
       options: ExecutePipelineRequestOptions,
     ) => {
-      return startPipelineExecutionFromMain({
-        pipeline,
-        options: sanitizeRendererExecuteOptions(options),
-        getWindow,
-      });
+      // CAN-5086: only this app's own windows may run workflows in the
+      // daemon; the remote-control bridge keeps them in process.
+      const context: DaemonPipelineRouteContext = {
+        localWindow:
+          event !== null &&
+          event !== undefined &&
+          resolveRemoteBridgeSender(event.sender) === null &&
+          // App Advisor's page may be a view its window hosts.
+          isOwnRendererSender(event.sender, [
+            getWindow(),
+            getAppAdvisorSurface(),
+          ]),
+      };
+      const { selectDaemonPipeline } = await import('./daemon-pipeline-route');
+      return withDaemonPipelineRoute(selectDaemonPipeline(context), () =>
+        startPipelineExecutionFromMain({
+          pipeline,
+          options: sanitizeRendererExecuteOptions(options),
+          getWindow,
+        }),
+      );
     },
   );
 
@@ -3914,6 +4041,80 @@ export function registerExecutionHandlers(
       } catch (error) {
         return { success: false, error: String(error) };
       }
+    },
+  );
+
+  // Worktree-scoped reads for hosted controllers (CAN-5985): the Portal
+  // pipeline services, addressed by project and worktree IDs, never a host
+  // path. Read-only; a missing or foreign run is the service's not-found.
+  // Without a worktree, the project's default one, as `portal.pipeline.list`.
+  registerIpcHandler(
+    PIPELINE_CHANNELS.LIST_FOR_WORKTREE,
+    async (
+      _event,
+      request: { projectId: string; worktreeId?: string },
+    ): Promise<{ pipelines: PortalPipelineSummary[] }> => {
+      const scope = worktreePipelineScope(request, { optionalWorktree: true });
+      const { listPipelines } = await import('../services/pipelines-service');
+      return {
+        pipelines: await listPipelines({
+          projectId: scope.projectId,
+          ...(scope.worktreeId === undefined
+            ? {}
+            : { worktreeId: scope.worktreeId }),
+        }),
+      };
+    },
+  );
+
+  // One pipeline's detail for browser controllers (CAN-5985): the read
+  // `portal.pipeline.get` runs, addressed by project and optional worktree.
+  registerIpcHandler(
+    PIPELINE_CHANNELS.GET_FOR_WORKTREE,
+    async (
+      _event,
+      request: { projectId: string; worktreeId?: string; pipelineId: string },
+    ): Promise<PortalPipelineGetResult> => {
+      const scope = worktreePipelineScope(request, { optionalWorktree: true });
+      // The service validates the locator and reports a missing pipeline.
+      const { getPipeline } = await import('../services/pipelines-service');
+      return getPipeline({
+        pipelineId: request.pipelineId,
+        projectId: scope.projectId,
+        ...(scope.worktreeId === undefined
+          ? {}
+          : { worktreeId: scope.worktreeId }),
+      });
+    },
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.LIST_WORKTREE_EXECUTIONS,
+    async (
+      _event,
+      request: WorktreePipelineScope,
+    ): Promise<PortalPipelineExecutionListResult> => {
+      const scope = worktreePipelineScope(request);
+      const { listPipelineExecutions } =
+        await import('../services/pipelines-service');
+      return listPipelineExecutions(scope);
+    },
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.GET_WORKTREE_EXECUTION,
+    async (
+      _event,
+      request: WorktreePipelineScope & { executionId: string },
+    ): Promise<PortalPipelineRun | null> => {
+      const scope = worktreePipelineScope(request);
+      validateId(request.executionId, 'executionId');
+      const { getPipelineExecution } =
+        await import('../services/pipelines-service');
+      return getPipelineExecution({
+        ...scope,
+        executionId: request.executionId,
+      });
     },
   );
 
@@ -4098,7 +4299,7 @@ export function registerExecutionHandlers(
         }
 
         const resolvedPath = path.resolve(filePath);
-        if (!isPathInside(runtime.executionsDir, resolvedPath)) {
+        if (!isPathInsideExecutionsDir(runtime.executionsDir, resolvedPath)) {
           return { success: false, error: 'Invalid report file path' };
         }
 
@@ -4146,7 +4347,7 @@ export function registerExecutionHandlers(
                 undefined,
               );
 
-      if (!isPathInside(runtime.executionsDir, resolvedPath)) {
+      if (!isPathInsideExecutionsDir(runtime.executionsDir, resolvedPath)) {
         return { success: false, error: 'Invalid log file path' };
       }
 

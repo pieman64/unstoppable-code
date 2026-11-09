@@ -1,5 +1,5 @@
 import { prepareOpenCodeVisibleFork } from '@canopy/desktop-shared/lib/opencode-fork-context';
-import type { ModelHarness } from '@canopy/desktop-shared/model-harnesses';
+import type { ModelHarness } from '@canopy/execution-engine/model-harnesses';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import {

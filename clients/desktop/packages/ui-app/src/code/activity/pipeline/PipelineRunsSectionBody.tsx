@@ -81,19 +81,21 @@ export function PipelineRunsSectionBody({
 
   return (
     <div
-      className={frameless ? 'flex min-h-0 flex-1 flex-col gap-2' : 'space-y-2'}
+      className={
+        frameless ? 'flex min-h-0 flex-1 flex-col gap-2' : 'flex flex-col gap-2'
+      }
     >
       {primaryRowCount > 0 && (
         <div
           data-testid="pipeline-runs-primary-list"
           className={
             frameless
-              ? 'min-h-0 flex-1 space-y-2 overflow-y-auto'
-              : 'max-h-76 space-y-2 overflow-y-auto'
+              ? 'min-h-0 flex-1 grid grid-cols-1 content-start gap-2 overflow-y-auto'
+              : 'max-h-76 grid grid-cols-1 content-start gap-2 overflow-y-auto'
           }
         >
           {queuedExecutions.length > 0 && (
-            <div className="space-y-1.5">
+            <div className="flex flex-col gap-1.5">
               {queuedExecutions.map((entry) => (
                 <QueuedHookPipelineCard
                   key={entry.queueId}
@@ -104,7 +106,7 @@ export function PipelineRunsSectionBody({
             </div>
           )}
           {failedQueuedExecutions.length > 0 && (
-            <div className="space-y-1.5">
+            <div className="flex flex-col gap-1.5">
               {failedQueuedExecutions.map((entry) => (
                 <FailedQueuedHookPipelineCard
                   key={entry.queueId}
@@ -115,7 +117,7 @@ export function PipelineRunsSectionBody({
             </div>
           )}
           {pendingExecutions.length > 0 && (
-            <div className="space-y-1.5">
+            <div className="flex flex-col gap-1.5">
               {pendingExecutions.map((entry) => (
                 <PendingExecutionCard
                   key={entry.localId}
@@ -126,7 +128,7 @@ export function PipelineRunsSectionBody({
             </div>
           )}
           {failedPendingExecutions.length > 0 && (
-            <div className="space-y-1.5">
+            <div className="flex flex-col gap-1.5">
               {failedPendingExecutions.map((entry) => (
                 <FailedPendingExecutionCard
                   key={entry.localId}
@@ -171,7 +173,7 @@ export function PipelineRunsSectionBody({
             }}
             viewportClassName="overflow-x-hidden"
             railClassName="-right-3"
-            contentClassName="min-w-0 space-y-1.5"
+            contentClassName="min-w-0 flex flex-col gap-1.5"
             // The frameless cap is `FRAMELESS_HIDDEN_GROUP_MAX_H`, spelled
             // out so the design-system lint can read it; the section test
             // pins the literal to the shared constant.

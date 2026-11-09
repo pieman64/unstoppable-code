@@ -1,3 +1,9 @@
+import { portablePipelineTriggerTypes } from '@canopy/protocol/pipelines';
+import {
+  inlineFailureReason,
+  inlineFailureText,
+  type InlineFailure,
+} from '@/lib/inline-app-error';
 import { marketplaceManagementDestination } from '@canopy/ui-shared/lib';
 import { scriptPreferencesActionSchema } from '@canopy/agent-actions/families/settings/script-preferences';
 import { requestScriptActionsReview } from '@canopy/ui-app/script-actions';
@@ -6,23 +12,14 @@ import { pipelineAutomationTargetSummary } from '@canopy/desktop-shared/lib/auto
 import { storedAutomationActivity } from '@/lib/workflows/stored-automation-activity';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import { classifyShareFailure } from '@canopy/ui-app/sharing';
-import {
-  legacyChatHistoryMessageText,
-  serializeLegacyChatHistoryMessage,
-} from '@canopy/desktop-shared/lib/chat-history-serialization';
+import { serializeLegacyChatHistoryMessage } from '@canopy/desktop-shared/lib/chat-history-serialization';
 import {
   isSidebarItemGroupAction,
-  orderedSidebarItemGroups,
   sidebarItemGroupIds,
 } from '@canopy/desktop-shared/lib/sidebar-item-group-actions';
 import { z } from 'zod/v4';
 import { sidebarGroupStackUnits } from '@canopy/desktop-shared/lib/worktree-grouping';
 import type { SidebarItemGroupScope } from '@canopy/protocol/sidebar';
-import {
-  useSidebarItemGroupsStore,
-  sidebarItemGroupScopeKey,
-} from '@/stores/sidebarItemGroupsStore';
-import { chatTabStripLabel, getChatTabLabel } from '@/lib/chatTabLabel';
 import { getCursorSettingsSection } from '@/lib/cursor-settings';
 import { extractCreateFromReferences } from '@canopy/desktop-shared/lib/create-from-reference';
 import { extractPipelineReferenceTokens } from '@canopy/desktop-shared/lib/invocation-tokens';
@@ -48,8 +45,7 @@ import type { ShareTarget } from '@canopy/desktop-shared/lib/skill-share-nudge';
 import { loadChatShareLocalData } from '@/hooks/useChatShareData';
 import { resolveShareTarget } from '@/lib/invocableShareTarget';
 import { requestShare, useShareRequestStore } from '@/stores/shareRequestStore';
-import { isMcpOAuthBrowserScope } from '@canopy/desktop-shared/types/browser';
-import { flattenMcpServerRows } from '@canopy/desktop-shared/lib/mcp-server-rows';
+import { isMcpOAuthBrowserScope } from '@canopy/execution-engine/types/browser';
 import { dispatchChatHarnessAction } from '@/lib/chat-harness-actions';
 import {
   useHomeComposerStore,
@@ -79,7 +75,6 @@ import type {
   CreateOrgCoworkProjectResult,
   CreateOrgMemberCodeProjectResult,
   CreateOrgMemberMultiRepoProjectResult,
-  FileTreeMutationRequest,
   LaunchAtLoginSetResult,
   LocalMemoryConsolidationStatus,
   LocalMemoryScopeRequest,
@@ -157,7 +152,6 @@ import {
 } from './types';
 import type { RemoteControlState } from '@canopy/desktop-shared/types/remote-control';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
-import { getRendererActiveWorkOwner } from '@/stores/modelPolicyRuntime';
 import { emitPreferencesUpdated } from '@/lib/preferences-events';
 import {
   getModelPreferenceThinkingLevels,
@@ -185,8 +179,6 @@ import {
   type ChatTab,
   type WorktreeChatState,
 } from '@/stores/chatStore';
-import { installTranscriptPage } from '@/stores/chat/transcript-pages';
-import { tabRequestedCodexSpeed } from '@/stores/chat/codex-speed';
 import { useActivityStore } from '@/stores/activityStore';
 import { useLiveBackgroundTaskStore } from '@/stores/liveBackgroundTaskStore';
 import { getLockedHarness } from '@/lib/chatProviderLock';
@@ -231,14 +223,13 @@ import { unifiedEntryIdForRef } from '@canopy/ui-app/capability';
 import { normalizeAgentArtifactNavigationRequest } from '@canopy/protocol/agent-artifacts';
 import { openLegacyAutomationsTab } from '@/lib/navigation/workflows-navigation';
 import { isDataSharingOptInFeature } from '@canopy/protocol/canopy-server';
-import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
 import { openImportProjectsModal } from '@/stores/importProjectsModalStore';
 import { openRepoRulesModal } from '@/stores/repoRulesModalStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useBranchFromStore } from '@/stores/branchFromStore';
 import { useBaseBranchAlignmentStore } from '@/stores/baseBranchAlignmentStore';
-import { prepareBranchFromWorktree } from '@/lib/prepareBranchFromWorktree';
 import { useUsageLimitResumePromptStore } from '@/stores/usageLimitResumePromptStore';
 import { useResumeQueueStore } from '@/stores/resumeQueueStore';
 import { summarizeCloneJobs, useCloneJobsStore } from '@/stores/cloneJobsStore';
@@ -259,9 +250,28 @@ import {
   type ResolvedCreateFromTarget,
 } from '@/lib/createFromSource';
 import {
-  BaseBranchChangeError,
-  setWorktreeBaseBranch,
-} from '@/lib/setWorktreeBaseBranch';
+  workspaceSummary,
+  worktreeSummary,
+  workspaceSettingsCapabilities,
+} from '@canopy/desktop-shared/lib/app-advisor-worktree-summaries';
+import {
+  CHAT_HISTORY_MAX_LIMIT,
+  CHAT_PLUGIN_LIST_MAX_LIMIT,
+  STANDALONE_LIST_MAX_LIMIT,
+  chatSettingsResult,
+  clampChatHistoryLimit,
+  clampLimit,
+  fuzzyMatchText,
+  standaloneChatSummary,
+  standaloneProjectSummary,
+  worktreeTabsResult as advisorWorktreeTabsResult,
+} from '@canopy/desktop-shared/lib/app-advisor-chat-reads';
+import {
+  TRACKED_PLAN_COMMENT_MAX_LIMIT,
+  TRACKED_PLAN_CONTENT_MAX_CHARS,
+  TRACKED_PLAN_LIST_MAX_LIMIT,
+  trackedPlanSummary,
+} from '@canopy/desktop-shared/lib/app-advisor-tracked-plan-results';
 import {
   currentCoworkDestinationRequestId,
   useStandaloneChatStore,
@@ -331,7 +341,6 @@ import {
   isNavigationMode,
   COWORK_HOME_WORKTREE_ID,
   APP_ADVISOR_PROJECT_ID,
-  isDefaultCoworkWorkspaceId,
   PIPELINE_EDITOR_PROJECT_ID,
   PIPELINE_EDITOR_WORKTREE_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
@@ -340,8 +349,6 @@ import {
   WORKSPACE_ROOT_REPO_ID,
   getProviderForModel,
   getChatHarnessOptions,
-  isVisiblePersistedChatMessage,
-  modelConfigForProviderSupportsFastMode,
   isThinkingLevel,
   resolveModelAlias,
   type AdhocJoinedWorktreeMigration,
@@ -352,31 +359,22 @@ import {
   type ChatProjectData,
   type ChatTabPluginSelections,
   type EnvironmentRuntime,
-  type ExistingWorktreeJoinWorkspaceGroup,
   type MultiRepoSidebarItem,
-  type PlanCommentThread,
   type PluginsManagementSectionId,
   type RepoBranchInfo,
   type ScheduledActivity,
   type ScheduledActivityRun,
   type SidebarItem,
   type SingleRepoSidebarItem,
-  type StandaloneChatMeta,
-  type StandaloneWorkspaceSnapshotResponse,
   type PreferencesData,
   type ThinkingLevel,
-  type TrackedPlanData,
   type UpdateChatProjectRequest,
   type WorktreeCompatibilitySymlink,
   type WorktreeData,
   type WorkspaceApplySourceChangesTarget,
 } from '@canopy/desktop-shared/types';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
-import {
-  codexSpeedFromFastMode,
-  isCodexSpeed,
-  type CodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+import { isCodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
 import {
   buildSharedPipelineId,
   parseSharedPipelineLocalId,
@@ -408,6 +406,7 @@ import {
 } from '@canopy/protocol/delegation/discovery';
 import { isClaudeSettingsAvailable } from '@/lib/claude-settings-availability';
 import { isRemoteAccessSettingAvailable } from '@/lib/remote-control/remote-access-availability';
+import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { isClaudeTuiChatsEnabled } from '@/lib/claude-tui-chats';
 import {
   getTriggerTypes,
@@ -421,7 +420,7 @@ import {
   type PipelineLookupRequest,
   type PipelineTriggerType,
   type SharedPipelineSummary,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { advisorJobJson } from './advisorPipelineJson';
 import type {
   MergePrBlockedReason,
@@ -439,7 +438,6 @@ import {
 } from '@/lib/pluginSelections';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { brandText } from '@/lib/brand';
-import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { isClaudeBackedChatTab } from '@/lib/chat-provider';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { hydratePersistedChatTab } from '@/lib/chatTabPersistence';
@@ -473,10 +471,6 @@ import type {
   CollectionConfig,
   SharedCollectionDetail,
 } from '@canopy/desktop-shared/types/collections';
-import type {
-  MarketplaceInfo,
-  MarketplaceRemovalResult,
-} from '@canopy/desktop-shared/types/plugins';
 import {
   buildSharedCollectionPayload,
   convertLocalCollectionToEditable,
@@ -517,6 +511,16 @@ import {
   useSpaceNotificationStore,
 } from '@/stores/spaceNotificationStore';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
+
+/**
+ * A worktree failure as an agent reads it: the reason behind our sentence,
+ * so it can tell a branch conflict from running setup.
+ */
+function worktreeFailureAgentText(
+  failure: InlineFailure | null,
+): string | null {
+  return inlineFailureReason(failure) ?? inlineFailureText(failure);
+}
 
 interface CacheEntry {
   response: AppAdvisorActionResponse;
@@ -686,21 +690,8 @@ const SETTINGS_SECTIONS = new Set([
   'feedback',
   'legal',
 ]);
-const CHAT_HISTORY_DEFAULT_LIMIT = 20;
-const CHAT_HISTORY_MAX_LIMIT = 100;
-const TRACKED_PLAN_LIST_DEFAULT_LIMIT = 50;
-const TRACKED_PLAN_LIST_MAX_LIMIT = 200;
-const TRACKED_PLAN_CONTENT_DEFAULT_MAX_CHARS = 20_000;
-const TRACKED_PLAN_CONTENT_MAX_CHARS = 100_000;
-const TRACKED_PLAN_COMMENT_DEFAULT_LIMIT = 50;
-const TRACKED_PLAN_COMMENT_MAX_LIMIT = 200;
-const TRACKED_PLAN_COMMENT_BODY_MAX_CHARS = 4_000;
-const CHAT_PLUGIN_LIST_DEFAULT_LIMIT = 50;
-const CHAT_PLUGIN_LIST_MAX_LIMIT = 200;
 const SKILL_LIST_DEFAULT_LIMIT = 50;
 const SKILL_LIST_MAX_LIMIT = 200;
-const STANDALONE_LIST_DEFAULT_LIMIT = 50;
-const STANDALONE_LIST_MAX_LIMIT = 200;
 const PLUGIN_KINDS = new Set(['collection', 'skill', 'plugin', 'mcp']);
 const PLUGIN_PROVIDERS = new Set(['claude', 'codex']);
 const AGENT_PROVIDER_TYPES = new Set(['claude', 'codex', 'ollama']);
@@ -936,45 +927,6 @@ interface ChatHistoryTarget {
 
 interface StandaloneChatHistoryTarget extends ChatHistoryTarget {
   archived: boolean;
-}
-
-interface ChatTurnInspectionResult {
-  [key: string]: AppAdvisorJson;
-  status: ChatTab['status'];
-  inProgress: boolean;
-  state: 'in_progress' | 'paused' | 'completed' | 'error';
-  startedAt: number | null;
-  pausedAt: number | null;
-  resumedAt: number | null;
-  accumulatedPausedDurationMs: number;
-  completedAt: number | null;
-  durationMs: number | null;
-}
-
-type PluginRowKind = 'collection' | 'skill' | 'plugin' | 'mcp';
-
-interface AvailablePluginRow {
-  [key: string]: AppAdvisorJson;
-  kind: PluginRowKind;
-  key: string;
-  name: string;
-  description: string;
-  source: string;
-  selected: boolean;
-}
-
-interface MarketplaceAdvisorRow {
-  [key: string]: AppAdvisorJson;
-  id: string;
-  name: string;
-  sourceType: string;
-  sourceUrl: string;
-  pluginCount: number;
-  validProviders: string[];
-  claudeState: string;
-  codexState: string;
-  claudeError: string;
-  codexError: string;
 }
 
 interface PipelineRunModeSummary {
@@ -1222,31 +1174,6 @@ function buildPipelineLookupRequest(
   };
 }
 
-function clampLimit(
-  limit: number | undefined,
-  defaultLimit: number,
-  maxLimit: number,
-): number {
-  if (limit === undefined || !Number.isFinite(limit)) {
-    return defaultLimit;
-  }
-  return Math.max(1, Math.min(maxLimit, Math.floor(limit)));
-}
-
-function fuzzyMatchText(query: string | undefined, values: string[]): boolean {
-  const normalizedQuery = query?.trim().toLowerCase();
-  if (!normalizedQuery) return true;
-  const haystack = values.join(' ').toLowerCase();
-  if (haystack.includes(normalizedQuery)) return true;
-  let index = 0;
-  for (const char of normalizedQuery) {
-    index = haystack.indexOf(char, index);
-    if (index === -1) return false;
-    index += 1;
-  }
-  return true;
-}
-
 function pipelineInputCount(
   pipeline: PipelineData,
   mode: PipelineTriggerType,
@@ -1258,11 +1185,15 @@ function pipelineInputCount(
   ).length;
 }
 
+// `workflow` starts only from the Workflows page, never an agent run, so it
+// is never listed as a run mode (CAN-5782).
 function pipelineRunModes(pipeline: PipelineData): PipelineRunModeSummary[] {
-  return getTriggerTypes(pipeline.content.on).map((mode) => ({
-    mode,
-    inputCount: pipelineInputCount(pipeline, mode),
-  }));
+  return portablePipelineTriggerTypes(getTriggerTypes(pipeline.content.on)).map(
+    (mode) => ({
+      mode,
+      inputCount: pipelineInputCount(pipeline, mode),
+    }),
+  );
 }
 
 function pipelineInputDetails(
@@ -1406,7 +1337,10 @@ async function appAdvisorPipelineReceipt(
       : {}),
     enabled: !disabled.has(pipeline.info.id),
     scopes: normalized.scope,
-    runModes: getTriggerTypes(pipeline.content.on),
+    // `workflow` starts only from the Workflows page, never an agent run.
+    runModes: portablePipelineTriggerTypes(
+      getTriggerTypes(pipeline.content.on),
+    ),
     jobCount: Object.keys(pipeline.content.jobs).length,
     stepCount: Object.values(pipeline.content.jobs).reduce(
       (total, job) => total + job.steps.length,
@@ -1451,56 +1385,6 @@ function truncateContent(
   };
 }
 
-function workspaceSummary(item: SidebarItem): AppAdvisorJson {
-  const temporary = item.type === 'multi-repo' && item.temporary === true;
-  const repos =
-    item.type === 'multi-repo'
-      ? item.repos.map((repo) => ({
-          id: repo.id,
-          name: repo.name,
-          source: repo.source ?? 'local',
-          repoPath: repo.repoPath,
-          manifestUrl: repo.manifestUrl ?? '',
-        }))
-      : item.type === 'single-repo'
-        ? [
-            {
-              id: item.id,
-              name: item.name,
-              source: 'local',
-              repoPath: item.repoPath,
-              manifestUrl: '',
-            },
-          ]
-        : [];
-  return {
-    id: item.id,
-    name: item.name,
-    displayName: getWorkspaceDisplayName(item),
-    type: item.type,
-    temporary,
-    color: item.color,
-    collapsed: item.collapsed,
-    order: item.order,
-    repoPath: item.type === 'single-repo' ? item.repoPath : '',
-    sourceRepoPath:
-      item.type === 'multi-repo' ? (item.sourceRepoPath ?? '') : '',
-    sourceControlledConfigAvailable:
-      item.type !== 'multi-repo' ||
-      (!temporary && Boolean(item.sourceRepoPath)),
-    repoCount:
-      item.type === 'multi-repo'
-        ? item.repos.filter((repo) => repo.id !== WORKSPACE_ROOT_REPO_ID).length
-        : item.type === 'single-repo'
-          ? 1
-          : 0,
-    worktreeCount: item.type === 'cowork' ? 0 : item.worktrees.length,
-    repos,
-    alwaysShow: item.alwaysShow === true,
-    hasDefaultPluginSelections: item.defaultPluginSelections !== undefined,
-  };
-}
-
 // Uses the sidebar's retirement rule so every action can reach exactly the
 // combinations the sidebar shows, including empty ones kept by explicit
 // Always show or by retained archived containers.
@@ -1508,53 +1392,6 @@ function visibleWorkspaces(): SidebarItem[] {
   return useProjectsStore
     .getState()
     .projects.filter((item) => !isRetiredTemporaryWorkspace(item));
-}
-
-function workspaceSettingsCapabilities(item: SidebarItem): AppAdvisorJson {
-  const temporary = item.type === 'multi-repo' && item.temporary === true;
-  const sourceControlledEditsAvailable =
-    item.type !== 'multi-repo' || (!temporary && Boolean(item.sourceRepoPath));
-  const sourceControlledDisabledReason = sourceControlledEditsAvailable
-    ? ''
-    : temporary
-      ? 'Temporary projects are local-only. Promote the project before applying source-controlled changes.'
-      : 'This multi-repo project has no attached source repo for source-controlled configuration.';
-  return {
-    temporary,
-    canUpdateLocalOverrides: true,
-    canPromoteTemporary: temporary,
-    canApplySourceEdits: sourceControlledEditsAvailable,
-    sourceControlledEditsAvailable,
-    canUseUpdateSourceWorkspaceMode:
-      item.type === 'multi-repo' && temporary !== true,
-    sourceControlledDisabledReason,
-  };
-}
-
-function worktreeSummary(
-  worktree: WorktreeData,
-  groupId?: string,
-): AppAdvisorJson {
-  return {
-    id: worktree.id,
-    ...(groupId ? { groupId } : {}),
-    branchName: worktree.branchName,
-    createdAt: worktree.createdAt,
-    status: worktree.status ?? 'active',
-    hidden: worktree.hidden === true,
-    setupPhase: worktree.setupPhase ?? 'git-ready',
-    pausedHookKeys: worktree.pausedHookKeys ?? [],
-    trackedBaseBranch: worktree.trackedBaseBranch ?? null,
-    trackedRepoBaseBranches: worktree.trackedRepoBaseBranches ?? {},
-    branchGroupingOverride: worktree.branchGroupingOverride ?? null,
-    healthIssue: worktree.healthIssue
-      ? {
-          code: worktree.healthIssue.code,
-          message: worktree.healthIssue.message,
-          checkedAt: worktree.healthIssue.checkedAt,
-        }
-      : null,
-  };
 }
 
 function repoMappingSummary(
@@ -1604,66 +1441,6 @@ function joinedWorktreeSummary(
     ),
     removedTemporaryWorkspaceId: joined.removedTemporaryWorkspaceId ?? null,
   };
-}
-
-async function existingWorktreeJoinGroupsSummary(
-  groups: ExistingWorktreeJoinWorkspaceGroup[],
-): Promise<AppAdvisorJson> {
-  const membershipsByWorkspace = new Map<
-    string,
-    Promise<Map<string, string>>
-  >();
-  let preferencesPromise:
-    | ReturnType<typeof window.api.loadPreferences>
-    | undefined;
-  const groupingEnabled = async (): Promise<boolean> => {
-    preferencesPromise ??= window.api.loadPreferences();
-    return (await preferencesPromise).groupChildBranchesWithBase;
-  };
-  return Promise.all(
-    groups.map(async (group): Promise<AppAdvisorJson> => {
-      const workspace = useProjectsStore
-        .getState()
-        .projects.find((item) => item.id === group.workspaceId);
-      let membership = membershipsByWorkspace.get(group.workspaceId);
-      if (!membership) {
-        membership = codeSidebarGroupIdsForListing(
-          group.workspaceId,
-          workspace && workspace.type !== 'cowork' ? workspace.worktrees : [],
-          groupingEnabled,
-        );
-        membershipsByWorkspace.set(group.workspaceId, membership);
-      }
-      const memberships = await membership.catch(
-        () => new Map<string, string>(),
-      );
-      return {
-        workspaceId: group.workspaceId,
-        workspaceName: group.workspaceName,
-        color: group.color,
-        isMultiRepo: group.isMultiRepo,
-        repoCount: group.repoCount,
-        temporary: group.temporary,
-        candidates: group.candidates.map((candidate) => ({
-          workspaceId: candidate.workspaceId,
-          worktreeId: candidate.worktreeId,
-          ...(memberships.get(candidate.worktreeId)
-            ? { groupId: memberships.get(candidate.worktreeId) ?? null }
-            : {}),
-          branchName: candidate.branchName,
-          ...(candidate.busyReason ? { busyReason: candidate.busyReason } : {}),
-          addsNewRepo: candidate.addsNewRepo,
-          repoOverlaps: candidate.repoOverlaps.map((overlap) => ({
-            repoName: overlap.repoName,
-            sourceHasChanges: overlap.sourceHasChanges,
-            targetHasChanges: overlap.targetHasChanges,
-            sourceBranch: overlap.sourceBranch,
-            targetBranch: overlap.targetBranch,
-          })),
-        })),
-      };
-    }),
-  );
 }
 
 function getWorkspaceOrError(
@@ -4394,13 +4171,6 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   );
 }
 
-function clampChatHistoryLimit(limit: number | undefined): number {
-  if (limit === undefined || !Number.isFinite(limit)) {
-    return CHAT_HISTORY_DEFAULT_LIMIT;
-  }
-  return Math.max(1, Math.min(CHAT_HISTORY_MAX_LIMIT, Math.floor(limit)));
-}
-
 function worktreeKey(projectId: string, worktreeId: string): string {
   return `${projectId}/${worktreeId}`;
 }
@@ -6011,545 +5781,18 @@ async function runBrowserAction(
   };
 }
 
-function lastUserMessageResult(tab: ChatTab): AppAdvisorJson {
-  for (let index = tab.messages.length - 1; index >= 0; index -= 1) {
-    const message = tab.messages[index];
-    if (message.role !== 'user') {
-      continue;
-    }
-    const text = legacyChatHistoryMessageText(message);
-    return {
-      id: message.id,
-      timestamp: message.timestamp,
-      text: text.text,
-      truncated: text.truncated,
-    };
-  }
-  return null;
-}
-
-function chatSessionResult(tab: ChatTab): Record<string, AppAdvisorJson> {
-  const staleSession = tab.staleSessionDetected;
-  return {
-    state: staleSession
-      ? 'expired'
-      : tab.status === 'streaming'
-        ? 'active'
-        : tab.status === 'error'
-          ? 'error'
-          : 'idle',
-    expired: staleSession !== undefined,
-    readOnly: tab.readOnly === true,
-    canHandOff: staleSession !== undefined,
-    undeliveredMessagePresent:
-      (staleSession?.droppedMessageText.trim().length ?? 0) > 0,
-    undeliveredMessageLength: staleSession?.droppedMessageText.length ?? 0,
-    undeliveredFileReferenceCount:
-      staleSession?.droppedFileReferences?.length ?? 0,
-    undeliveredInputMode: staleSession?.droppedInputMode ?? null,
-  };
-}
-
-function mcpHttpAuthTargetResult(
-  target: NonNullable<
-    ChatTabPluginSelections['mcpHttpAuthPreferences']
-  >[number]['target'],
-): Record<string, AppAdvisorJson> {
-  if (target.kind === 'standalone') {
-    return {
-      kind: target.kind,
-      serverId: target.serverId,
-      configId: target.configId,
-    };
-  }
-  return {
-    kind: target.kind,
-    marketplaceId: target.marketplaceId,
-    pluginName: target.pluginName,
-    serverName: target.serverName,
-  };
-}
-
-function pluginSelectionsResult(
-  selections: ChatTabPluginSelections,
-): AppAdvisorJson {
-  const result: Record<string, AppAdvisorJson> = {
-    collectionIds: selections.collectionIds.map((id) => id),
-    skillRefs: selections.skillRefs.map((ref) => ({
-      sourceId: ref.sourceId,
-      skillName: ref.skillName,
-    })),
-    pluginRefs: selections.pluginRefs.map((ref) => ({
-      marketplaceId: ref.marketplaceId,
-      pluginName: ref.pluginName,
-    })),
-  };
-  if (selections.bundleIds) {
-    result.bundleIds = selections.bundleIds.map((id) => id);
-  }
-  if (selections.mcpServerRefs) {
-    result.mcpServerRefs = selections.mcpServerRefs.map((ref) => ({
-      serverId: ref.serverId,
-      configId: ref.configId,
-    }));
-  }
-  if (selections.mcpHttpAuthPreferences) {
-    result.mcpHttpAuthPreferences = selections.mcpHttpAuthPreferences.map(
-      (preference) => ({
-        target: mcpHttpAuthTargetResult(preference.target),
-        handler: preference.handler,
-      }),
-    );
-  }
-  return result;
-}
-
-function chatTabSummaryResult(
-  tab: ChatTab,
-  activeTabId: string,
-): Record<string, AppAdvisorJson> {
-  return {
-    id: tab.id,
-    title: tab.title,
-    description: tab.description ?? null,
-    customTitle: tab.customTitle ?? null,
-    displayName: getChatTabLabel(tab),
-    active: tab.id === activeTabId,
-    state: tab.status === 'streaming' ? 'active' : 'idle',
-    status: tab.status,
-    queuedMessageCount: tab.queuedMessages.length,
-    session: chatSessionResult(tab),
-    lastUserMessage: lastUserMessageResult(tab),
-  };
-}
-
 function worktreeTabsResult(
   projectId: string,
   worktreeId: string,
   worktreeChat: WorktreeChatState,
 ): AppAdvisorJson {
-  const chatTabs = worktreeChat.tabs
-    .filter((tab) => (tab.kind ?? 'chat') === 'chat')
-    .map((tab) => chatTabSummaryResult(tab, worktreeChat.activeTabId));
-  const fileTabs = worktreeChat.tabs
-    .filter((tab) => tab.kind === 'file')
-    .map((tab) => ({
-      id: tab.id,
-      title: tab.title,
-      active: tab.id === worktreeChat.activeTabId,
-      filePath: tab.filePath ?? null,
-      unsavedChanges: desktopFileSessionController.isDirty(tab.id),
-    }));
-  const activeTab = worktreeChat.tabs.find(
-    (tab) => tab.id === worktreeChat.activeTabId,
-  );
-
-  return {
+  return advisorWorktreeTabsResult(
     projectId,
     worktreeId,
-    activeTabId: worktreeChat.activeTabId || null,
-    activeTabKind: activeTab ? (activeTab.kind ?? 'chat') : null,
-    totalTabs: worktreeChat.tabs.length,
-    chatTabs,
-    fileTabs,
-  };
-}
-
-function latestTurnInspection(tab: ChatTab): ChatTurnInspectionResult {
-  for (let index = tab.messages.length - 1; index >= 0; index -= 1) {
-    const message = tab.messages[index];
-    for (
-      let blockIndex = message.blocks.length - 1;
-      blockIndex >= 0;
-      blockIndex -= 1
-    ) {
-      const block = message.blocks[blockIndex];
-      if (block.type !== 'turn_timer') {
-        continue;
-      }
-      const completedAt = block.completedAt;
-      const pausedAt = block.pausedAt ?? null;
-      const resumedAt = block.resumedAt ?? null;
-      const startedAt = block.startedAt ?? null;
-      const accumulatedPausedDurationMs = Math.max(
-        0,
-        block.accumulatedPausedDurationMs ??
-          (startedAt !== null && pausedAt !== null && resumedAt !== null
-            ? resumedAt - Math.max(startedAt, pausedAt)
-            : 0),
-      );
-      const inProgress =
-        (pausedAt === null || resumedAt !== null) &&
-        (completedAt === null || tab.status === 'streaming');
-      const end =
-        completedAt ??
-        (resumedAt !== null ? Date.now() : pausedAt) ??
-        Date.now();
-      const activePausedDurationMs =
-        pausedAt !== null && resumedAt === null
-          ? Math.max(0, end - pausedAt)
-          : 0;
-      return {
-        status: tab.status,
-        inProgress,
-        state:
-          tab.status === 'error'
-            ? 'error'
-            : pausedAt !== null && resumedAt === null && completedAt === null
-              ? 'paused'
-              : inProgress
-                ? 'in_progress'
-                : 'completed',
-        startedAt,
-        pausedAt,
-        resumedAt,
-        accumulatedPausedDurationMs,
-        completedAt,
-        durationMs:
-          startedAt === null
-            ? null
-            : Math.max(
-                0,
-                end -
-                  startedAt -
-                  accumulatedPausedDurationMs -
-                  activePausedDurationMs,
-              ),
-      };
-    }
-  }
-
-  return {
-    status: tab.status,
-    inProgress: tab.status === 'streaming',
-    state:
-      tab.status === 'error'
-        ? 'error'
-        : tab.status === 'streaming'
-          ? 'in_progress'
-          : 'completed',
-    startedAt: null,
-    pausedAt: null,
-    resumedAt: null,
-    accumulatedPausedDurationMs: 0,
-    completedAt: null,
-    durationMs: null,
-  };
-}
-
-function chatSettingsResult(
-  target: ChatHistoryTarget,
-): Record<string, AppAdvisorJson> {
-  return {
-    projectId: target.projectId,
-    worktreeId: target.worktreeId,
-    chatId: target.chatId,
-    title: target.tab.title,
-    planMode: target.tab.planMode,
-    thinkingLevel: target.tab.thinkingLevel,
-    model: target.tab.model ?? '',
-    providerType: target.tab.providerType ?? '',
-    pluginSelections: pluginSelectionsResult(
-      target.tab.pluginSelections ?? createEmptySelections(),
-    ),
-    session: chatSessionResult(target.tab),
-    agentTurn: latestTurnInspection(target.tab),
-    ...(tabUsesCodexSpeed(target.tab)
-      ? { speed: tabRequestedCodexSpeed(target.tab) }
-      : {}),
-  };
-}
-
-/** Whether App Advisor can read or change a Codex speed on this chat tab. */
-function tabUsesCodexSpeed(tab: ChatTab): boolean {
-  const provider =
-    tab.providerType ??
-    (tab.model ? getProviderForModel(tab.model) : undefined);
-  return (
-    provider !== undefined && modelConfigForProviderSupportsFastMode(provider)
+    worktreeChat.tabs,
+    worktreeChat.activeTabId,
+    (tabId) => desktopFileSessionController.isDirty(tabId),
   );
-}
-
-/**
- * Result of a Codex speed change, read back from the store so App Advisor
- * sees the exact requested speed with its derived boolean. It reports the
- * requested speed only, never an entitlement or the tier actually served.
- */
-function chatSpeedChangeResult(
-  target: ChatHistoryTarget,
-  requested: CodexSpeed,
-): { ok: boolean; result?: AppAdvisorJson; error?: AppAdvisorActionError } {
-  const tab = useChatStore
-    .getState()
-    .worktreeChats[
-      worktreeKey(target.projectId, target.worktreeId)
-    ]?.tabs.find((candidate) => candidate.id === target.chatId);
-  if (
-    !tab ||
-    tab.kind === 'file' ||
-    tabRequestedCodexSpeed(tab) !== requested
-  ) {
-    return {
-      ok: false,
-      error: {
-        code: 'execution_failed',
-        message: 'The speed change was not applied. Try again.',
-        retryable: true,
-      },
-    };
-  }
-  return {
-    ok: true,
-    result: {
-      ...chatSettingsResult({ ...target, tab }),
-      modelConfig: { ...tab.modelConfig },
-    },
-  };
-}
-
-function chatHistoryPayloadForTarget(
-  target: ChatHistoryTarget,
-  mode: 'last_user_message' | 'last_agent_response' | 'transcript',
-  query: string | undefined,
-  limit: number,
-): AppAdvisorJson {
-  const visibleMessages = target.tab.messages.filter(
-    isVisiblePersistedChatMessage,
-  );
-  const base = {
-    mode,
-    projectId: target.projectId,
-    worktreeId: target.worktreeId,
-    chatId: target.chatId,
-    tabTitle: target.tab.title,
-    totalMessages: visibleMessages.length,
-    session: chatSessionResult(target.tab),
-    agentTurn: latestTurnInspection(target.tab),
-  };
-
-  if (mode === 'last_user_message') {
-    const message = [...visibleMessages]
-      .reverse()
-      .find((candidate) => candidate.role === 'user');
-    return {
-      ...base,
-      message: message ? serializeLegacyChatHistoryMessage(message) : null,
-    };
-  }
-
-  if (mode === 'last_agent_response') {
-    const message = [...visibleMessages]
-      .reverse()
-      .find(
-        (candidate) =>
-          candidate.role === 'assistant' &&
-          legacyChatHistoryMessageText(candidate).text.length,
-      );
-    return {
-      ...base,
-      message: message ? serializeLegacyChatHistoryMessage(message) : null,
-    };
-  }
-
-  const normalizedQuery = query?.toLowerCase();
-  const matching = visibleMessages.filter((message) => {
-    if (!normalizedQuery) return true;
-    return legacyChatHistoryMessageText(message)
-      .text.toLowerCase()
-      .includes(normalizedQuery);
-  });
-  const selected = matching.slice(-limit);
-  return {
-    ...base,
-    ...(query ? { query } : {}),
-    limit,
-    matchedMessages: matching.length,
-    returnedMessages: selected.length,
-    messages: selected.map(serializeLegacyChatHistoryMessage),
-  };
-}
-
-async function loadCompleteChatHistoryTarget(
-  target: ChatHistoryTarget,
-): Promise<ChatHistoryTarget> {
-  let tab = target.tab;
-  if (
-    tab.transcript &&
-    (tab.transcriptLoaded !== true || tab.transcriptWindow?.view === 'turns')
-  ) {
-    const page = await window.api.chat.getTranscriptPage({
-      projectId: target.projectId,
-      worktreeId: target.worktreeId,
-      chatId: target.chatId,
-    });
-    tab = installTranscriptPage(tab, page, false);
-  }
-  while (tab.transcriptWindow?.before !== undefined) {
-    const before = tab.transcriptWindow.before;
-    const page = await window.api.chat.getTranscriptPage({
-      projectId: target.projectId,
-      worktreeId: target.worktreeId,
-      chatId: target.chatId,
-      before,
-      transcriptRevision: tab.transcriptWindow.transcriptRevision,
-    });
-    tab = installTranscriptPage(tab, page, true);
-    if (tab.transcriptWindow?.before === before) {
-      throw new Error('Transcript pagination did not advance.');
-    }
-  }
-  return { ...target, tab };
-}
-
-async function readChatHistoryResult(
-  action: Extract<
-    AppAdvisorAction,
-    {
-      type:
-        | 'worktree-chat.get_last_user_message'
-        | 'worktree-chat.get_last_agent_response'
-        | 'worktree-chat.read_history';
-    }
-  >,
-  mode: 'last_user_message' | 'last_agent_response' | 'transcript',
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const resolvedTarget = await resolveChatHistoryTarget(action);
-  if ('error' in resolvedTarget) {
-    return { ok: false, error: resolvedTarget.error };
-  }
-  const target =
-    mode === 'transcript'
-      ? await loadCompleteChatHistoryTarget(resolvedTarget)
-      : resolvedTarget;
-
-  const query =
-    action.type === 'worktree-chat.read_history'
-      ? action.query?.trim()
-      : undefined;
-  const limit =
-    action.type === 'worktree-chat.read_history'
-      ? clampChatHistoryLimit(action.limit)
-      : CHAT_HISTORY_DEFAULT_LIMIT;
-  return {
-    ok: true,
-    result: chatHistoryPayloadForTarget(target, mode, query, limit),
-  };
-}
-
-function clampTrackedPlanListLimit(limit: number | undefined): number {
-  if (limit === undefined) return TRACKED_PLAN_LIST_DEFAULT_LIMIT;
-  return Math.max(1, Math.min(TRACKED_PLAN_LIST_MAX_LIMIT, Math.floor(limit)));
-}
-
-function clampTrackedPlanCommentLimit(limit: number | undefined): number {
-  if (limit === undefined) return TRACKED_PLAN_COMMENT_DEFAULT_LIMIT;
-  return Math.max(
-    1,
-    Math.min(TRACKED_PLAN_COMMENT_MAX_LIMIT, Math.floor(limit)),
-  );
-}
-
-function clampTrackedPlanContentMaxChars(limit: number | undefined): number {
-  if (limit === undefined) return TRACKED_PLAN_CONTENT_DEFAULT_MAX_CHARS;
-  return Math.max(
-    1,
-    Math.min(TRACKED_PLAN_CONTENT_MAX_CHARS, Math.floor(limit)),
-  );
-}
-
-function truncateFreeformText(
-  text: string,
-  maxChars: number,
-): { text: string; truncated: boolean } {
-  if (text.length <= maxChars) {
-    return { text, truncated: false };
-  }
-  if (maxChars <= 0) {
-    return { text: '', truncated: true };
-  }
-
-  let prefixLength = maxChars;
-  let suffix = '';
-  for (let i = 0; i < 3; i += 1) {
-    suffix = `\n\n[truncated ${text.length - prefixLength} chars]`;
-    const nextPrefixLength = Math.max(0, maxChars - suffix.length);
-    if (nextPrefixLength === prefixLength) break;
-    prefixLength = nextPrefixLength;
-  }
-  if (prefixLength <= 0 || suffix.length > maxChars) {
-    return { text: text.slice(0, maxChars), truncated: true };
-  }
-
-  return {
-    text: `${text.slice(0, prefixLength)}${suffix}`,
-    truncated: true,
-  };
-}
-
-function trackedPlanCommentCounts(
-  plan: Pick<TrackedPlanData, 'commentThreads'>,
-): Record<string, AppAdvisorJson> {
-  const threads = plan.commentThreads ?? [];
-  return {
-    commentThreadCount: threads.length,
-    openThreadCount: threads.filter((thread) => thread.status === 'open')
-      .length,
-    resolvedThreadCount: threads.filter(
-      (thread) => thread.status === 'resolved',
-    ).length,
-    outdatedThreadCount: threads.filter(
-      (thread) => thread.anchorState === 'outdated',
-    ).length,
-    stagedCommentCount: threads.reduce(
-      (count, thread) =>
-        count +
-        thread.comments.filter((comment) => comment.staged === true).length,
-      0,
-    ),
-  };
-}
-
-function trackedPlanSummary(
-  plan: TrackedPlanData,
-): Record<string, AppAdvisorJson> {
-  return {
-    id: plan.id,
-    projectId: plan.projectId,
-    worktreeId: plan.worktreeId,
-    source: plan.source,
-    title: plan.title,
-    reviewStatus: plan.reviewStatus,
-    createdAt: plan.createdAt,
-    updatedAt: plan.updatedAt,
-    latestRevisionNumber: plan.latestRevisionNumber,
-    linkedExecutionIds: plan.linkedExecutionIds,
-    hidden: plan.hidden === true,
-    sourceFilePath: plan.sourceFilePath ?? null,
-    sourceRepoId: plan.sourceRepoId ?? null,
-    contentLength: plan.content.length,
-    ...trackedPlanCommentCounts(plan),
-  };
-}
-
-async function loadTrackedPlanForAction(action: {
-  projectId: string;
-  worktreeId: string;
-  planId: string;
-}): Promise<TrackedPlanData | { error: AppAdvisorActionError }> {
-  const plan = await window.api.activity.plans.get(action);
-  if (!plan) {
-    return {
-      error: {
-        code: 'not_found',
-        message: `Tracked plan ${action.planId} was not found.`,
-      },
-    };
-  }
-  return plan;
 }
 
 async function importTrackedPlanResult(
@@ -6581,246 +5824,6 @@ async function importTrackedPlanResult(
     result: {
       plan: trackedPlanSummary(response.plan),
       trackedPlanFilePath: response.trackedPlanFilePath,
-    },
-  };
-}
-
-async function listTrackedPlansResult(
-  action: Extract<AppAdvisorAction, { type: 'tracked-plan.list' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const plans = await window.api.activity.plans.list({
-    projectId: action.projectId,
-    worktreeId: action.worktreeId,
-  });
-  const query = action.query?.trim().toLowerCase();
-  const includeHidden = action.includeHidden === true;
-  const matching = plans.filter((plan) => {
-    if (!includeHidden && plan.hidden === true) return false;
-    if (action.reviewStatus && plan.reviewStatus !== action.reviewStatus) {
-      return false;
-    }
-    if (!query) return true;
-    return (
-      plan.title.toLowerCase().includes(query) ||
-      plan.id.toLowerCase().includes(query) ||
-      plan.content.toLowerCase().includes(query)
-    );
-  });
-  const limit = clampTrackedPlanListLimit(action.limit);
-  const selected = matching.slice(0, limit);
-  return {
-    ok: true,
-    result: {
-      projectId: action.projectId,
-      worktreeId: action.worktreeId,
-      ...(action.reviewStatus ? { reviewStatus: action.reviewStatus } : {}),
-      ...(query ? { query } : {}),
-      totalPlans: plans.length,
-      matchedPlans: matching.length,
-      returnedPlans: selected.length,
-      plans: selected.map(trackedPlanSummary),
-    },
-  };
-}
-
-async function getTrackedPlanResult(
-  action: Extract<AppAdvisorAction, { type: 'tracked-plan.get' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const plan = await loadTrackedPlanForAction(action);
-  if ('error' in plan) return { ok: false, error: plan.error };
-  const includeContent = action.includeContent !== false;
-  const maxChars = clampTrackedPlanContentMaxChars(action.maxContentChars);
-  const content = truncateFreeformText(plan.content, maxChars);
-  return {
-    ok: true,
-    result: {
-      plan: {
-        ...trackedPlanSummary(plan),
-        revisions: plan.revisions.map((revision) => ({
-          revisionNumber: revision.revisionNumber,
-          source: revision.source,
-          reviewStatus: revision.reviewStatus,
-          createdAt: revision.createdAt,
-          approvedAt: revision.approvedAt ?? null,
-          dismissedAt: revision.dismissedAt ?? null,
-          contentLength: revision.content.length,
-        })),
-        diagrams: (plan.diagrams ?? null) as unknown as AppAdvisorJson,
-        lastEditSource: plan.lastEditSource ?? null,
-        ...(includeContent
-          ? { content: content.text, contentTruncated: content.truncated }
-          : {}),
-      },
-    },
-  };
-}
-
-function serializePlanComment(comment: {
-  id: string;
-  author: string;
-  body: string;
-  createdAt: string;
-  staged?: boolean;
-}): Record<string, AppAdvisorJson> {
-  const body = truncateFreeformText(
-    comment.body,
-    TRACKED_PLAN_COMMENT_BODY_MAX_CHARS,
-  );
-  return {
-    id: comment.id,
-    author: comment.author,
-    createdAt: comment.createdAt,
-    staged: comment.staged === true,
-    body: body.text,
-    bodyTruncated: body.truncated,
-  };
-}
-
-function serializePlanCommentThread(
-  thread: PlanCommentThread,
-  includeComments: boolean,
-): Record<string, AppAdvisorJson> {
-  const stagedCommentCount = thread.comments.filter(
-    (comment) => comment.staged === true,
-  ).length;
-  const latestComment = thread.comments[thread.comments.length - 1];
-  const anchorQuote = truncateFreeformText(
-    thread.anchor.quote,
-    TRACKED_PLAN_COMMENT_BODY_MAX_CHARS,
-  );
-  return {
-    id: thread.id,
-    status: thread.status,
-    anchorState: thread.anchorState,
-    createdAt: thread.createdAt,
-    commentCount: thread.comments.length,
-    stagedCommentCount,
-    latestCommentAt: latestComment?.createdAt ?? null,
-    anchor: {
-      source: thread.anchor.source ?? 'document',
-      diagramKind: thread.anchor.diagramKind ?? null,
-      unanchored: thread.anchor.unanchored === true,
-      lineStart: thread.anchor.lineStart ?? null,
-      lineEnd: thread.anchor.lineEnd ?? null,
-      planNodeId: thread.anchor.planNodeId ?? null,
-      headingPath: thread.anchor.headingPath ?? [],
-      quote: anchorQuote.text,
-      quoteTruncated: anchorQuote.truncated,
-      renderedText: thread.anchor.renderedText ?? null,
-    },
-    ...(includeComments
-      ? { comments: thread.comments.map(serializePlanComment) }
-      : {}),
-  };
-}
-
-function threadMatchesQuery(
-  thread: PlanCommentThread,
-  query: string | undefined,
-): boolean {
-  if (!query) return true;
-  const haystack = [
-    thread.id,
-    thread.anchor.quote,
-    thread.anchor.renderedText ?? '',
-    ...(thread.anchor.headingPath ?? []),
-    ...thread.comments.map((comment) => comment.body),
-  ]
-    .join('\n')
-    .toLowerCase();
-  return haystack.includes(query);
-}
-
-async function listTrackedPlanCommentThreadsResult(
-  action: Extract<
-    AppAdvisorAction,
-    { type: 'tracked-plan.list_comment_threads' }
-  >,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const plan = await loadTrackedPlanForAction(action);
-  if ('error' in plan) return { ok: false, error: plan.error };
-  const query = action.query?.trim().toLowerCase();
-  const matching = (plan.commentThreads ?? []).filter((thread) => {
-    if (action.status && thread.status !== action.status) return false;
-    if (action.anchorState && thread.anchorState !== action.anchorState) {
-      return false;
-    }
-    if (
-      action.staged !== undefined &&
-      thread.comments.some((comment) => comment.staged === true) !==
-        action.staged
-    ) {
-      return false;
-    }
-    return threadMatchesQuery(thread, query);
-  });
-  const limit = clampTrackedPlanCommentLimit(action.limit);
-  const selected = matching.slice(0, limit);
-  return {
-    ok: true,
-    result: {
-      projectId: action.projectId,
-      worktreeId: action.worktreeId,
-      planId: action.planId,
-      planTitle: plan.title,
-      ...(action.status ? { status: action.status } : {}),
-      ...(action.anchorState ? { anchorState: action.anchorState } : {}),
-      ...(action.staged !== undefined ? { staged: action.staged } : {}),
-      ...(query ? { query } : {}),
-      ...trackedPlanCommentCounts(plan),
-      matchedThreads: matching.length,
-      returnedThreads: selected.length,
-      threads: selected.map((thread) =>
-        serializePlanCommentThread(thread, action.includeComments === true),
-      ),
-    },
-  };
-}
-
-async function getTrackedPlanCommentThreadResult(
-  action: Extract<
-    AppAdvisorAction,
-    { type: 'tracked-plan.get_comment_thread' }
-  >,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const plan = await loadTrackedPlanForAction(action);
-  if ('error' in plan) return { ok: false, error: plan.error };
-  const thread = (plan.commentThreads ?? []).find(
-    (candidate) => candidate.id === action.threadId,
-  );
-  if (!thread) {
-    return {
-      ok: false,
-      error: {
-        code: 'not_found',
-        message: `Comment thread ${action.threadId} was not found on tracked plan ${action.planId}.`,
-      },
-    };
-  }
-  return {
-    ok: true,
-    result: {
-      projectId: action.projectId,
-      worktreeId: action.worktreeId,
-      planId: action.planId,
-      planTitle: plan.title,
-      thread: serializePlanCommentThread(thread, true),
     },
   };
 }
@@ -6969,23 +5972,6 @@ async function openPipelineAssistantSurface(): Promise<void> {
     });
 }
 
-async function pipelineAssistantChatListTabsResult(): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const loaded = await ensurePipelineAssistantTabsLoaded();
-  if ('error' in loaded) return { ok: false, error: loaded.error };
-  return {
-    ok: true,
-    result: worktreeTabsResult(
-      PIPELINE_EDITOR_PROJECT_ID,
-      PIPELINE_EDITOR_WORKTREE_ID,
-      loaded.worktreeChat,
-    ),
-  };
-}
-
 async function createPipelineAssistantChatTabResult(
   action: Extract<
     AppAdvisorAction,
@@ -7089,38 +6075,6 @@ async function pipelineAssistantChatSwitchTabResult(
         updated,
       ),
     },
-  };
-}
-
-async function readPipelineAssistantChatHistoryResult(
-  action: Extract<
-    AppAdvisorAction,
-    {
-      type:
-        | 'pipeline-assistant-chat.get_last_user_message'
-        | 'pipeline-assistant-chat.get_last_agent_response'
-        | 'pipeline-assistant-chat.read_history';
-    }
-  >,
-  mode: 'last_user_message' | 'last_agent_response' | 'transcript',
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const target = await resolvePipelineAssistantChatHistoryTarget(action);
-  if ('error' in target) return { ok: false, error: target.error };
-  const query =
-    action.type === 'pipeline-assistant-chat.read_history'
-      ? action.query?.trim()
-      : undefined;
-  const limit =
-    action.type === 'pipeline-assistant-chat.read_history'
-      ? clampChatHistoryLimit(action.limit)
-      : CHAT_HISTORY_DEFAULT_LIMIT;
-  return {
-    ok: true,
-    result: chatHistoryPayloadForTarget(target, mode, query, limit),
   };
 }
 
@@ -7611,150 +6565,6 @@ function openPluginsEntryDetail(
   });
 }
 
-function marketplaceSummary(
-  marketplace: MarketplaceInfo,
-): MarketplaceAdvisorRow {
-  return {
-    id: marketplace.id,
-    name: marketplace.name,
-    sourceType: marketplace.sourceType,
-    sourceUrl: marketplace.sourceUrl,
-    pluginCount: marketplace.pluginCount,
-    validProviders: marketplace.validProviders,
-    claudeState: marketplace.providerStatus.claude.state,
-    codexState: marketplace.providerStatus.codex.state,
-    claudeError: marketplace.providerStatus.claude.error ?? '',
-    codexError: marketplace.providerStatus.codex.error ?? '',
-  };
-}
-
-function marketplaceMatches(
-  marketplace: MarketplaceInfo,
-  query: string | undefined,
-): boolean {
-  return fuzzyMatchText(query, [
-    marketplace.id,
-    marketplace.name,
-    marketplace.sourceType,
-    marketplace.sourceUrl,
-    marketplace.validProviders.join(' '),
-    marketplace.providerStatus.claude.state,
-    marketplace.providerStatus.codex.state,
-    marketplace.providerStatus.claude.error ?? '',
-    marketplace.providerStatus.codex.error ?? '',
-  ]);
-}
-
-async function listMarketplacesResult(
-  action: Extract<AppAdvisorAction, { type: 'plugins.list_marketplaces' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const result = await window.plugins.loadMarketplaces();
-  if (!result.success || !result.data) {
-    return {
-      ok: false,
-      error: {
-        code: 'execution_failed',
-        message: result.error ?? 'Failed to load plugin marketplaces.',
-      },
-    };
-  }
-
-  const query = action.query?.trim() ?? '';
-  const limit = clampLimit(
-    action.limit,
-    CHAT_PLUGIN_LIST_DEFAULT_LIMIT,
-    CHAT_PLUGIN_LIST_MAX_LIMIT,
-  );
-  const filtered = result.data.marketplaces
-    .filter((marketplace) => marketplaceMatches(marketplace, query))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const rows = filtered.slice(0, limit).map(marketplaceSummary);
-  return {
-    ok: true,
-    result: {
-      query,
-      totalMatches: filtered.length,
-      returned: rows.length,
-      marketplaces: rows,
-    },
-  };
-}
-
-async function refreshMarketplaceResult(
-  action: Extract<AppAdvisorAction, { type: 'plugins.refresh_marketplace' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const result = await window.plugins.updateMarketplace(action.marketplaceId);
-  if (!result.success || !result.data) {
-    return {
-      ok: false,
-      error: {
-        code: 'execution_failed',
-        message: result.error ?? 'Failed to refresh plugin marketplace.',
-      },
-    };
-  }
-  return { ok: true, result: { marketplace: marketplaceSummary(result.data) } };
-}
-
-function removalResultSummary(
-  result: MarketplaceRemovalResult,
-): Record<string, AppAdvisorJson> {
-  return {
-    removedProviders: result.removedProviders,
-    marketplaceRemoved: result.marketplace === null,
-    marketplace: result.marketplace
-      ? marketplaceSummary(result.marketplace)
-      : null,
-    providerOutcomes: {
-      claude: {
-        removed: result.providerOutcomes.claude.removed,
-        alreadyAbsent: result.providerOutcomes.claude.alreadyAbsent,
-        error: result.providerOutcomes.claude.error ?? null,
-      },
-      codex: {
-        removed: result.providerOutcomes.codex.removed,
-        alreadyAbsent: result.providerOutcomes.codex.alreadyAbsent,
-        error: result.providerOutcomes.codex.error ?? null,
-      },
-    },
-  };
-}
-
-async function removeMarketplaceResult(
-  action: Extract<AppAdvisorAction, { type: 'plugins.remove_marketplace' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const options =
-    action.providers && action.providers.length > 0
-      ? { providers: action.providers }
-      : undefined;
-  const result = await window.plugins.removeMarketplace(
-    action.marketplaceId,
-    options,
-  );
-  if (!result.success || !result.data) {
-    return {
-      ok: false,
-      error: {
-        code: 'execution_failed',
-        message: result.error ?? 'Failed to remove plugin marketplace.',
-      },
-    };
-  }
-  return { ok: true, result: removalResultSummary(result.data) };
-}
-
 function chatActionTargetError(
   target: ChatHistoryTarget,
   action: Extract<AppAdvisorAction, { type: 'worktree-chat.run_chat_action' }>,
@@ -7923,295 +6733,6 @@ function parseSelections(value: unknown): ChatTabPluginSelections | null {
   }
 }
 
-function selectionSets(selections: ChatTabPluginSelections): {
-  collections: Set<string>;
-  skills: Set<string>;
-  plugins: Set<string>;
-  mcp: Set<string>;
-} {
-  return {
-    collections: new Set(selections.collectionIds),
-    skills: new Set(
-      selections.skillRefs.map((ref) => `${ref.sourceId}/${ref.skillName}`),
-    ),
-    plugins: new Set(
-      selections.pluginRefs.map(
-        (ref) => `${ref.marketplaceId}/${ref.pluginName}`,
-      ),
-    ),
-    mcp: new Set(
-      (selections.mcpServerRefs ?? []).map(
-        (ref) => `${ref.serverId}/${ref.configId}`,
-      ),
-    ),
-  };
-}
-
-function selectionsFromSets(
-  sets: ReturnType<typeof selectionSets>,
-): ChatTabPluginSelections {
-  return {
-    collectionIds: Array.from(sets.collections).sort(),
-    skillRefs: Array.from(sets.skills)
-      .sort()
-      .map((key) => {
-        const index = key.lastIndexOf('/');
-        return {
-          sourceId: key.slice(0, index),
-          skillName: key.slice(index + 1),
-        };
-      }),
-    pluginRefs: Array.from(sets.plugins)
-      .sort()
-      .map((key) => {
-        const index = key.lastIndexOf('/');
-        return {
-          marketplaceId: key.slice(0, index),
-          pluginName: key.slice(index + 1),
-        };
-      }),
-    mcpServerRefs: Array.from(sets.mcp)
-      .sort()
-      .map((key) => {
-        const index = key.indexOf('/');
-        return {
-          serverId: key.slice(0, index),
-          configId: key.slice(index + 1),
-        };
-      }),
-  };
-}
-
-function updateSelection(
-  selections: ChatTabPluginSelections,
-  kind: PluginRowKind,
-  key: string,
-  enabled: boolean,
-): ChatTabPluginSelections {
-  const sets = selectionSets(selections);
-  const set =
-    kind === 'collection'
-      ? sets.collections
-      : kind === 'skill'
-        ? sets.skills
-        : kind === 'plugin'
-          ? sets.plugins
-          : sets.mcp;
-  if (enabled) {
-    set.add(key);
-  } else {
-    set.delete(key);
-  }
-  return selectionsFromSets(sets);
-}
-
-function pluginRowMatches(
-  row: AvailablePluginRow,
-  query: string,
-  kind: PluginRowKind | undefined,
-): boolean {
-  if (kind && row.kind !== kind) {
-    return false;
-  }
-  if (!query) {
-    return true;
-  }
-  const haystack = [row.kind, row.key, row.name, row.description, row.source]
-    .join(' ')
-    .toLowerCase();
-  return haystack.includes(query.toLowerCase());
-}
-
-async function buildAvailablePluginListResult(
-  currentSelections: ChatTabPluginSelections | null,
-  targetMeta: AppAdvisorJson | null,
-  action: {
-    query?: string;
-    kind?: PluginRowKind;
-    limit?: number;
-  },
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const selected = selectionSets(currentSelections ?? createEmptySelections());
-  const [skillsResult, marketplacesResult, collectionsResult, mcpResult] =
-    await Promise.all([
-      window.skills.loadSkills(),
-      window.plugins.loadMarketplaces(),
-      window.collections.loadIndex(),
-      window.mcpServers.loadIndex(),
-    ]);
-  const rows: AvailablePluginRow[] = [];
-
-  if (skillsResult.success && skillsResult.data) {
-    for (const skill of skillsResult.data) {
-      const key = `${skill.sourceId}/${skill.name}`;
-      rows.push({
-        kind: 'skill',
-        key,
-        name: skill.name,
-        description: skill.description,
-        source: skill.builtIn
-          ? `${brandText.appName} (built-in)`
-          : skill.sourceId,
-        selected: selected.skills.has(key),
-      });
-    }
-  }
-
-  if (marketplacesResult.success && marketplacesResult.data) {
-    for (const marketplace of marketplacesResult.data.marketplaces) {
-      for (const plugin of marketplace.plugins) {
-        const key = `${plugin.marketplaceId}/${plugin.name}`;
-        rows.push({
-          kind: 'plugin',
-          key,
-          name: plugin.name,
-          description: plugin.description ?? '',
-          source: marketplace.name,
-          providers: {
-            claude: plugin.providerSupport.claude,
-            codex: plugin.providerSupport.codex,
-          },
-          selected: selected.plugins.has(key),
-        });
-      }
-    }
-  }
-
-  for (const collection of collectionsResult) {
-    rows.push({
-      kind: 'collection',
-      key: collection.id,
-      name: collection.name,
-      description: collection.description,
-      source: 'Collection',
-      selected: selected.collections.has(collection.id),
-    });
-  }
-
-  for (const server of flattenMcpServerRows(mcpResult.servers)) {
-    for (const config of server.configs) {
-      if (!config.enabled) continue;
-      const key = `${server.id}/${config.id}`;
-      rows.push({
-        kind: 'mcp',
-        key,
-        name: `${server.name} - ${config.name}`,
-        description: server.description,
-        source: server.type === 'command' ? 'CLI MCP' : 'HTTP MCP',
-        selected: selected.mcp.has(key),
-      });
-    }
-  }
-
-  const query = action.query?.trim() ?? '';
-  const limit = Math.max(
-    1,
-    Math.min(
-      CHAT_PLUGIN_LIST_MAX_LIMIT,
-      Math.floor(action.limit ?? CHAT_PLUGIN_LIST_DEFAULT_LIMIT),
-    ),
-  );
-  const filtered = rows
-    .filter((row) => pluginRowMatches(row, query, action.kind))
-    .sort(
-      (a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name),
-    );
-
-  return {
-    ok: true,
-    result: {
-      ...(targetMeta ? { target: targetMeta } : {}),
-      currentSelections: (currentSelections ??
-        createEmptySelections()) as unknown as AppAdvisorJson,
-      query,
-      ...(action.kind ? { kind: action.kind } : {}),
-      totalMatches: filtered.length,
-      returned: Math.min(filtered.length, limit),
-      rows: filtered.slice(0, limit) as unknown as AppAdvisorJson,
-    },
-  };
-}
-
-async function listAvailablePluginsResult(
-  action: Extract<AppAdvisorAction, { type: 'worktree-chat.list_plugins' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const explicitTarget =
-    action.projectId !== undefined ||
-    action.worktreeId !== undefined ||
-    action.chatId !== undefined;
-  const chatStore = useChatStore.getState();
-  const canResolveImplicitTarget = chatStore.selectedWorktree !== null;
-  let currentSelections: ChatTabPluginSelections | null = null;
-  let targetMeta: AppAdvisorJson | null = null;
-
-  if (explicitTarget || canResolveImplicitTarget) {
-    const target = await resolveChatHistoryTarget(action);
-    if ('error' in target) {
-      if (explicitTarget) {
-        return { ok: false, error: target.error };
-      }
-    } else {
-      currentSelections =
-        target.tab.pluginSelections ?? createEmptySelections();
-      targetMeta = {
-        projectId: target.projectId,
-        worktreeId: target.worktreeId,
-        chatId: target.chatId,
-        title: target.tab.title,
-        session: chatSessionResult(target.tab),
-      };
-    }
-  }
-
-  return buildAvailablePluginListResult(currentSelections, targetMeta, action);
-}
-
-function standaloneProjectSummary(project: ChatProjectData): AppAdvisorJson {
-  return {
-    id: project.id,
-    name: project.name,
-    createdAt: project.createdAt,
-    color: project.color ?? '',
-    description: project.description ?? '',
-    defaultModel: project.defaultModel ?? '',
-    defaultPresetId: project.defaultPresetId ?? '',
-    presetCount: project.presets?.length ?? 0,
-    hasDefaultPluginSelections: project.defaultPluginSelections !== undefined,
-    archiveRetentionDays: project.archiveRetentionDays ?? null,
-    isDefault: isDefaultCoworkWorkspaceId(project.id),
-  };
-}
-
-function standaloneChatSummary(
-  chat: StandaloneChatMeta,
-  workEntryId?: string | null,
-  groupId?: string,
-): AppAdvisorJson {
-  return {
-    id: chat.id,
-    ...(groupId ? { groupId } : {}),
-    title: chat.title ?? '',
-    description: chat.description,
-    createdAt: chat.createdAt,
-    messageCount: chat.messageCount ?? 0,
-    lastMessageAt: chat.lastMessageAt ?? '',
-    providerType: chat.providerType ?? '',
-    archived: chat.archived === true,
-    archivedAt: chat.archivedAt ?? '',
-    hasPluginSelections: chat.pluginSelections !== undefined,
-    // Owning Work Entry for live cowork chats; null = legacy archived chat.
-    ...(workEntryId !== undefined ? { workEntryId } : {}),
-  };
-}
-
 async function ensureStandaloneProjectsLoaded(): Promise<void> {
   const store = useStandaloneChatStore.getState();
   if (store.chatProjectsLoaded) return;
@@ -8313,122 +6834,6 @@ function archivedStandaloneMutationError(
     code: 'invalid_target',
     message:
       'Archived standalone chats are read-only. Restore the chat before applying mutations.',
-  };
-}
-
-async function readStandaloneChatHistoryResult(
-  action: Extract<
-    AppAdvisorAction,
-    {
-      type:
-        | 'standalone-chat.get_last_user_message'
-        | 'standalone-chat.get_last_agent_response'
-        | 'standalone-chat.read_history';
-    }
-  >,
-  mode: 'last_user_message' | 'last_agent_response' | 'transcript',
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const target = await resolveStandaloneChatTarget(
-    action.projectId,
-    action.chatId,
-  );
-  if ('error' in target) return { ok: false, error: target.error };
-  const query =
-    action.type === 'standalone-chat.read_history'
-      ? action.query?.trim()
-      : undefined;
-  const limit =
-    action.type === 'standalone-chat.read_history'
-      ? clampChatHistoryLimit(action.limit)
-      : CHAT_HISTORY_DEFAULT_LIMIT;
-  return {
-    ok: true,
-    result: chatHistoryPayloadForTarget(target, mode, query, limit),
-  };
-}
-
-async function listAvailableStandalonePluginsResult(
-  action: Extract<AppAdvisorAction, { type: 'standalone-chat.list_plugins' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const resolved = await resolveStandaloneProjectId(action.projectId);
-  if (typeof resolved !== 'string') {
-    return { ok: false, error: resolved.error };
-  }
-
-  if (action.chatId) {
-    const target = await resolveStandaloneChatTarget(resolved, action.chatId);
-    if ('error' in target) {
-      return { ok: false, error: target.error };
-    }
-    return buildAvailablePluginListResult(
-      target.tab.pluginSelections ?? createEmptySelections(),
-      {
-        projectId: resolved,
-        chatId: action.chatId,
-        title: target.tab.title,
-      },
-      action,
-    );
-  }
-
-  const project = await getStandaloneProjectOrError(resolved);
-  if ('error' in project) {
-    return { ok: false, error: project.error };
-  }
-  return buildAvailablePluginListResult(
-    project.defaultPluginSelections ?? createEmptySelections(),
-    {
-      projectId: resolved,
-      projectName: project.name,
-      scope: 'standalone-project-defaults',
-    },
-    action,
-  );
-}
-
-function filterAndLimit<T>(
-  items: T[],
-  query: string | undefined,
-  limit: number | undefined,
-  values: (item: T) => string[],
-): T[] {
-  const max = clampLimit(
-    limit,
-    STANDALONE_LIST_DEFAULT_LIMIT,
-    STANDALONE_LIST_MAX_LIMIT,
-  );
-  return items
-    .filter((item) => fuzzyMatchText(query, values(item)))
-    .slice(0, max);
-}
-
-async function loadStandaloneWorkspace(
-  projectId: string,
-): Promise<StandaloneWorkspaceSnapshotResponse> {
-  return window.api.standaloneChat.loadWorkspace({ projectId });
-}
-
-function standaloneWorkspaceListResult<T>(
-  items: T[],
-  query: string | undefined,
-  limit: number | undefined,
-  values: (item: T) => string[],
-): AppAdvisorJson {
-  const filtered = filterAndLimit(items, query, limit, values);
-  return {
-    query: query?.trim() ?? '',
-    totalMatches: items.filter((item) => fuzzyMatchText(query, values(item)))
-      .length,
-    returned: filtered.length,
-    items: filtered as unknown as AppAdvisorJson,
   };
 }
 
@@ -8636,7 +7041,9 @@ async function getPipelineDetailsResult(
     };
   }
 
-  const runModes = getTriggerTypes(pipeline.content.on).map((mode) => {
+  const runModes = portablePipelineTriggerTypes(
+    getTriggerTypes(pipeline.content.on),
+  ).map((mode) => {
     const inputState = resolvePipelineTriggerInputs(pipeline.content, mode);
     return {
       mode,
@@ -9438,96 +7845,6 @@ async function executionGetResult(
   };
 }
 
-async function sendExecutionFollowUpToChat(
-  action: Extract<
-    AppAdvisorAction,
-    {
-      type:
-        | 'pipeline.execution_send_report_to_chat'
-        | 'pipeline.execution_send_plan_to_chat';
-    }
-  >,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const state = await loadExecutionStateForAction(action.executionId);
-  if (!state.ok) {
-    return { ok: false, error: state.error };
-  }
-  if (!state.state.project_id || !state.state.worktree_id) {
-    return {
-      ok: false,
-      error: {
-        code: 'invalid_target',
-        message: 'This pipeline execution is not linked to a worktree chat.',
-      },
-    };
-  }
-
-  const path =
-    action.type === 'pipeline.execution_send_report_to_chat'
-      ? (state.state.report_outputs?.report_file ??
-        state.state.report_outputs?.report_json_file ??
-        null)
-      : getExecutionPlanPath(state.state);
-  if (!path) {
-    return {
-      ok: false,
-      error: {
-        code: 'not_found',
-        message:
-          action.type === 'pipeline.execution_send_report_to_chat'
-            ? 'This pipeline execution does not have a saved report file.'
-            : 'This pipeline execution does not have a saved plan file.',
-      },
-    };
-  }
-
-  useChatStore
-    .getState()
-    .selectWorktree(state.state.project_id, state.state.worktree_id);
-  const target = await resolveChatHistoryTarget({
-    projectId: state.state.project_id,
-    worktreeId: state.state.worktree_id,
-    ...(action.chatId ? { chatId: action.chatId } : {}),
-  });
-  if ('error' in target) {
-    return { ok: false, error: target.error };
-  }
-  useChatStore.getState().switchTab(target.chatId, {
-    projectId: target.projectId,
-    worktreeId: target.worktreeId,
-  });
-
-  const defaultPrompt =
-    action.type === 'pipeline.execution_send_report_to_chat'
-      ? 'Review this report:'
-      : 'Review this plan:';
-  const prompt = action.prompt?.trim() || defaultPrompt;
-  await useChatStore.getState().sendMessage(
-    `${prompt} ${path}`,
-    undefined,
-    {
-      projectId: target.projectId,
-      worktreeId: target.worktreeId,
-      chatId: target.chatId,
-    },
-    undefined,
-    { throwOnDispatchFailure: true },
-  );
-  return {
-    ok: true,
-    result: {
-      projectId: target.projectId,
-      worktreeId: target.worktreeId,
-      chatId: target.chatId,
-      path,
-    },
-  };
-}
-
 async function chainPipelineFromExecution(
   action: Extract<AppAdvisorAction, { type: 'pipeline.execution_chain' }>,
 ): Promise<{
@@ -10098,98 +8415,6 @@ async function deleteSharedSkillResult(
 // Local + shared Collection action handlers.
 // ---------------------------------------------------------------------------
 
-async function listLocalCollectionsResult(): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const entries = await window.collections.loadIndex();
-    return {
-      ok: true,
-      result: {
-        collections: entries as unknown as AppAdvisorJson,
-      },
-    };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err);
-  }
-}
-
-async function createLocalCollectionResult(
-  action: Extract<AppAdvisorAction, { type: 'collections.create' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const config = await window.collections.saveCollection({
-      name: action.name,
-      ...(action.description !== undefined
-        ? { description: action.description }
-        : {}),
-      skills: action.skills ?? [],
-      plugins: action.plugins ?? [],
-      mcpServers: action.mcpServers ?? [],
-    });
-    return { ok: true, result: config as unknown as AppAdvisorJson };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err);
-  }
-}
-
-async function updateLocalCollectionResult(
-  action: Extract<AppAdvisorAction, { type: 'collections.update' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const existing = await window.collections.loadCollection(action.id);
-    if (!existing) {
-      return {
-        ok: false,
-        error: {
-          code: 'not_found',
-          message: `Local collection ${action.id} was not found.`,
-        },
-      };
-    }
-    const config = await window.collections.saveCollection({
-      ...existing,
-      ...(action.name !== undefined ? { name: action.name } : {}),
-      ...(action.description !== undefined
-        ? { description: action.description }
-        : {}),
-      ...(action.skills !== undefined ? { skills: action.skills } : {}),
-      ...(action.plugins !== undefined ? { plugins: action.plugins } : {}),
-      ...(action.mcpServers !== undefined
-        ? { mcpServers: action.mcpServers }
-        : {}),
-    });
-    return { ok: true, result: config as unknown as AppAdvisorJson };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err);
-  }
-}
-
-async function deleteLocalCollectionResult(
-  action: Extract<AppAdvisorAction, { type: 'collections.delete' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    await window.collections.deleteCollection(action.id);
-    return { ok: true, result: { id: action.id } };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err);
-  }
-}
-
 async function shareLocalCollectionResult(
   action: Extract<AppAdvisorAction, { type: 'collections.share' }>,
 ): Promise<{
@@ -10408,129 +8633,6 @@ async function deleteSharedCollectionResult(
 // ---------------------------------------------------------------------------
 // Local + shared Agent action handlers.
 // ---------------------------------------------------------------------------
-
-async function listLocalAgentsResult(
-  action: Extract<AppAdvisorAction, { type: 'agents.list' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const response = await window.agents.list();
-    const query = action.query?.trim().toLowerCase();
-    const filtered = query
-      ? response.agents.filter(
-          (agent) =>
-            agent.id.toLowerCase().includes(query) ||
-            agent.name.toLowerCase().includes(query),
-        )
-      : response.agents;
-    const limit =
-      action.limit && action.limit > 0
-        ? Math.min(action.limit, filtered.length)
-        : filtered.length;
-    return {
-      ok: true,
-      result: {
-        agents: filtered.slice(0, limit) as unknown as AppAdvisorJson,
-      },
-    };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'agents' });
-  }
-}
-
-async function getLocalAgentResult(
-  action: Extract<AppAdvisorAction, { type: 'agents.get' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const agent = await window.agents.get(action.id);
-    if (!agent) {
-      return {
-        ok: false,
-        error: {
-          code: 'not_found',
-          message: `Local agent ${action.id} was not found.`,
-        },
-      };
-    }
-    return { ok: true, result: agent as unknown as AppAdvisorJson };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'agents' });
-  }
-}
-
-async function createLocalAgentResult(
-  action: Extract<AppAdvisorAction, { type: 'agents.create' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const agent = await window.agents.save({
-      name: action.name,
-      baseModel: action.baseModel,
-      instructions: action.instructions,
-      ...(action.modelIdSlug ? { modelIdSlug: action.modelIdSlug } : {}),
-      pluginSelections: action.pluginSelections ?? createEmptySelections(),
-    });
-    return { ok: true, result: agent as unknown as AppAdvisorJson };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'agents' });
-  }
-}
-
-async function updateLocalAgentResult(
-  action: Extract<AppAdvisorAction, { type: 'agents.update' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const existing = await window.agents.get(action.id);
-    if (!existing) {
-      return {
-        ok: false,
-        error: {
-          code: 'not_found',
-          message: `Local agent ${action.id} was not found.`,
-        },
-      };
-    }
-    const agent = await window.agents.save({
-      id: existing.id,
-      name: action.name ?? existing.name,
-      baseModel: action.baseModel ?? existing.baseModel,
-      instructions: action.instructions ?? existing.instructions,
-      pluginSelections: action.pluginSelections ?? existing.pluginSelections,
-    });
-    return { ok: true, result: agent as unknown as AppAdvisorJson };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'agents' });
-  }
-}
-
-async function deleteLocalAgentResult(
-  action: Extract<AppAdvisorAction, { type: 'agents.delete' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    await window.agents.delete({ id: action.id });
-    return { ok: true, result: { id: action.id } };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'agents' });
-  }
-}
 
 async function listSharedAgentsResult(
   action: Extract<AppAdvisorAction, { type: 'agents.list_shared' }>,
@@ -11424,57 +9526,6 @@ function panelGroupNotFound(groupId: string | undefined): PanelActionFailure {
 // Action routing
 // ---------------------------------------------------------------------------
 
-async function mutateFileTreeFromAppAdvisor(
-  request: FileTreeMutationRequest,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  const splitLockError = refuseIfSplitLocked(
-    request.projectId,
-    request.worktreeId,
-  );
-  if (splitLockError) return { ok: false, error: splitLockError };
-  try {
-    const response = await window.api.mutateFileTree(request);
-    return {
-      ok: true,
-      result: {
-        operation: response.operation,
-        ...(response.source
-          ? {
-              source: {
-                repoId: response.source.repoId,
-                relativePath: response.source.relativePath,
-              },
-            }
-          : {}),
-        ...(response.target
-          ? {
-              target: {
-                repoId: response.target.repoId,
-                relativePath: response.target.relativePath,
-              },
-            }
-          : {}),
-      },
-    };
-  } catch (error: unknown) {
-    return {
-      ok: false,
-      error: {
-        code: 'execution_failed',
-        message:
-          error instanceof Error
-            ? error.message
-            : 'Failed to update the file tree.',
-        retryable: true,
-      },
-    };
-  }
-}
-
 /** Why a catalog project Add cannot start, in the member's words. */
 function orgProjectUnaddableReason(state: OrgProjectPlaceholderState): string {
   switch (state) {
@@ -11870,55 +9921,6 @@ function skillSuggestionsUnavailable(): {
     error: {
       code: 'surface_unavailable',
       message: 'Skill suggestions are not available.',
-    },
-  };
-}
-
-/** Open suggestions without their example requests (CAN-385). */
-async function listSkillSuggestionsResult(): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  if (!skillSuggestionsAvailable()) return skillSuggestionsUnavailable();
-  const response = await window.skillSuggestions.list();
-  if (!response.success) {
-    return {
-      ok: false,
-      error: {
-        code: 'execution_failed',
-        message: response.error ?? "Couldn't load skill suggestions.",
-      },
-    };
-  }
-  // Partitions are never mixed: the agent runs under the active work owner,
-  // so it only sees that owner's non-private suggestions and a count of the
-  // rest. Before hydration the owner is personal, as for model policy.
-  const owner = getRendererActiveWorkOwner() ?? { kind: 'personal' };
-  const all = response.data ?? [];
-  const visible = all.filter(
-    (suggestion) =>
-      !suggestion.isPrivate &&
-      (suggestion.owner.kind === 'personal'
-        ? owner.kind === 'personal'
-        : owner.kind === 'organization' &&
-          owner.organizationId === suggestion.owner.organizationId),
-  );
-  const otherSuggestionCount = all.length - visible.length;
-  return {
-    ok: true,
-    result: {
-      ...(otherSuggestionCount > 0 ? { otherSuggestionCount } : {}),
-      suggestions: visible.map((suggestion) => ({
-        id: suggestion.id,
-        kind: suggestion.kind,
-        title: suggestion.title,
-        summary: suggestion.summary,
-        proposedSkillName: suggestion.proposedSkillName,
-        occurrenceCount: suggestion.occurrenceCount,
-        chainSkills: suggestion.chainSkills,
-        ownerLabel: suggestion.ownerLabel,
-      })),
     },
   };
 }
@@ -12551,48 +10553,6 @@ async function removeRepoFromMultiRepoProjectFromAdvisor(
   };
 }
 
-async function sidebarGroupActionInventory(
-  scope: SidebarItemGroupScope,
-): Promise<{
-  order: string[];
-  units: string[][];
-  items: Array<Record<string, AppAdvisorJson>>;
-}> {
-  const projectId = scope.appAdvisor ? 'app-advisor' : scope.workspaceLocalId;
-  const workspace = scope.appAdvisor
-    ? undefined
-    : useProjectsStore
-        .getState()
-        .projects.find((item) => item.id === projectId);
-  if (workspace && workspace.type !== 'cowork') {
-    const preferences = await window.api.loadPreferences();
-    return {
-      order: workspace.worktrees.map((item) => item.id),
-      units: sidebarGroupStackUnits(
-        workspace.worktrees,
-        preferences.groupChildBranchesWithBase,
-      ),
-      items: workspace.worktrees.map((item) => ({
-        id: item.id,
-        name: item.branchName,
-        kind: 'worktree',
-        createdAt: item.createdAt,
-      })),
-    };
-  }
-  const { entries } = await window.api.workEntries.list({ projectId });
-  return {
-    order: entries.map((item) => item.id),
-    units: entries.map((item) => [item.id]),
-    items: entries.map((item) => ({
-      id: item.id,
-      name: item.title,
-      kind: 'work-entry',
-      createdAt: item.createdAt,
-    })),
-  };
-}
-
 async function sidebarGroupsForListing(
   scope: SidebarItemGroupScope,
 ): Promise<Awaited<ReturnType<typeof window.api.sidebarItemGroups.list>>> {
@@ -12802,170 +10762,6 @@ async function routeAction(
 }> {
   const { action } = request;
   switch (action.type) {
-    case 'sidebar.item_groups.list':
-    case 'sidebar.item_groups.list_items':
-    case 'sidebar.item_groups.set_item':
-    case 'sidebar.item_groups.create':
-    case 'sidebar.item_groups.update':
-    case 'sidebar.item_groups.move_item':
-    case 'sidebar.item_groups.move_group':
-    case 'sidebar.item_groups.ungroup': {
-      if (!action.scope.appAdvisor) {
-        await ensureProjectsHydrated();
-        const workspace = getWorkspaceOrError(action.scope.workspaceLocalId);
-        if ('error' in workspace) return { ok: false, error: workspace.error };
-      }
-      const store = useSidebarItemGroupsStore.getState();
-      let createdId: string | undefined;
-      switch (action.type) {
-        case 'sidebar.item_groups.list_items':
-          await store.hydrate(action.scope);
-          break;
-        case 'sidebar.item_groups.set_item':
-          if (action.newGroup !== undefined) {
-            createdId = (
-              await store.create({
-                scope: action.scope,
-                itemId: action.itemId,
-                ...action.newGroup,
-              })
-            ).id;
-          } else {
-            await store.moveItem({
-              scope: action.scope,
-              itemId: action.itemId,
-              groupId: action.groupId,
-            });
-          }
-          break;
-        case 'sidebar.item_groups.list':
-          await store.hydrate(action.scope);
-          break;
-        case 'sidebar.item_groups.create':
-          createdId = (
-            await store.create({
-              scope: action.scope,
-              itemId: action.itemId,
-              name: action.name,
-              color: action.color,
-              labelHidden: action.labelHidden,
-            })
-          ).id;
-          break;
-        case 'sidebar.item_groups.update':
-          await store.update({
-            scope: action.scope,
-            groupId: action.groupId,
-            name: action.name,
-            color: action.color,
-            collapsed: action.collapsed,
-            labelHidden: action.labelHidden,
-            keepWhenEmpty: action.keepWhenEmpty,
-          });
-          break;
-        case 'sidebar.item_groups.ungroup':
-          await store.ungroup({ scope: action.scope, groupId: action.groupId });
-          break;
-        case 'sidebar.item_groups.move_item':
-          await store.moveItem({
-            scope: action.scope,
-            itemId: action.itemId,
-            groupId: action.groupId,
-            ...(action.before
-              ? { before: action.before }
-              : action.after
-                ? { after: action.after }
-                : {}),
-          });
-          break;
-        case 'sidebar.item_groups.move_group':
-          await store.moveGroup({
-            scope: action.scope,
-            groupId: action.groupId,
-            ...(action.before
-              ? { before: action.before }
-              : action.after
-                ? { after: action.after }
-                : {}),
-          });
-          break;
-      }
-      let inventory: Awaited<ReturnType<typeof sidebarGroupActionInventory>>;
-      try {
-        inventory = await sidebarGroupActionInventory(action.scope);
-      } catch (cause) {
-        if (
-          action.type === 'sidebar.item_groups.list' ||
-          action.type === 'sidebar.item_groups.list_items'
-        )
-          throw cause;
-        return {
-          ok: true,
-          result: {
-            applied: action.type,
-            groupId:
-              createdId ??
-              ('groupId' in action ? (action.groupId ?? null) : null),
-            ...('itemId' in action ? { itemId: action.itemId } : {}),
-            refreshFailed: true,
-          },
-        };
-      }
-      const groups = orderedSidebarItemGroups(
-        useSidebarItemGroupsStore.getState().byScope[
-          sidebarItemGroupScopeKey(action.scope)
-        ] ?? [],
-        inventory.order,
-      );
-      if (action.type === 'sidebar.item_groups.list_items') {
-        const group = groups.find(
-          (candidate) => candidate.id === action.groupId,
-        );
-        if (!group)
-          return {
-            ok: false,
-            error: {
-              code: 'not_found',
-              message: 'Sidebar item group no longer exists.',
-            },
-          };
-        const membership = sidebarItemGroupIds(groups, inventory.units);
-        const items = inventory.items
-          .filter(
-            (item) =>
-              typeof item.id === 'string' &&
-              membership.get(item.id) === action.groupId,
-          )
-          .map((item) => ({ ...item, groupId: action.groupId }));
-        return {
-          ok: true,
-          result: {
-            group: {
-              id: group.id,
-              name: group.name,
-              color: group.color,
-              collapsed: group.collapsed,
-              memberIds: group.memberIds,
-            },
-            items,
-            returned: items.length,
-          },
-        };
-      }
-      return {
-        ok: true,
-        result: {
-          ...(createdId ? { groupId: createdId } : {}),
-          ...(action.type === 'sidebar.item_groups.set_item'
-            ? {
-                itemId: action.itemId,
-                groupId: createdId ?? action.groupId ?? null,
-              }
-            : {}),
-          groups: groups.map((group) => ({ ...group })),
-        },
-      };
-    }
     case 'navigation.go_to_page': {
       const requestedPage: string = action.page;
       if (requestedPage === LEGACY_AGENTS_PAGE) {
@@ -13135,33 +10931,6 @@ async function routeAction(
         initialTab: 'code-graph',
       });
       return { ok: true };
-    }
-    case 'preferences.get_global_plugin_selections': {
-      const preferences = await window.api.loadPreferences();
-      return {
-        ok: true,
-        result: {
-          pluginSelections: pluginSelectionsResult(
-            preferences.globalPluginSelections ?? createEmptySelections(),
-          ),
-        },
-      };
-    }
-    case 'preferences.set_global_plugin_selections': {
-      // Resolution overlays the saved preference at read time; persisting it
-      // is the entire mutation. Sessions on overlay-participating surfaces
-      // recreate lazily on their next send.
-      const preferences = await window.api.savePreferences({
-        globalPluginSelections: action.selections,
-      });
-      return {
-        ok: true,
-        result: {
-          pluginSelections: pluginSelectionsResult(
-            preferences.globalPluginSelections ?? action.selections,
-          ),
-        },
-      };
     }
     case 'navigation.open_customize_sidebar':
       useNavigationStore.getState().requestCustomizeSidebar();
@@ -14030,45 +11799,19 @@ async function routeAction(
       };
     }
     case 'file-tree.create_file':
-      return mutateFileTreeFromAppAdvisor({
-        operation: 'create-file',
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        target: action.target,
-      });
     case 'file-tree.create_directory':
-      return mutateFileTreeFromAppAdvisor({
-        operation: 'create-directory',
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        target: action.target,
-      });
     case 'file-tree.copy':
-      return mutateFileTreeFromAppAdvisor({
-        operation: 'copy',
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        source: action.source,
-        target: action.target,
-        conflict: action.conflict,
-      });
     case 'file-tree.move':
-      return mutateFileTreeFromAppAdvisor({
-        operation: 'move',
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        source: action.source,
-        target: action.target,
-        conflict: 'error',
-      });
     case 'file-tree.delete':
-      return mutateFileTreeFromAppAdvisor({
-        operation: 'delete',
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        target: action.target,
-        useTrash: true,
-      });
+      // CAN-6006: the App Advisor runtime creates, copies, moves and deletes
+      // file tree entries in main; these never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'File tree changes run in the main process.',
+        },
+      };
     case 'navigation.open_pr_picker':
       useNavigationStore.getState().openPrPicker([]);
       return { ok: true };
@@ -14105,8 +11848,6 @@ async function routeAction(
         new CustomEvent(PLUGINS_OPEN_TAB_EVENT, { detail: { tab: 'skills' } }),
       );
       return { ok: true };
-    case 'skill_suggestions.list':
-      return listSkillSuggestionsResult();
     case 'skill_suggestions.open':
       if (!skillSuggestionsAvailable()) return skillSuggestionsUnavailable();
       useSkillSuggestionStore.getState().setModalOpen(true);
@@ -14137,37 +11878,6 @@ async function routeAction(
       return deleteCustomSkillResult(action);
     case 'skills.list_shared':
       return listSharedSkillsResult(action);
-    case 'skills.list_marketplace': {
-      try {
-        const rows = await window.skills.listMarketplace();
-        const query = action.query?.trim().toLowerCase() ?? '';
-        const matches = rows.filter((row) =>
-          `${row.name}\n${row.description}\n${row.publisher}`
-            .toLowerCase()
-            .includes(query),
-        );
-        const limit = clampLimit(
-          action.limit,
-          CHAT_PLUGIN_LIST_DEFAULT_LIMIT,
-          CHAT_PLUGIN_LIST_MAX_LIMIT,
-        );
-        return {
-          ok: true,
-          result: {
-            totalMatches: matches.length,
-            skills: matches.slice(0, limit).map((row) => ({
-              entryId: `public-share:skill:${row.externalId}`,
-              name: row.name,
-              description: row.description,
-              publisher: row.publisher,
-              installed: Boolean(row.installedSkillName),
-            })),
-          },
-        };
-      } catch (error) {
-        return sharedResourceFailure(error, { unsupportedResource: 'skills' });
-      }
-    }
     case 'skills.read_shared':
       return readSharedSkillResult(action);
     case 'skills.share_custom':
@@ -14190,14 +11900,6 @@ async function routeAction(
       );
       return { ok: true };
     }
-    case 'collections.list':
-      return listLocalCollectionsResult();
-    case 'collections.create':
-      return createLocalCollectionResult(action);
-    case 'collections.update':
-      return updateLocalCollectionResult(action);
-    case 'collections.delete':
-      return deleteLocalCollectionResult(action);
     case 'collections.share':
       return shareLocalCollectionResult(action);
     case 'collections.list_shared':
@@ -14218,16 +11920,6 @@ async function routeAction(
       });
       return { ok: true };
     }
-    case 'agents.list':
-      return listLocalAgentsResult(action);
-    case 'agents.get':
-      return getLocalAgentResult(action);
-    case 'agents.create':
-      return createLocalAgentResult(action);
-    case 'agents.update':
-      return updateLocalAgentResult(action);
-    case 'agents.delete':
-      return deleteLocalAgentResult(action);
     case 'agents.list_shared':
       return listSharedAgentsResult(action);
     case 'agents.import_shared':
@@ -14291,26 +11983,6 @@ async function routeAction(
     case 'plugins.open_entry_detail':
       openPluginsEntryDetail(action.entryId, action.intent);
       return { ok: true, result: { entryId: action.entryId } };
-    case 'plugins.list_marketplaces':
-      return listMarketplacesResult(action);
-    case 'plugins.refresh_marketplace':
-      return refreshMarketplaceResult(action);
-    case 'plugins.remove_marketplace':
-      return removeMarketplaceResult(action);
-    case 'workspace.list': {
-      await ensureProjectsHydrated();
-      const allWorkspaces = useProjectsStore.getState().projects;
-      const workspaces = visibleWorkspaces();
-      return {
-        ok: true,
-        result: {
-          totalWorkspaces: workspaces.length,
-          excludedSoftDeletedTemporaryWorkspaces:
-            allWorkspaces.length - workspaces.length,
-          workspaces: workspaces.map(workspaceSummary),
-        },
-      };
-    }
     case 'workspace.open_add_dialog': {
       useNavigationStore.getState().openAddWorkspaceModal();
       return { ok: true, result: {} };
@@ -14381,7 +12053,6 @@ async function routeAction(
       }
       return addOrgProjectFromAdvisor(context, project, signal);
     }
-    case 'org_project.list':
     case 'org_project.setup_start':
     case 'org_project.setup_cancel': {
       // Organization projects only exist inside an organization context, and
@@ -14396,29 +12067,6 @@ async function routeAction(
             code: 'surface_unavailable',
             message:
               'Organization projects are only available while an organization context is selected. Choose an organization from the context switcher above the account in the sidebar first.',
-          },
-        };
-      }
-      if (action.type === 'org_project.list') {
-        const snapshot = await window.api.orgProjects.list({ context });
-        return {
-          ok: true,
-          result: {
-            organizationId: context.organizationId,
-            stale: snapshot.stale,
-            error: snapshot.error,
-            totalProjects: snapshot.projects.length,
-            projects: snapshot.projects.map((project) => ({
-              projectId: project.id,
-              name: project.name,
-              kind: project.kind,
-              listed: project.listed,
-              repository: project.repository
-                ? `${project.repository.owner}/${project.repository.name}`
-                : null,
-              verification: project.repository?.verification ?? null,
-              instanceState: project.instance?.state ?? null,
-            })),
           },
         };
       }
@@ -14495,107 +12143,6 @@ async function routeAction(
         action.workspaceId,
         action.repoId,
       );
-    case 'workspace.list_worktrees': {
-      await ensureProjectsHydrated();
-      const workspace = getGitWorkspaceOrError(action.workspaceId);
-      if ('error' in workspace) {
-        return { ok: false, error: workspace.error };
-      }
-      const memberships = await codeSidebarGroupIdsForListing(
-        workspace.id,
-        workspace.worktrees,
-      );
-      return {
-        ok: true,
-        result: {
-          workspace: workspaceSummary(workspace),
-          totalWorktrees: workspace.worktrees.length,
-          worktrees: workspace.worktrees.map((item) =>
-            worktreeSummary(item, memberships.get(item.id)),
-          ),
-        },
-      };
-    }
-    case 'workspace.list_join_options': {
-      await ensureProjectsHydrated();
-      const sourceWorkspace = getGitWorkspaceOrError(action.sourceWorkspaceId);
-      if ('error' in sourceWorkspace) {
-        return { ok: false, error: sourceWorkspace.error };
-      }
-      const sourceWorktree = sourceWorkspace.worktrees.find(
-        (candidate) => candidate.id === action.sourceWorktreeId,
-      );
-      if (!sourceWorktree) {
-        return {
-          ok: false,
-          error: {
-            code: 'not_found',
-            message: `Worktree ${action.sourceWorktreeId} was not found in project ${action.sourceWorkspaceId}.`,
-          },
-        };
-      }
-      const response = await window.api.listAdhocMultiRepoJoinOptions({
-        sourceWorkspaceId: action.sourceWorkspaceId,
-      });
-      const allowedModes =
-        sourceWorkspace.type === 'multi-repo' &&
-        sourceWorkspace.temporary !== true
-          ? ['temporary', 'update-source-workspace']
-          : ['temporary'];
-      return {
-        ok: true,
-        result: {
-          sourceWorkspace: workspaceSummary(sourceWorkspace),
-          sourceWorktree: worktreeSummary(sourceWorktree),
-          allowedModes,
-          totalOptions: response.options.length,
-          options: response.options as unknown as AppAdvisorJson,
-        },
-      };
-    }
-    case 'workspace.list_existing_worktree_join_options': {
-      await ensureProjectsHydrated();
-      const sourceWorkspace = getGitWorkspaceOrError(action.sourceWorkspaceId);
-      if ('error' in sourceWorkspace) {
-        return { ok: false, error: sourceWorkspace.error };
-      }
-      const sourceWorktree = sourceWorkspace.worktrees.find(
-        (candidate) => candidate.id === action.sourceWorktreeId,
-      );
-      if (!sourceWorktree) {
-        return {
-          ok: false,
-          error: {
-            code: 'not_found',
-            message: `Worktree ${action.sourceWorktreeId} was not found in project ${action.sourceWorkspaceId}.`,
-          },
-        };
-      }
-      const response = await window.api.listExistingWorktreeJoinOptions({
-        sourceWorkspaceId: action.sourceWorkspaceId,
-        sourceWorktreeId: action.sourceWorktreeId,
-      });
-      const allowedModes =
-        sourceWorkspace.type === 'multi-repo' &&
-        sourceWorkspace.temporary !== true
-          ? ['temporary', 'update-source-workspace']
-          : ['temporary'];
-      const totalCandidates = response.groups.reduce(
-        (sum, group) => sum + group.candidates.length,
-        0,
-      );
-      return {
-        ok: true,
-        result: {
-          sourceWorkspace: workspaceSummary(sourceWorkspace),
-          sourceWorktree: worktreeSummary(sourceWorktree),
-          allowedModes,
-          totalGroups: response.groups.length,
-          totalCandidates,
-          groups: await existingWorktreeJoinGroupsSummary(response.groups),
-        },
-      };
-    }
     case 'worktree.select':
       useChatStore
         .getState()
@@ -14668,76 +12215,6 @@ async function routeAction(
           requestedDeleteBranch: action.deleteBranch,
           mode,
           note: `The ${confirmLabel} worktree confirmation is open; it has no mode switch. Its Keep the local branch switch starts ${requestedBranch}, and the dialog names that request. The user can flip the switch and confirms with ${confirmLabel} worktree. Nothing is removed until the user confirms.`,
-        },
-      };
-    }
-    case 'worktree.create': {
-      await ensureProjectsHydrated();
-      const workspace = getWorkspaceOrError(action.workspaceId);
-      if ('error' in workspace) {
-        return { ok: false, error: workspace.error };
-      }
-      if (action.baseWorktreeId) {
-        const preparation = await prepareBranchFromWorktree(
-          action.workspaceId,
-          action.baseWorktreeId,
-          { uncommittedChanges: 'leave-in-source' },
-        );
-        if (preparation.status !== 'ready') {
-          return {
-            ok: false,
-            error: {
-              code: 'execution_failed',
-              message: 'Fresh source worktree status could not be verified.',
-              retryable: true,
-            },
-          };
-        }
-      }
-      const previousSelection = useChatStore.getState().selectedWorktree;
-      const created = await useProjectsStore
-        .getState()
-        .createWorktree(action.workspaceId, {
-          suppressStartPage: true,
-          ...(action.baseWorktreeId
-            ? { baseWorktreeId: action.baseWorktreeId }
-            : {}),
-          ...(action.baseBranch ? { baseBranch: action.baseBranch } : {}),
-        });
-      if (!created) {
-        const state = useProjectsStore.getState();
-        const pendingRepair = state.pendingWorkspaceRepair;
-        return {
-          ok: false,
-          error: {
-            code: pendingRepair ? 'surface_unavailable' : 'execution_failed',
-            message:
-              pendingRepair !== null
-                ? `Worktree creation needs repair before it can continue: ${pendingRepair.repairIssues
-                    .map((issue) => issue.message)
-                    .join('; ')}`
-                : (state.worktreeError ?? 'Failed to create worktree.'),
-            retryable: pendingRepair === null,
-          },
-        };
-      }
-      if (action.select === false) {
-        if (previousSelection) {
-          useChatStore
-            .getState()
-            .selectWorktree(
-              previousSelection.projectId,
-              previousSelection.worktreeId,
-            );
-        } else {
-          useChatStore.getState().deselectWorktree();
-        }
-      }
-      return {
-        ok: true,
-        result: {
-          workspaceId: action.workspaceId,
-          worktreeId: created.id,
         },
       };
     }
@@ -14834,7 +12311,9 @@ async function routeAction(
           error: {
             code: 'execution_failed',
             message:
-              useProjectsStore.getState().worktreeError ??
+              worktreeFailureAgentText(
+                useProjectsStore.getState().worktreeError,
+              ) ??
               'Couldn’t create the worktree. The project remains available.',
             retryable: true,
           },
@@ -14946,7 +12425,8 @@ async function routeAction(
                 ? `Worktree creation needs repair before it can continue: ${pendingRepair.repairIssues
                     .map((issue) => issue.message)
                     .join('; ')}`
-                : (state.worktreeError ?? 'Failed to create worktree.'),
+                : (worktreeFailureAgentText(state.worktreeError) ??
+                  'Failed to create worktree.'),
             retryable: pendingRepair === null,
           },
         };
@@ -15041,64 +12521,6 @@ async function routeAction(
           level: action.level,
         },
       };
-    }
-    case 'worktree.set_base_branch': {
-      await ensureProjectsHydrated();
-      try {
-        const result = await setWorktreeBaseBranch(
-          {
-            projectId: action.projectId,
-            worktreeId: action.worktreeId,
-            repoId: action.repoId,
-            baseBranch: action.baseBranch,
-          },
-          {
-            ...(requestId ? { requestId } : {}),
-            ...(signal ? { signal } : {}),
-          },
-        );
-        if (result.status === 'cancelled') {
-          return {
-            ok: false,
-            error: {
-              code: 'execution_failed',
-              message: 'Base branch change was cancelled.',
-              retryable: false,
-            },
-          };
-        }
-        return {
-          ok: true,
-          result: {
-            projectId: action.projectId,
-            worktreeId: action.worktreeId,
-            ...(action.repoId ? { repoId: action.repoId } : {}),
-            baseBranch: result.baseBranch,
-            pullRequestUpdated: result.pullRequestUpdated,
-          },
-        };
-      } catch (error) {
-        if (error instanceof BaseBranchChangeError) {
-          return {
-            ok: false,
-            error: {
-              code: error.code,
-              message: error.message,
-              retryable: error.retryable,
-            },
-          };
-        }
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to set the base branch.',
-          },
-        };
-      }
     }
     case 'worktree.resolve_branch_from_confirmation': {
       const pending = useBranchFromStore.getState().pending;
@@ -15221,8 +12643,9 @@ async function routeAction(
           error: {
             code: 'execution_failed',
             message:
-              useProjectsStore.getState().worktreeError ??
-              'Failed to add project to worktree.',
+              worktreeFailureAgentText(
+                useProjectsStore.getState().worktreeError,
+              ) ?? 'Failed to add project to worktree.',
             retryable: true,
           },
         };
@@ -15373,102 +12796,6 @@ async function routeAction(
         };
       }
     }
-    case 'worktree.get_settings': {
-      await ensureProjectsHydrated();
-      const workspace = getGitWorkspaceOrError(action.projectId);
-      if ('error' in workspace) {
-        return { ok: false, error: workspace.error };
-      }
-      const worktree = workspace.worktrees.find(
-        (candidate) => candidate.id === action.worktreeId,
-      );
-      if (!worktree) {
-        return {
-          ok: false,
-          error: {
-            code: 'not_found',
-            message: `Worktree ${action.worktreeId} was not found in project ${action.projectId}.`,
-          },
-        };
-      }
-      return {
-        ok: true,
-        result: {
-          workspace: workspaceSummary(workspace),
-          worktree: worktreeSummary(worktree),
-          effectiveOverrides:
-            (workspace.worktreeEffective?.[action.worktreeId] as unknown as
-              | AppAdvisorJson
-              | undefined) ?? null,
-        },
-      };
-    }
-    case 'worktree.update_settings': {
-      await ensureProjectsHydrated();
-      const workspace = getGitWorkspaceOrError(action.projectId);
-      if ('error' in workspace) {
-        return { ok: false, error: workspace.error };
-      }
-      if (
-        !workspace.worktrees.some(
-          (candidate) => candidate.id === action.worktreeId,
-        )
-      ) {
-        return {
-          ok: false,
-          error: {
-            code: 'not_found',
-            message: `Worktree ${action.worktreeId} was not found in project ${action.projectId}.`,
-          },
-        };
-      }
-      if (action.hidden !== undefined) {
-        await useProjectsStore
-          .getState()
-          .setWorktreeHidden(
-            action.projectId,
-            action.worktreeId,
-            action.hidden,
-          );
-      }
-      if (action.pausedHookKeys !== undefined) {
-        await useProjectsStore
-          .getState()
-          .setWorktreePausedHookKeys(
-            action.projectId,
-            action.worktreeId,
-            action.pausedHookKeys,
-          );
-      }
-      if (action.branchGroupingOverride !== undefined) {
-        await useProjectsStore
-          .getState()
-          .setWorktreeBranchGroupingOverride(
-            action.projectId,
-            action.worktreeId,
-            action.branchGroupingOverride,
-          );
-      }
-      const refreshedWorkspace =
-        useProjectsStore
-          .getState()
-          .projects.find((item) => item.id === action.projectId) ?? workspace;
-      const refreshedWorktree =
-        (refreshedWorkspace.type !== 'cowork'
-          ? refreshedWorkspace.worktrees.find(
-              (candidate) => candidate.id === action.worktreeId,
-            )
-          : undefined) ?? workspace.worktrees[0];
-      return {
-        ok: true,
-        result: {
-          workspace: workspaceSummary(refreshedWorkspace),
-          worktree: refreshedWorktree
-            ? worktreeSummary(refreshedWorktree)
-            : null,
-        },
-      };
-    }
     case 'hook.pause':
     case 'hook.resume': {
       await ensureProjectsHydrated();
@@ -15555,144 +12882,6 @@ async function routeAction(
       return {
         ok: true,
         result: worktreeGitActionsResult(contextResult.context),
-      };
-    }
-    case 'worktree.start_merge_conflict_resolution': {
-      await ensureProjectsHydrated();
-      const workspace = getGitWorkspaceOrError(action.projectId);
-      if ('error' in workspace) {
-        return { ok: false, error: workspace.error };
-      }
-      const worktree = workspace.worktrees.find(
-        (candidate) => candidate.id === action.worktreeId,
-      );
-      if (!worktree) {
-        return {
-          ok: false,
-          error: {
-            code: 'not_found',
-            message: `Worktree ${action.worktreeId} was not found in project ${action.projectId}.`,
-          },
-        };
-      }
-      const mergeConflictLockError = refuseIfSplitLocked(
-        action.projectId,
-        action.worktreeId,
-      );
-      if (mergeConflictLockError) {
-        return { ok: false, error: mergeConflictLockError };
-      }
-      useChatStore
-        .getState()
-        .selectWorktree(action.projectId, action.worktreeId);
-      const response = await window.api.github.startMergeConflictResolution({
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        ...(action.repoId ? { repoId: action.repoId } : {}),
-        ...(action.repoName ? { repoName: action.repoName } : {}),
-        ...(action.branchName ? { branchName: action.branchName } : {}),
-      });
-      return {
-        ok: true,
-        result: {
-          dispatchedAction: action.type,
-          chatId: response.chatId,
-          projectId: action.projectId,
-          worktreeId: action.worktreeId,
-          repoId: action.repoId ?? null,
-        },
-      };
-    }
-    case 'worktree.start_pr_comment_triage': {
-      await ensureProjectsHydrated();
-      const workspace = getGitWorkspaceOrError(action.projectId);
-      if ('error' in workspace) {
-        return { ok: false, error: workspace.error };
-      }
-      const worktree = workspace.worktrees.find(
-        (candidate) => candidate.id === action.worktreeId,
-      );
-      if (!worktree) {
-        return {
-          ok: false,
-          error: {
-            code: 'not_found',
-            message: `Worktree ${action.worktreeId} was not found in project ${action.projectId}.`,
-          },
-        };
-      }
-      const prCommentTriageLockError = refuseIfSplitLocked(
-        action.projectId,
-        action.worktreeId,
-      );
-      if (prCommentTriageLockError) {
-        return { ok: false, error: prCommentTriageLockError };
-      }
-      useChatStore
-        .getState()
-        .selectWorktree(action.projectId, action.worktreeId);
-      const response = await window.api.github.startPrCommentTriage({
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        ...(action.repoId ? { repoId: action.repoId } : {}),
-        ...(action.repoName ? { repoName: action.repoName } : {}),
-        ...(action.branchName ? { branchName: action.branchName } : {}),
-      });
-      return {
-        ok: true,
-        result: {
-          dispatchedAction: action.type,
-          chatId: response.chatId,
-          projectId: action.projectId,
-          worktreeId: action.worktreeId,
-          repoId: action.repoId ?? null,
-        },
-      };
-    }
-    case 'worktree.start_ci_check_fix': {
-      await ensureProjectsHydrated();
-      const workspace = getGitWorkspaceOrError(action.projectId);
-      if ('error' in workspace) {
-        return { ok: false, error: workspace.error };
-      }
-      const worktree = workspace.worktrees.find(
-        (candidate) => candidate.id === action.worktreeId,
-      );
-      if (!worktree) {
-        return {
-          ok: false,
-          error: {
-            code: 'not_found',
-            message: `Worktree ${action.worktreeId} was not found in project ${action.projectId}.`,
-          },
-        };
-      }
-      const ciCheckFixLockError = refuseIfSplitLocked(
-        action.projectId,
-        action.worktreeId,
-      );
-      if (ciCheckFixLockError) {
-        return { ok: false, error: ciCheckFixLockError };
-      }
-      useChatStore
-        .getState()
-        .selectWorktree(action.projectId, action.worktreeId);
-      const response = await window.api.github.startCiCheckFix({
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        ...(action.repoId ? { repoId: action.repoId } : {}),
-        ...(action.repoName ? { repoName: action.repoName } : {}),
-        ...(action.branchName ? { branchName: action.branchName } : {}),
-      });
-      return {
-        ok: true,
-        result: {
-          dispatchedAction: action.type,
-          chatId: response.chatId,
-          projectId: action.projectId,
-          worktreeId: action.worktreeId,
-          repoId: action.repoId ?? null,
-        },
       };
     }
     case 'worktree.run_git_action': {
@@ -16428,8 +13617,9 @@ async function routeAction(
           error: {
             code: 'execution_failed',
             message:
-              useProjectsStore.getState().worktreeError ??
-              'Failed to join existing worktree.',
+              worktreeFailureAgentText(
+                useProjectsStore.getState().worktreeError,
+              ) ?? 'Failed to join existing worktree.',
             retryable: true,
           },
         };
@@ -16487,67 +13677,6 @@ async function routeAction(
         },
       };
     }
-    case 'workspace.get_settings': {
-      await ensureProjectsHydrated();
-      const workspace = getWorkspaceOrError(action.workspaceId);
-      if ('error' in workspace) {
-        return { ok: false, error: workspace.error };
-      }
-      const [settingsData, claudeMd] = await Promise.all([
-        window.api.getWorkspaceSettingsData({
-          workspaceId: action.workspaceId,
-          ...(action.worktreeId ? { worktreeId: action.worktreeId } : {}),
-        }),
-        action.includeClaudeMd === true
-          ? window.api.loadClaudeMd({ workspaceId: action.workspaceId })
-          : Promise.resolve(undefined),
-      ]);
-      return {
-        ok: true,
-        result: {
-          workspace: workspaceSummary(workspace),
-          capabilities: workspaceSettingsCapabilities(workspace),
-          settingsData: settingsData as unknown as AppAdvisorJson,
-          ...(claudeMd !== undefined ? { claudeMd } : {}),
-        },
-      };
-    }
-    case 'workspace.get_start_page': {
-      if (!isCanopyDesktopStartPageEnabled()) {
-        return {
-          ok: false,
-          error: {
-            code: 'surface_unavailable',
-            message: 'Project start pages are not available.',
-            retryable: false,
-          },
-        };
-      }
-      const resolved = await window.api.resolveProjectStartPage({
-        projectId: action.workspaceId,
-        ...(action.worktreeId ? { worktreeId: action.worktreeId } : {}),
-      });
-      return {
-        ok: true,
-        result: {
-          resolved: resolved
-            ? {
-                source: resolved.source,
-                startPage:
-                  resolved.startPage.kind === 'url'
-                    ? { kind: 'url', url: resolved.startPage.url }
-                    : {
-                        kind: 'file',
-                        path: resolved.startPage.path,
-                        ...(resolved.startPage.repoId
-                          ? { repoId: resolved.startPage.repoId }
-                          : {}),
-                      },
-              }
-            : null,
-        },
-      };
-    }
     case 'workspace.set_start_page': {
       if (!isCanopyDesktopStartPageEnabled()) {
         return {
@@ -16577,30 +13706,6 @@ async function routeAction(
         };
       }
       return { ok: true, result: { updated: true } };
-    }
-    case 'workspace.read_readiness': {
-      await ensureProjectsHydrated();
-      const workspace = getGitWorkspaceOrError(action.workspaceId);
-      if ('error' in workspace) {
-        return { ok: false, error: workspace.error };
-      }
-      const response = await window.api.getWorkspaceReadiness({
-        workspaceId: action.workspaceId,
-        ...(action.worktreeId ? { worktreeId: action.worktreeId } : {}),
-      });
-      return {
-        ok: true,
-        result: {
-          workspace: workspaceSummary(workspace),
-          issues: response.issues.map((issue) => ({
-            code: issue.code,
-            title: issue.title,
-            message: issue.message,
-            repoName: issue.repoName,
-            ...(issue.repoId ? { repoId: issue.repoId } : {}),
-          })),
-        },
-      };
     }
     case 'workspace.start_readiness_fix': {
       await ensureProjectsHydrated();
@@ -17067,18 +14172,6 @@ async function routeAction(
       }
       return { ok: true, result: { chatId } };
     }
-    case 'worktree-chat.list_tabs': {
-      const target = await resolveWorktreeTabsTarget(action);
-      if ('error' in target) return { ok: false, error: target.error };
-      return {
-        ok: true,
-        result: worktreeTabsResult(
-          target.projectId,
-          target.worktreeId,
-          target.worktreeChat,
-        ),
-      };
-    }
     case 'worktree-chat.list_background_processes': {
       const processes =
         useActivityStore.getState().bgProcesses[
@@ -17160,70 +14253,6 @@ async function routeAction(
       return {
         ok: true,
         result: { taskId: action.taskId, status: outcome },
-      };
-    }
-    case 'delegation.stop': {
-      // The same user stop as the card's Stop: main resolves the chat's
-      // delegation tree by chat identity, so no session needs to be live.
-      const outcome = await window.api.managedDelegation.stop({
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        chatId: action.chatId,
-        delegationId: action.delegationId,
-      });
-      if (!outcome.ok) {
-        return {
-          ok: false,
-          error: { code: 'execution_failed', message: outcome.error },
-        };
-      }
-      return {
-        ok: true,
-        result: { delegationId: action.delegationId, status: 'stopping' },
-      };
-    }
-    case 'delegation.stop_all': {
-      const outcome = await window.api.managedDelegation.stopAll({
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        chatId: action.chatId,
-      });
-      if (!outcome.ok) {
-        return {
-          ok: false,
-          error: { code: 'execution_failed', message: outcome.error },
-        };
-      }
-      return { ok: true, result: { stopped: outcome.stopped } };
-    }
-    case 'delegation.read_changes': {
-      // The same read as the card's Show changes, from the delegate's
-      // retained worktree in this worktree's delegation data.
-      const outcome = await window.api.managedDelegation.changes({
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        delegationId: action.delegationId,
-        revision: action.revision,
-      });
-      if (!outcome.ok) {
-        return {
-          ok: false,
-          error: { code: 'execution_failed', message: outcome.error },
-        };
-      }
-      return {
-        ok: true,
-        result: {
-          files: outcome.changes.files.map((file) => ({
-            path: file.path,
-            change: file.change,
-            ...(file.diff === undefined ? {} : { diff: file.diff }),
-            ...(file.diffTruncated ? { diffTruncated: true } : {}),
-          })),
-          ...(outcome.changes.omittedFiles
-            ? { omittedFiles: outcome.changes.omittedFiles }
-            : {}),
-        },
       };
     }
     case 'worktree-chat.retry_state_refresh': {
@@ -17385,12 +14414,6 @@ async function routeAction(
           message: 'Chat message controls run in the main process.',
         },
       };
-    case 'worktree-chat.get_last_user_message':
-      return readChatHistoryResult(action, 'last_user_message');
-    case 'worktree-chat.get_last_agent_response':
-      return readChatHistoryResult(action, 'last_agent_response');
-    case 'worktree-chat.read_history':
-      return readChatHistoryResult(action, 'transcript');
     case 'worktree-chat.run_chat_action':
       return runWorktreeChatActionResult(action);
     case 'worktree-chat.set_plan_mode': {
@@ -17504,73 +14527,6 @@ async function routeAction(
         },
       };
     }
-    case 'worktree-chat.set_fast_mode': {
-      const target = await resolveChatHistoryTarget(action);
-      if ('error' in target) {
-        return { ok: false, error: target.error };
-      }
-      const provider =
-        target.tab.providerType ??
-        (target.tab.model ? getProviderForModel(target.tab.model) : undefined);
-      if (!provider || !modelConfigForProviderSupportsFastMode(provider)) {
-        return {
-          ok: false,
-          error: {
-            code: 'invalid_target',
-            message:
-              'Fast mode is only available for supported model providers.',
-          },
-        };
-      }
-      await useChatStore.getState().setFastMode(action.enabled, {
-        projectId: target.projectId,
-        worktreeId: target.worktreeId,
-        chatId: target.chatId,
-      });
-      // An explicit boolean replaces the speed (false moves Ultra fast to
-      // Regular), so report the exact speed read back from the store rather
-      // than splicing the boolean into the previous record.
-      return chatSpeedChangeResult(
-        target,
-        codexSpeedFromFastMode(action.enabled),
-      );
-    }
-    case 'worktree-chat.set_speed': {
-      const target = await resolveChatHistoryTarget(action);
-      if ('error' in target) {
-        return { ok: false, error: target.error };
-      }
-      if (!tabUsesCodexSpeed(target.tab)) {
-        return {
-          ok: false,
-          error: {
-            code: 'invalid_target',
-            message: 'Speed is only available for Codex chats.',
-          },
-        };
-      }
-      // Mirrors the full speed picker: Auto cannot promise a model that
-      // offers Ultra fast, so the chat needs an explicit model first.
-      if (
-        action.speed === 'ultrafast' &&
-        target.tab.modelSelectionMode === 'auto'
-      ) {
-        return {
-          ok: false,
-          error: {
-            code: 'invalid_target',
-            message:
-              'Ultra fast needs a specific model. Choose a model that offers Ultra fast, or choose Regular or Fast.',
-          },
-        };
-      }
-      await useChatStore.getState().setSpeed(action.speed, {
-        projectId: target.projectId,
-        worktreeId: target.worktreeId,
-        chatId: target.chatId,
-      });
-      return chatSpeedChangeResult(target, action.speed);
-    }
     case 'home.set_execution_harness': {
       const draft = useHomeComposerStore.getState();
       const model =
@@ -17669,82 +14625,10 @@ async function routeAction(
         },
       };
     }
-    case 'worktree-chat.list_plugins':
-      return listAvailablePluginsResult(action);
-    case 'worktree-chat.update_plugin_selection': {
-      const target = await resolveChatHistoryTarget(action);
-      if ('error' in target) {
-        return { ok: false, error: target.error };
-      }
-      const next = updateSelection(
-        target.tab.pluginSelections ?? createEmptySelections(),
-        action.kind,
-        action.key,
-        action.enabled,
-      );
-      const effectiveSelections =
-        useChatStore.getState().setPluginSelections(next, {
-          projectId: target.projectId,
-          worktreeId: target.worktreeId,
-          chatId: target.chatId,
-        }) ?? next;
-      return {
-        ok: true,
-        result: {
-          ...chatSettingsResult(target),
-          pluginSelections: pluginSelectionsResult(effectiveSelections),
-        },
-      };
-    }
-    case 'worktree-chat.set_plugin_selections': {
-      const target = await resolveChatHistoryTarget(action);
-      if ('error' in target) {
-        return { ok: false, error: target.error };
-      }
-      const effectiveSelections =
-        useChatStore.getState().setPluginSelections(action.selections, {
-          projectId: target.projectId,
-          worktreeId: target.worktreeId,
-          chatId: target.chatId,
-        }) ?? action.selections;
-      return {
-        ok: true,
-        result: {
-          ...chatSettingsResult(target),
-          pluginSelections: pluginSelectionsResult(effectiveSelections),
-        },
-      };
-    }
-    case 'tracked-plan.list':
-      return listTrackedPlansResult(action);
-    case 'tracked-plan.import':
-      return importTrackedPlanResult(action);
-    case 'tracked-plan.get':
-      return getTrackedPlanResult(action);
-    case 'tracked-plan.open_explore':
-      return openTrackedPlanPanelResult(action);
-    case 'tracked-plan.list_comment_threads':
-      return listTrackedPlanCommentThreadsResult(action);
-    case 'tracked-plan.get_comment_thread':
-      return getTrackedPlanCommentThreadResult(action);
-    case 'pipeline-assistant-chat.list_tabs':
-      return pipelineAssistantChatListTabsResult();
     case 'pipeline-assistant-chat.create_tab':
       return createPipelineAssistantChatTabResult(action);
     case 'pipeline-assistant-chat.switch_tab':
       return pipelineAssistantChatSwitchTabResult(action);
-    case 'pipeline-assistant-chat.get_last_user_message':
-      return readPipelineAssistantChatHistoryResult(
-        action,
-        'last_user_message',
-      );
-    case 'pipeline-assistant-chat.get_last_agent_response':
-      return readPipelineAssistantChatHistoryResult(
-        action,
-        'last_agent_response',
-      );
-    case 'pipeline-assistant-chat.read_history':
-      return readPipelineAssistantChatHistoryResult(action, 'transcript');
     case 'pipeline-assistant-chat.send_message':
       return sendPipelineAssistantChatMessageResult(action);
     case 'pipeline-assistant-chat.set_model': {
@@ -17785,218 +14669,6 @@ async function routeAction(
         result: {
           ...chatSettingsResult(target),
           thinkingLevel: action.level,
-        },
-      };
-    }
-    case 'pipeline-assistant-chat.list_plugins': {
-      const target = await resolvePipelineAssistantChatHistoryTarget(action);
-      if ('error' in target) return { ok: false, error: target.error };
-      return buildAvailablePluginListResult(
-        target.tab.pluginSelections ?? createEmptySelections(),
-        {
-          projectId: target.projectId,
-          worktreeId: target.worktreeId,
-          chatId: target.chatId,
-          title: target.tab.title,
-          session: chatSessionResult(target.tab),
-        },
-        action,
-      );
-    }
-    case 'pipeline-assistant-chat.update_plugin_selection': {
-      const target = await resolvePipelineAssistantChatHistoryTarget(action);
-      if ('error' in target) return { ok: false, error: target.error };
-      const next = updateSelection(
-        target.tab.pluginSelections ?? createEmptySelections(),
-        action.kind,
-        action.key,
-        action.enabled,
-      );
-      const effectiveSelections =
-        useChatStore.getState().setPluginSelections(next, {
-          projectId: target.projectId,
-          worktreeId: target.worktreeId,
-          chatId: target.chatId,
-        }) ?? next;
-      return {
-        ok: true,
-        result: {
-          ...chatSettingsResult(target),
-          pluginSelections: pluginSelectionsResult(effectiveSelections),
-        },
-      };
-    }
-    case 'pipeline-assistant-chat.set_plugin_selections': {
-      const target = await resolvePipelineAssistantChatHistoryTarget(action);
-      if ('error' in target) return { ok: false, error: target.error };
-      const effectiveSelections =
-        useChatStore.getState().setPluginSelections(action.selections, {
-          projectId: target.projectId,
-          worktreeId: target.worktreeId,
-          chatId: target.chatId,
-        }) ?? action.selections;
-      return {
-        ok: true,
-        result: {
-          ...chatSettingsResult(target),
-          pluginSelections: pluginSelectionsResult(effectiveSelections),
-        },
-      };
-    }
-    case 'standalone-chat.list_projects': {
-      await ensureStandaloneProjectsLoaded();
-      const includeDefault = action.includeDefault !== false;
-      const projects = useStandaloneChatStore
-        .getState()
-        .chatProjects.filter(
-          (project) =>
-            includeDefault || !isDefaultCoworkWorkspaceId(project.id),
-        );
-      const max = clampLimit(
-        action.limit,
-        STANDALONE_LIST_DEFAULT_LIMIT,
-        STANDALONE_LIST_MAX_LIMIT,
-      );
-      const matching = projects.filter((project) =>
-        fuzzyMatchText(action.query, [
-          project.id,
-          project.name,
-          project.description ?? '',
-        ]),
-      );
-      const selected = matching.slice(0, max);
-      return {
-        ok: true,
-        result: {
-          query: action.query?.trim() ?? '',
-          includeDefault,
-          activeProjectId: activeStandaloneProjectId(),
-          totalMatches: matching.length,
-          returned: selected.length,
-          projects: selected.map(standaloneProjectSummary),
-        },
-      };
-    }
-    case 'standalone-chat.list_chats': {
-      const resolved = await resolveStandaloneProjectId(action.projectId);
-      if (typeof resolved !== 'string') {
-        return { ok: false, error: resolved.error };
-      }
-      // Live chats flatten across the workspace's Work Entries (each row
-      // carries its owning workEntryId); legacy pre-entry archived chats are
-      // appended from the chat-history read path when requested.
-      const { entries } = await window.api.workEntries.list({
-        projectId: resolved,
-      });
-      const memberships = sidebarItemGroupIds(
-        await sidebarGroupsForListing({ workspaceLocalId: resolved }),
-        entries.map((entry) => [entry.id]),
-      );
-      const liveRows: Array<{
-        meta: StandaloneChatMeta;
-        workEntryId: string;
-      }> = [];
-      for (const entry of entries) {
-        const tabsFile = await window.api.chat.loadTabs({
-          projectId: resolved,
-          worktreeId: entry.id,
-        });
-        for (const tab of tabsFile.tabs) {
-          if ((tab.kind ?? 'chat') !== 'chat') continue;
-          const lastMessage = tab.messages[tab.messages.length - 1];
-          liveRows.push({
-            workEntryId: entry.id,
-            meta: {
-              id: tab.id,
-              title: tab.title,
-              description: chatTabStripLabel(tab),
-              createdAt: tab.createdAt,
-              messageCount: tab.messages.length,
-              ...(lastMessage
-                ? {
-                    lastMessageAt: new Date(
-                      lastMessage.timestamp,
-                    ).toISOString(),
-                  }
-                : {}),
-              ...(tab.providerType ? { providerType: tab.providerType } : {}),
-              ...(tab.pluginSelections
-                ? { pluginSelections: tab.pluginSelections }
-                : {}),
-            },
-          });
-        }
-      }
-      const includeArchived = action.includeArchived === true;
-      const archivedRows: Array<{
-        meta: StandaloneChatMeta;
-        workEntryId: string | null;
-      }> = [];
-      if (includeArchived) {
-        for (const entry of entries) {
-          const archives = await window.api.chat.loadArchives({
-            projectId: resolved,
-            worktreeId: entry.id,
-          });
-          for (const archive of archives) {
-            archivedRows.push({
-              workEntryId: entry.id,
-              meta: {
-                id: archive.chatId,
-                title: archive.title,
-                description: chatTabStripLabel(archive),
-                createdAt: archive.createdAt,
-                messageCount: archive.turnCount,
-                providerType: archive.providerType,
-                archived: true,
-                archivedAt: archive.archivedAt,
-              },
-            });
-          }
-        }
-        const legacy = await window.api.standaloneChat.list(resolved);
-        for (const chat of legacy.chats) {
-          if (chat.archived === true) {
-            archivedRows.push({ meta: chat, workEntryId: null });
-          }
-        }
-      }
-      const rows = [...liveRows, ...archivedRows].filter(({ meta }) => {
-        if (action.providerType && meta.providerType !== action.providerType) {
-          return false;
-        }
-        return true;
-      });
-      const max = clampLimit(
-        action.limit,
-        STANDALONE_LIST_DEFAULT_LIMIT,
-        STANDALONE_LIST_MAX_LIMIT,
-      );
-      const matching = rows.filter(({ meta }) =>
-        fuzzyMatchText(action.query, [
-          meta.id,
-          meta.title ?? '',
-          meta.description ?? '',
-          meta.providerType ?? '',
-        ]),
-      );
-      const selected = matching.slice(0, max);
-      return {
-        ok: true,
-        result: {
-          projectId: resolved,
-          query: action.query?.trim() ?? '',
-          includeArchived,
-          providerType: action.providerType ?? null,
-          totalMatches: matching.length,
-          returned: selected.length,
-          chats: selected.map(({ meta, workEntryId }) =>
-            standaloneChatSummary(
-              meta,
-              workEntryId,
-              workEntryId ? memberships.get(workEntryId) : undefined,
-            ),
-          ),
         },
       };
     }
@@ -18254,12 +14926,6 @@ async function routeAction(
           message: 'Chat sends must run in the main process.',
         },
       };
-    case 'standalone-chat.get_last_user_message':
-      return readStandaloneChatHistoryResult(action, 'last_user_message');
-    case 'standalone-chat.get_last_agent_response':
-      return readStandaloneChatHistoryResult(action, 'last_agent_response');
-    case 'standalone-chat.read_history':
-      return readStandaloneChatHistoryResult(action, 'transcript');
     case 'standalone-chat.set_model': {
       const target = await resolveStandaloneChatTarget(
         action.projectId,
@@ -18318,212 +14984,6 @@ async function routeAction(
         result: {
           ...chatSettingsResult(target),
           thinkingLevel: action.level,
-        },
-      };
-    }
-    case 'standalone-chat.list_plugins':
-      return listAvailableStandalonePluginsResult(action);
-    case 'standalone-chat.update_plugin_selection': {
-      const target = await resolveStandaloneChatTarget(
-        action.projectId,
-        action.chatId,
-      );
-      if ('error' in target) {
-        return { ok: false, error: target.error };
-      }
-      const archivedError = archivedStandaloneMutationError(target);
-      if (archivedError) return { ok: false, error: archivedError };
-      const next = updateSelection(
-        target.tab.pluginSelections ?? createEmptySelections(),
-        action.kind,
-        action.key,
-        action.enabled,
-      );
-      const effectiveSelections =
-        useChatStore.getState().setPluginSelections(next, {
-          projectId: action.projectId,
-          worktreeId: target.worktreeId,
-          chatId: action.chatId,
-        }) ?? next;
-      return {
-        ok: true,
-        result: {
-          ...chatSettingsResult(target),
-          pluginSelections: pluginSelectionsResult(effectiveSelections),
-        },
-      };
-    }
-    case 'standalone-chat.set_plugin_selections': {
-      const target = await resolveStandaloneChatTarget(
-        action.projectId,
-        action.chatId,
-      );
-      if ('error' in target) {
-        return { ok: false, error: target.error };
-      }
-      const archivedError = archivedStandaloneMutationError(target);
-      if (archivedError) return { ok: false, error: archivedError };
-      const effectiveSelections =
-        useChatStore.getState().setPluginSelections(action.selections, {
-          projectId: action.projectId,
-          worktreeId: target.worktreeId,
-          chatId: action.chatId,
-        }) ?? action.selections;
-      return {
-        ok: true,
-        result: {
-          ...chatSettingsResult(target),
-          pluginSelections: pluginSelectionsResult(effectiveSelections),
-        },
-      };
-    }
-    case 'standalone-chat.list_prompts': {
-      const prompts = await window.api.workspaceItems.listPrompts({
-        projectId: action.projectId,
-      });
-      return {
-        ok: true,
-        result: standaloneWorkspaceListResult(
-          prompts,
-          action.query,
-          action.limit,
-          (prompt) => [prompt.id, prompt.title],
-        ),
-      };
-    }
-    case 'standalone-chat.get_prompt': {
-      const response = await window.api.workspaceItems.readPrompt({
-        projectId: action.projectId,
-        promptId: action.promptId,
-      });
-      return { ok: true, result: response as unknown as AppAdvisorJson };
-    }
-    case 'standalone-chat.list_notes': {
-      const notes = await window.api.workspaceItems.listNotes({
-        projectId: action.projectId,
-      });
-      return {
-        ok: true,
-        result: standaloneWorkspaceListResult(
-          notes,
-          action.query,
-          action.limit,
-          (note) => [note.id, note.title],
-        ),
-      };
-    }
-    case 'standalone-chat.get_note': {
-      const response = await window.api.workspaceItems.readNote({
-        projectId: action.projectId,
-        noteId: action.noteId,
-      });
-      return { ok: true, result: response as unknown as AppAdvisorJson };
-    }
-    case 'standalone-chat.list_attachments': {
-      // Cowork attachments are physically shared across Work Entries (the
-      // workspace-items cowork adapter ignores worktreeId), so the legacy
-      // shared `home` bucket key stays intentional here.
-      const attachments = await window.api.workspaceItems.listAttachments({
-        projectId: action.projectId,
-        worktreeId: COWORK_HOME_WORKTREE_ID,
-      });
-      return {
-        ok: true,
-        result: standaloneWorkspaceListResult(
-          attachments,
-          action.query,
-          action.limit,
-          (attachment) => [attachment.filename, attachment.absolutePath],
-        ),
-      };
-    }
-    case 'standalone-chat.get_attachment': {
-      // Shared-attachment keying — see list_attachments above.
-      const attachments = await window.api.workspaceItems.listAttachments({
-        projectId: action.projectId,
-        worktreeId: COWORK_HOME_WORKTREE_ID,
-      });
-      const attachment = attachments.find(
-        (candidate) => candidate.filename === action.attachmentId,
-      );
-      if (!attachment) {
-        return {
-          ok: false,
-          error: {
-            code: 'not_found',
-            message: `Standalone attachment ${action.attachmentId} was not found in project ${action.projectId}.`,
-          },
-        };
-      }
-      const content =
-        action.includeContent === true
-          ? await window.api.readFileContent({
-              absolutePath: attachment.absolutePath,
-            })
-          : undefined;
-      return {
-        ok: true,
-        result: {
-          meta: attachment as unknown as AppAdvisorJson,
-          ...(content !== undefined
-            ? { content: content as unknown as AppAdvisorJson }
-            : {}),
-        },
-      };
-    }
-    case 'standalone-chat.get_settings': {
-      const project = await getStandaloneProjectOrError(action.projectId);
-      if ('error' in project) {
-        return { ok: false, error: project.error };
-      }
-      const [snapshot, notes, prompts, attachments, claudeMd, workEntries] =
-        await Promise.all([
-          loadStandaloneWorkspace(action.projectId),
-          window.api.workspaceItems.listNotes({ projectId: action.projectId }),
-          window.api.workspaceItems.listPrompts({
-            projectId: action.projectId,
-          }),
-          // Shared-attachment keying — see list_attachments above.
-          window.api.workspaceItems.listAttachments({
-            projectId: action.projectId,
-            worktreeId: COWORK_HOME_WORKTREE_ID,
-          }),
-          action.includeClaudeMd === true
-            ? window.api.chatProject.loadClaudeMd({
-                projectId: action.projectId,
-              })
-            : Promise.resolve(undefined),
-          window.api.workEntries.list({ projectId: action.projectId }),
-        ]);
-      const entryArchives = await Promise.all(
-        [
-          ...workEntries.entries.map((entry) => entry.id),
-          COWORK_HOME_WORKTREE_ID,
-        ].map((worktreeId) =>
-          window.api.chat.loadArchives({
-            projectId: action.projectId,
-            worktreeId,
-          }),
-        ),
-      );
-      const archiveIds = new Set(
-        snapshot.archives.map((entry) => entry.chatId),
-      );
-      for (const archives of entryArchives) {
-        for (const archive of archives) archiveIds.add(archive.chatId);
-      }
-      return {
-        ok: true,
-        result: {
-          project: project as unknown as AppAdvisorJson,
-          summary: standaloneProjectSummary(project),
-          counts: {
-            archives: archiveIds.size,
-            notes: notes.length,
-            prompts: prompts.length,
-            attachments: attachments.length,
-          },
-          ...(claudeMd !== undefined ? { claudeMd: claudeMd.content } : {}),
         },
       };
     }
@@ -18825,6 +15285,8 @@ async function routeAction(
       });
       return pipelineOpenRunResponse(result);
     }
+    // The window's own Debug buttons dispatch this with source 'ui'; App
+    // Advisor's debug runs in main (CAN-6001).
     case 'pipeline.debug_run': {
       const context = await buildPipelineFailureDebugContext(
         action.executionId,
@@ -18989,26 +15451,6 @@ async function routeAction(
           )
         : { ok: true, result: result as unknown as AppAdvisorJson };
     }
-    case 'pipeline.execution_start_over': {
-      const result = await window.pipelines.rerunExecution(action.executionId);
-      if (!result.success) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message: result.error ?? 'Failed to start over pipeline execution.',
-          },
-        };
-      }
-      return { ok: true, result: result as unknown as AppAdvisorJson };
-    }
-    case 'pipeline.execution_read_report':
-      return readExecutionReportResult(action);
-    case 'pipeline.execution_read_plan':
-      return readExecutionPlanResult(action);
-    case 'pipeline.execution_send_report_to_chat':
-    case 'pipeline.execution_send_plan_to_chat':
-      return sendExecutionFollowUpToChat(action);
     case 'pipeline.execution_chain':
       return chainPipelineFromExecution(action);
     case 'file.open': {
@@ -19686,7 +16128,12 @@ async function routeAction(
           (await window.api.disconnectCanopyCloudAccount()) as unknown as AppAdvisorJson,
       };
     case 'canopy_portal.open':
-      if (rejectIfPortalDisabled(`open ${PORTAL_NAME_INLINE}`)) {
+      // The Remote Control dialog follows device Remote Control, not the
+      // Portal flag: Portal only follows its opt-in (CAN-5985).
+      if (!useRemoteControlStore.getState().state.available) {
+        useGitHubStore
+          .getState()
+          .addToast(CANOPY_PORTAL_DISABLED_TOAST, 'info');
         return canopyPortalDisabledResponse();
       }
       useNavigationStore.getState().openCanopyPortal();
@@ -20497,6 +16944,158 @@ async function routeAction(
           code: 'unsupported_action',
           message:
             'Code Graph actions run in the main process with the requested worktree.',
+        },
+      };
+    case 'tracked-plan.import':
+      return importTrackedPlanResult(action);
+    case 'tracked-plan.open_explore':
+      return openTrackedPlanPanelResult(action);
+    case 'worktree-chat.update_plugin_selection':
+    case 'worktree-chat.set_plugin_selections':
+    case 'standalone-chat.update_plugin_selection':
+    case 'standalone-chat.set_plugin_selections':
+    case 'pipeline-assistant-chat.update_plugin_selection':
+    case 'pipeline-assistant-chat.set_plugin_selections':
+    case 'worktree-chat.set_fast_mode':
+    case 'worktree-chat.set_speed':
+      // CAN-5999: the App Advisor runtime changes speed and plugin
+      // selections in main; these never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Chat speed and plugin changes run in the main process.',
+        },
+      };
+    case 'agents.list':
+    case 'agents.get':
+    case 'agents.create':
+    case 'agents.update':
+    case 'agents.delete':
+    case 'collections.list':
+    case 'collections.create':
+    case 'collections.update':
+    case 'collections.delete':
+    case 'plugins.list_marketplaces':
+    case 'plugins.refresh_marketplace':
+    case 'plugins.remove_marketplace':
+    case 'skills.list_marketplace':
+    case 'skill_suggestions.list':
+    case 'preferences.get_global_plugin_selections':
+    case 'preferences.set_global_plugin_selections':
+      // CAN-6002: the App Advisor runtime runs catalog actions in main;
+      // these never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Catalog actions run in the main process.',
+        },
+      };
+    case 'pipeline.execution_read_plan':
+    case 'pipeline.execution_read_report':
+    case 'pipeline.execution_start_over':
+    case 'pipeline.execution_send_plan_to_chat':
+    case 'pipeline.execution_send_report_to_chat':
+      // CAN-6001: the App Advisor runtime reads, reruns, sends and debugs
+      // pipeline executions in main; these never reach the renderer
+      // dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Pipeline execution actions run in the main process.',
+        },
+      };
+    case 'delegation.stop':
+    case 'delegation.stop_all':
+    case 'delegation.read_changes':
+      // CAN-6000: the App Advisor runtime stops delegates and reads their
+      // changes in main; these never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Delegation stops and change reads run in the main process.',
+        },
+      };
+    case 'worktree-chat.list_tabs':
+    case 'worktree-chat.read_history':
+    case 'worktree-chat.get_last_user_message':
+    case 'worktree-chat.get_last_agent_response':
+    case 'worktree-chat.list_plugins':
+    case 'pipeline-assistant-chat.list_tabs':
+    case 'pipeline-assistant-chat.read_history':
+    case 'pipeline-assistant-chat.get_last_user_message':
+    case 'pipeline-assistant-chat.get_last_agent_response':
+    case 'pipeline-assistant-chat.list_plugins':
+    case 'standalone-chat.list_projects':
+    case 'standalone-chat.list_chats':
+    case 'standalone-chat.get_settings':
+    case 'standalone-chat.list_plugins':
+    case 'standalone-chat.read_history':
+    case 'standalone-chat.get_last_user_message':
+    case 'standalone-chat.get_last_agent_response':
+    case 'standalone-chat.list_prompts':
+    case 'standalone-chat.get_prompt':
+    case 'standalone-chat.list_notes':
+    case 'standalone-chat.get_note':
+    case 'standalone-chat.list_attachments':
+    case 'standalone-chat.get_attachment':
+      // CAN-5999: the App Advisor runtime runs these chat reads in main;
+      // they never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Chat reads run in the main process.',
+        },
+      };
+    case 'workspace.list':
+    case 'workspace.get_settings':
+    case 'workspace.get_start_page':
+    case 'workspace.list_worktrees':
+    case 'workspace.list_join_options':
+    case 'workspace.list_existing_worktree_join_options':
+    case 'workspace.read_readiness':
+    case 'org_project.list':
+    case 'sidebar.item_groups.list':
+    case 'sidebar.item_groups.list_items':
+    case 'sidebar.item_groups.create':
+    case 'sidebar.item_groups.update':
+    case 'sidebar.item_groups.set_item':
+    case 'sidebar.item_groups.move_item':
+    case 'sidebar.item_groups.move_group':
+    case 'sidebar.item_groups.ungroup':
+    case 'tracked-plan.list':
+    case 'tracked-plan.get':
+    case 'tracked-plan.list_comment_threads':
+    case 'tracked-plan.get_comment_thread':
+      // CAN-5998: the App Advisor runtime runs these in main from main's
+      // own owners; they never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message:
+            'Project, sidebar group and tracked plan actions run in the main process.',
+        },
+      };
+    case 'worktree.create':
+    case 'worktree.get_settings':
+    case 'worktree.update_settings':
+    case 'worktree.set_base_branch':
+    case 'worktree.start_ci_check_fix':
+    case 'worktree.start_merge_conflict_resolution':
+    case 'worktree.start_pr_comment_triage':
+      // CAN-5997 and CAN-6024: the App Advisor runtime runs these in main
+      // with the requested worktree; they never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message:
+            'Worktree actions run in the main process with the requested worktree.',
         },
       };
     case 'worktree.list_scripts':

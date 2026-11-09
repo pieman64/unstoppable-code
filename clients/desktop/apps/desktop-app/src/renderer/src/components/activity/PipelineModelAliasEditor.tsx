@@ -14,7 +14,7 @@ import type {
   PipelineModelAlias,
   PipelineModelAliasPreference,
   PipelinePluginCollection,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   getAgentModelAvailability,
   getModelDisplayName,
@@ -22,6 +22,7 @@ import {
 import { ModelPicker } from '@/components/chat/ModelPicker';
 import { useAgentsStore } from '@/stores/agentsStore';
 import {
+  Stack,
   DialogFormField,
   FieldError,
   SettingsSelect,
@@ -218,7 +219,7 @@ export function PipelineModelAliasEditor({
         </span>
       }
     >
-      <div className="space-y-3">
+      <Stack gap="item">
         <SegmentedControl
           label="Alias mode"
           shape="capsule"
@@ -234,7 +235,7 @@ export function PipelineModelAliasEditor({
         />
 
         {currentMode === 'inline' && (
-          <div className="space-y-3">
+          <Stack gap="item">
             <DialogFormField
               label="Base model"
               error={errorFor('base')}
@@ -301,7 +302,7 @@ export function PipelineModelAliasEditor({
                 disabled={readonly}
               />
             </DialogFormField>
-          </div>
+          </Stack>
         )}
 
         {currentMode === 'agent' && (
@@ -353,6 +354,7 @@ export function PipelineModelAliasEditor({
 
         {!readonly && effective.customized && (
           <Button
+            className="self-start"
             size="compact"
             onClick={handleResetOrClear}
             data-testid={`pipeline-model-alias-${alias.id}-reset`}
@@ -360,7 +362,7 @@ export function PipelineModelAliasEditor({
             {hasDefaults ? 'Reset to defaults' : 'Clear custom value'}
           </Button>
         )}
-      </div>
+      </Stack>
     </Disclosure>
   );
 }

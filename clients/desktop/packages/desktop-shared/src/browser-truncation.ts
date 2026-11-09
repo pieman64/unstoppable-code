@@ -1,4 +1,7 @@
-import type { BrowserConsoleEntry, BrowserNetworkEntry } from './types/browser';
+import type {
+  BrowserConsoleEntry,
+  BrowserNetworkEntry,
+} from '@canopy/execution-engine/types/browser';
 
 export const BROWSER_ACTION_ROW_LIMIT = 200;
 export const BROWSER_CONSOLE_MESSAGE_MAX_CHARS = 2000;

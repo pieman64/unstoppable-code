@@ -98,6 +98,10 @@ export function failedPerformanceScenario(name, durationMs, error) {
     ...(details.gitAttribution
       ? { gitAttribution: details.gitAttribution }
       : {}),
+    ...(details.rendererProcessGone
+      ? { rendererProcessGone: details.rendererProcessGone }
+      : {}),
+    ...(details.crashDumps ? { crashDumps: details.crashDumps } : {}),
     ...(details.userDataDir ? { userDataDir: details.userDataDir } : {}),
     error:
       error instanceof Error ? (error.stack ?? error.message) : String(error),

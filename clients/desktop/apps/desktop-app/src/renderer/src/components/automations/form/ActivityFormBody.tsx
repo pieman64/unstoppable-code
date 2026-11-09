@@ -33,7 +33,7 @@ import {
   WORKSPACE_ROOT_REPO_NAME,
 } from '@canopy/desktop-shared/types';
 import { emptyPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
-import { canonicalizeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
+import { canonicalizeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import {
   CHAT_UNIT_LABEL,
   ORCHESTRATOR_LABEL,
@@ -52,10 +52,10 @@ import {
   validateAutomationTrigger,
   type AutomationChatRunMode,
 } from '@canopy/desktop-shared/lib/automations';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import type { useProjectsStore } from '@/stores/projectsStore';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
-import { automationContextNoteMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
+import { automationContextNoteMessage } from '@canopy/execution-engine/lib/automation-context-copy';
 import type { WorktreeSessionTarget } from '@/components/automations/worktreeSessionPrompt';
 import { AutomationSidebarGroupPicker } from '@/components/automations/AutomationSidebarGroupPicker';
 import { AutomationPipelineDependenciesField } from './AutomationPipelineDependenciesField';
@@ -77,6 +77,7 @@ import type { AutomationScope } from '@/hooks/useAutomationScope';
 import { ProjectIcon } from '@/components/shared/ProjectIcon';
 import { Tooltip } from '@canopy/ui-shared';
 import {
+  Stack,
   AutomationPipelineTargetFields,
   Button,
   Disclosure,
@@ -92,6 +93,7 @@ import {
   TextArea,
   TextInput,
   ToggleSwitch,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import { automationDestinationExecutionScope } from '@canopy/pipeline-interop/automation-target';
@@ -1058,16 +1060,16 @@ export function ActivityFormBody({
                 size="small"
                 data-testid="automations-form-schedule-readonly"
               >
-                <div className="px-3 py-2">
-                  <div className="mb-2 text-xs font-medium fg-secondary">
+                <div className="flex flex-col px-3 py-2 gap-2">
+                  <div className="text-xs font-medium fg-secondary">
                     Trigger
                   </div>
                   <Surface
                     variant="group"
                     size="small"
-                    className="mb-2 inline-block"
+                    className="inline-block self-start"
                   >
-                    <div className="inline-flex px-2 py-1 text-xs fg-primary">
+                    <div className="inline-flex self-start px-2 py-1 text-xs fg-primary">
                       One-time
                     </div>
                   </Surface>
@@ -1096,7 +1098,7 @@ export function ActivityFormBody({
                     </Field>
                   </div>
                   {previewDate ? (
-                    <div className="mt-2 text-xs fg-secondary">
+                    <div className="text-xs fg-secondary">
                       Triggers at {previewDate.toLocaleString()}
                     </div>
                   ) : null}
@@ -1115,105 +1117,108 @@ export function ActivityFormBody({
               />
             )}
             {!formReadOnly && state.triggerKind === 'cron' ? (
-              <div className="flex flex-col">
-                <FormField label="Cron expression">
-                  {(control) => (
-                    <TextInput
-                      {...control}
-                      type="text"
-                      mono
-                      value={state.cronExpression}
-                      onChange={(event): void =>
-                        update('cronExpression', event.target.value)
-                      }
-                      disabled={cronGenerating}
-                      aria-busy={cronGenerating}
-                      spellCheck={false}
-                      data-testid="automations-form-cron"
-                      trailing={
-                        <Tooltip label="Generate cron expression">
-                          <Button
-                            variant="ghost"
-                            size="compact"
-                            iconOnly
-                            aria-label="Generate cron expression"
-                            disabled={cronGenerating}
-                            onClick={(): void => {
-                              setCronAssistantOpen((open) => !open);
-                              setCronGenerationWarning(null);
-                            }}
-                            data-testid="automations-form-cron-assistant"
-                          >
-                            <AppAdvisorIcon size="sm" />
-                          </Button>
-                        </Tooltip>
-                      }
-                    />
-                  )}
-                </FormField>
-                {cronAssistantOpen && !cronGenerating && (
-                  <div className="mt-2 flex items-center gap-2">
-                    <TextInput
-                      type="text"
-                      aria-label="Describe schedule"
-                      value={cronAssistantText}
-                      onChange={(event): void =>
-                        setCronAssistantText(event.target.value)
-                      }
-                      onKeyDown={(event): void => {
-                        if (event.key !== 'Enter') return;
-                        event.preventDefault();
-                        void handleGenerateCron();
-                      }}
-                      placeholder="Describe schedule in natural language"
-                      data-testid="automations-form-cron-natural-language"
-                      className="min-w-0 flex-1"
-                    />
-                    <Button
-                      size="compact"
-                      disabled={cronAssistantText.trim().length === 0}
-                      onClick={() => void handleGenerateCron()}
-                      data-testid="automations-form-cron-generate"
-                    >
-                      Generate
-                    </Button>
-                  </div>
-                )}
-                {cronGenerating && (
-                  <div className="mt-1 text-xs fg-secondary">Generating…</div>
-                )}
-                {cronGenerationWarning && !cronGenerating && (
-                  <Notice
-                    intent="attention"
-                    role="alert"
-                    className="mt-2"
-                    data-testid="automations-form-cron-generation-warning"
-                    actions={
-                      <NoticeButton
-                        variant="primary"
-                        onClick={(): void => {
-                          setCronGenerationWarning(null);
-                          setCronAssistantOpen(true);
+              <Stack gap="tight">
+                <Stack gap={cronGenerating ? 'tight' : 'inline'}>
+                  <FormField label="Cron expression">
+                    {(control) => (
+                      <TextInput
+                        {...control}
+                        type="text"
+                        mono
+                        value={state.cronExpression}
+                        onChange={(event): void =>
+                          update('cronExpression', event.target.value)
+                        }
+                        disabled={cronGenerating}
+                        aria-busy={cronGenerating}
+                        spellCheck={false}
+                        data-testid="automations-form-cron"
+                        trailing={
+                          <Tooltip label="Generate cron expression">
+                            <Button
+                              variant="ghost"
+                              size="compact"
+                              iconOnly
+                              aria-label="Generate cron expression"
+                              disabled={cronGenerating}
+                              onClick={(): void => {
+                                setCronAssistantOpen((open) => !open);
+                                setCronGenerationWarning(null);
+                              }}
+                              data-testid="automations-form-cron-assistant"
+                            >
+                              <AppAdvisorIcon size="sm" />
+                            </Button>
+                          </Tooltip>
+                        }
+                      />
+                    )}
+                  </FormField>
+                  {cronAssistantOpen && !cronGenerating && (
+                    <div className="flex items-center gap-2">
+                      <TextInput
+                        type="text"
+                        aria-label="Describe schedule"
+                        value={cronAssistantText}
+                        onChange={(event): void =>
+                          setCronAssistantText(event.target.value)
+                        }
+                        onKeyDown={(event): void => {
+                          if (event.key !== 'Enter') return;
+                          event.preventDefault();
+                          void handleGenerateCron();
                         }}
-                        data-testid="automations-form-cron-generation-try-again"
+                        placeholder="Describe schedule in natural language"
+                        data-testid="automations-form-cron-natural-language"
+                        className="min-w-0 flex-1"
+                      />
+                      <Button
+                        size="compact"
+                        disabled={cronAssistantText.trim().length === 0}
+                        onClick={() => void handleGenerateCron()}
+                        data-testid="automations-form-cron-generate"
                       >
-                        Try again
-                      </NoticeButton>
-                    }
-                  >
-                    {cronGenerationWarning}
-                  </Notice>
-                )}
+                        Generate
+                      </Button>
+                    </div>
+                  )}
+                  {cronGenerating && (
+                    <div className="text-xs fg-secondary">Generating…</div>
+                  )}
+                  {cronGenerationWarning && !cronGenerating && (
+                    <Notice
+                      className=""
+                      intent="destructive"
+                      data-testid="automations-form-cron-generation-warning"
+                      actions={
+                        <NoticeButton
+                          variant="primary"
+                          onClick={(): void => {
+                            setCronGenerationWarning(null);
+                            setCronAssistantOpen(true);
+                          }}
+                          data-testid="automations-form-cron-generation-try-again"
+                        >
+                          Try again
+                        </NoticeButton>
+                      }
+                    >
+                      {cronGenerationWarning}
+                    </Notice>
+                  )}
+                </Stack>
                 {cronError ? (
-                  <div className="mt-1 text-xs fg-destructive">{cronError}</div>
+                  <FieldError id="automations-form-cron-error">
+                    {cronError}
+                  </FieldError>
                 ) : previewDate ? (
-                  <div className="mt-1 text-xs fg-secondary">
+                  <div className="text-xs fg-secondary">
                     Next trigger: {previewDate.toLocaleString()}
                   </div>
                 ) : null}
-              </div>
+              </Stack>
             ) : !formReadOnly ? (
-              <div className="flex flex-col gap-2">
+              <Stack gap="inline">
                 <Field label="Date">
                   {(control) => (
                     <TextInput
@@ -1242,16 +1247,16 @@ export function ActivityFormBody({
                 </Field>
                 {previewDate ? (
                   previewDate.getTime() <= Date.now() ? (
-                    <div className="text-xs fg-destructive">
+                    <FieldError id="automations-form-time-error">
                       Choose a future time.
-                    </div>
+                    </FieldError>
                   ) : (
                     <div className="text-xs fg-secondary">
                       Triggers at {previewDate.toLocaleString()}
                     </div>
                   )
                 ) : null}
-              </div>
+              </Stack>
             ) : null}
             {!formReadOnly && (
               <Disclosure
@@ -1354,8 +1359,7 @@ export function ActivityFormBody({
                 )}
                 {ifCommandWarning && !ifCommandGenerating && (
                   <Notice
-                    intent="attention"
-                    role="alert"
+                    intent="destructive"
                     data-testid="automations-form-if-command-warning"
                   >
                     {ifCommandWarning}
@@ -1523,103 +1527,115 @@ export function ActivityFormBody({
                 selectedProject) ||
               isWorktreeSessionPrompt) && (
               <Field label="Prompt">
-                <ConfigurationChatComposer
-                  editorId={`automation-${state.id ?? 'new'}`}
-                  dataTestId="automations-form-prompt"
-                  draftGeneration={0}
-                  context={composerContext}
-                  selectionMode="local"
-                  readOnly={formReadOnly}
-                  disabled={saving}
-                  effectiveModel={previewTab?.model}
-                  speedRouteContext={
-                    isWorktreeSessionPrompt && state.worktreeSessionTarget
-                      ? {
-                          kind: 'chat',
-                          projectId: state.worktreeSessionTarget.workspaceId,
-                          worktreeId: state.worktreeSessionTarget.worktreeId,
-                          chatId: state.worktreeSessionTarget.chatId,
-                        }
-                      : undefined
+                {/* The composite field's six-pixel child rhythm previously
+                    added to the note/mode margin. Keep those control-internal
+                    distances on their parent while the label keeps its gap. */}
+                <div
+                  className={
+                    state.actionType === 'worktree_prompt' &&
+                    claudeTuiChatsEnabled
+                      ? 'flex flex-col gap-4.5'
+                      : 'flex flex-col gap-3.5'
                   }
-                  speedRouteModelSelection={previewTab?.modelSelectionMode}
-                  effectiveModelConfig={
-                    previewTab?.modelConfig ??
-                    (previewTab?.thinkingLevel
-                      ? { thinkingLevel: previewTab.thinkingLevel }
-                      : undefined)
-                  }
-                  executionHarness={
-                    previewTab?.executionHarness === 'claude' ||
-                    previewTab?.executionHarness === 'codex'
-                      ? previewTab.executionHarness
-                      : undefined
-                  }
-                  effectivePlanMode={previewTab?.planMode}
-                  effectiveApprovalMode={previewTab?.approvalMode}
-                  inheritedSelections={previewTab?.pluginSelections}
-                  value={{
-                    prompt: state.prompt,
-                    promptReferences: state.promptReferences,
-                    model: state.model,
-                    modelConfig: canonicalizeAgentModelConfig({
-                      ...state.chatModelConfig,
-                      ...(state.thinkingLevel !== undefined
-                        ? { thinkingLevel: state.thinkingLevel }
-                        : {}),
-                      ...(state.fastMode !== undefined
-                        ? { fastMode: state.fastMode }
-                        : {}),
-                    }),
-                    planMode: state.planMode,
-                    approvalMode: state.approvalMode,
-                    plugins: state.plugins,
-                    pluginSelections: state.pluginSelections,
-                  }}
-                  onChange={(next) =>
-                    onFieldChange({
-                      ...state,
-                      prompt: next.prompt,
-                      promptReferences: next.promptReferences,
-                      model: next.model,
-                      chatModelConfig: next.modelConfig,
-                      thinkingLevel: next.modelConfig?.thinkingLevel,
-                      fastMode: next.modelConfig?.fastMode,
-                      planMode: next.planMode,
-                      approvalMode: next.approvalMode,
-                      plugins: next.plugins ?? [],
-                      pluginSelections:
-                        next.pluginSelections ?? emptyPluginSelections(),
-                    })
-                  }
-                  onPendingChange={setComposerPending}
-                  onValidityChange={onComposerValidityChange}
-                  variables={promptVariableItems.map((variable) => ({
-                    ...variable,
-                    token: createAutomationPromptVariableToken(variable.name),
-                  }))}
-                />
-                {!formReadOnly && isWorktreeSessionPrompt && (
-                  <p className="mt-2 text-2xs fg-secondary">
-                    Settings changed here apply to this chat when the automation
-                    runs. Unchanged settings follow the chat.
-                  </p>
-                )}
-                {!formReadOnly &&
-                  state.actionType === 'worktree_prompt' &&
-                  claudeTuiChatsEnabled && (
-                    <div className="mt-3 flex flex-col gap-1">
-                      <span className="text-2xs font-medium fg-secondary">
-                        Claude Code mode
-                      </span>
-                      <InterfaceModePill
-                        value={state.interfaceMode}
-                        onChange={(nextMode) =>
-                          update('interfaceMode', nextMode)
-                        }
-                      />
-                    </div>
+                >
+                  <ConfigurationChatComposer
+                    editorId={`automation-${state.id ?? 'new'}`}
+                    dataTestId="automations-form-prompt"
+                    draftGeneration={0}
+                    context={composerContext}
+                    selectionMode="local"
+                    readOnly={formReadOnly}
+                    disabled={saving}
+                    effectiveModel={previewTab?.model}
+                    speedRouteContext={
+                      isWorktreeSessionPrompt && state.worktreeSessionTarget
+                        ? {
+                            kind: 'chat',
+                            projectId: state.worktreeSessionTarget.workspaceId,
+                            worktreeId: state.worktreeSessionTarget.worktreeId,
+                            chatId: state.worktreeSessionTarget.chatId,
+                          }
+                        : undefined
+                    }
+                    speedRouteModelSelection={previewTab?.modelSelectionMode}
+                    effectiveModelConfig={
+                      previewTab?.modelConfig ??
+                      (previewTab?.thinkingLevel
+                        ? { thinkingLevel: previewTab.thinkingLevel }
+                        : undefined)
+                    }
+                    executionHarness={
+                      previewTab?.executionHarness === 'claude' ||
+                      previewTab?.executionHarness === 'codex'
+                        ? previewTab.executionHarness
+                        : undefined
+                    }
+                    effectivePlanMode={previewTab?.planMode}
+                    effectiveApprovalMode={previewTab?.approvalMode}
+                    inheritedSelections={previewTab?.pluginSelections}
+                    value={{
+                      prompt: state.prompt,
+                      promptReferences: state.promptReferences,
+                      model: state.model,
+                      modelConfig: canonicalizeAgentModelConfig({
+                        ...state.chatModelConfig,
+                        ...(state.thinkingLevel !== undefined
+                          ? { thinkingLevel: state.thinkingLevel }
+                          : {}),
+                        ...(state.fastMode !== undefined
+                          ? { fastMode: state.fastMode }
+                          : {}),
+                      }),
+                      planMode: state.planMode,
+                      approvalMode: state.approvalMode,
+                      plugins: state.plugins,
+                      pluginSelections: state.pluginSelections,
+                    }}
+                    onChange={(next) =>
+                      onFieldChange({
+                        ...state,
+                        prompt: next.prompt,
+                        promptReferences: next.promptReferences,
+                        model: next.model,
+                        chatModelConfig: next.modelConfig,
+                        thinkingLevel: next.modelConfig?.thinkingLevel,
+                        fastMode: next.modelConfig?.fastMode,
+                        planMode: next.planMode,
+                        approvalMode: next.approvalMode,
+                        plugins: next.plugins ?? [],
+                        pluginSelections:
+                          next.pluginSelections ?? emptyPluginSelections(),
+                      })
+                    }
+                    onPendingChange={setComposerPending}
+                    onValidityChange={onComposerValidityChange}
+                    variables={promptVariableItems.map((variable) => ({
+                      ...variable,
+                      token: createAutomationPromptVariableToken(variable.name),
+                    }))}
+                  />
+                  {!formReadOnly && isWorktreeSessionPrompt && (
+                    <p className="text-2xs fg-secondary">
+                      Settings changed here apply to this chat when the
+                      automation runs. Unchanged settings follow the chat.
+                    </p>
                   )}
+                  {!formReadOnly &&
+                    state.actionType === 'worktree_prompt' &&
+                    claudeTuiChatsEnabled && (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-2xs font-medium fg-secondary">
+                          Claude Code mode
+                        </span>
+                        <InterfaceModePill
+                          value={state.interfaceMode}
+                          onChange={(nextMode) =>
+                            update('interfaceMode', nextMode)
+                          }
+                        />
+                      </div>
+                    )}
+                </div>
               </Field>
             )}
             {actionTypeTakesPipelineDependencies(state.actionType) &&
@@ -1639,9 +1655,14 @@ export function ActivityFormBody({
               (selectedProject || isGlobalPipeline) && (
                 <>
                   <Field label="Workflow">
-                    <Surface variant="inset" size="small" padding="tight">
+                    <Surface
+                      variant="inset"
+                      gap="inline"
+                      size="small"
+                      padding="tight"
+                    >
                       {state.pipelineId ? (
-                        <div className="mb-2 min-w-0">
+                        <div className="min-w-0">
                           <div className="truncate text-s font-medium fg-primary">
                             {state.pipelineName || state.pipelineId}
                           </div>
@@ -1664,7 +1685,7 @@ export function ActivityFormBody({
                           </div>
                         </div>
                       ) : (
-                        <div className="mb-2 text-xs fg-secondary">
+                        <div className="text-xs fg-secondary">
                           {!state.workspaceId && !isGlobalPipeline
                             ? 'Select a project to load workflows.'
                             : 'Select a dispatch workflow and configure its inputs.'}
@@ -1682,6 +1703,7 @@ export function ActivityFormBody({
                                 !codeProjectFolderRepoChoices?.length))
                         }
                         onClick={(): void => setPipelinePickerOpen(true)}
+                        className="self-start"
                         data-testid="automations-form-pipeline"
                       >
                         {state.pipelineId
@@ -1689,7 +1711,7 @@ export function ActivityFormBody({
                           : 'Select workflow'}
                       </Button>
                       <ErrorBanner
-                        className="mt-2"
+                        className=""
                         error={modelAliasBlockingError}
                         testId="automations-form-model-alias-error"
                       />
@@ -1699,11 +1721,12 @@ export function ActivityFormBody({
                     <Field label="Inputs">
                       <Surface
                         variant="group"
+                        gap="tight"
                         size="small"
                         padding="tight"
                         data-testid="automations-form-pipeline-inputs"
                       >
-                        <div className="space-y-1">
+                        <div className="flex flex-col gap-1">
                           {state.pipelineInputs.map((row) => (
                             <div
                               key={row.key}
@@ -1731,26 +1754,27 @@ export function ActivityFormBody({
         )}
       </div>
       {chatTargetBlockingMessage && (
-        <div
-          role="alert"
-          data-testid="automations-form-chat-target-error"
-          className={`shrink-0 border-t px-4 pt-3 text-xs ${
-            chatTargetStatus === 'unavailable'
-              ? 'fg-destructive'
-              : 'fg-secondary'
-          }`}
-        >
-          {chatTargetBlockingMessage}
+        <div className="shrink-0 border-t px-4 pt-3">
+          <Notice
+            intent={
+              chatTargetStatus === 'unavailable' ? 'destructive' : 'neutral'
+            }
+            data-testid="automations-form-chat-target-error"
+          >
+            {chatTargetBlockingMessage}
+          </Notice>
         </div>
       )}
       {error && (
-        <Notice
-          intent="destructive"
-          className="mx-4 mb-3 shrink-0"
-          data-testid="automations-form-error"
-        >
-          {error}
-        </Notice>
+        <div className="shrink-0 px-4 pb-3">
+          <Notice
+            className=""
+            intent="destructive"
+            data-testid="automations-form-error"
+          >
+            {error}
+          </Notice>
+        </div>
       )}
     </>
   );
@@ -1881,7 +1905,7 @@ function projectPickerOption(
     label: displayName,
     subtitle,
     badge: (
-      <WorkspaceBadge
+      <ProjectIcon
         color={project.color}
         repoPath={project.type === 'single-repo' ? project.repoPath : undefined}
         kind={isCowork ? 'cowork' : isMultiRepo ? 'multi-repo' : 'single-repo'}
@@ -1889,25 +1913,4 @@ function projectPickerOption(
       />
     ),
   };
-}
-
-function WorkspaceBadge({
-  color,
-  kind,
-  repoPath,
-  temporary,
-}: {
-  color?: string;
-  kind: 'single-repo' | 'multi-repo' | 'cowork';
-  repoPath?: string;
-  temporary?: boolean;
-}): JSX.Element {
-  return (
-    <ProjectIcon
-      kind={kind}
-      temporary={temporary}
-      color={color}
-      repoPath={repoPath}
-    />
-  );
 }

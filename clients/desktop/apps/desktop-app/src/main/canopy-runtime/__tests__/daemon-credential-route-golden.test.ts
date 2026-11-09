@@ -24,7 +24,7 @@ import canopyBrand from '../../../../../../brands/canopy/brand.json';
 import unstoppableBrand from '../../../../../../brands/unstoppable-code/brand.json';
 import {
   resolveLegacyPatPaths,
-  secureStorageMode,
+  resolveBuildStoragePaths,
 } from '@canopy/core-runtime/node/secure-data-dir';
 import { createLegacyPatGenerationReader } from '@canopy/core-runtime/node/vault';
 import { createHash } from 'node:crypto';
@@ -584,7 +584,7 @@ async function isolated(run: () => Promise<void>): Promise<void> {
 describe.each([canopyBrand, unstoppableBrand])(
   'legacy path equivalence for $id',
   (brand) => {
-    it.each(['stable', 'rc', 'internal', 'dev'])(
+    it.each(['stable', 'rc', 'internal', 'dev'] as const)(
       'matches Electron auth lookup for %s with and without overrides',
       async (flavor) => {
         const defines = {
@@ -645,43 +645,51 @@ describe.each([canopyBrand, unstoppableBrand])(
                 process.env.CANOPY_SECURE_DATA_DIR =
                   overrides.CANOPY_SECURE_DATA_DIR;
                 resetResolvedCanopyDataDirCache();
-                const runtimeMode =
-                  flavor === 'dev' ? 'dev' : flavor === 'rc' ? 'rc' : 'prod';
-                const daemonOptions: Parameters<
-                  typeof resolveLegacyPatPaths
-                >[0] = {
+                const identity = compiledBuildIdentity(brand.id);
+                const { dataRoot } = resolveBuildStoragePaths({
                   home: root,
-                  names: brand.storage.secureDataDirNames,
-                  dataDirNames: brand.storage.dataDirNames,
-                  runtimeMode,
-                  mode: secureStorageMode(flavor, runtimeMode),
+                  brand,
+                  identity,
+                });
+                const daemonOptions = {
+                  dataRoot,
                   environment: process.env,
                 };
-                if (
-                  flavor !== 'dev' &&
-                  !testBuild &&
-                  (overrides.CANOPY_DATA_DIR?.trim() ||
-                    overrides.CANOPY_SECURE_DATA_DIR?.trim())
-                ) {
-                  expect(() => resolveLegacyPatPaths(daemonOptions)).toThrow(
-                    'require a dev or test build',
-                  );
-                  expect(() => paths.getGitHubPatFilePath()).toThrow(
-                    'require a dev or test build',
-                  );
-                  await expect(readStoredPatWithStatus()).rejects.toThrow(
-                    'require a dev or test build',
-                  );
-                  continue;
-                }
                 const daemonPaths = resolveLegacyPatPaths(daemonOptions);
                 const hostPaths = [
                   paths.getGitHubPatFilePath(),
-                  paths.getInternalLegacySharedGitHubPatFilePath(),
                   paths.getLegacyGitHubPatFilePath(),
                 ].filter((path): path is string => path !== null);
                 expect(daemonPaths).toEqual(hostPaths);
-                const identity = compiledBuildIdentity(brand.id);
+                const dataOverride = overrides.CANOPY_DATA_DIR?.trim();
+                const secureOverride = overrides.CANOPY_SECURE_DATA_DIR?.trim();
+                if (dataOverride || secureOverride) {
+                  expect(
+                    paths.getInternalLegacySharedGitHubPatFilePath(),
+                  ).toBeNull();
+                  expect(daemonPaths).toHaveLength(2);
+                  expect(daemonPaths[0]).toBe(
+                    join(
+                      secureOverride ??
+                        join(dataOverride ?? dataRoot, 'secure-storage'),
+                      'github-pat.enc',
+                    ),
+                  );
+                }
+                expect(
+                  paths.getInternalLegacySharedGitHubPatFilePath(),
+                ).toBeNull();
+                const retainedPaths = [canopyBrand, unstoppableBrand].flatMap(
+                  (retainedBrand) =>
+                    Object.values(retainedBrand.storage.secureDataDirNames).map(
+                      (directory) => join(root, directory, 'github-pat.enc'),
+                    ),
+                );
+                for (const retained of retainedPaths) {
+                  await mkdir(dirname(retained), { recursive: true });
+                  await writeFile(retained, 'explicit-recovery-only');
+                  expect(daemonPaths).not.toContain(retained);
+                }
                 expect(identity).toEqual({ brandId: brand.id, build: flavor });
                 expect(getCanopyBuildIdentity()).toEqual(identity);
                 const generation = createLegacyPatGenerationReader({
@@ -709,6 +717,34 @@ describe.each([canopyBrand, unstoppableBrand])(
                   await rm(daemonPaths[0], { force: true });
                 }
                 expect(await generation(identity)).toBeNull();
+                expect(await readStoredPatWithStatus()).toMatchObject({
+                  status: 'ok',
+                  value: null,
+                });
+                const { saveGitHubPat: save } =
+                  await import('../../lib/github-pat-save');
+                await writeFile(daemonPaths[1], 'root-contained-legacy');
+                await save('new-synthetic-pat');
+                expect(await readFile(daemonPaths[0], 'utf8')).toBe(
+                  'encrypted:new-synthetic-pat',
+                );
+                await expect(readFile(daemonPaths[1])).rejects.toMatchObject({
+                  code: 'ENOENT',
+                });
+                expect(await generation(identity)).toBe(
+                  createHash('sha256')
+                    .update('encrypted:new-synthetic-pat')
+                    .digest('hex'),
+                );
+                await save('');
+                expect(await generation(identity)).toBeNull();
+                await expect(readFile(daemonPaths[0])).rejects.toMatchObject({
+                  code: 'ENOENT',
+                });
+                for (const retained of retainedPaths)
+                  expect(await readFile(retained, 'utf8')).toBe(
+                    'explicit-recovery-only',
+                  );
               }
             }
           });

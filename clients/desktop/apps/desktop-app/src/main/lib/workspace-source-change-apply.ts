@@ -1,3 +1,4 @@
+import type { SourceChangeGit } from '../canopy-runtime/worker-git-worktree-adapter';
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { applyProjectInstructionsChange } from '@canopy/core-runtime/node/workspace/workspace-instructions';
 import { dirname, join } from 'node:path';
@@ -39,12 +40,7 @@ import {
   writeProjectInstructionFile,
 } from './instruction-files';
 import { readCanopyJson, writeCanopyJson } from './canopy-json';
-import {
-  bestEffortPruneWorktrees,
-  createWorktree,
-  getRepoRootFromWorktree,
-  removeWorktree,
-} from './git';
+import { getRepoRootFromWorktree } from './git';
 import {
   getWorktreeDataDir,
   getWorkspaceWorktreeRepoDir,
@@ -392,12 +388,13 @@ function mergeRepoHooks(
 }
 
 async function safeRemoveRepoWorktree(
+  git: SourceChangeGit,
   repoPath: string | null,
   worktreePath: string,
 ): Promise<void> {
   if (repoPath) {
     try {
-      await removeWorktree(repoPath, worktreePath);
+      await git.removeWorktree(repoPath, worktreePath);
       return;
     } catch {
       // Fall back to force-removing the directory.
@@ -406,7 +403,7 @@ async function safeRemoveRepoWorktree(
 
   await rm(worktreePath, { recursive: true, force: true });
   if (repoPath) {
-    bestEffortPruneWorktrees(
+    git.bestEffortPruneWorktrees(
       repoPath,
       'workspace-source-change-apply cleanupWorktreeDirectory',
     );
@@ -735,13 +732,16 @@ async function prepareRepoAdds(params: {
   return repoWorktreesToCreate;
 }
 
-async function createPreparedRepoWorktrees(params: {
-  workspaceId: string;
-  worktreeId: string;
-  repos: PreparedRepoWorktree[];
-  createdWorktree: boolean;
-  getWindow: () => BrowserWindow | null;
-}): Promise<void> {
+async function createPreparedRepoWorktrees(
+  git: SourceChangeGit,
+  params: {
+    workspaceId: string;
+    worktreeId: string;
+    repos: PreparedRepoWorktree[];
+    createdWorktree: boolean;
+    getWindow: () => BrowserWindow | null;
+  },
+): Promise<void> {
   await settleAll(
     params.repos.map(async (prepared) => {
       const repoWorktreePath = getWorkspaceWorktreeRepoDir(
@@ -755,7 +755,7 @@ async function createPreparedRepoWorktrees(params: {
         prepared.repoId,
       );
       await mkdir(dirname(repoWorktreePath), { recursive: true });
-      await createWorktree(
+      await git.createWorktree(
         prepared.repo.repoPath,
         repoWorktreePath,
         branchName,
@@ -775,12 +775,15 @@ async function createPreparedRepoWorktrees(params: {
   );
 }
 
-async function createWorkspaceRepoWorktrees(params: {
-  workspaceId: string;
-  worktreeId: string;
-  branchName: string;
-  repos: WorkspaceRepoData[];
-}): Promise<void> {
+async function createWorkspaceRepoWorktrees(
+  git: SourceChangeGit,
+  params: {
+    workspaceId: string;
+    worktreeId: string;
+    branchName: string;
+    repos: WorkspaceRepoData[];
+  },
+): Promise<void> {
   await settleAll(
     params.repos.map(async (repo) => {
       const repoWorktreePath = getWorkspaceWorktreeRepoDir(
@@ -789,7 +792,11 @@ async function createWorkspaceRepoWorktrees(params: {
         repo.id,
       );
       await mkdir(dirname(repoWorktreePath), { recursive: true });
-      await createWorktree(repo.repoPath, repoWorktreePath, params.branchName);
+      await git.createWorktree(
+        repo.repoPath,
+        repoWorktreePath,
+        params.branchName,
+      );
     }),
   );
 }
@@ -812,11 +819,14 @@ function applyRepoRemovalsToManifest(params: {
   return Array.from(repoRemovals);
 }
 
-async function removeRepoWorktrees(params: {
-  workspaceId: string;
-  worktreeId: string;
-  repoIds: string[];
-}): Promise<void> {
+async function removeRepoWorktrees(
+  git: SourceChangeGit,
+  params: {
+    workspaceId: string;
+    worktreeId: string;
+    repoIds: string[];
+  },
+): Promise<void> {
   for (const repoId of params.repoIds) {
     await stopHooksForRepoTarget({
       projectId: params.workspaceId,
@@ -837,7 +847,7 @@ async function removeRepoWorktrees(params: {
     const repoPath = await getRepoRootFromWorktree(repoWorktreePath).catch(
       (): null => null,
     );
-    await safeRemoveRepoWorktree(repoPath, repoWorktreePath);
+    await safeRemoveRepoWorktree(git, repoPath, repoWorktreePath);
   }
 }
 
@@ -897,6 +907,7 @@ function syncLocalRepoBindingsInBackground(
 }
 
 async function rollbackCreatedWorktree(
+  git: SourceChangeGit,
   workspaceId: string,
   context: TargetWorkspaceContext,
   repos: WorkspaceRepoData[],
@@ -907,12 +918,13 @@ async function rollbackCreatedWorktree(
       context.worktreeId,
       repo.id,
     );
-    await safeRemoveRepoWorktree(repo.repoPath, repoWorktreePath).catch(
+    await safeRemoveRepoWorktree(git, repo.repoPath, repoWorktreePath).catch(
       (): Promise<void> => Promise.resolve(),
     );
   }
 
   await safeRemoveRepoWorktree(
+    git,
     context.referenceRepoPath,
     getWorkspaceWorktreeRootRepoDir(workspaceId, context.worktreeId),
   ).catch((): Promise<void> => Promise.resolve());
@@ -923,6 +935,7 @@ async function rollbackCreatedWorktree(
 }
 
 async function ensureTargetWorkspaceWorktree(
+  git: SourceChangeGit,
   request: WorkspaceApplySourceChangesRequest,
   referenceRepoPath: string,
   transition?: SourceChangesTransition<WorkspaceApplySourceChangesResponse>,
@@ -970,7 +983,7 @@ async function ensureTargetWorkspaceWorktree(
   await mkdir(getWorktreeDataDir(request.workspaceId, worktreeId), {
     recursive: true,
   });
-  const branchName = await createWorktree(
+  const branchName = await git.createWorktree(
     referenceRepoPath,
     worktreeRootPath,
     worktreeId,
@@ -994,7 +1007,12 @@ async function ensureTargetWorkspaceWorktree(
       true,
     );
     if (repairedIssues.some((issue) => issue.blocking)) {
-      await rollbackCreatedWorktree(request.workspaceId, targetContext, []);
+      await rollbackCreatedWorktree(
+        git,
+        request.workspaceId,
+        targetContext,
+        [],
+      );
       throw new Error(repairedIssues.map((issue) => issue.message).join('\n'));
     }
   }
@@ -1020,19 +1038,29 @@ async function ensureTargetWorkspaceWorktree(
 }
 
 export function applyWorkspaceSourceChangesToWorktree(
-  ...args: Parameters<typeof applyAdmittedWorkspaceSourceChanges>
+  request: WorkspaceApplySourceChangesRequest,
+  getWindow: () => BrowserWindow | null,
+  git: SourceChangeGit,
+  onApplied?: (event: WorkspaceSourceChangesAppliedEvent) => void,
+  transition?: SourceChangesTransition<WorkspaceApplySourceChangesResponse>,
 ): Promise<WorkspaceApplySourceChangesResponse> {
-  const [request] = args;
-  // Repository bindings may republish the manifest after the apply.
   return withStorageAdmission(
     request.target.mode === 'new'
       ? [WORKSPACE_MANIFEST_STORAGE, WORKTREE_LIST_STORAGE]
       : [WORKSPACE_MANIFEST_STORAGE],
-    () => applyAdmittedWorkspaceSourceChanges(...args),
+    () =>
+      applyAdmittedWorkspaceSourceChanges(
+        git,
+        request,
+        getWindow,
+        onApplied,
+        transition,
+      ),
   );
 }
 
 async function applyAdmittedWorkspaceSourceChanges(
+  git: SourceChangeGit,
   request: WorkspaceApplySourceChangesRequest,
   getWindow: () => BrowserWindow | null,
   onApplied?: (event: WorkspaceSourceChangesAppliedEvent) => void,
@@ -1050,6 +1078,7 @@ async function applyAdmittedWorkspaceSourceChanges(
     config.sourceRepoPath,
   );
   const targetContext = await ensureTargetWorkspaceWorktree(
+    git,
     request,
     referenceRepoPath,
     transition,
@@ -1148,7 +1177,7 @@ async function applyAdmittedWorkspaceSourceChanges(
     trackDetachedWork(() =>
       (async (): Promise<void> => {
         try {
-          await removeRepoWorktrees({
+          await removeRepoWorktrees(git, {
             workspaceId: normalizedRequest.workspaceId,
             worktreeId: targetContext.worktreeId,
             repoIds: repoIdsToRemove,
@@ -1159,7 +1188,7 @@ async function applyAdmittedWorkspaceSourceChanges(
             // New worktrees are populated from the post-sync config so newly
             // added manifest repos and pre-existing workspace repos are created
             // together with one branch name.
-            await createWorkspaceRepoWorktrees({
+            await createWorkspaceRepoWorktrees(git, {
               workspaceId: normalizedRequest.workspaceId,
               worktreeId: targetContext.worktreeId,
               branchName: targetContext.branchName,
@@ -1176,7 +1205,7 @@ async function applyAdmittedWorkspaceSourceChanges(
             return;
           }
 
-          await createPreparedRepoWorktrees({
+          await createPreparedRepoWorktrees(git, {
             workspaceId: normalizedRequest.workspaceId,
             worktreeId: targetContext.worktreeId,
             repos: repoWorktreesToCreate,
@@ -1205,6 +1234,7 @@ async function applyAdmittedWorkspaceSourceChanges(
         ))
     ) {
       await rollbackCreatedWorktree(
+        git,
         normalizedRequest.workspaceId,
         targetContext,
         [],

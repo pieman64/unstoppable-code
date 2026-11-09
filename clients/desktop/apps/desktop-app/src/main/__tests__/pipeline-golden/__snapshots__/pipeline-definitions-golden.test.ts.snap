@@ -4993,3 +4993,193 @@ exports[`installs from the curated catalog and shares installs public package sh
   },
 }
 `;
+
+exports[`workflow trigger (CAN-5782) reads and lists a workflow pipeline and keeps it off the Portal 1`] = `
+{
+  "backToWorkflowOnly": {
+    "cloudRequests": [],
+    "result": {
+      "workflow": {
+        "inputs": {
+          "topic": {
+            "default": "news",
+            "type": "string",
+          },
+        },
+      },
+    },
+  },
+  "get": {
+    "cloudRequests": [],
+    "result": {
+      "data": {
+        "content": {
+          "jobs": {
+            "run": {
+              "steps": [
+                {
+                  "run": "echo workflow",
+                },
+              ],
+            },
+          },
+          "name": "Golden workflow only",
+          "on": {
+            "workflow": {
+              "inputs": {
+                "topic": {
+                  "default": "news",
+                  "type": "string",
+                },
+              },
+            },
+          },
+        },
+        "info": {
+          "createdAt": "<timestamp>",
+          "description": "",
+          "filename": "<uuid>.yaml",
+          "icon": "",
+          "id": "<uuid>",
+          "name": "Golden workflow only",
+          "readonly": false,
+          "revision": 1,
+          "scopes": [
+            "directory",
+          ],
+          "source": "user",
+          "stepCount": 1,
+          "triggerTypes": [
+            "workflow",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        "localRunOwner": "personal",
+        "rawContent": "pipeline:
+  name: Golden workflow only
+  'on':
+    workflow:
+      inputs:
+        topic:
+          type: string
+          default: news
+  jobs:
+    run:
+      steps:
+        - run: echo workflow
+",
+      },
+      "success": true,
+    },
+  },
+  "list": {
+    "cloudRequests": [],
+    "result": [
+      {
+        "name": "Golden workflow only",
+        "triggerTypes": [
+          "workflow",
+        ],
+      },
+      {
+        "name": "Golden workflow and dispatch",
+        "triggerTypes": [
+          "dispatch",
+          "workflow",
+        ],
+      },
+    ],
+  },
+  "packagedShare": {
+    "cloudRequests": [],
+    "result": {
+      "blockers": [
+        "LOCAL_ONLY_PIPELINE_TRIGGER",
+      ],
+      "create": {
+        "error": "Workflows with a Workflow trigger can't be shared yet.",
+        "failure": {
+          "commitState": "not-committed",
+          "kind": "unavailable",
+          "message": "Workflows with a Workflow trigger can't be shared yet.",
+          "retryable": false,
+          "stage": "access",
+          "version": 1,
+        },
+        "success": false,
+      },
+      "state": "blocked",
+    },
+  },
+  "portalGetMixedTriggers": {
+    "cloudRequests": [],
+    "result": "Manual",
+  },
+  "portalGetWorkflowOnly": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.failed",
+      "payload": {
+        "error": {
+          "code": "not_found",
+          "message": "Workflow not found.",
+        },
+        "generatedAt": "<timestamp>",
+        "retryable": false,
+      },
+      "updates": [],
+    },
+  },
+  "portalList": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines?limit=50&triggerType=plan_ready&shareScope=private",
+    ],
+    "result": [
+      {
+        "name": "Golden workflow and dispatch",
+        "triggerTypes": [
+          "dispatch",
+        ],
+      },
+    ],
+  },
+  "setTriggerTypes": {
+    "cloudRequests": [],
+    "result": {
+      "dispatch": {},
+      "workflow": {
+        "inputs": {
+          "topic": {
+            "default": "news",
+            "type": "string",
+          },
+        },
+      },
+    },
+  },
+  "setWorkflowInputs": {
+    "cloudRequests": [],
+    "result": {
+      "topic": {
+        "default": "sports",
+        "type": "string",
+      },
+    },
+  },
+  "shareCreate": {
+    "cloudRequests": [],
+    "result": {
+      "error": "Workflows with a Workflow trigger can't be shared yet.",
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "unavailable",
+        "message": "Workflows with a Workflow trigger can't be shared yet.",
+        "retryable": false,
+        "stage": "access",
+        "version": 1,
+      },
+      "success": false,
+    },
+  },
+}
+`;

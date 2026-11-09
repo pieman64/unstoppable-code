@@ -3,6 +3,11 @@ import {
   runSidebarReorder,
 } from './sidebar-reorder-scenario.mjs';
 import {
+  measureProjectsRetention,
+  prepareProjectsRetention,
+  runProjectsRetention,
+} from './projects-retention-scenario.mjs';
+import {
   prepareCodeReviewRegistry,
   runCodeReviewRegistryCleanup,
 } from './code-review-registry-scenario.mjs';
@@ -87,6 +92,12 @@ import {
   seedArchiveActivityFixture,
 } from '../electron/seeders/archiveActivityFixture.mjs';
 import { seedDemoWorkspaces } from '../electron/demoWorkspaces.mjs';
+import {
+  observeRendererCrashes,
+  rendererCrashRecordFields,
+  retainLaunchCrashDumps,
+  settleRendererCrashEvidence,
+} from './renderer-crash-evidence.mjs';
 import { openBackgroundDrawer } from '../electron/backgroundDrawer.mjs';
 import {
   installTranscriptRewriteObserver,
@@ -348,6 +359,27 @@ export async function drainTransientItems({
  * baseline shift in these scenarios is expected rather than a harness bug.
  */
 const NO_ACTIVITY_RAIL = { expandDefaultActivityRail: false };
+
+/**
+ * Opens the default-collapsed activity rail through its own expand control,
+ * as a user would. Unlike `expandDefaultActivityRail`, this needs no E2E panel
+ * test API, so release-like runs reveal the rail too.
+ */
+async function openActivityRail(page) {
+  const section = page.getByTestId('panel-content-activity-section');
+  const expand = page
+    .getByTestId('panel-group-group-activity')
+    .getByTestId('panel-group-expand-group-activity');
+  await expect(
+    section.or(expand).filter({ visible: true }).first(),
+  ).toBeVisible({ timeout: 30_000 });
+  if (!(await section.isVisible())) {
+    // CAN-2836's auto-reopen can unmount the control first; the assertion
+    // below still requires the section.
+    await expand.click({ timeout: 5_000 }).catch(() => undefined);
+  }
+  await expect(section).toBeVisible();
+}
 
 /**
  * Flattens the E2E transcript accumulator
@@ -945,10 +977,10 @@ async function openPipelinesPage(page) {
   ).toBeVisible({ timeout: 30_000 });
 }
 
-export function seedWorkspace(userDataDir) {
+export function seedWorkspace(userDataDir, apps = ['ts-pnpm-vite']) {
   const seed = seedDemoWorkspaces({
     userDataDir,
-    apps: ['ts-pnpm-vite'],
+    apps,
     checkRuntimes: false,
   });
   // Non-startup scenarios measure their declared workload, not live provider
@@ -8287,6 +8319,102 @@ async function runTranscriptRetentionCycle({
   };
 }
 
+/**
+ * Web Animations whose target left the document stay in the renderer's
+ * document timeline while they loop, keeping the detached element alive.
+ * `document.getAnimations()` never lists them and an animation's JS wrapper
+ * can be collected while it runs, so only a heap snapshot counts them. The
+ * count is taken by node name; no snapshot or string is kept.
+ */
+const PROJECTS_RELOAD_ANIMATION_GROWTH_CEILING = 10;
+
+async function countRendererAnimations(page) {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send('HeapProfiler.enable');
+    await cdp.send('HeapProfiler.collectGarbage');
+    const chunks = [];
+    const onChunk = ({ chunk }) => chunks.push(chunk);
+    cdp.on('HeapProfiler.addHeapSnapshotChunk', onChunk);
+    await cdp.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false });
+    cdp.off('HeapProfiler.addHeapSnapshotChunk', onChunk);
+    const { snapshot, nodes, strings } = JSON.parse(chunks.join(''));
+    const width = snapshot.meta.node_fields.length;
+    const nameField = snapshot.meta.node_fields.indexOf('name');
+    const counts = { Animation: 0, CSSAnimation: 0, CSSTransition: 0 };
+    for (let index = nameField; index < nodes.length; index += width) {
+      const name = strings[nodes[index]];
+      if (Object.hasOwn(counts, name)) counts[name] += 1;
+    }
+    return counts;
+  } finally {
+    await cdp.detach();
+  }
+}
+
+/** Stream R's reproduction: the default demo workspaces, a worktree each. */
+function prepareProjectsReloadRetention(userDataDir) {
+  return seedWorkspace(userDataDir, []);
+}
+
+/** Before the measured window: the loaded sidebar and its animation count. */
+async function setupProjectsReloadRetention({ page, fixture }) {
+  await openMainPage(page);
+  await waitUntil(
+    () => page.evaluate(() => Boolean(window.__canopyProjectsTestApi)),
+    { timeoutMs: 30_000, label: 'the E2E projects test API' },
+  );
+  await expect(page.getByTestId('worktree-row').first()).toBeVisible({
+    timeout: 30_000,
+  });
+  fixture.animationsBefore = await countRendererAnimations(page);
+}
+
+/**
+ * Silent projects reloads (the path every worktree-file change takes) each
+ * followed by a worktree row selection, as a user does between them.
+ */
+async function runProjectsReloadRetention({ page, config, tasks }) {
+  const rows = page.getByTestId('worktree-row');
+  const rowCount = await rows.count();
+  await recordTask(
+    tasks,
+    'projects_reload_select_cycles',
+    async () => {
+      for (let cycle = 0; cycle < config.projectsReloadCycles; cycle++) {
+        // Stream R's pacing: each reload and selection draws and settles
+        // its loading skeletons before the next step.
+        await page.evaluate(() =>
+          window.__canopyProjectsTestApi.loadProjects(),
+        );
+        await page.waitForTimeout(250);
+        await rows.nth(cycle % rowCount).click();
+        await page.waitForTimeout(250);
+      }
+    },
+    { cycles: config.projectsReloadCycles },
+  );
+  return {
+    reloadCycles: config.projectsReloadCycles,
+    worktreeRows: rowCount,
+  };
+}
+
+/** After the measured window: fails when Web Animations accumulated. */
+async function checkProjectsReloadRetention({ page, counters, fixture }) {
+  // Loops on removed elements may outlive their element by a moment.
+  await page.waitForTimeout(2_000);
+  const before = fixture.animationsBefore;
+  const after = await countRendererAnimations(page);
+  const growth = after.Animation - before.Animation;
+  counters.rendererAnimations = { before, after, growth };
+  if (growth > PROJECTS_RELOAD_ANIMATION_GROWTH_CEILING) {
+    throw new Error(
+      `Web Animations grew by ${growth} over ${counters.reloadCycles} reload-and-select cycles (ceiling ${PROJECTS_RELOAD_ANIMATION_GROWTH_CEILING}): a looping animation outlives its element`,
+    );
+  }
+}
+
 async function registerPerformanceChatScenarios(config) {
   for (let index = 0; index < config.concurrentChats; index += 1) {
     const marker = `Canopy-CPERF${index + 1}`;
@@ -15207,11 +15335,9 @@ async function runWorktreeConcurrency({ page, app, config, tasks }) {
     );
   }
 
-  await app.selectWorktree(WORKTREE_BRANCH);
+  await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
   await expect(visibleChatPanel(page)).toBeVisible({ timeout: 30_000 });
-  await expect(
-    page.getByTestId('panel-content-activity-section'),
-  ).toBeVisible();
+  await openActivityRail(page);
 
   const { peakConcurrentTurns, tabIds } = await startConcurrentChats({
     page,
@@ -15271,7 +15397,7 @@ async function runWorktreeConcurrency({ page, app, config, tasks }) {
         await liveTab.click();
         await expect(liveTab).toHaveAttribute('aria-selected', 'true');
         await openPipelinesPage(page);
-        await app.selectWorktree(WORKTREE_BRANCH);
+        await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
         await expect(page.getByTestId('page-main')).toBeVisible({
           timeout: 30_000,
         });
@@ -20567,6 +20693,11 @@ const W5_STORE = w5StoreScenarios({
 
 const SCENARIOS = {
   'sidebar-reorder': { prepare: prepareSidebarReorder, run: runSidebarReorder },
+  'projects-retention': {
+    prepare: prepareProjectsRetention,
+    beforeCapture: measureProjectsRetention,
+    run: runProjectsRetention,
+  },
   'startup-settle': {
     prepare: prepareStartupSettle,
     run: runStartupSettle,
@@ -20838,6 +20969,12 @@ const SCENARIOS = {
     afterMeasurement: captureLabTranscriptDiagnostics,
     headlessOnly: true,
   },
+  'projects-reload-retention': {
+    prepare: prepareProjectsReloadRetention,
+    beforeCapture: setupProjectsReloadRetention,
+    run: runProjectsReloadRetention,
+    afterCapture: checkProjectsReloadRetention,
+  },
   'scope-residency': {
     prepare: prepareScopeResidency,
     run: runScopeResidency,
@@ -20900,6 +21037,7 @@ const RELEASE_LIKE_E2E_PROVIDER_SCENARIOS = new Set([
   'lab-transcript-offscreen',
   'lab-transcript-checkpoint',
   'many-chat-residency',
+  'worktree-concurrency',
 ]);
 
 // Production builds have no E2E chat-event ingress to commit seeded events.
@@ -20918,6 +21056,7 @@ const RELEASE_LIKE_E2E_HOOK_SCENARIOS = new Set([
   'ledger-disabled-idle',
   'skill-suggestions-backfill',
   'scope-residency',
+  'projects-reload-retention',
   'w5-store-startup',
   'w5-store-reload',
   'w5-store-writes',
@@ -20999,14 +21138,20 @@ export function measuredBuildRootOption(options) {
 }
 
 /**
- * Where scenario data roots are created. `CANOPY_PERFORMANCE_DATA_ROOT_PARENT`
- * (an absolute directory, such as `/tmp`) keeps a data root short enough for
- * the local daemon's socket path, which macOS caps at 103 bytes; set it for
- * both arms of a comparison.
+ * Where scenario data roots are created. macOS caps the local daemon's socket
+ * path at 103 bytes, and its per-user temp directory leaves too little room
+ * for a data root: the daemon host can't be set up, Files reads fall back and
+ * the background service notice covers the UI (CAN-5734). So macOS defaults to
+ * `/tmp`. `CANOPY_PERFORMANCE_DATA_ROOT_PARENT` (an absolute directory)
+ * overrides the default.
  */
-export function performanceDataRootParent(env = process.env) {
+export function performanceDataRootParent(
+  env = process.env,
+  platform = process.platform,
+) {
   const parent = env.CANOPY_PERFORMANCE_DATA_ROOT_PARENT;
-  if (parent === undefined || parent === '') return os.tmpdir();
+  if (parent === undefined || parent === '')
+    return platform === 'darwin' ? '/tmp' : os.tmpdir();
   if (!path.isAbsolute(parent))
     throw new Error(
       'CANOPY_PERFORMANCE_DATA_ROOT_PARENT must be an absolute directory',
@@ -21023,6 +21168,17 @@ export function runPerformanceScenario(name, config, options = {}) {
   return settlePerformanceScenario(name, (closeScenario) =>
     runPerformanceScenarioAttempt(name, config, options, closeScenario),
   );
+}
+
+/**
+ * Where a launch's retained crash dumps go: the run's per-sample diagnostics
+ * directory, or a diagnostic replay's own output directory.
+ */
+function crashDumpOutputDir(options) {
+  if (options.crashDumpOutputDir) return options.crashDumpOutputDir;
+  return options.diagnosticOutputDir
+    ? path.join(options.diagnosticOutputDir, 'crash-dumps')
+    : null;
 }
 
 async function runPerformanceScenarioAttempt(
@@ -21057,6 +21213,7 @@ async function runPerformanceScenarioAttempt(
   Object.defineProperty(tasks, 'extraWork', { value: {} });
   const collection = scenarioWorkCollection(name, options);
   let electronApp;
+  let rendererCrashes;
   let monitoring;
   let diagnosticCapture;
   let gitAttributionCapture;
@@ -21182,6 +21339,7 @@ async function runPerformanceScenarioAttempt(
       env: Object.keys(launchEnv).length > 0 ? launchEnv : undefined,
     });
     electronApp = launched.electronApp;
+    rendererCrashes = await observeRendererCrashes(electronApp);
     if (options.releaseLike) {
       const nativeDataRoots = await electronApp.evaluate(({ app }) => ({
         userData: app.getPath('userData'),
@@ -21367,6 +21525,9 @@ async function runPerformanceScenarioAttempt(
       // wait for the closing read (a PowerShell CIM query on Windows).
       const diskClosing = diskIo?.stop();
       monitoring = await monitor.stop();
+      // Checks too heavy for the measured window (a heap snapshot); a throw
+      // fails the scenario like one from `run`.
+      await definition.afterCapture?.({ page, counters, config, fixture });
       const disk = await diskClosing;
       assertValidMonitoring(monitoring.summary);
       assertValidTypingSampling(monitoring.raw, tasks);
@@ -21472,6 +21633,14 @@ async function runPerformanceScenarioAttempt(
           ? { gitAttribution: gitAttributionCapture.summarize() }
           : {}),
         ...(diagnostics ? { diagnostics } : {}),
+        ...rendererCrashRecordFields(
+          rendererCrashes,
+          retainLaunchCrashDumps(
+            rendererCrashes,
+            null,
+            crashDumpOutputDir(options),
+          ),
+        ),
         ...(options.keepData ? { userDataDir } : {}),
       };
       const completedRecord = attachLabCaptureReceipt(record, labCapture);
@@ -21483,6 +21652,15 @@ async function runPerformanceScenarioAttempt(
     } catch (error) {
       await diskIo?.stop();
       monitoring = await monitor?.stop().catch(() => undefined);
+      await settleRendererCrashEvidence(rendererCrashes, error);
+      const rendererCrashFields = rendererCrashRecordFields(
+        rendererCrashes,
+        retainLaunchCrashDumps(
+          rendererCrashes,
+          error,
+          crashDumpOutputDir(options),
+        ),
+      );
       diagnostics = diagnosticCapture
         ? await diagnosticCapture.stop().catch((captureError) => ({
             status: 'error',
@@ -21523,6 +21701,7 @@ async function runPerformanceScenarioAttempt(
             ? { gitAttribution: gitAttributionCapture.summarize() }
             : {}),
           ...(diagnostics ? { diagnostics } : {}),
+          ...rendererCrashFields,
           ...(options.keepData ? { userDataDir } : {}),
         };
       }
@@ -21536,6 +21715,7 @@ async function runPerformanceScenarioAttempt(
             ? { gitAttribution: gitAttributionCapture.summarize() }
             : {}),
           ...(diagnostics ? { diagnostics } : {}),
+          ...rendererCrashFields,
           ...(options.keepData ? { userDataDir } : {}),
         };
       }

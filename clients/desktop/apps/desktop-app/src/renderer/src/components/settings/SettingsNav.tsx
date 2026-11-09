@@ -1,4 +1,4 @@
-import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
+import { ORCHESTRATOR_LABEL, REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { type JSX, type ReactNode } from 'react';
 import { useAccountProxyStatus } from '@/stores/accountProxyStore';
 import {
@@ -113,7 +113,7 @@ const ALL_NAV_ITEMS: NavItem[] = [
   },
   {
     key: 'remote-access',
-    label: 'Remote access',
+    label: REMOTE_CONTROL_LABEL,
     // The computer glyph of the sidebar machine picker, so both surfaces
     // read as one feature.
     icon: <MacbookIcon size="sm" />,

@@ -399,6 +399,14 @@ export async function persistPortalStopReason(
 let cachedState: PersistedPortalState | null = null;
 let cachedStatePath: string | null = null;
 let loadInFlight: Promise<PersistedPortalState> | null = null;
+/**
+ * How the cached state was first loaded: parsed from disk, created because
+ * no file existed, or recovered as fresh state from a file that could not be
+ * read or parsed (its previous contents, Portal session included, are lost).
+ */
+let cachedLoadOutcome: 'parsed' | 'missing' | 'recovered' | null = null;
+/** Whether the cached `clientDeviceId` is known to be on disk. */
+let installIdDurable = false;
 
 function getCachedState(): PersistedPortalState | null {
   return cachedStatePath === statePath() ? cachedState : null;
@@ -426,14 +434,25 @@ async function loadPortalStateStore(): Promise<PersistedPortalState> {
     const raw = await fs.readFile(statePath(), 'utf8');
     const state = normalize(JSON.parse(raw) as unknown);
     setCachedState(state);
+    cachedLoadOutcome = 'parsed';
+    installIdDurable = true;
     return state;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      void error;
-    }
+    const missing =
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'ENOENT';
     const state = freshState();
     setCachedState(state);
-    await writePortalStateStore(state).catch(() => undefined);
+    cachedLoadOutcome = missing ? 'missing' : 'recovered';
+    installIdDurable = false;
+    await writePortalStateStore(state).then(
+      () => {
+        installIdDurable = true;
+      },
+      () => undefined,
+    );
     return state;
   }
 }
@@ -559,6 +578,7 @@ function requestStoreWrite(): void {
       }
       try {
         await writePortalStateStore(state);
+        installIdDurable = true;
         settleWriteWaiters(version, { ok: true });
       } catch (error) {
         settleWriteWaiters(version, { ok: false, error });
@@ -596,6 +616,45 @@ export async function updatePortalStateStore(
   const { next, version } = await applied;
   await waitForDurableWrite(version);
   return next;
+}
+
+/**
+ * Whether persisted state says Portal is on: an active session that was not
+ * stopped on purpose, the same test Portal's own resume applies.
+ */
+function portalOptedIn(state: PersistedPortalState): boolean {
+  return (
+    state.activeSession !== undefined &&
+    (state.lastStopReason === undefined ||
+      state.lastStopReason === 'app_shutdown')
+  );
+}
+
+/**
+ * The Portal opt-in for the one-time Remote Control `allowIncoming`
+ * migration. Unreliable when this process recovered the store from a file
+ * it could not read: the migration then keeps its settings and retries.
+ */
+export async function readPortalOptInForMigration(): Promise<
+  { reliable: true; active: boolean } | { reliable: false }
+> {
+  const state = await readPortalStateStore();
+  if (cachedLoadOutcome === 'recovered') return { reliable: false };
+  return { reliable: true, active: portalOptedIn(state) };
+}
+
+/**
+ * This install's stable identifier (`clientDeviceId`). Reading it
+ * initializes the store through its own loader when no file exists yet, and
+ * waits until the identifier is on disk, so a value is never reported that a
+ * restart would replace. Throws when it cannot be saved. Never starts Portal.
+ */
+export async function readDurablePortalInstallId(): Promise<string> {
+  await readPortalStateStore();
+  if (!installIdDurable) {
+    await updatePortalStateStore((state) => state);
+  }
+  return (await readPortalStateStore()).clientDeviceId;
 }
 
 export async function persistActivePortalSession(input: {

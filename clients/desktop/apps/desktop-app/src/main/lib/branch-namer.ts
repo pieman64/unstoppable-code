@@ -57,7 +57,7 @@ import { recordWorktreeBranchChange } from './worktree-branch-watcher';
 import {
   isTransientAgentRetryExhaustedError,
   type TransientAgentRetryNotice,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 
 const NO_TOOL_BRANCH_NAMING_INSTRUCTION =
   'Do not explore the repo, use tools, or connect to MCP servers.';

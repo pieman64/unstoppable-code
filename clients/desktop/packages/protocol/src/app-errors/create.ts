@@ -1,5 +1,13 @@
 import { z } from 'zod';
-import { getAppErrorDefinition, type AppErrorCode } from './catalog';
+import {
+  getAppErrorDefinition,
+  isAppErrorCode,
+  type AppErrorCode,
+} from './catalog';
+import {
+  readErrorClassification,
+  type ErrorClassification,
+} from './classification';
 import { isAppCancellation } from './cancellation';
 import {
   AppErrorCopySchema,
@@ -91,8 +99,22 @@ function classify(
     });
   }
   if (value instanceof Error) {
-    return createAppError('app.unexpected', {
+    const classification = readErrorClassification(
+      value,
+      isUsableClassification,
+    );
+    return createAppError(classification?.code ?? 'app.unexpected', {
       ...optionsForCreation(options),
+      ...(classification
+        ? {
+            source: classification.source,
+            copy: classification.copy,
+            retryAt:
+              classification.retryAt === undefined
+                ? undefined
+                : Math.round(classification.retryAt),
+          }
+        : {}),
       detail: {
         name:
           typeof value.name === 'string' ? value.name.slice(0, 128) : 'Error',
@@ -131,4 +153,27 @@ export function toAppError(
       detail: { message: 'Unrecognized error value' },
     });
   }
+}
+
+function isUsableClassification(value: unknown): value is ErrorClassification {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('code' in value) ||
+    !isAppErrorCode(value.code)
+  )
+    return false;
+  const { code, ...options } = value;
+  const parsed = OptionsSchema.safeParse({
+    ...options,
+    ...('retryAt' in options && typeof options.retryAt === 'number'
+      ? { retryAt: Math.round(options.retryAt) }
+      : {}),
+  });
+  return (
+    parsed.success &&
+    (parsed.data.copy === undefined || code === 'input.not_accepted') &&
+    (parsed.data.retryAt === undefined ||
+      (code === 'external.rate_limited' && parsed.data.retryAt > 0))
+  );
 }

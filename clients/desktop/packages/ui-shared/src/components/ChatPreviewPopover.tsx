@@ -105,7 +105,7 @@ export function ChatPreviewPopover({
       {rows.length === 0 ? (
         <div className="text-xs fg-secondary">No chat details</div>
       ) : (
-        <div className="space-y-1.5">
+        <div className="flex flex-col gap-1.5">
           {rows.map((row) => (
             <div key={row.chatId} className="min-w-0">
               <div className="flex items-center gap-1.5 text-xs">

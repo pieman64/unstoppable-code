@@ -3,8 +3,9 @@ import type {
   LogFormatHint,
   PipelineScalar,
   Step,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
+  Stack,
   Divider,
   Heading,
   SegmentedControl,
@@ -17,6 +18,7 @@ import { SelectField } from '../shared/SelectField';
 import { ToggleField } from '../shared/ToggleField';
 import { KeyValueEditor } from '../shared/KeyValueEditor';
 import { PipelineDetailPanelShell } from './PipelinePanelPrimitives';
+import { AutomationSidebarGroupPicker } from '../../automations/AutomationSidebarGroupPicker';
 import { pt } from '@/lib/platform-text';
 import { uiText } from '@/lib/ui-text';
 import {
@@ -25,6 +27,10 @@ import {
   type StepTargetFormState,
   type StepTargetScope,
 } from '@/lib/pipelineStepTarget';
+import {
+  stepSidebarGroupField,
+  withStepSidebarGroup,
+} from '@/lib/pipelineStepSidebarGroup';
 import {
   PIPELINE_SHELL_OPTIONS,
   type PipelineShellOption,
@@ -37,6 +43,11 @@ interface StepDetailPanelProps {
   onChange: (step: Step) => void;
   onClose: () => void;
   readonly?: boolean;
+  /**
+   * Values the steps' `inputs.*` stand for, such as a workflow's first
+   * schedule's (CAN-5782), to resolve a create step's project.
+   */
+  inputValues?: Readonly<Record<string, string>>;
 }
 
 type StepMode = 'action' | 'script';
@@ -96,6 +107,7 @@ export function StepDetailPanel({
   onChange,
   onClose,
   readonly = false,
+  inputValues,
 }: StepDetailPanelProps): JSX.Element {
   const mode = getMode(step);
   const headerLabel = step.id || `Step ${stepIndex + 1}`;
@@ -174,6 +186,7 @@ export function StepDetailPanel({
   }
 
   const isRunPipeline = step.uses === RUN_PIPELINE_USES;
+  const sidebarGroup = stepSidebarGroupField(step, inputValues);
   const targetForm = readStepTargetForm(step.target);
 
   // Rebuild and store the whole `target` object on every field change. We never
@@ -225,7 +238,7 @@ export function StepDetailPanel({
       {/* Mode-specific fields */}
       <div>
         <Divider />
-        <div className="pt-2 space-y-4">
+        <div className="flex flex-col pt-2 gap-4">
           {mode === 'action' ? (
             <>
               <FormField label="Uses" hint="Action reference">
@@ -237,8 +250,36 @@ export function StepDetailPanel({
                 />
               </FormField>
 
-              <div>
-                <Heading level={4} variant="label" className="mb-2">
+              {sidebarGroup && (
+                <FormField
+                  label="Sidebar group"
+                  hint="The group the new task joins in the sidebar"
+                >
+                  {sidebarGroup.kind === 'picker' ? (
+                    <AutomationSidebarGroupPicker
+                      scope={sidebarGroup.scope}
+                      value={sidebarGroup.value}
+                      onChange={(name): void =>
+                        onChange(withStepSidebarGroup(step, name))
+                      }
+                      disabled={readonly}
+                    />
+                  ) : (
+                    <TextField
+                      value={sidebarGroup.value}
+                      onChange={(e): void =>
+                        onChange(withStepSidebarGroup(step, e.target.value))
+                      }
+                      placeholder="No group"
+                      disabled={readonly}
+                      data-testid="step-sidebar-group-name"
+                    />
+                  )}
+                </FormField>
+              )}
+
+              <Stack gap="inline">
+                <Heading level={4} variant="label">
                   Inputs (with)
                 </Heading>
                 <KeyValueEditor
@@ -246,7 +287,7 @@ export function StepDetailPanel({
                   onChange={handleWithChange}
                   readonly={readonly}
                 />
-              </div>
+              </Stack>
 
               <FormField
                 label="Log format"
@@ -266,9 +307,12 @@ export function StepDetailPanel({
               </FormField>
 
               {isRunPipeline && (
-                <div data-testid="step-target-editor">
+                <div
+                  className="flex flex-col pt-2 gap-4"
+                  data-testid="step-target-editor"
+                >
                   <Divider />
-                  <div className="pt-2 space-y-4">
+                  <div className="pt-2 flex flex-col gap-4">
                     <Heading level={4} variant="label">
                       Target
                     </Heading>
@@ -380,7 +424,7 @@ export function StepDetailPanel({
       {/* Common fields */}
       <div>
         <Divider />
-        <div className="pt-2 space-y-4">
+        <div className="flex flex-col pt-2 gap-4">
           <Heading level={4} variant="label">
             Common settings
           </Heading>
@@ -399,8 +443,8 @@ export function StepDetailPanel({
             />
           </FormField>
 
-          <div>
-            <Heading level={4} variant="label" className="mb-2">
+          <Stack gap="inline">
+            <Heading level={4} variant="label">
               Environment variables
             </Heading>
             <KeyValueEditor
@@ -408,7 +452,7 @@ export function StepDetailPanel({
               onChange={handleEnvChange}
               readonly={readonly}
             />
-          </div>
+          </Stack>
 
           <FormField label="Timeout (minutes)">
             <TextField

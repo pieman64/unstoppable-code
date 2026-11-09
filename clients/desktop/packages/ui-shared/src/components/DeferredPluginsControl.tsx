@@ -1,3 +1,4 @@
+import { Button } from './Button';
 import type { JSX } from 'react';
 import { CognitionIcon } from '../icons/CognitionIcon';
 import { ActionTooltip } from './ActionTooltip';
@@ -24,8 +25,10 @@ export function DeferredPluginsControl({
             : 'Prevent this chat from discovering or enabling deferred skills, plugins, and MCP servers.'
         }
       >
-        <button
-          type="button"
+        <Button
+          variant={allowed ? 'ghost-accent' : 'ghost'}
+          size="sm"
+          iconOnly
           role="switch"
           aria-checked={allowed}
           aria-label="Allow deferred plugins for this chat"
@@ -33,14 +36,9 @@ export function DeferredPluginsControl({
           disabled={disabled}
           data-testid="chat-plugins-deferred-tools-toggle"
           data-active={allowed ? 'true' : 'false'}
-          className={`focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors ${
-            allowed
-              ? 'border-fg-info/30 bg-info-subtle fg-info hover:bg-info-subtle/80'
-              : 'bg-popover fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-          }`}
         >
           <CognitionIcon size="sm" aria-hidden="true" />
-        </button>
+        </Button>
       </ActionTooltip>
       <span
         className="truncate text-2xs fg-secondary"

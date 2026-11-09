@@ -10,7 +10,7 @@ import type {
 import type {
   CanopyOrganizationSummary,
   CanopyTeamSummary,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 

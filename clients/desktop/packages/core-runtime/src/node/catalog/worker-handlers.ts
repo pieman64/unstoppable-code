@@ -1,10 +1,12 @@
-import type {
-  WORKER_CATALOG_INSTRUCTION_DEFINITIONS,
-  WORKER_CATALOG_QUERY_DEFINITIONS,
-  CanopyErrorKind,
-  CanopyOperationCode,
-  CanopyRetryDirective,
-  WorkerCatalogMaterialization,
+import {
+  catalogMaterializationSecretBindings,
+  type WORKER_CATALOG_INSTRUCTION_DEFINITIONS,
+  type WORKER_CATALOG_QUERY_DEFINITIONS,
+  type CanopyErrorKind,
+  type CanopyOperationCode,
+  type CanopyRetryDirective,
+  type CatalogMaterializationMcpServerDescriptor,
+  type WorkerCatalogMaterialization,
 } from '@canopy/protocol/canopy-core';
 
 import { CanopyOperationError } from '../../runtime/errors';
@@ -13,12 +15,18 @@ import type {
   CanopyDispatcherInstructionHandlerMap,
   CanopyDispatcherInstructionParams,
 } from '../../runtime/types';
+import {
+  redeemExecutionSecrets,
+  type ExecutionSecretSource,
+} from '../execution-secrets';
 import { catalogMaterializationIdentity } from './revision';
 
 /*
  * `worker.catalog.*` on the in-process worker (CAN-4123): materializations
  * are in-memory records under their content-addressed id. A ready or failed
- * record is never rewritten; only a released one materializes again.
+ * record is never rewritten; only a released one materializes again. MCP
+ * server secrets (CAN-4125) are redeemed once, after every revision check,
+ * and live only in the ready record's bundle.
  */
 
 export interface WorkerCatalogPluginInstall {
@@ -38,7 +46,23 @@ export interface WorkerCatalogSkillInstall {
   skillMdPath: string;
 }
 
-/** The worker's view of installed plugins; host-local, never on the wire. */
+/** One MCP server configuration as the worker's host sees it now. Host-local, never on the wire. */
+export interface WorkerCatalogMcpServerInstall {
+  /** The current `configRevision` of this server, config and binding. */
+  readonly configRevision: string;
+  /** The pinned server record with each redeemed value in place of its reference. Memory only. */
+  pin(values: ReadonlyMap<string, string>): Readonly<Record<string, unknown>>;
+}
+
+/** The host refuses damaged MCP state; the handler fails closed without storing anything. */
+export class WorkerCatalogMcpStateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkerCatalogMcpStateError';
+  }
+}
+
+/** The worker's view of installed plugins and MCP servers; host-local, never on the wire. */
 export interface WorkerCatalogHost {
   lookupPlugin(
     marketplaceId: string,
@@ -49,6 +73,22 @@ export interface WorkerCatalogHost {
     sourceId: string,
     skillName: string,
   ): Promise<WorkerCatalogSkillInstall | null>;
+  /** Null when the server or the config is absent; throws WorkerCatalogMcpStateError on damaged state. */
+  lookupMcpServer(
+    serverId: string,
+    configId: string,
+    binding: 'device' | 'account',
+  ): Promise<WorkerCatalogMcpServerInstall | null>;
+}
+
+export interface WorkerMaterializedMcpServer {
+  readonly entryId: string;
+  readonly serverId: string;
+  readonly configId: string;
+  readonly transport: 'stdio' | 'http';
+  readonly binding: 'device' | 'account';
+  /** The host's pinned record; holds redeemed secret values. Never logged, recorded or returned. */
+  readonly server: Readonly<Record<string, unknown>>;
 }
 
 /** Worker-local handoff (CAN-4115 reads it at session start). Paths never cross the wire. */
@@ -73,6 +113,8 @@ export interface WorkerCatalogMaterializedBundle {
     canonicalSourceDir: string | null;
     skillMdPath: string;
   }[];
+  /** Sorted by entryId. */
+  mcpServers: readonly WorkerMaterializedMcpServer[];
 }
 
 export interface WorkerCatalogMaterializationReader {
@@ -130,6 +172,8 @@ const byEntryId = (a: { entryId: string }, b: { entryId: string }): number =>
 
 export function createWorkerCatalogHandlers(options: {
   host: WorkerCatalogHost;
+  /** Required: every composition names its secret source (CAN-5067 D15). */
+  secrets: ExecutionSecretSource;
   maxRecords?: number;
 }): WorkerCatalogHandlers {
   const { host } = options;
@@ -161,6 +205,7 @@ export function createWorkerCatalogHandlers(options: {
 
   const materialize = async (
     params: WorkerCatalogMaterializeParams,
+    signal: AbortSignal,
   ): Promise<WorkerCatalogMaterialization> => {
     const { materializationId, expectedFingerprint: fingerprint } = params;
     const diagnostics: Diagnostic[] = [];
@@ -295,6 +340,99 @@ export function createWorkerCatalogHandlers(options: {
       effectiveItems.push({ entryId, kind: 'plugin', providers });
       plugins.push({ entryId, marketplaceId, pluginName, roots });
     }
+    // Damaged state stores nothing; an absent or changed configuration
+    // stores a failed record. Used before and after redemption.
+    const lookupMcpServer = async (
+      item: CatalogMaterializationMcpServerDescriptor,
+    ): Promise<WorkerCatalogMcpServerInstall> => {
+      let install: WorkerCatalogMcpServerInstall | null;
+      try {
+        install = await host.lookupMcpServer(
+          item.serverId,
+          item.configId,
+          item.binding,
+        );
+      } catch (error) {
+        if (error instanceof WorkerCatalogMcpStateError)
+          throw fail(
+            'failed_precondition',
+            'An MCP server file is damaged, so this materialization was refused.',
+            { code: 'worker.catalog.invalidState' },
+          );
+        throw fail(
+          'unavailable',
+          'The MCP configuration cannot be read right now.',
+          { retry: { kind: 'same_idempotency_key' } },
+        );
+      }
+      if (install !== null && install.configRevision === item.configRevision)
+        return install;
+      const error = fail(
+        'conflict',
+        'The MCP configuration changed since this materialization was resolved.',
+        {
+          code: 'worker.catalog.revisionConflict',
+          retry: { kind: 'after_refresh', resource: 'core.catalog.snapshot' },
+        },
+      );
+      store(materializationId, {
+        materialization: {
+          materializationId,
+          state: 'failed',
+          fingerprint,
+          effectiveItems: [],
+          diagnostics: [],
+        },
+        bundle: null,
+        error,
+      });
+      throw error;
+    };
+    const mcpItems = params.itemDescriptors.filter(
+      (item): item is CatalogMaterializationMcpServerDescriptor =>
+        item.kind === 'mcp_server',
+    );
+    for (const item of mcpItems) await lookupMcpServer(item);
+    const bindings = catalogMaterializationSecretBindings(
+      params.itemDescriptors,
+    );
+    const redeemed = await redeemExecutionSecrets(
+      options.secrets,
+      { operation: 'worker.catalog.materialize', key: materializationId },
+      bindings,
+      signal,
+    );
+    const valuesByRef = new Map<string, string>();
+    for (const binding of bindings) {
+      const value = redeemed.env[binding.name];
+      if (binding.source.kind === 'stored-secret' && value !== undefined)
+        valuesByRef.set(binding.source.ref, value);
+    }
+    const mcpServers: WorkerMaterializedMcpServer[] = [];
+    for (const item of mcpItems) {
+      // The owner read the values after the first check, so a save in
+      // between could pair a checked endpoint with a newer credential:
+      // check again and pin what was confirmed, or drop the values.
+      const install = await lookupMcpServer(item);
+      const values = new Map<string, string>();
+      for (const ref of item.secretRefs) {
+        const value = valuesByRef.get(ref);
+        if (value !== undefined) values.set(ref, value);
+      }
+      mcpServers.push({
+        entryId: item.entryId,
+        serverId: item.serverId,
+        configId: item.configId,
+        transport: item.transport,
+        binding: item.binding,
+        server: install.pin(values),
+      });
+      effectiveItems.push({
+        entryId: item.entryId,
+        kind: 'mcp_server',
+        transport: item.transport,
+      });
+    }
     const materialization: WorkerCatalogMaterialization = {
       materializationId,
       state: 'ready',
@@ -309,6 +447,7 @@ export function createWorkerCatalogHandlers(options: {
         fingerprint,
         plugins: plugins.sort(byEntryId),
         skills: skills.sort(byEntryId),
+        mcpServers: mcpServers.sort(byEntryId),
       },
       error: null,
     });
@@ -324,17 +463,7 @@ export function createWorkerCatalogHandlers(options: {
       },
     },
     instructions: {
-      'worker.catalog.materialize': async (params) => {
-        if ((params.secretGrantIds ?? []).length > 0)
-          throw fail(
-            'capability_unavailable',
-            'This worker does not take MCP secrets yet.',
-          );
-        if (params.itemDescriptors.some((item) => item.kind === 'mcp_server'))
-          throw fail(
-            'capability_unavailable',
-            'This worker does not materialize MCP servers yet.',
-          );
+      'worker.catalog.materialize': async (params, { signal }) => {
         const identity = catalogMaterializationIdentity(
           params.itemDescriptors,
           params.scope,
@@ -348,6 +477,21 @@ export function createWorkerCatalogHandlers(options: {
             'These items do not match their materialization identity.',
             { code: 'worker.catalog.invalidState' },
           );
+        const expectedGrants =
+          catalogMaterializationSecretBindings(params.itemDescriptors).length >
+          0
+            ? [params.materializationId]
+            : [];
+        const grantIds = params.secretGrantIds ?? [];
+        if (
+          grantIds.length !== expectedGrants.length ||
+          grantIds.some((grantId, index) => grantId !== expectedGrants[index])
+        )
+          throw fail(
+            'invalid_argument',
+            'These secret grants do not match this materialization.',
+            { code: 'worker.catalog.invalidState' },
+          );
         const id = params.materializationId;
         const existing = records.get(id);
         if (existing?.error)
@@ -358,7 +502,7 @@ export function createWorkerCatalogHandlers(options: {
         }
         const joined = running.get(id);
         if (joined) return joined;
-        const attempt = materialize(params);
+        const attempt = materialize(params, signal);
         running.set(id, attempt);
         try {
           return await attempt;

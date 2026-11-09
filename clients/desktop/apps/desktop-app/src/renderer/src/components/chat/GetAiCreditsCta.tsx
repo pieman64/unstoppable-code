@@ -1,4 +1,9 @@
 import {
+  Button,
+  type ButtonSize,
+  type ButtonVariant,
+} from '@canopy/ui-shared/components/Button';
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -44,7 +49,6 @@ import {
   isConnectedNonGuest,
   useCloudConnectGateStore,
 } from '@/stores/cloudConnectGateStore';
-import { ACCOUNT_BUTTON_PRIMARY } from '@/lib/account-button-styles';
 import {
   chatBannerKey,
   type ChatBannerTarget,
@@ -235,8 +239,9 @@ export interface GetAiCreditsCtaProps {
   readonly onNeedsRecovery?: () => void;
   /** `'primary'` = modal button, `'inline'` = picker-footer button. */
   readonly variant?: GetAiCreditsCtaVariant;
-  /** Preserve an established host surface's button treatment. */
-  readonly buttonClassName?: string;
+  /** The host surface's button treatment; a compact secondary by default. */
+  readonly buttonVariant?: ButtonVariant;
+  readonly buttonSize?: ButtonSize;
   /**
    * How the post-hand-off state is laid out.
    *
@@ -362,16 +367,14 @@ function billingOpenOptions(
     : { destination };
 }
 
-const INLINE_BUTTON_CLASS =
-  'mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-2xs fg-primary transition-colors hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-60';
-
 export function GetAiCreditsCta({
   label,
   description,
   onCovered,
   onNeedsRecovery,
   variant = 'primary',
-  buttonClassName,
+  buttonVariant = variant === 'inline' ? 'secondary' : 'primary',
+  buttonSize = 'compact',
   handoffLayout = 'block',
   disabled = false,
   handoffOnInconclusiveRead = false,
@@ -1586,17 +1589,12 @@ export function GetAiCreditsCta({
     })();
   }, [commitCovered, onNeedsRecovery, requestBillingHandoff]);
 
-  const buttonClass =
-    buttonClassName ??
-    (variant === 'inline'
-      ? INLINE_BUTTON_CLASS
-      : `w-full ${ACCOUNT_BUTTON_PRIMARY} flex items-center justify-center gap-1.5`);
-
   if (handedOff) {
     const checkAgain = (
-      <button
+      <Button
+        variant={buttonVariant}
+        size={buttonSize}
         ref={checkAgainButtonRef}
-        type="button"
         data-testid={`${dataTestId}-check-again`}
         // Honors the host's inert gate as well as our own busy state, exactly
         // like the primary button below. A host that knows its own read is in
@@ -1608,7 +1606,6 @@ export function GetAiCreditsCta({
         // Forced: bypasses the §5 throttle so a user returning inside the
         // 60s window gets a real read instead of a silent no-op.
         onClick={(): void => void checkCoverage(true)}
-        className={`relative ${buttonClass}`}
       >
         {busy && (
           <span
@@ -1619,7 +1616,7 @@ export function GetAiCreditsCta({
           </span>
         )}
         {AI_CREDITS_CHECK_AGAIN_LABEL}
-      </button>
+      </Button>
     );
 
     // Compact: one button, no stacked paragraph, so a banner's action bar
@@ -1671,28 +1668,30 @@ export function GetAiCreditsCta({
   const containerClass =
     handoffLayout === 'compact'
       ? 'inline-flex shrink-0 flex-col items-stretch gap-1.5'
-      : 'flex flex-col gap-1.5';
+      : variant === 'inline'
+        ? 'flex flex-col gap-1.5 pt-1.5'
+        : 'flex flex-col gap-1.5';
 
   return (
     <div className={containerClass}>
       {description ? (
         <p className="text-2xs leading-snug fg-secondary">{description}</p>
       ) : null}
-      <button
+      <Button
+        variant={buttonVariant}
+        size={buttonSize}
         ref={primaryButtonRef}
-        type="button"
         data-testid={dataTestId}
         disabled={busy || disabled}
         aria-busy={busy || disabled}
         onMouseDown={(e): void => e.preventDefault()}
         onClick={handleGetCredits}
-        className={buttonClass}
       >
         {busy && (
           <LoadingSpinner dataTestId={`${dataTestId}-spinner`} decorative />
         )}
         {label}
-      </button>
+      </Button>
       {/* Nothing opened (no authenticated hand-off AND no pricing URL). Saying
           so beats parking the user on a "finish this in your browser" state for
           a page that never appeared. */}

@@ -1,7 +1,22 @@
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  readCoworkFolderMissing,
+  type CoworkFolderStatus,
+} from '@canopy/protocol/canopy-core/core';
+import { resolveCoworkFolderMissing } from '@/lib/ipc-cowork-folder';
+import {
+  inlineFailure,
+  inlineFailureText,
+  type InlineFailure,
+} from '@/lib/inline-app-error';
 import { notifyAcceptedWorktreeTurn } from '../onboarding-tips/homeSendEvents';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import { isCursorModel } from '@canopy/desktop-shared/lib/cursor-models';
+import { isCursorModel } from '@canopy/execution-engine/lib/cursor-models';
 import type {
   AttachmentMeta,
   BranchEntry,
@@ -32,7 +47,6 @@ import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { showAutomationCreatedToast } from '@/lib/automationToasts';
 import { ensureWorktreePanelLayout } from '@/lib/panels/persistence-bridge';
 import { useChatStore } from '@/stores/chatStore';
-import { useGitHubStore } from '@/stores/githubStore';
 import { nextMsgId } from '@/stores/chat/ids';
 import type { ChatTab } from '@/stores/chat/types';
 import { isTabAiCreditsRouted } from '@/stores/chat/tab-utils';
@@ -65,8 +79,11 @@ import {
   createOptionsForBranchTarget,
   createOptionsForNewWorktreeBaseTarget,
   homeDraftChatPluginSelections,
+  missingFolderSendError,
+  homeSendUsesSourceHead,
   resolveHomeEffectiveModelSettings,
   resolveHomeSpeed,
+  sourceNoCommitsSendFailure,
   useHomeComposerStore,
   type HomeBranchTarget,
   type HomeNewWorktreeBaseTarget,
@@ -402,6 +419,36 @@ function findWorkspace(workspaceId: string): SidebarItem | undefined {
 }
 
 /**
+ * CAN-6019: Home's early refusal of an external Cowork project whose folder
+ * is missing, before any work, schedule, or navigation. Main checks again on
+ * send. An unprovisioned project has no folder to check. A check that fails
+ * defers to that send, whose guards refuse a missing folder or report the
+ * failure before creating work; a controlled host on an older release
+ * refuses the check channel and must still accept sends.
+ */
+async function readMissingCoworkFolder(
+  workspaceId: string,
+): Promise<{ folderName: string; message: string } | null> {
+  if (
+    !findWorkspace(workspaceId) ||
+    typeof window.api.chatProject.checkFolder !== 'function'
+  )
+    return null;
+  let status: CoworkFolderStatus;
+  try {
+    status = await window.api.chatProject.checkFolder({
+      projectId: workspaceId,
+    });
+  } catch (error) {
+    reportClientAppError(error);
+    return null;
+  }
+  return status.kind === 'external' && status.status === 'missing'
+    ? status
+    : null;
+}
+
+/**
  * Maps a Home draft's `branchTarget` (plus the selected workspace and the
  * loaded branch list) to the `task_ready` pipeline launcher's target shape
  * (Task C4; extended for PR / Linear-issue targets in Task 11). Cowork
@@ -523,6 +570,70 @@ function withMentionedPlugins(
  * home-draft originals are left in place rather than added as new cleanup
  * surface area.
  */
+/**
+ * CAN-6016: stops a send whose new worktree would start from a source branch
+ * verified to have no commits, before any chat, draft or worktree effect. A
+ * cached positive is re-read first, so a commit made outside the app never
+ * traps the draft; a missing, unsupported or failed read never blocks, and
+ * the backend still classifies a failure that races this check. Scheduled
+ * sends with an initial message provision at fire time and are checked then.
+ */
+async function preflightSourceHead(
+  draft: ReturnType<typeof useHomeComposerStore.getState>,
+  submittedAccountEpoch: number,
+  submissionId: string,
+): Promise<'send' | 'stop'> {
+  const workspaceId = draft.workspaceId;
+  const hasInitialMessage =
+    draft.text.trim().length > 0 || draft.attachments.length > 0;
+  if (!workspaceId || (draft.scheduledSendDraft && hasInitialMessage))
+    return 'send';
+  const usesSourceHead = (
+    state: ReturnType<typeof useHomeComposerStore.getState>,
+  ): boolean =>
+    state.workspaceId === workspaceId &&
+    !state.branchTargetsLoading &&
+    state.branchTargets?.headUnborn === true &&
+    homeSendUsesSourceHead({
+      projectType: findWorkspace(workspaceId)?.type,
+      branchTarget: state.branchTarget,
+      newWorktreeBaseTarget: state.newWorktreeBaseTarget,
+      branches: state.branchTargets.branches,
+      defaultBranch: state.branchTargets.defaultBranch,
+    });
+  if (!usesSourceHead(draft)) return 'send';
+  // Lock before awaiting so a repeated Enter cannot start a second send.
+  useHomeComposerStore.setState({ isSending: true });
+  try {
+    await useHomeComposerStore.getState().loadBranchTargets();
+  } finally {
+    if (
+      isHomeSendAccountCurrent(submittedAccountEpoch) &&
+      activeHomeSubmissionId === submissionId
+    )
+      useHomeComposerStore.setState({ isSending: false });
+  }
+  const current = useHomeComposerStore.getState();
+  if (
+    !isHomeSendAccountCurrent(submittedAccountEpoch) ||
+    activeHomeSubmissionId !== submissionId ||
+    !isSubmittedHomeDraftCurrent(draft) ||
+    current.workspaceSelectionGeneration !==
+      draft.workspaceSelectionGeneration ||
+    current.draftGeneration !== draft.draftGeneration ||
+    current.branchTarget !== draft.branchTarget ||
+    current.pendingAttachmentImportIds.length > 0
+  )
+    return 'stop';
+  if (!usesSourceHead(useHomeComposerStore.getState())) return 'send';
+  useHomeComposerStore.setState({
+    sendError: sourceNoCommitsSendFailure(findWorkspace(workspaceId)?.name),
+    sendErrorRetryable: false,
+    sendErrorChooseModel: null,
+  });
+  return 'stop';
+}
+
 export async function dispatchHomeSend(): Promise<boolean> {
   const submittedAccountEpoch =
     useWorkspaceContextStore.getState().accountEpoch;
@@ -570,6 +681,13 @@ export async function dispatchHomeSend(): Promise<boolean> {
     gate = quickGate;
   }
   if (gate.kind === 'none') {
+    const verdict = await preflightSourceHead(
+      draft,
+      submittedAccountEpoch,
+      submissionIdentity.userMessageId,
+    );
+    if (verdict === 'stop') return false;
+    draft = useHomeComposerStore.getState();
     const modelSettings = await prepareHomeModelSubmission(
       draft,
       draft.workspaceId,
@@ -584,7 +702,8 @@ export async function dispatchHomeSend(): Promise<boolean> {
   }
   if (gate.kind === 'stop') {
     useHomeComposerStore.setState({
-      sendError: gate.message,
+      sendErrorMissingFolder: null,
+      sendError: { error: gate.message },
       sendErrorRetryable: false,
     });
     return false;
@@ -593,8 +712,11 @@ export async function dispatchHomeSend(): Promise<boolean> {
   const { plan } = gate;
   if (draft.scheduledSendDraft && plan.kind === 'create-project') {
     useHomeComposerStore.setState({
-      sendError:
-        'Scheduling isn’t available while this link’s project doesn’t exist yet. Send now, or remove the schedule.',
+      sendErrorMissingFolder: null,
+      sendError: {
+        error:
+          'Scheduling isn’t available while this link’s project doesn’t exist yet. Send now, or remove the schedule.',
+      },
       sendErrorRetryable: false,
     });
     return false;
@@ -611,8 +733,11 @@ export async function dispatchHomeSend(): Promise<boolean> {
     )
   ) {
     useHomeComposerStore.setState({
-      sendError:
-        'File mentions can’t move to another project. Remove them, or dismiss the link.',
+      sendErrorMissingFolder: null,
+      sendError: {
+        error:
+          'File mentions can’t move to another project. Remove them, or dismiss the link.',
+      },
       sendErrorRetryable: false,
     });
     return false;
@@ -658,6 +783,7 @@ export async function dispatchHomeSend(): Promise<boolean> {
     sendError: null,
     sendErrorRetryable: false,
     sendErrorChooseModel: null,
+    sendErrorMissingFolder: null,
   });
   showProgress('Preparing worktree…');
   const controller = new AbortController();
@@ -707,9 +833,8 @@ export async function dispatchHomeSend(): Promise<boolean> {
     if (isSubmittedHomeDraftCurrent(draft)) {
       restorePreview();
       useHomeComposerStore.setState({
-        sendError: destination.ok
-          ? 'Worktree creation cancelled. The project remains available.'
-          : destination.message,
+        sendErrorMissingFolder: null,
+        sendError: null,
       });
     }
     useHomeComposerStore.setState({ isSending: false });
@@ -737,7 +862,8 @@ export async function dispatchHomeSend(): Promise<boolean> {
     }
     useHomeComposerStore.setState({
       isSending: false,
-      sendError: destination.message,
+      sendErrorMissingFolder: null,
+      sendError: { error: destination.message },
       sendErrorRetryable: destination.retryable,
     });
     return false;
@@ -803,7 +929,6 @@ function findChatTab(target: HomeSendChatTarget): ChatTab | undefined {
     ]?.tabs.find((tab) => tab.id === target.chatId);
 }
 
-/** Whether the user is looking at this chat right now. */
 function isChatTargetInView(target: HomeSendChatTarget): boolean {
   if (useNavigationStore.getState().activePage !== 'main') return false;
   const { selectedWorktree, worktreeChats } = useChatStore.getState();
@@ -907,6 +1032,7 @@ async function prepareHomeModelSubmission(
     sendError: null,
     sendErrorRetryable: false,
     sendErrorChooseModel: null,
+    sendErrorMissingFolder: null,
   });
   const cursorRuntimeAvailable =
     !isCursorModel(model) || (await isCursorRuntimeAvailable());
@@ -920,19 +1046,25 @@ async function prepareHomeModelSubmission(
     // state exists; the draft stays intact for a retry or a model change.
     useHomeComposerStore.setState({
       isSending: false,
-      sendError: useFeatureFlagsStore
-        .getState()
-        .isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key)
-        ? 'Connect Cursor in Settings to send with Cursor, or choose another model.'
-        : 'This Cursor model is unavailable. Choose another Cursor model and try again.',
+      sendErrorMissingFolder: null,
+      sendError: {
+        error: useFeatureFlagsStore
+          .getState()
+          .isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key)
+          ? 'Connect Cursor in Settings to send with Cursor, or choose another model.'
+          : 'This Cursor model is unavailable. Choose another Cursor model and try again.',
+      },
     });
     return null;
   }
   if (draft.scheduledSendDraft && isCursorModel(model)) {
     useHomeComposerStore.setState({
       isSending: false,
-      sendError:
-        'Cursor currently supports interactive chats only. Choose another model to schedule this message.',
+      sendErrorMissingFolder: null,
+      sendError: {
+        error:
+          'Cursor currently supports interactive chats only. Choose another model to schedule this message.',
+      },
     });
     return null;
   }
@@ -975,7 +1107,8 @@ async function prepareHomeModelSubmission(
     );
     useHomeComposerStore.setState({
       isSending: false,
-      sendError: message,
+      sendErrorMissingFolder: null,
+      sendError: { error: message },
       sendErrorRetryable: false,
       sendErrorChooseModel: {
         failureId: crypto.randomUUID(),
@@ -1031,6 +1164,8 @@ async function dispatchHomeSendTo(
   }
   const workspaceId = destination?.workspaceId ?? draft.workspaceId;
   if (!workspaceId) return false;
+  // A narrowed id for the failure handlers declared below.
+  const sendProjectId: string = workspaceId;
   // Selections made for the draft's own project never carry to another one.
   const sameProject = destination === null || workspaceId === draft.workspaceId;
   const draftBranches =
@@ -1064,7 +1199,27 @@ async function dispatchHomeSendTo(
     sendError: null,
     sendErrorRetryable: false,
     sendErrorChooseModel: null,
+    sendErrorMissingFolder: null,
   });
+
+  if (isCoworkChatTarget(workspaceId)) {
+    // Prompt expansion can read project files and initialize metadata. Check
+    // before those reads as well as before the scheduling/creation branches.
+    const missingFolder = await readMissingCoworkFolder(workspaceId);
+    if (!isHomeSendAccountCurrent(submittedAccountEpoch)) return false;
+    if (!ownsHomeSubmission() || !isSubmittedHomeDraftCurrent(draft)) {
+      if (ownsHomeSubmission())
+        useHomeComposerStore.setState({ isSending: false });
+      return false;
+    }
+    if (missingFolder) {
+      useHomeComposerStore.setState({
+        isSending: false,
+        ...missingFolderSendError({ projectId: workspaceId, ...missingFolder }),
+      });
+      return false;
+    }
+  }
 
   // Prompt @-mentions expand into the outgoing text BEFORE any target
   // rewrites (worktree repo mapping / cowork root-relative rewriting), so
@@ -1081,7 +1236,8 @@ async function dispatchHomeSendTo(
     if (!isHomeSendAccountCurrent(submittedAccountEpoch)) return false;
     useHomeComposerStore.setState({
       isSending: false,
-      sendError: 'Could not load the referenced prompt.',
+      sendErrorMissingFolder: null,
+      sendError: { error: 'Could not load the referenced prompt.' },
     });
     return false;
   }
@@ -1108,6 +1264,13 @@ async function dispatchHomeSendTo(
   // retry from its failed chat (not this Home submission) is driving it.
   let firstSendAttemptId = submissionIdentity.userMessageId;
   let resumedByRetry = false;
+  // The chat attempt preparing `firstSend` now, so a failure Home can no
+  // longer show stays failed in that chat, with its Try again.
+  let chatAttempt: {
+    target: HomeSendChatTarget;
+    selection: FirstSendModelSelection;
+    continueFromModel: (selection: FirstSendModelSelection) => Promise<boolean>;
+  } | null = null;
   // A send to a worktree that is still setting up is held by main and
   // starts once the setup finishes, so it is presented as a starting turn.
   const presentFirstSend = (target: HomeSendChatTarget): void => {
@@ -1244,33 +1407,68 @@ async function dispatchHomeSendTo(
   if (
     scheduledSendDraft &&
     draft.attachments.length > 0 &&
-    (isCoworkChatTarget(workspaceId) ||
-      branchTarget.kind === 'new-worktree' ||
+    !isCoworkChatTarget(workspaceId) &&
+    (branchTarget.kind === 'new-worktree' ||
       branchTarget.kind === 'branch' ||
       branchTarget.kind === 'pr' ||
       branchTarget.kind === 'linear-issue')
   ) {
     useHomeComposerStore.setState({
       isSending: false,
-      sendError:
-        'Scheduled sends to this destination cannot include attachments. Remove the attachments or send now.',
+      sendErrorMissingFolder: null,
+      sendError: {
+        error:
+          'Scheduled sends to this destination cannot include attachments. Remove the attachments or send now.',
+      },
     });
     return false;
   }
 
+  /** Shows the failure on its Home draft; false when there is none to show it on. */
   function fail(
-    message: string,
+    failure: string | InlineFailure,
     retryable = false,
     modelFailure?: {
       failureId: string;
       /** The chat that keeps the failed prompt and offers recovery. */
       inlineTarget: HomeSendChatTarget | null;
+      /** Home offers Choose model too; only for a model refusal. */
+      chooseModel?: boolean;
     },
-  ): void {
+    /** CAN-6019: Home offers Locate folder and Choose another project. */
+    missingFolder?: { folderName: string; message: string },
+  ): boolean {
+    const missingFolderError = missingFolder
+      ? missingFolderSendError({ projectId: sendProjectId, ...missingFolder })
+      : null;
+    const normalized =
+      missingFolderError?.sendError ??
+      (typeof failure === 'string' ? { error: failure } : failure);
+    const message =
+      inlineFailureText(normalized) ?? "Couldn't send this message.";
     const inlineTarget = modelFailure?.inlineTarget ?? null;
     const failedTarget = firstSendPresentation.target ?? inlineTarget;
+    // Home holds another draft or submission now: withdrawing the prompt
+    // would leave this failure nowhere. Keep it failed in its chat instead.
+    if (
+      !modelFailure &&
+      chatAttempt &&
+      firstSendPresentation.target &&
+      isHomeSendAccountCurrent(submittedAccountEpoch) &&
+      (!ownsHomeSubmission() || !isSubmittedHomeDraftCurrent(draft))
+    ) {
+      const attempt = chatAttempt;
+      failInChat(
+        attempt.target,
+        attempt.selection,
+        resumeFirstSend(attempt.target, attempt.continueFromModel),
+        message,
+        { failure: normalized, retryable },
+      );
+      return false;
+    }
     withdrawFirstSend();
-    if (!isHomeSendAccountCurrent(submittedAccountEpoch)) return;
+    if (!isHomeSendAccountCurrent(submittedAccountEpoch)) return false;
     const currentDraft = useHomeComposerStore.getState();
     if (
       ownsHomeSubmission() &&
@@ -1304,35 +1502,34 @@ async function dispatchHomeSendTo(
         draftGeneration: currentDraft.draftGeneration + 1,
       });
     }
-    // The failed chat explains itself inline; elsewhere a toast leads back.
-    if (
-      failedTarget &&
-      useNavigationStore.getState().activePage !== 'home' &&
-      !(inlineTarget && isChatTargetInView(inlineTarget))
-    ) {
-      useGitHubStore.getState().addToast(message, 'error', undefined, {
-        forceInApp: true,
-        suppressOsNotification: true,
-        action: {
-          label: 'Open draft',
-          onClick: (): void => useNavigationStore.getState().navigate('home'),
-        },
-      });
-    }
+    // Keep the failure with its Home draft; returning to Home reveals it.
     if (!ownsHomeSubmission() || !isSubmittedHomeDraftCurrent(draft)) {
       if (!resumedByRetry && ownsHomeSubmission())
         useHomeComposerStore.setState({ isSending: false });
-      return;
+      return false;
     }
     useHomeComposerStore.setState({
       ...(resumedByRetry ? {} : { isSending: false }),
-      sendError: message,
+      sendError: normalized,
       sendErrorRetryable: retryable,
       // Home shows the recovery too, but focus stays where the user is.
-      sendErrorChooseModel: modelFailure
-        ? { failureId: modelFailure.failureId, message, focus: false }
-        : null,
+      sendErrorChooseModel:
+        modelFailure && modelFailure.chooseModel !== false
+          ? { failureId: modelFailure.failureId, message, focus: false }
+          : null,
+      sendErrorMissingFolder:
+        missingFolderError?.sendErrorMissingFolder ?? null,
     });
+    // The send carried the person to its chat, and its prompt is withdrawn
+    // there: bring them back to the draft, which now says why. A chat that
+    // offers its own model recovery explains itself.
+    if (
+      failedTarget &&
+      isChatTargetInView(failedTarget) &&
+      !(inlineTarget && isChatTargetInView(inlineTarget))
+    )
+      useNavigationStore.getState().navigate('home');
+    return true;
   }
 
   function isAttemptCurrent(target: HomeSendChatTarget): boolean {
@@ -1401,7 +1598,28 @@ async function dispatchHomeSendTo(
           homeModelDisplayLabel(selection.model),
         )
       : homeModelFailureMessage(refusal.reason, refusal.modelLabel);
+    failInChat(target, selection, resume, message);
+  }
+
+  /**
+   * Keeps the prompt in the chat that shows it, failed with `message` and
+   * its Try again, and tells Home too when Home still owns this draft.
+   */
+  function failInChat(
+    target: HomeSendChatTarget,
+    selection: FirstSendModelSelection,
+    resume: FailedFirstSendRetry['resume'],
+    message: string,
+    /**
+     * A failure that is not a model refusal: Home shows it as itself, with
+     * Try again when it is retryable, never Choose model.
+     */
+    home?: { failure: string | InlineFailure; retryable: boolean },
+  ): void {
     const failureId = crypto.randomUUID();
+    const homeFailure = home?.failure ?? message;
+    const retryable = home?.retryable ?? false;
+    const chooseModel = home === undefined;
     const presented = firstSendPresentation.target;
     const tabModelAtFailure = findChatTab(target)?.model;
     if (
@@ -1412,6 +1630,8 @@ async function dispatchHomeSendTo(
         userMessageId: firstSend.userMessageId,
         attemptId: firstSendAttemptId,
         failure: { failureId, model: selection.model, message },
+        // A send main refused before dispatch keeps its prompt failed here.
+        refusedBeforeDispatch: firstSendRejected,
       })
     ) {
       // The failed prompt stays; nothing withdraws it from here on.
@@ -1424,10 +1644,18 @@ async function dispatchHomeSendTo(
         tabHarnessAtFailure: findChatTab(target)?.executionHarness,
         resume,
       });
-      fail(message, false, { failureId, inlineTarget: target });
+      fail(homeFailure, retryable, {
+        failureId,
+        inlineTarget: target,
+        chooseModel,
+      });
       return;
     }
-    fail(message, false, { failureId, inlineTarget: null });
+    fail(homeFailure, retryable, {
+      failureId,
+      inlineTarget: null,
+      chooseModel,
+    });
   }
 
   /**
@@ -1463,10 +1691,31 @@ async function dispatchHomeSendTo(
         return await continueFromModel(selection);
       } catch (err: unknown) {
         if (!isAttemptCurrent(target)) return false;
-        fail(
-          extractIpcErrorMessage(err),
-          err instanceof OrgDefaultChatsUnavailableError,
-        );
+        const appError = toAppError(resolveClientAppError(err));
+        // The retry ran from the failed chat, and Home may belong to another
+        // draft by now: the prompt stays there, failed again, with this
+        // reason. Not ready yet is a known state with its own sentence and
+        // Try again; neither is a model refusal.
+        const home: { failure: InlineFailure; retryable: boolean } | null =
+          err instanceof OrgDefaultChatsUnavailableError
+            ? { failure: { error: err.message }, retryable: true }
+            : appError
+              ? {
+                  failure: inlineFailure(
+                    appError,
+                    "Couldn't send this message.",
+                  ),
+                  retryable: false,
+                }
+              : null;
+        if (home !== null)
+          failInChat(
+            target,
+            selection,
+            resumeFirstSend(target, continueFromModel),
+            inlineFailureText(home.failure) ?? "Couldn't send this message.",
+            home,
+          );
         return false;
       }
     };
@@ -1482,10 +1731,24 @@ async function dispatchHomeSendTo(
   });
   try {
     if (destination?.signal?.aborted) {
-      fail('Worktree creation cancelled.', true);
+      withdrawFirstSend();
+      if (ownsHomeSubmission())
+        useHomeComposerStore.setState({ isSending: false });
       return false;
     }
     if (isCoworkChatTarget(workspaceId)) {
+      // Expansion and preparation also await: never submit a newer draft.
+      if (!ownsHomeSubmission() || !isSubmittedHomeDraftCurrent(draft)) {
+        if (ownsHomeSubmission())
+          useHomeComposerStore.setState({ isSending: false });
+        return false;
+      }
+      if (scheduledSendDraft && draft.attachments.length > 0) {
+        fail(
+          'Scheduled sends to this destination cannot include attachments. Remove the attachments or send now.',
+        );
+        return false;
+      }
       // Scheduled cowork sends defer chat creation entirely to automation
       // fire time via the `standalone_prompt` action — exact parity with the
       // `new-worktree`/`branch` deferred path below: no draft chat is
@@ -1545,6 +1808,13 @@ async function dispatchHomeSendTo(
         });
 
         if (!response.ok || !response.activity) {
+          const missingFolder = !response.ok
+            ? readCoworkFolderMissing(response.coworkFolderMissing)
+            : undefined;
+          if (missingFolder) {
+            fail(missingFolder.message, false, undefined, missingFolder);
+            return false;
+          }
           fail('Could not schedule message.');
           return false;
         }
@@ -1662,6 +1932,7 @@ async function dispatchHomeSendTo(
         selection: FirstSendModelSelection,
       ): Promise<boolean> => {
         if (!isAttemptCurrent(target)) return false;
+        chatAttempt = { target, selection, continueFromModel };
         // Draft settings belong to the submitted model. A replacement
         // accepted in the failed chat keeps the settings its picker applied.
         const submittedModel =
@@ -1700,7 +1971,8 @@ async function dispatchHomeSendTo(
           await useChatStore.getState().setSpeed(speed, target);
         }
         if (!isAttemptCurrent(target)) return false;
-        if (planMode) {
+        // Enabled, not toggled: Try again re-runs this step.
+        if (planMode && findChatTab(target)?.planMode !== true) {
           useChatStore.getState().togglePlanMode(target);
         }
         if (approvalMode) {
@@ -2113,10 +2385,12 @@ async function dispatchHomeSendTo(
         useHomeComposerStore.setState({ isSending: false });
         return false;
       }
-      fail(
-        useProjectsStore.getState().worktreeError ??
-          'Failed to create worktree.',
-      );
+      const projects = useProjectsStore.getState();
+      // Once the composer shows this failure where the send started, the
+      // worktree error notice over every page would show it a second time.
+      // When the draft changed meanwhile, the notice is the only place left.
+      if (fail(projects.worktreeError ?? 'Failed to create worktree.'))
+        projects.clearWorktreeError();
       return false;
     }
 
@@ -2252,7 +2526,11 @@ async function dispatchHomeSendTo(
     let newWorktreeAttachmentPaths = attachmentPaths;
     let newWorktreeAttachmentPromptContexts = attachmentPromptContexts;
     let newWorktreeAttachments = draft.attachments;
-    if (draft.attachments.length > 0) {
+    // Runs inside the chat attempt, so a failed re-import stays failed in the
+    // chat with Try again, which re-imports once more.
+    let newWorktreeAttachmentsRestaged = draft.attachments.length === 0;
+    const restageNewWorktreeAttachments = async (): Promise<void> => {
+      if (newWorktreeAttachmentsRestaged) return;
       const restaged = await reimportDraftAttachmentsPreservingPromptKind(
         { projectId: workspaceId, worktreeId: created.id },
         draft.attachments,
@@ -2261,7 +2539,8 @@ async function dispatchHomeSendTo(
       newWorktreeAttachmentPaths = attachmentPathsFromMeta(restaged);
       newWorktreeAttachmentPromptContexts =
         attachmentPromptContextsFromMeta(restaged);
-    }
+      newWorktreeAttachmentsRestaged = true;
+    };
 
     const target = { projectId: workspaceId, worktreeId: created.id, chatId };
     // Hydration may have been started by selection without the Home draft's
@@ -2282,6 +2561,9 @@ async function dispatchHomeSendTo(
     const continueFromModel = async (
       selection: FirstSendModelSelection,
     ): Promise<boolean> => {
+      if (!isAttemptCurrent(target)) return false;
+      chatAttempt = { target, selection, continueFromModel };
+      await restageNewWorktreeAttachments();
       if (!isAttemptCurrent(target)) return false;
       const outcome = await applyFirstSendModel(target, selection);
       if (outcome === 'stale') return false;
@@ -2317,7 +2599,8 @@ async function dispatchHomeSendTo(
         );
       }
       if (!isAttemptCurrent(target)) return false;
-      if (planMode) {
+      // Enabled, not toggled: Try again re-runs this step.
+      if (planMode && findChatTab(target)?.planMode !== true) {
         useChatStore.getState().togglePlanMode(target);
       }
       if (approvalMode) {
@@ -2412,10 +2695,24 @@ async function dispatchHomeSendTo(
     };
     return await continueFromModel(submittedModelSelection);
   } catch (err: unknown) {
-    fail(
-      extractIpcErrorMessage(err),
-      err instanceof OrgDefaultChatsUnavailableError,
-    );
+    // CAN-6019: main refused a folder that went missing after the preflight
+    // (or was never checked); Home offers the same recovery.
+    const missingFolder = resolveCoworkFolderMissing(err, workspaceId);
+    if (missingFolder) {
+      fail(missingFolder.message, false, undefined, missingFolder);
+      return false;
+    }
+    const appError = toAppError(resolveClientAppError(err));
+    // Not ready yet is a known, retryable state with its own sentence, not a
+    // defect to report.
+    if (err instanceof OrgDefaultChatsUnavailableError) {
+      fail(err.message, true);
+    } else if (appError) {
+      fail(inlineFailure(appError, "Couldn't send this message."));
+    } else if (ownsHomeSubmission()) {
+      withdrawFirstSend();
+      useHomeComposerStore.setState({ isSending: false });
+    }
     return false;
   } finally {
     destination?.signal?.removeEventListener('abort', withdrawFirstSend);

@@ -236,6 +236,7 @@ describe('pipeline owner requests', () => {
       'owner.ledger.codexToolAuthorize': { toolsKey: 'k', threadId: 't', call },
       'owner.ledger.codexToolExecute': { toolsKey: 'k', threadId: 't', call },
       'owner.ledger.codexToolsDispose': { toolsKey: 'k' },
+      'owner.claude.modAdmission': { cwd: '/tmp/run', settingSources: [] },
     };
     for (const action of WORKER_PIPELINE_OWNER_ACTIONS) {
       expect(

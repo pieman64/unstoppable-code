@@ -5,28 +5,28 @@ import {
   AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT,
   readClaudeRetrySessionId,
   runWithTransientAgentRetry,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 import {
   codexServiceTierForModelConfig,
   mapThinkingToReasoningEffort,
-} from '@canopy/desktop-shared/lib/codex-model-config';
+} from '@canopy/execution-engine/lib/codex-model-config';
 import {
   DEFAULT_CODEX_SPEED,
   readCodexSpeedRecord,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import { buildHelperInjectedPrompts } from '@canopy/desktop-shared/lib/helper-transcript';
-import { readHelperUsage } from '@canopy/desktop-shared/lib/helper-usage';
+import { readHelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import {
   formatClaudeStreamError,
   StructuredHelperQueryError,
 } from '@canopy/desktop-shared/lib/structured-helper-query';
 import type { CodexThreadHandle } from '@canopy/desktop-shared/node/codex-runtime';
 import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
-import { resolveCodexMockAppServerOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import { resolveCodexMockAppServerOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   claudeNativeMemoryOptions,
   codexNativeMemoryThreadConfig,
-} from '@canopy/desktop-shared/node/lib/native-memory';
+} from '@canopy/execution-engine/node/lib/native-memory';
 import {
   type AgentModelConfig,
   type AgentProviderType,
@@ -48,6 +48,8 @@ import {
   reportCodexSpeedTurnFailure,
 } from '../codex/speed-policy';
 import { getClaudeWorkerSessionService } from '../integration/claude-worker-session-service';
+import { resolveClaudeModAdmissionLaunch } from './claude-mod-admission-launch';
+import { mergeClaudeModAdmissionSettings } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
 import { getEffectiveClaudeWorkerModePreferences } from '../lib/claude-tui-workers';
 import { markObservedHelperTaskAiCreditsRouted } from '../lib/helper-observed-task';
 import { checkModelGatewayRoute } from '../lib/model-gateway-state';
@@ -1147,8 +1149,23 @@ ${conversationText}`;
           waitForQuotaRecovery: invocation.waitForQuotaRecovery,
           provider: invocation.providerType,
           model: effectiveModel,
-          runAttempt: (captureEvent) =>
-            runObservedClaudeQuery(
+          runAttempt: async (captureEvent) => {
+            const claudeModAdmission = await resolveClaudeModAdmissionLaunch({
+              cwd: effectiveCwd,
+              environment: resolveAgentEnvironment(options?.workspaceId),
+              ...(invocation.envOverride?.CLAUDE_CONFIG_DIR !== undefined
+                ? { claudeConfigDir: invocation.envOverride.CLAUDE_CONFIG_DIR }
+                : {}),
+            });
+            const nativeMemoryOptions =
+              claudeNativeMemoryOptions(localMemoryEnabled);
+            const admissionSettings = claudeModAdmission?.settings
+              ? mergeClaudeModAdmissionSettings(
+                  nativeMemoryOptions.settings ?? {},
+                  claudeModAdmission.settings,
+                )
+              : undefined;
+            return runObservedClaudeQuery(
               options?.observabilityTaskKey,
               invocation.providerType,
               resumeSessionId,
@@ -1179,7 +1196,14 @@ ${conversationText}`;
                     systemPrompt,
                     // Native-memory suppression while local memory is enabled
                     // (CAN-1969).
-                    ...claudeNativeMemoryOptions(localMemoryEnabled),
+                    ...nativeMemoryOptions,
+                    ...(admissionSettings
+                      ? { settings: admissionSettings }
+                      : {}),
+                    ...(claudeModAdmission &&
+                    claudeModAdmission.plugins.length > 0
+                      ? { plugins: [...claudeModAdmission.plugins] }
+                      : {}),
                     ...(resumeSessionId ? { resume: resumeSessionId } : {}),
                   },
                 }),
@@ -1187,7 +1211,8 @@ ${conversationText}`;
               (sessionId) => {
                 resumeSessionId = sessionId;
               },
-            ),
+            );
+          },
           onRetry: (notice) =>
             updateHelperRetryMetadata(options?.observabilityTaskKey, {
               attempt: notice.nextAttempt,

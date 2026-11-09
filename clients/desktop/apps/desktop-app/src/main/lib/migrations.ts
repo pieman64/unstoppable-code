@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { pruneDamagedCopies } from '@canopy/desktop-shared/node/lib/damaged-copies';
+import { pruneDamagedCopies } from '@canopy/execution-engine/node/lib/damaged-copies';
 import {
   createDirectoryDurably,
   writeFileAtomically,

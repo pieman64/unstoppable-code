@@ -1,4 +1,4 @@
-import { Button, Surface } from '@canopy/ui-shared/components';
+import { Stack, Button, Surface } from '@canopy/ui-shared/components';
 import { useState, type JSX } from 'react';
 import type { WorkspaceWorktreeRepairIssue } from '@canopy/desktop-shared/types';
 import { ChoiceField } from '@canopy/ui-shared/components';
@@ -36,32 +36,32 @@ export function WorkspaceRepairDialog({
     >
       <div className="flex flex-col gap-4 text-s fg-primary">
         <Surface variant="group" padding="compact">
-          <div className="text-xs fg-secondary">
+          <div className="flex flex-col text-xs fg-secondary gap-1">
             <div>
               Worktree{' '}
               <span className="font-medium fg-primary">{worktreeId}</span>
             </div>
-            <div className="mt-1">
+            <div>
               Branch{' '}
               <span className="font-medium fg-primary">{branchName}</span>
             </div>
           </div>
         </Surface>
 
-        <div className="space-y-2">
+        <Stack gap="inline">
           {issues.map((issue) => (
             <Surface variant="outline" key={issue.code}>
               <div
-                className={`px-3 py-2 text-xs ${workspaceHealthIssueClassName(issue.blocking)}`}
+                className={`flex flex-col gap-1 px-3 py-2 text-xs ${workspaceHealthIssueClassName(issue.blocking)}`}
               >
                 <div className="font-medium">
                   {issue.blocking ? 'Blocking issue' : 'Warning'}
                 </div>
-                <div className="mt-1">{issue.message}</div>
+                <div>{issue.message}</div>
               </div>
             </Surface>
           ))}
-        </div>
+        </Stack>
 
         <ChoiceField
           checked={restoreClaudeMd}

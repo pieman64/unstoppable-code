@@ -10,14 +10,14 @@ import type {
   AgentMcpHttpAuthPin,
   AgentMcpSelection,
 } from '@canopy/desktop-shared/node/delegation/agent-artifacts';
-import { normalizeMcpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
+import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import {
   buildManagedMcpServerIdentityDigest,
   normalizeManagedMcpServerLabel,
   readManagedMcpServerNameDigest,
 } from '@canopy/desktop-shared/node/plugins/mcp-server-name';
 import { resolvePluginServerCwd } from '@canopy/desktop-shared/node/plugins/plugin-resolver';
-import type { CodexConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { getMcpHttpAuthHandler } from '@canopy/desktop-shared/lib/mcp-http-auth';
 import type {
   McpHttpAuthPreference,

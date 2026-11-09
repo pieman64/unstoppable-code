@@ -1,3 +1,8 @@
+import { selectGitDefaultBranch } from './default-branch';
+import { selectAvailableGitBranchName } from './branch-writes';
+import { addGitWorktree } from './worktree-writes';
+import { readGitHeadState } from './head-state';
+import type { WorkerGitWorktreeWriteHost } from './worker-git-worktree-writes';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
@@ -120,6 +125,7 @@ export interface RecordedGitWorktree {
 }
 
 export interface RecordedWorkerGitHosts {
+  readonly worktreeWrite: WorkerGitWorktreeWriteHost;
   readonly branchList: WorkerGitBranchListHost<RecordedGitRepository>;
   readonly branchWrite: WorkerGitBranchWriteHost<RecordedGitRepository, string>;
   /** `worker.git.fetch` and `worker.git.pull`, on the branch writes' checkouts. */
@@ -557,6 +563,14 @@ export function createRecordedWorkerGitHosts(
           ),
         readWorktreeList: () => readRecordedWorktreeList(checkout, invocation),
         defaultBranchFacts: defaultBranchFacts(checkout.path, invocation),
+        readHeadUnborn: async () =>
+          (
+            await readGitHeadState(checkout.path, {
+              verifyCommit: () =>
+                git.read({ kind: 'head-commit' }, checkout.path, invocation),
+              signal: invocation.signal,
+            })
+          ).headUnborn,
       };
     },
     now: () => now().getTime(),
@@ -764,6 +778,97 @@ export function createRecordedWorkerGitHosts(
       branchDeletePort(repository, invocationOf(context)),
   };
 
+  const worktreeWrite: WorkerGitWorktreeWriteHost = {
+    authorityId,
+    resolve: async (scope, context, operation) => {
+      const record = await readWorkspace(scope);
+      if (operation === 'remove' && scope.worktreeId !== undefined)
+        await readWorktree(record, scope.worktreeId);
+      const configured = recordedRepository(record, scope);
+      const invocation = invocationOf(context);
+      // Mutations (including their prerequisite reads) finish once admitted.
+      const mutationInvocation = {
+        ...invocation,
+        signal: new AbortController().signal,
+      };
+      const repository = await referenceRoot(
+        configured,
+        record,
+        mutationInvocation,
+      );
+      const commands = writeCommands(repository, mutationInvocation);
+      const target =
+        scope.worktreeId === undefined
+          ? undefined
+          : join(
+              record.base,
+              'worktrees',
+              scope.worktreeId,
+              ...(scope.repoId !== undefined &&
+              scope.repoId !== WORKSPACE_ROOT_REPO_ID
+                ? ['repos', scope.repoId]
+                : []),
+            );
+      const requireTarget = (): string => {
+        if (!target) throw unresolved();
+        return target;
+      };
+      return {
+        add: (branch) =>
+          addGitWorktree(
+            {
+              fetch: async () => {
+                try {
+                  await commands.succeeded({
+                    kind: 'fetch-origin',
+                    prune: false,
+                  });
+                } catch (error) {
+                  if (error instanceof GitBranchWriteInterrupted) throw error;
+                }
+              },
+              defaultBranch: async () =>
+                (
+                  await selectGitDefaultBranch(
+                    defaultBranchFacts(repository, mutationInvocation),
+                    { now: now().getTime() },
+                  )
+                ).defaultBranch,
+              localBranchExists: (branch) =>
+                commands.probe({ kind: 'local-branch', branch }),
+              availableBranchName: (name) =>
+                selectAvailableGitBranchName(
+                  branchWritePort(
+                    { path: repository, recorded: [repository] },
+                    mutationInvocation,
+                  ),
+                  name,
+                ),
+              add: async (branch, startPoint, create) => {
+                await commands.succeeded({
+                  kind: 'worktree-add',
+                  path: requireTarget(),
+                  branch,
+                  startPoint,
+                  create,
+                });
+              },
+            },
+            branch,
+          ),
+        remove: async () => {
+          await commands.succeeded({
+            kind: 'worktree-remove',
+            path: requireTarget(),
+          });
+        },
+        prune: async () => {
+          await commands.succeeded({ kind: 'worktree-prune' });
+        },
+      };
+    },
+  };
+
   const remote: WorkerGitRemoteHost<string> = {
     authorityId,
     resolveRepository: async ({ scope, repository }, context) => {
@@ -917,10 +1022,10 @@ export function createRecordedWorkerGitHosts(
     detect: async ({ recheck }, { signal }) => {
       const facts = await git.selectExecutable({ recheck, signal });
       const requirement = getGitExecutableRequirement(options.os, options.arch);
-      // No winget probe on the daemon (D10): Windows serving is CAN-4732.
       const status = {
         ...requirement,
-        wingetAvailable: false,
+        wingetAvailable:
+          options.os === 'win32' && (facts.wingetAvailable ?? false),
         checkedAt: now().toISOString(),
       };
       if (facts.ready) {
@@ -1049,6 +1154,7 @@ export function createRecordedWorkerGitHosts(
   return {
     branchList,
     branchWrite,
+    worktreeWrite,
     syncWrite,
     commitPush: createRecordedWorkerGitCommitPushHost({
       authorityId,

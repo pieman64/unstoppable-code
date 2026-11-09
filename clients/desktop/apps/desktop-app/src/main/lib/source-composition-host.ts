@@ -1,3 +1,4 @@
+import { sourceChangeGit } from '../canopy-runtime/worker-git-worktree-adapter';
 import {
   CoreSharedContainerForkResultSchema,
   CoreWorkspaceSourceRepoInitializeResultSchema,
@@ -430,6 +431,7 @@ export function createDesktopSourceCompositionHost(
       // receipt lookup; addressing still runs after it (RR5).
       const variant = await asWire(() => sourceChangesVariant(workspaceId));
       const options = {
+        git: sourceChangeGit(workspaceId, dispatcher(), call.caller),
         expectedRevisions: sourceChangesRevisions(input),
         idempotencyKey: call.idempotencyKey,
         wireCall: wireCall('workspace-source-changes', call, () =>

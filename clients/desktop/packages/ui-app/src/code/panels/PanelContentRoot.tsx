@@ -62,7 +62,12 @@
  */
 import { useEffect, type JSX, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { isPanelKind } from '@canopy/protocol';
 import { PANEL_CONTENT_HOST_ATTRIBUTE } from '@canopy/ui-shared/panels';
+import {
+  AppErrorBoundary,
+  type AppErrorBoundaryHost,
+} from '../../feedback/AppErrorBoundary';
 import {
   getAuxPanelLayoutOwnerKey,
   usePanelLayoutStore,
@@ -105,6 +110,8 @@ export interface PanelContentRootProps {
    * hidden (a browser page, a terminal) keeps mounting up front.
    */
   deferHiddenContent?: (kind: string) => boolean;
+  /** Records a panel's failure and offers its report. Containment doesn't need it. */
+  errorHost?: AppErrorBoundaryHost;
 }
 
 function ownerKeyOf(layoutKey: string): string {
@@ -168,6 +175,21 @@ function collectLivePanelKeys(
   return live;
 }
 
+/**
+ * Runs the renderer beneath the boundary, so a throw from the renderer itself
+ * is contained too, not only a throw from what it returns. Not memoized: web
+ * renderers close over live context.
+ */
+function PanelContentSlot({
+  render,
+  args,
+}: {
+  readonly render: PanelContentRootProps['renderPanelContent'];
+  readonly args: RenderPanelContentArgs;
+}): ReactNode {
+  return render(args);
+}
+
 export function PanelContentRoot({
   worktreeKey,
   hostState,
@@ -175,6 +197,7 @@ export function PanelContentRoot({
   auxLayoutKeys = [],
   includeAuxWindows = true,
   deferHiddenContent,
+  errorHost,
 }: PanelContentRootProps): JSX.Element {
   const layouts = usePanelLayoutStore((state) => state.layouts);
 
@@ -238,15 +261,37 @@ export function PanelContentRoot({
                   value={{ layoutKey, groupId: group.groupId }}
                 >
                   <PanelVisibilityContext.Provider value={isVisible}>
-                    {renderPanelContent({
-                      panelId: tab.panelId,
-                      kind: tab.kind,
-                      ...(tab.instance !== undefined
-                        ? { instance: tab.instance }
-                        : {}),
-                      isActive: isActiveGroup && isActiveTab,
-                      isVisible,
-                    })}
+                    {/* The portal's key holds this boundary to one panel across
+                        tab switches, moves and pop-outs. A panel bound to new
+                        content has nothing left to do with the old failure. */}
+                    <AppErrorBoundary
+                      layout="fill"
+                      message="Couldn't show this panel."
+                      recoveryLabel="Reload panel"
+                      testId="panel-error-fallback"
+                      host={errorHost}
+                      resetKey={
+                        tab.instance !== undefined
+                          ? JSON.stringify(tab.instance)
+                          : undefined
+                      }
+                      context={{
+                        panelKind: isPanelKind(tab.kind) ? tab.kind : 'unknown',
+                      }}
+                    >
+                      <PanelContentSlot
+                        render={renderPanelContent}
+                        args={{
+                          panelId: tab.panelId,
+                          kind: tab.kind,
+                          ...(tab.instance !== undefined
+                            ? { instance: tab.instance }
+                            : {}),
+                          isActive: isActiveGroup && isActiveTab,
+                          isVisible,
+                        }}
+                      />
+                    </AppErrorBoundary>
                   </PanelVisibilityContext.Provider>
                 </PanelPlacementContext.Provider>
               </PanelWorktreeContext.Provider>

@@ -1,5 +1,8 @@
 import { useEffect } from 'react';
 import { useGitHubStore } from '@/stores/githubStore';
+import { addFailureToast, type ToastMeta } from '@/stores/toastStore';
+import { worktreeToastOrigin } from '@/lib/toastWorktreeNavigation';
+import { unclassifiedToastError } from '@canopy/ui-shared/lib';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 
@@ -32,28 +35,33 @@ export function useAutoArchiveNotifications(): void {
         notification.status === 'success'
           ? `${subject} was automatically deleted after ${notification.inactivityDays} ${notification.inactivityDays === 1 ? 'day' : 'days'} of inactivity.`
           : `${subject} could not be automatically deleted${notification.error ? `: ${notification.error}` : '.'}`;
+      const text = hasWarnings
+        ? `${message} Cleanup incomplete: ${notification.warnings?.join(' ')}`
+        : message;
+      const meta: ToastMeta = {
+        category: 'Automation',
+        title: 'Auto delete',
+        workspaceName: notification.workspaceName,
+        projectId: notification.workspaceId,
+        worktreeId: notification.targetId,
+        persistent: notification.status === 'failure' || hasWarnings,
+        forceInApp: true,
+      };
+      if (notification.status === 'failure') {
+        addFailureToast({
+          message: text,
+          error: unclassifiedToastError(),
+          origin: worktreeToastOrigin(
+            notification.workspaceId,
+            notification.targetId,
+          ),
+          meta,
+        });
+        return;
+      }
       useGitHubStore
         .getState()
-        .addToast(
-          hasWarnings
-            ? `${message} Cleanup incomplete: ${notification.warnings?.join(' ')}`
-            : message,
-          notification.status === 'failure'
-            ? 'error'
-            : hasWarnings
-              ? 'warning'
-              : 'success',
-          undefined,
-          {
-            category: 'Automation',
-            title: 'Auto delete',
-            workspaceName: notification.workspaceName,
-            projectId: notification.workspaceId,
-            worktreeId: notification.targetId,
-            persistent: notification.status === 'failure' || hasWarnings,
-            forceInApp: true,
-          },
-        );
+        .addToast(text, hasWarnings ? 'warning' : 'success', undefined, meta);
     });
   }, []);
 }

@@ -1,9 +1,13 @@
 import { repositoryCloneErrorMessage } from '@canopy/protocol/portal';
+import { toAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
 import {
   Fact,
   FactList,
   RepositoryCloneError,
-  ErrorBanner,
   StatusLabel,
 } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useState, type JSX } from 'react';
@@ -12,6 +16,8 @@ import type { CloneJobSnapshot } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { ProgressBar } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { formatElapsed } from '@/lib/pipelineTiming';
 import { announceBackgroundCloneOutcomes } from '@/lib/cloneJobOutcomes';
 import {
@@ -70,7 +76,11 @@ interface CloneJobRowProps {
 
 function CloneJobRow({ job, now }: CloneJobRowProps): JSX.Element {
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<InlineFailure | null>(null);
+  // The row action that failed, so Try again repeats it.
+  const [failedAction, setFailedAction] = useState<
+    (() => Promise<void>) | null
+  >(null);
   const failed = job.status === 'failed';
   const finished = job.status === 'succeeded';
   const transfer = transferDetail(job);
@@ -80,14 +90,22 @@ function CloneJobRow({ job, now }: CloneJobRowProps): JSX.Element {
   ): Promise<void> => {
     setPending(true);
     setError(null);
+    setFailedAction(null);
     try {
       await action();
-    } catch {
-      setError(
-        kind === 'dismiss'
-          ? "Couldn't dismiss this clone. Try again."
-          : "Couldn't cancel the clone. Try again.",
-      );
+    } catch (cause) {
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError) {
+        setError(
+          inlineFailure(
+            appError,
+            kind === 'dismiss'
+              ? "Couldn't dismiss this clone."
+              : "Couldn't cancel the clone.",
+          ),
+        );
+        setFailedAction(() => (): Promise<void> => act(action, kind));
+      }
     } finally {
       setPending(false);
     }
@@ -149,7 +167,17 @@ function CloneJobRow({ job, now }: CloneJobRowProps): JSX.Element {
           </>
         )}
       </FactList>
-      <ErrorBanner error={error} className="" />
+      <DesktopErrorBanner
+        className=""
+        error={error?.error}
+        details={error?.details}
+        retrying={pending}
+        {...(failedAction ? { onRetry: () => void failedAction() } : {})}
+        onDismiss={() => {
+          setError(null);
+          setFailedAction(null);
+        }}
+      />
       {(job.cancellable || failed || finished) && (
         <div className="flex justify-end">
           {failed || finished ? (
@@ -223,7 +251,10 @@ export function CloneProgressModal(): JSX.Element | null {
         hydrate(initial);
         announceBackgroundCloneOutcomes(initial);
       })
-      .catch((): void => undefined);
+      .catch((error: unknown): void => {
+        // The subscription above still delivers every later change.
+        reportClientAppError(error);
+      });
     return (): void => {
       disposed = true;
       unsubscribe();

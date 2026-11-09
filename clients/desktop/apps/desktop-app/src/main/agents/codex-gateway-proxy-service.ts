@@ -23,7 +23,7 @@ import {
   AI_CREDITS_ORG_PROJECT_HEADER,
   AI_CREDITS_WORK_OWNER_HEADER,
 } from '@canopy/protocol/llm-gateway';
-import { isSyntacticallyValidModelId } from '@canopy/desktop-shared/lib/model-id';
+import { isSyntacticallyValidModelId } from '@canopy/execution-engine/lib/model-id';
 import { recordSessionProxyFailure } from './ai-credits-quota-state';
 
 const MAX_INFERENCE_REQUESTS_PER_LEASE = 1024;

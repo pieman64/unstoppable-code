@@ -9,10 +9,9 @@ import {
 } from 'react';
 import type { ArchivedChatSummary } from '@canopy/desktop-shared/types';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
-import { Count, TitlebarIconButton } from '@canopy/ui-shared';
+import { Count } from '@canopy/ui-shared';
 import { ArchiveIcon, CheckIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { TabContextMenu } from './TabContextMenu';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import {
   useChatStore,
   WORKTREE_CHAT_OPEN_ARCHIVE_TRANSCRIPT_EVENT,
@@ -114,13 +113,6 @@ export interface ArchivedChatsControlProps {
    * secondary scoped instances (plan-explore modal, cowork, popouts) omit it.
    */
   primarySurface?: boolean;
-  /**
-   * `header` (default): the hand-rolled icon with its count badge, tinted
-   * amber while anything is unread. `tabStrip`: a scoped surface's icon
-   * button (as the `+` and Activity), in the neutral ink, with a blue
-   * dot while anything is unread instead of the count.
-   */
-  variant?: 'header' | 'tabStrip';
 }
 
 /**
@@ -138,7 +130,6 @@ export const ArchivedChatsControl = memo(function ArchivedChatsControl({
   popoverAlign = 'right',
   primarySurface = false,
   className = '',
-  variant = 'header',
 }: ArchivedChatsControlProps = {}): JSX.Element | null {
   const hasScopedSelection = scope != null;
   const scopedProjectId = scope?.projectId;
@@ -174,10 +165,6 @@ export const ArchivedChatsControl = memo(function ArchivedChatsControl({
   // tracking so the row actions can show spinners and disable while the async
   // restore/summarize calls run.
   const [archivePopoverOpen, setArchivePopoverOpen] = useState(false);
-  // The tab-strip variant's wrapper, which anchors its body-portaled popover.
-  const [tabStripAnchor, setTabStripAnchor] = useState<HTMLDivElement | null>(
-    null,
-  );
   const [archiveModalOpen, setArchiveModalOpen] = useState(false);
   // Right-click menu on the archive icon ("Mark all as read").
   const [archiveMenu, setArchiveMenu] = useState<{
@@ -437,76 +424,41 @@ export const ArchivedChatsControl = memo(function ArchivedChatsControl({
 
   return (
     <div
-      ref={variant === 'tabStrip' ? setTabStripAnchor : undefined}
       className={`relative shrink-0 ${className}`.trimEnd()}
       onPointerLeave={() => setArchivePopoverOpen(false)}
     >
-      {variant === 'tabStrip' ? (
-        <>
-          <TitlebarIconButton
-            data-testid="chat-tab-archive"
-            // A tab row chrome control: the row's nested corner radius.
-            surface="panelChrome"
-            data-unread={hasUnreadArchived ? 'true' : undefined}
-            icon={ArchiveIcon}
-            onPointerEnter={() => setArchivePopoverOpen(true)}
-            onClick={() => {
-              setArchivePopoverOpen(false);
-              setArchiveModalOpen(true);
-            }}
-            onContextMenu={(e): void => {
-              e.preventDefault();
-              setArchivePopoverOpen(false);
-              setArchiveMenu({ x: e.clientX, y: e.clientY });
-            }}
-            aria-label={`Archived ${CHAT_UNIT_LABEL}s (${archivedSummaries.length})`}
-            aria-haspopup="dialog"
-            // Hovering opens the archive popover, which says what this is.
-            tooltipLabel=""
-          />
-          {hasUnreadArchived ? (
-            <span
-              data-testid="chat-tab-archive-unread"
-              aria-hidden="true"
-              // The sidebar's 6px unread dot, on the glyph's top-right corner.
-              className={`pointer-events-none absolute right-1 top-1 h-1.5 w-1.5 rounded-full ${OPERATIONAL_STATUS_COLORS.unread.background}`}
-            />
-          ) : null}
-        </>
-      ) : (
-        <button
-          type="button"
-          data-testid="chat-tab-archive"
-          data-unread={hasUnreadArchived ? 'true' : undefined}
-          onPointerEnter={() => setArchivePopoverOpen(true)}
-          onClick={() => {
-            setArchivePopoverOpen(false);
-            setArchiveModalOpen(true);
-          }}
-          onContextMenu={(e): void => {
-            e.preventDefault();
-            setArchivePopoverOpen(false);
-            setArchiveMenu({ x: e.clientX, y: e.clientY });
-          }}
-          // Matches the shared TitlebarIconButton frame (tab strip `+`, group
-          // chrome) — hand-rolled rather than the shared component because the
-          // count badge renders as a child, and hovering opens the archive
-          // popover, which the component's built-in tooltip would fight.
-          className={`electron-no-drag focus-ring relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors enabled:hover:bg-subtle enabled:hover:fg-primary ${
-            hasUnreadArchived ? 'text-amber-400' : 'fg-secondary'
-          }`}
-          aria-label={`Archived ${CHAT_UNIT_LABEL}s (${archivedSummaries.length})`}
-          aria-haspopup="dialog"
-        >
-          <ArchiveIcon size={16} />
-          <Count
-            value={archivedSummaries.length}
-            placement="icon"
-            data-testid="chat-tab-archive-count"
-            className="pointer-events-none absolute -right-1 -top-1"
-          />
-        </button>
-      )}
+      <button
+        type="button"
+        data-testid="chat-tab-archive"
+        data-unread={hasUnreadArchived ? 'true' : undefined}
+        onPointerEnter={() => setArchivePopoverOpen(true)}
+        onClick={() => {
+          setArchivePopoverOpen(false);
+          setArchiveModalOpen(true);
+        }}
+        onContextMenu={(e): void => {
+          e.preventDefault();
+          setArchivePopoverOpen(false);
+          setArchiveMenu({ x: e.clientX, y: e.clientY });
+        }}
+        // Matches the shared TitlebarIconButton frame (tab strip `+`, group
+        // chrome) — hand-rolled rather than the shared component because the
+        // count badge renders as a child, and hovering opens the archive
+        // popover, which the component's built-in tooltip would fight.
+        className={`electron-no-drag focus-ring relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors enabled:hover:bg-subtle enabled:hover:fg-primary ${
+          hasUnreadArchived ? 'text-amber-400' : 'fg-secondary'
+        }`}
+        aria-label={`Archived ${CHAT_UNIT_LABEL}s (${archivedSummaries.length})`}
+        aria-haspopup="dialog"
+      >
+        <ArchiveIcon size={16} />
+        <Count
+          value={archivedSummaries.length}
+          placement="icon"
+          data-testid="chat-tab-archive-count"
+          className="pointer-events-none absolute -right-1 -top-1"
+        />
+      </button>
       {archivePopoverOpen && (
         <ArchivedChatsPopover
           summaries={archivedSummaries}
@@ -520,7 +472,6 @@ export const ArchivedChatsControl = memo(function ArchivedChatsControl({
           summarizingIds={summarizingIds}
           restoringIds={restoringIds}
           align={popoverAlign}
-          anchor={variant === 'tabStrip' ? tabStripAnchor : null}
           look="card"
         />
       )}

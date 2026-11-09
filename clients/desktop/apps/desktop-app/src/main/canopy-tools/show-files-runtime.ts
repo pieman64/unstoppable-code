@@ -18,11 +18,13 @@ import type {
 import {
   interfaceToolOutcomeToRendererResponse,
   requestAppAdvisorRendererTool,
-  routeRendererToolRequest,
   surfaceUnavailableResponse,
 } from '../ipc/app-advisor';
 import type { AppAdvisorRendererToolSurfaces } from '../ipc/app-advisor';
-import { getSessionInterfaceToolRegistry } from '../agents/interface-tool-binding';
+import {
+  getSessionInterfaceToolRegistry,
+  interfaceToolAudienceOf,
+} from '../agents/interface-tool-binding';
 import {
   canopyJsonValueSchemaWithin,
   INTERFACE_TOOL_INPUT_MAX_BYTES,
@@ -272,26 +274,20 @@ export async function requestShowFiles(
 /**
  * CAN-4131: ShowFiles for a chat whose session bound `ui.show_files`. The
  * main window's interface lease serves it; no window accessor is called.
- * A chat driven from another computer keeps today's routed path (D10).
+ * A chat driven from another computer is served by that computer's window
+ * lease (CAN-5823).
  */
 export function requestShowFilesThroughLease(
   input: RequestShowFilesInput,
-  remoteFallbackSurfaces: AppAdvisorRendererToolSurfaces,
   options?: { signal?: AbortSignal },
 ): Promise<ShowFilesRendererResult> {
-  return requestShowFilesThroughInterfaceTool(
-    'ui.show_files',
-    input,
-    remoteFallbackSurfaces,
-    options,
-  );
+  return requestShowFilesThroughInterfaceTool('ui.show_files', input, options);
 }
 
 /** CAN-4133: as {@link requestShowFilesThroughLease}, through the named ShowFiles tool. */
 export async function requestShowFilesThroughInterfaceTool(
   toolName: 'ui.show_files' | 'ui.app_advisor.show_files',
   input: RequestShowFilesInput,
-  remoteFallbackSurfaces: AppAdvisorRendererToolSurfaces,
   options?: { signal?: AbortSignal },
 ): Promise<ShowFilesRendererResult> {
   const prepared = prepareShowFiles(input);
@@ -301,12 +297,6 @@ export async function requestShowFilesThroughInterfaceTool(
     requestId: randomUUID(),
     payload: prepared.payload,
   };
-  if (routeRendererToolRequest(request) !== null)
-    return showFilesThroughWindow(
-      prepared.policy,
-      request,
-      remoteFallbackSurfaces,
-    );
   const registry = getSessionInterfaceToolRegistry();
   if (!registry)
     return presentedResult(
@@ -324,6 +314,7 @@ export async function requestShowFilesThroughInterfaceTool(
       worktreeId: input.origin.worktreeId,
       chatId: input.origin.chatTabId,
     },
+    ...interfaceToolAudienceOf(input.origin.chatTabId),
     ...(options?.signal ? { signal: options.signal } : {}),
   });
   return presentedResult(

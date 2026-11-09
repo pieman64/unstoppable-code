@@ -4124,3 +4124,97 @@ exports[`desktop shutdown checkpoints running work at shutdown and resumes it 1`
   },
 }
 `;
+
+exports[`workflow trigger (CAN-5782) runs a workflow pipeline as workflow and starts it nowhere else 1`] = `
+{
+  "agentRun": {
+    "isError": true,
+    "result": {
+      "error": {
+        "code": "invalid_target",
+        "message": "Pipeline <pipeline:workflow> does not declare the dispatch run mode.",
+      },
+      "ok": false,
+      "requestId": "golden-tool-25",
+      "result": {
+        "reason": "invalid_target",
+        "status": "rejected",
+      },
+    },
+  },
+  "portalWithoutEvent": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "invalid_payload",
+        "message": "This workflow can only start from the Workflows page.",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+  "run": {
+    "data": {
+      "event_name": "workflow",
+      "id": "<run:ipc-workflow>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {
+        "greeting": "golden",
+      },
+      "jobs": {
+        "build": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "pending",
+          "steps": {
+            "greet": {
+              "outputs": {},
+              "status": "pending",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run workflow",
+      "pipeline_id": "<pipeline:workflow>",
+      "status": "running",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "settled": {
+    "event_name": "workflow",
+    "id": "<run:ipc-workflow>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "greeting": "golden",
+    },
+    "jobs": {
+      "build": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "greet": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run workflow",
+    "pipeline_id": "<pipeline:workflow>",
+    "status": "success",
+    "status_reasons": [],
+  },
+}
+`;

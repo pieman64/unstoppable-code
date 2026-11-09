@@ -1,3 +1,5 @@
+import { IPC_PRIVATE_CHANNELS } from './channel-policy';
+import { toIpcRejection } from './app-error-rejection';
 import { ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
@@ -52,16 +54,6 @@ const SLOW_ACTION_LABELS: Record<string, string> = {
   [IPC_CHANNELS.aiGatewayModelCatalogRetry]: 'Loading models',
 };
 
-const SLOW_ACTION_IGNORED_CHANNELS = new Set<string>([
-  // Even a decision count would disclose that a private relationship exists.
-  IPC_CHANNELS.orgProjectLinksList,
-  IPC_CHANNELS.orgProjectLinksDecide,
-  IPC_CHANNELS.scriptRun,
-  IPC_CHANNELS.approvalSecretInput,
-  IPC_CHANNELS.slowActionSnapshot,
-  IPC_CHANNELS.slowActionClear,
-]);
-
 function labelForIpcChannel(channel: string): string {
   return SLOW_ACTION_LABELS[channel] ?? `Running ${channel}`;
 }
@@ -81,18 +73,20 @@ export function registerIpcHandler<Args extends unknown[], Result>(
     try {
       settled = Promise.resolve(handler(event, ...args));
     } catch (error) {
-      settled = Promise.reject(
-        error instanceof Error ? error : new Error(String(error)),
-      );
+      settled = Promise.reject(toIpcRejection(channel, error, true));
     }
     // Messages held back for this renderer (coalesced chat state) are sent
     // before the reply, so a reply's continuation never runs ahead of a
     // commit published before the handler settled.
     const sender = event.sender;
-    const result = settled.finally(() => {
-      runRendererDeliveryBarriers(sender, channel);
-    });
-    if (SLOW_ACTION_IGNORED_CHANNELS.has(channel)) {
+    const result = settled
+      .catch((error: unknown): never => {
+        throw toIpcRejection(channel, error);
+      })
+      .finally(() => {
+        runRendererDeliveryBarriers(sender, channel);
+      });
+    if (IPC_PRIVATE_CHANNELS.has(channel)) {
       return result;
     }
     return trackSlowAction(result, {

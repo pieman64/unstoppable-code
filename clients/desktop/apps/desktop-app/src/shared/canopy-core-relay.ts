@@ -27,15 +27,21 @@ export function relayRetryFor(
     : retry;
 }
 
+/** The one non-local authority the relay can reach; absent means the local core. */
+export type CanopyCoreRelayAuthority = 'web-core';
+
 /** One channel; stream reads pull one frame at a time to bound renderer delivery. */
-export type CanopyCoreRelayRequest =
+export type CanopyCoreRelayRequest = {
+  authority?: CanopyCoreRelayAuthority;
+} & (
   | {
       kind: 'request' | 'openStream';
       method: string;
       params: Record<string, unknown>;
     }
   | { kind: 'readStream' | 'closeStream'; subscriptionId: string }
-  | { kind: 'close' };
+  | { kind: 'close' }
+);
 
 export type CanopyCoreRelayReply =
   | { ok: true; value: unknown }

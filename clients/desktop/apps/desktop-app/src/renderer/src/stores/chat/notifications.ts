@@ -22,7 +22,8 @@ import {
 import { requestChatPanelReveal } from '@/lib/chatPanelReveal';
 import { dismissPageLikeViewers } from '@/lib/dismissPageLikeViewers';
 import { useCodeReviewStore } from '../codeReviewStore';
-import { useGitHubStore, type ToastMeta } from '../githubStore';
+import { useGitHubStore } from '../githubStore';
+import type { ToastMeta } from '../toastStore';
 import {
   isScopedNotificationDeliverable,
   type ScopedNotificationDescriptor,

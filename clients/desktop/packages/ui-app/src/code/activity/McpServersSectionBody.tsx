@@ -81,6 +81,8 @@ export interface McpServersSectionBodyProps {
   readonly onCancelSignIn?: (server: McpServersSectionItem) => void;
   /** Host-owned content rendered under a row (token prompts, inline errors). */
   readonly renderRowExtra?: (server: McpServersSectionItem) => ReactNode;
+  /** Opt into the row-owned 6px footer gap; the callback then supplies no outer margin. */
+  readonly rowExtraLayout?: 'footer';
   readonly onSetCanopyProxyEnabled?: (
     server: McpServersSectionItem,
     enabled: boolean,
@@ -110,6 +112,7 @@ export function McpServersSectionBody({
   onDisconnect,
   onCancelSignIn,
   renderRowExtra,
+  rowExtraLayout,
   onSetCanopyProxyEnabled,
   onOpenDetails,
   emptyLabel,
@@ -203,6 +206,11 @@ export function McpServersSectionBody({
               <McpServerCardRow
                 key={server.key}
                 name={server.displayName}
+                footer={
+                  rowExtraLayout === 'footer'
+                    ? renderRowExtra?.(server)
+                    : undefined
+                }
                 enabled={server.enabled}
                 compact={compact}
                 destination={
@@ -352,7 +360,7 @@ export function McpServersSectionBody({
                   destination={getRowSettings?.(server)}
                   name={server.displayName}
                 />
-                {renderRowExtra?.(server)}
+                {rowExtraLayout === 'footer' ? null : renderRowExtra?.(server)}
               </McpServerCardRow>
             );
           })}

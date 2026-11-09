@@ -28,6 +28,16 @@
 /** The marketplace whose names this table is allowed to interpret. */
 export const OPENAI_PLUGIN_MARKETPLACE_ID = 'openai-curated';
 
+/** Providers report these catalogs by their repo name; people read these. */
+const OFFICIAL_MARKETPLACE_NAMES: ReadonlyMap<string, string> = new Map([
+  ['claude-plugins-official', 'Claude official'],
+]);
+
+/** A marketplace's name for display: tidy when a provider reports a raw id. */
+export function marketplaceDisplayName(name: string): string {
+  return OFFICIAL_MARKETPLACE_NAMES.get(name) ?? name;
+}
+
 /** One product in OpenAI's official marketplace, as Canopy identifies it. */
 export interface OfficialMarketplaceProduct {
   /**

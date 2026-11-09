@@ -28,7 +28,7 @@ import {
   hasAnySelections,
 } from '@canopy/desktop-shared/types';
 import { emptyPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
-import { canonicalizeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
+import { canonicalizeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import { CHAT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { validateConfiguredPromptReferences } from '@canopy/protocol/configured-prompt-references';
 import {
@@ -41,7 +41,7 @@ import {
   validateAutomationTrigger,
   type AutomationChatRunMode,
 } from '@canopy/desktop-shared/lib/automations';
-import type { PipelineModelAlias } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineModelAlias } from '@canopy/execution-engine/types/pipeline';
 import { getWorktreeBranchDisplayName } from '@/lib/worktreeDisplayName';
 import {
   buildWorktreeSessionPromptAction,

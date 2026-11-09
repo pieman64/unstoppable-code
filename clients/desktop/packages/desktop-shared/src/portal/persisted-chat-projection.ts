@@ -20,21 +20,16 @@ import type {
   PortalChatPart,
   PortalTurnTimerAutoRoutedModel,
 } from '@canopy/protocol/portal';
-import { pairToolResultOccurrences } from '@canopy/protocol/portal';
 import {
   PORTAL_CHAT_UNBOUNDED_LIMITS,
   isRecord,
-  persistedMessageToPortalMessage as persistedMessageToPortalMessageCore,
   persistedParts as persistedPartsCore,
   delegationRootMessages,
   isVisiblePersistedChatMessage,
   type PortalChatProjectionLimits,
 } from '@canopy/agent-transcript';
 import { getPortalChatToolFamily } from '../lib/portal-tool-family';
-import {
-  PORTAL_DELEGATION_SUB_BLOCKS_MAX_COUNT,
-  projectPortalDelegationPart,
-} from './delegation-wire-projection';
+import { persistedMessageToPortalWireMessage } from '@canopy/agent-transcript/portal/portal-wire-message';
 
 export {
   PORTAL_CHAT_PART_TEXT_MAX_CHARS,
@@ -60,195 +55,26 @@ export function persistedParts(
 ): PortalChatPart[] {
   return persistedPartsCore(message, getPortalChatToolFamily, {
     includeAccountProxySwitches: true,
+    includeClaudeModsSkipped: true,
     extractAgentArtifacts: extractCanonicalAgentArtifacts,
   });
-}
-
-function hasUnboundedProjectionLimits(
-  limits: PortalChatProjectionLimits | undefined,
-): boolean {
-  return (
-    limits !== undefined &&
-    limits.textMaxChars === Number.POSITIVE_INFINITY &&
-    limits.partTextMaxChars === Number.POSITIVE_INFINITY &&
-    limits.objectMaxDepth === Number.POSITIVE_INFINITY &&
-    limits.objectMaxKeys === Number.POSITIVE_INFINITY &&
-    limits.arrayMaxItems === Number.POSITIVE_INFINITY
-  );
-}
-
-function projectedChildPartCount(message: PersistedChatMessage): number {
-  const pairs = pairToolResultOccurrences(message.blocks, (block) =>
-    block.type === 'tool_use' || block.type === 'tool_result'
-      ? { kind: block.type, toolUseId: block.toolUseId }
-      : undefined,
-  );
-  const matchedResults = new Set(pairs.values());
-  return message.blocks.reduce((count, block, blockIndex) => {
-    if (
-      block.type === 'tool_result' &&
-      matchedResults.has(blockIndex) &&
-      block.visualRef === undefined
-    ) {
-      return count;
-    }
-    if (
-      block.type === 'text' ||
-      block.type === 'thinking' ||
-      block.type === 'tool_use' ||
-      block.type === 'tool_result' ||
-      block.type === 'image' ||
-      block.type === 'compaction_info' ||
-      block.type === 'mcp_activation' ||
-      block.type === 'account_proxy_switch' ||
-      block.type === 'delegated_agent_call'
-    ) {
-      return count + 1;
-    }
-    if (
-      block.type === 'file_references' &&
-      block.references.some((reference) => reference.kind !== 'plugin')
-    ) {
-      return count + 1;
-    }
-    if (block.type === 'turn_timer' && typeof block.completedAt === 'number') {
-      return count + 1;
-    }
-    return count;
-  }, 0);
-}
-
-function boundDelegationRelatedMessages(
-  message: PersistedChatMessage,
-  relatedMessages: readonly PersistedChatMessage[] | undefined,
-): {
-  relatedMessages: readonly PersistedChatMessage[] | undefined;
-  omittedByBlockId: ReadonlyMap<string, number>;
-} {
-  if (relatedMessages === undefined) {
-    return { relatedMessages, omittedByBlockId: new Map() };
-  }
-  const agentBlockIds = new Set(
-    message.blocks.flatMap((block) =>
-      block.type === 'delegated_agent_call' ? [block.agentBlockId] : [],
-    ),
-  );
-  if (agentBlockIds.size === 0) {
-    return { relatedMessages, omittedByBlockId: new Map() };
-  }
-
-  const retainedCounts = new Map<string, number>();
-  const omittedByBlockId = new Map<string, number>();
-  const retainedIndexes = new Set<number>();
-  for (let index = relatedMessages.length - 1; index >= 0; index -= 1) {
-    const child = relatedMessages[index];
-    const parentBlockId = child?.parentBlockId;
-    if (child === undefined || parentBlockId === undefined) continue;
-    if (!agentBlockIds.has(parentBlockId)) continue;
-    const retainedCount = retainedCounts.get(parentBlockId) ?? 0;
-    if (retainedCount < PORTAL_DELEGATION_SUB_BLOCKS_MAX_COUNT) {
-      retainedCounts.set(parentBlockId, retainedCount + 1);
-      retainedIndexes.add(index);
-      continue;
-    }
-    omittedByBlockId.set(
-      parentBlockId,
-      (omittedByBlockId.get(parentBlockId) ?? 0) +
-        projectedChildPartCount(child),
-    );
-  }
-
-  return {
-    relatedMessages: relatedMessages.filter((_, index) =>
-      retainedIndexes.has(index),
-    ),
-    omittedByBlockId,
-  };
-}
-
-function projectDelegationPartsOnWire(
-  message: PortalChatMessage,
-  omittedByBlockId: ReadonlyMap<string, number>,
-): PortalChatMessage {
-  if (!message.parts?.some((part) => part.kind === 'agent')) return message;
-  let changed = false;
-  const parts = message.parts.flatMap((part): PortalChatPart[] => {
-    if (part.kind !== 'agent' || !isRecord(part.data)) return [part];
-    const data = part.data;
-    if (!isRecord(data.delegation)) return [part];
-    const agentBlockId = data.delegation.agentBlockId;
-    const omitted =
-      typeof agentBlockId === 'string'
-        ? (omittedByBlockId.get(agentBlockId) ?? 0)
-        : 0;
-    const prepared: PortalChatPart =
-      omitted > 0
-        ? {
-            ...part,
-            data: {
-              ...data,
-              subBlocksTruncated: true,
-              omittedSubBlocks:
-                (typeof data.omittedSubBlocks === 'number' &&
-                Number.isSafeInteger(data.omittedSubBlocks) &&
-                data.omittedSubBlocks >= 0
-                  ? data.omittedSubBlocks
-                  : 0) + omitted,
-            },
-          }
-        : part;
-    const projected = projectPortalDelegationPart(prepared);
-    changed = true;
-    // This is already a managed card: never restore stale/unbounded children.
-    return projected === null ? [] : [projected];
-  });
-  return changed ? { ...message, parts } : message;
 }
 
 /**
  * Project a persisted message into a neutral portal message, stamping the
  * canonical tool family on each `tool_use` part via `getPortalChatToolFamily`.
+ * The projection lives in `@canopy/agent-transcript`; see
+ * {@link persistedMessageToPortalWireMessage}.
  */
 export function persistedMessageToPortalMessage(
-  input: {
-    scope: 'worktree' | 'standalone' | 'app_advisor';
-    workspaceLocalId?: string;
-    worktreeLocalId?: string;
-    chatId: string;
-    message: PersistedChatMessage;
-    relatedMessages?: readonly PersistedChatMessage[];
-    /** False for live/synthetic rows that cannot support canonical reads. */
-    outputLocators?: boolean;
-  },
+  input: Parameters<typeof persistedMessageToPortalWireMessage>[0],
   limits?: PortalChatProjectionLimits,
 ): PortalChatMessage {
-  const shouldProjectDelegations = !hasUnboundedProjectionLimits(limits);
-  const boundedChildren = shouldProjectDelegations
-    ? boundDelegationRelatedMessages(input.message, input.relatedMessages)
-    : {
-        relatedMessages: input.relatedMessages,
-        omittedByBlockId: new Map<string, number>(),
-      };
-  const message = persistedMessageToPortalMessageCore(
-    {
-      ...input,
-      relatedMessages: boundedChildren.relatedMessages,
-      toolFamilyFor: getPortalChatToolFamily,
-    },
-    // The owner's Portal and transcript show the switch lines; only the
-    // publish path, which calls the core projection, leaves them out.
-    {
-      ...limits,
-      ...(input.outputLocators === undefined
-        ? {}
-        : { outputLocators: input.outputLocators }),
-      includeAccountProxySwitches: true,
-      extractAgentArtifacts: extractCanonicalAgentArtifacts,
-    },
+  return persistedMessageToPortalWireMessage(
+    input,
+    getPortalChatToolFamily,
+    limits,
   );
-  return shouldProjectDelegations
-    ? projectDelegationPartsOnWire(message, boundedChildren.omittedByBlockId)
-    : message;
 }
 
 /**

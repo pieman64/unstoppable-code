@@ -23,12 +23,28 @@ describe('interface tool contract (CAN-4131)', () => {
       'ui.app_advisor.present',
       'ui.app_advisor.show_files',
       'ui.get_current_ui_state',
+      'ui.pipeline_editor.adopt_saved',
+      'ui.pipeline_editor.create',
+      'ui.pipeline_editor.get_current',
+      'ui.pipeline_editor.list',
+      'ui.pipeline_editor.open',
+      'ui.pipeline_editor.prepare_save',
+      'ui.pipeline_editor.set_yaml',
+      'ui.pipeline_editor.to_list',
       'ui.show_files',
     ]);
     expect(INTERFACE_TOOL_NAMES).toEqual([
       'ui.app_advisor.present',
       'ui.app_advisor.show_files',
       'ui.get_current_ui_state',
+      'ui.pipeline_editor.adopt_saved',
+      'ui.pipeline_editor.create',
+      'ui.pipeline_editor.get_current',
+      'ui.pipeline_editor.list',
+      'ui.pipeline_editor.open',
+      'ui.pipeline_editor.prepare_save',
+      'ui.pipeline_editor.set_yaml',
+      'ui.pipeline_editor.to_list',
       'ui.show_files',
     ]);
     for (const entry of catalogEntries) {

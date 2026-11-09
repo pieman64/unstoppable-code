@@ -58,6 +58,12 @@ export const CoreChatMessageSendParamsSchema = ChatCommandBaseSchema.extend({
   planReviewApproval: ChatPlanReviewApprovalSchema.optional(),
   messageId: IdentifierSchema,
   text: z.string(),
+  /** Attachments uploaded to this chat before the send; a host without uploads refuses them. */
+  attachments: z
+    .array(z.strictObject({ attachmentId: IdentifierSchema }))
+    .min(1)
+    .max(10)
+    .optional(),
   origin: z
     .strictObject({
       kind: z.literal('terminalInitialPrompt'),

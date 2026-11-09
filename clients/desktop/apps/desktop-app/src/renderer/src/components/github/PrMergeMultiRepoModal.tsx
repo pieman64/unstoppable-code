@@ -1,3 +1,4 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import {
   memo,
   useCallback,
@@ -10,7 +11,7 @@ import type { MergePrVerifiedRepo } from '@canopy/desktop-shared/types/github';
 import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { ThinkingSpinner } from '@/components/shared/loading/spinners/ThinkingSpinner';
-import { Checkbox, Surface } from '@canopy/ui-shared/components';
+import { Stack, Checkbox, Surface } from '@canopy/ui-shared/components';
 
 interface PrMergeMultiRepoModalProps {
   /** Freshly verified per-repo PR state for every repo with an open PR. */
@@ -122,12 +123,12 @@ export const PrMergeMultiRepoModal = memo(function PrMergeMultiRepoModal({
             data-testid="pr-merge-multi-repo-checking"
           >
             <ThinkingSpinner tone="accent" sizePx={20} />
-            <div>
+            <Stack gap="tight">
               <p className="font-medium">Checking pull requests…</p>
-              <p className="mt-1 text-xs fg-secondary">
+              <p className="text-xs fg-secondary">
                 Refreshing mergeability and review threads from GitHub.
               </p>
-            </div>
+            </Stack>
           </div>
         ) : checkFailed ? (
           <div
@@ -196,28 +197,23 @@ export const PrMergeMultiRepoModal = memo(function PrMergeMultiRepoModal({
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
                         {unresolved !== 0 && (
-                          <span className="rounded-full bg-warning-subtle px-2 py-0.5 text-2xs font-medium fg-warning">
-                            {unresolvedLabel}
-                          </span>
+                          <Badge tone="warning">{unresolvedLabel}</Badge>
                         )}
                         {repo.mergeable ? (
                           <>
                             {repo.usesMergeQueue === true && (
-                              <span
-                                className="rounded-full bg-muted px-2 py-0.5 text-2xs font-medium fg-secondary"
+                              <Badge
                                 data-testid={`pr-merge-multi-repo-queue-hint-${repo.repoName}`}
                               >
                                 Uses a merge queue
-                              </span>
+                              </Badge>
                             )}
-                            <span className="rounded-full bg-success-subtle px-2 py-0.5 text-2xs font-medium fg-success">
-                              Ready
-                            </span>
+                            <Badge tone="success">Ready</Badge>
                           </>
                         ) : (
-                          <span className="rounded-full bg-muted px-2 py-0.5 text-2xs font-medium fg-secondary">
+                          <Badge>
                             {blockedReasonLabel(repo.blockedReason)}
-                          </span>
+                          </Badge>
                         )}
                       </div>
                     </div>

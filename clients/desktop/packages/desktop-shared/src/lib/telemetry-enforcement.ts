@@ -27,12 +27,16 @@ import {
 } from '@canopy/protocol/org-projects';
 import type {
   CanopyCloudAccountPublicState,
+  OrgProhibitableUsageDataKey,
   TelemetryScopeKey,
   TelemetrySharingPreferences,
   TelemetrySharingVisibility,
 } from '../types';
-import { TELEMETRY_SHARING_SCOPES } from '../types';
-import { normalizeUuid } from './workspace-owner';
+import {
+  ORG_PROHIBITABLE_USAGE_DATA_KEYS,
+  TELEMETRY_SHARING_SCOPES,
+} from '../types';
+import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 
 export interface EnforcedTelemetryScopes {
   transcripts: boolean;
@@ -156,6 +160,61 @@ export function resolveTelemetryEnforcementByOrganization(
       organizationName: org.organizationName,
       enforcement: { required, prohibited },
     });
+  }
+
+  return byOrg;
+}
+
+/** Which org-prohibitable usage-data flows one organization turns off. */
+export type UsageDataProhibitions = Record<
+  OrgProhibitableUsageDataKey,
+  boolean
+>;
+
+export interface OrgUsageDataProhibition {
+  organizationName: string;
+  prohibited: UsageDataProhibitions;
+}
+
+export function emptyUsageDataProhibitions(): UsageDataProhibitions {
+  return {
+    productAnalytics: false,
+    sessionReplay: false,
+    errorReports: false,
+    activeUseSignal: false,
+    featureFlagIdentity: false,
+  };
+}
+
+/**
+ * Resolve the `usage-data` policy independently for each organization.
+ * Organizations without the policy are absent from the map. Flags are read as
+ * `=== true` and OR-ed across duplicate entries, so a prohibition only ever
+ * narrows.
+ */
+export function resolveUsageDataProhibitionByOrganization(
+  account: CanopyCloudAccountPublicState | null,
+): ReadonlyMap<string, OrgUsageDataProhibition> {
+  const byOrg = new Map<string, OrgUsageDataProhibition>();
+
+  for (const org of account?.enforcedSettings ?? []) {
+    const organizationId = normalizeUuid(org.organizationId);
+    if (!organizationId) continue;
+
+    for (const policy of org.policies) {
+      if (policy.kind !== 'usage-data') continue;
+      const existing = byOrg.get(organizationId);
+      const prohibited = existing
+        ? { ...existing.prohibited }
+        : emptyUsageDataProhibitions();
+      for (const key of ORG_PROHIBITABLE_USAGE_DATA_KEYS) {
+        if (policy.prohibited[key] === true) prohibited[key] = true;
+      }
+      byOrg.set(organizationId, {
+        organizationName: org.organizationName,
+        prohibited,
+      });
+    }
   }
 
   return byOrg;

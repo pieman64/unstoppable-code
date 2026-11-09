@@ -19,6 +19,10 @@ import {
 } from '../../../runtime/local-worker-transport';
 import { createWorkerExecutorReceipts } from '../../../runtime/worker-executor-receipts';
 import { serializingWorkerPair } from '../../../runtime/__tests__/serializing-worker-pair';
+import {
+  ExecutionSecretGrants,
+  refusingExecutionSecretSource,
+} from '../../execution-secrets';
 import { LocalWorkerExecution, OperationService } from '../../operations';
 import { OperationLedger } from '../../operations/ledger';
 import {
@@ -70,6 +74,9 @@ class MemoryWorkerHost implements WorkerCatalogHost {
   ): Promise<WorkerCatalogSkillInstall | null> {
     this.lookups += 1;
     return Promise.resolve(this.skills.get(`${sourceId}/${skillName}`) ?? null);
+  }
+  lookupMcpServer(): Promise<null> {
+    return Promise.resolve(null);
   }
 }
 
@@ -141,7 +148,10 @@ function harness(
   items: CatalogMaterializationItemDescriptor[],
 ): Harness {
   const host = new MemoryWorkerHost();
-  const handlers = createWorkerCatalogHandlers({ host });
+  const handlers = createWorkerCatalogHandlers({
+    host,
+    secrets: refusingExecutionSecretSource,
+  });
   const receipts = createWorkerExecutorReceipts(instructions);
   const worker = createCanopyDispatcher({
     profile: kind === 'direct' ? 'core+worker' : 'worker',
@@ -180,6 +190,9 @@ function harness(
     operations,
     localWorker: new LocalWorkerExecution({ operations, transport }),
     resolver,
+    secrets: new ExecutionSecretGrants({
+      reader: { read: (): Promise<never[]> => Promise.resolve([]) },
+    }),
   });
   return {
     host,

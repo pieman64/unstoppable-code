@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { useState, type JSX } from 'react';
 import type {
   ReviewAnnotation,
@@ -182,43 +183,45 @@ export function ReviewThreadCard({
               timestamp={comment.createdAt}
               pending={pending}
             >
-              <TextArea
-                aria-label="Comment"
-                value={editingBody}
-                onChange={(event): void => setEditingBody(event.target.value)}
-                onKeyDown={(event): void => {
-                  if (event.key === 'Escape') {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    cancelEditingComment();
-                    return;
-                  }
-                  if (
-                    event.key === 'Enter' &&
-                    !event.shiftKey &&
-                    !event.nativeEvent.isComposing
-                  ) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    saveEditingComment();
-                  }
-                }}
-                rows={3}
-                autoFocus
-              />
-              <div className="mt-1 flex items-center justify-end gap-1.5">
-                <Button size="compact" onClick={cancelEditingComment}>
-                  Cancel
-                </Button>
-                <Button
-                  variant="primary"
-                  size="compact"
-                  onClick={saveEditingComment}
-                  disabled={editingBody.trim().length === 0}
-                >
-                  Save
-                </Button>
-              </div>
+              <Stack gap="tight">
+                <TextArea
+                  aria-label="Comment"
+                  value={editingBody}
+                  onChange={(event): void => setEditingBody(event.target.value)}
+                  onKeyDown={(event): void => {
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      cancelEditingComment();
+                      return;
+                    }
+                    if (
+                      event.key === 'Enter' &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing
+                    ) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      saveEditingComment();
+                    }
+                  }}
+                  rows={3}
+                  autoFocus
+                />
+                <div className="flex items-center justify-end gap-1.5">
+                  <Button size="compact" onClick={cancelEditingComment}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="compact"
+                    onClick={saveEditingComment}
+                    disabled={editingBody.trim().length === 0}
+                  >
+                    Save
+                  </Button>
+                </div>
+              </Stack>
             </PlanReviewComment>
           );
         }

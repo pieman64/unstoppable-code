@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { CHAT_LABEL } from '@canopy/protocol';
+import { Button } from '@canopy/ui-shared/components/Button';
 import {
   AutoIcon,
   ChatIcon,
@@ -56,12 +57,6 @@ export function ChatInterfaceModeToggle({
   const autoDisabled = auto?.disabled ?? false;
   const claudeCodeDisabled = claudeCode?.disabled ?? false;
 
-  const baseButtonClass =
-    'focus-ring relative z-10 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full enabled:active:scale-97 disabled:cursor-not-allowed disabled:fg-tertiary';
-  const selectedButtonClass = 'bg-transparent fg-primary';
-  const unselectedButtonClass =
-    'bg-transparent fg-secondary enabled:hover:bg-subtle enabled:hover:fg-primary';
-
   const canopyActive = canopy?.active ?? false;
   const autoActive = auto?.active ?? false;
   const claudeCodeActive = claudeCode?.active ?? false;
@@ -70,16 +65,6 @@ export function ChatInterfaceModeToggle({
   const canopyTitle = canopy?.busyReason ?? TOOLTIP_CANOPY;
   const autoTitle = auto?.busyReason ?? TOOLTIP_AUTO;
   const claudeCodeTitle = claudeCode?.busyReason ?? TOOLTIP_CLAUDE_CODE;
-
-  const canopyButtonClass = canopyActive
-    ? selectedButtonClass
-    : unselectedButtonClass;
-  const autoButtonClass = autoActive
-    ? selectedButtonClass
-    : unselectedButtonClass;
-  const claudeCodeButtonClass = claudeCodeActive
-    ? selectedButtonClass
-    : unselectedButtonClass;
 
   return (
     <div
@@ -99,8 +84,13 @@ export function ChatInterfaceModeToggle({
         data-testid="chat-interface-mode-toggle-selector"
       />
       <Tooltip label={canopyTitle}>
-        <button
-          type="button"
+        <Button
+          variant="ghost-overlay"
+          size="sm"
+          iconOnly
+          touchArea="contained"
+          pressedHover
+          className="z-10"
           onClick={(): void => {
             if (canopyDisabled || canopyActive) return;
             onChange('canopy');
@@ -109,15 +99,19 @@ export function ChatInterfaceModeToggle({
           aria-disabled={canopyDisabled}
           aria-label={TOOLTIP_CANOPY}
           disabled={canopyDisabled}
-          className={`${baseButtonClass} ${canopyButtonClass}`}
           data-testid="chat-interface-mode-toggle-canopy"
         >
           <ChatIcon size={16} aria-hidden="true" />
-        </button>
+        </Button>
       </Tooltip>
       <Tooltip label={autoTitle}>
-        <button
-          type="button"
+        <Button
+          variant="ghost-overlay"
+          size="sm"
+          iconOnly
+          touchArea="contained"
+          pressedHover
+          className="z-10"
           onClick={(): void => {
             if (autoDisabled || autoActive) return;
             onChange('auto');
@@ -126,15 +120,19 @@ export function ChatInterfaceModeToggle({
           aria-disabled={autoDisabled}
           aria-label={TOOLTIP_AUTO}
           disabled={autoDisabled}
-          className={`${baseButtonClass} ${autoButtonClass}`}
           data-testid="chat-interface-mode-toggle-auto"
         >
           <AutoIcon size={16} aria-hidden="true" />
-        </button>
+        </Button>
       </Tooltip>
       <Tooltip label={claudeCodeTitle}>
-        <button
-          type="button"
+        <Button
+          variant="ghost-overlay"
+          size="sm"
+          iconOnly
+          touchArea="contained"
+          pressedHover
+          className="z-10"
           onClick={(): void => {
             if (claudeCodeDisabled || claudeCodeActive) return;
             onChange('claude-code');
@@ -143,11 +141,10 @@ export function ChatInterfaceModeToggle({
           aria-disabled={claudeCodeDisabled}
           aria-label={TOOLTIP_CLAUDE_CODE}
           disabled={claudeCodeDisabled}
-          className={`${baseButtonClass} ${claudeCodeButtonClass}`}
           data-testid="chat-interface-mode-toggle-claude-code"
         >
           <TerminalBorderedIcon size={16} aria-hidden="true" />
-        </button>
+        </Button>
       </Tooltip>
     </div>
   );

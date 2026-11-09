@@ -7,6 +7,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { ensureRepoShadowThroughWorker } from '../canopy-runtime/worker-git-local-mutations-dispatch';
 import { codeGraphRepoShadowKey } from '@canopy/code-graph/host/base-seed';
 import {
   addDetachedWorktree,
@@ -304,7 +305,14 @@ function scheduleBackgroundShadowRefresh(
     });
 }
 
-export async function ensureRepoShadow(
+export function ensureRepoShadow(
+  repoPath: string,
+  options?: EnsureRepoShadowOptions,
+): Promise<RepoShadowInfo> {
+  return ensureRepoShadowThroughWorker(repoPath, options);
+}
+
+export async function ensureRepoShadowEffect(
   repoPath: string,
   options?: EnsureRepoShadowOptions,
 ): Promise<RepoShadowInfo> {

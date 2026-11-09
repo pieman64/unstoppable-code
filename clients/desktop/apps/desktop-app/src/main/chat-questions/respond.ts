@@ -55,6 +55,7 @@ export type ChatQuestionResponse =
 
 export type QuestionCommandExecutionOptions = ChatCommandExecutionOptions & {
   agentSent?: ExternalAgentSender;
+  answeredByPerson?: true;
 };
 
 export interface RespondToChatQuestionRequest {
@@ -198,6 +199,7 @@ export async function respondToChatQuestion(
 export function respondToLiveChatQuestion(
   requestId: string,
   response: ChatQuestionResponse,
+  executionOptions?: QuestionCommandExecutionOptions,
 ): Promise<ChatQuestionRespondOutcome> {
   const live =
     questionWaits().scopeOf(requestId) ??
@@ -210,6 +212,7 @@ export function respondToLiveChatQuestion(
     questionId: requestId,
     response,
     commandId: randomUUID(),
+    ...(executionOptions ? { executionOptions } : {}),
   });
 }
 
@@ -222,10 +225,12 @@ export async function answerChatQuestionFromRenderer(
   requestId: string,
   answers: McpQuestionAnswer[],
 ): Promise<McpAnswerUserResponse> {
-  const outcome = await respondToLiveChatQuestion(requestId, {
-    kind: 'answer',
-    answers,
-  });
+  // Only the window's question card sends this, so a person answered.
+  const outcome = await respondToLiveChatQuestion(
+    requestId,
+    { kind: 'answer', answers },
+    { answeredByPerson: true },
+  );
   if (outcome.status === 'unavailable')
     throw new Error('The chat state service is temporarily unavailable.');
   return {

@@ -11,11 +11,18 @@ import {
 } from 'react';
 import { Button } from '@canopy/ui-shared/components/Button';
 import { ComponentSection } from '@canopy/ui-shared/components/ComponentSection';
+import {
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
+} from '@canopy/ui-shared/components/DataTable';
 import { CopyLinkButton } from '@canopy/ui-shared/components/CopyLinkButton';
 import { ShareAudienceLabel } from '@canopy/ui-shared/components/ShareAudienceLabel';
 import { MARKETPLACE_UNSHARE_LABEL } from '@canopy/ui-shared/lib/marketplace-unshare';
 import type { MarketplaceUnshareKind } from '@canopy/ui-shared/lib/marketplace-unshare';
-import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   SHARED_BY_YOU_REMOVE_LINK_ERROR,
   SHARED_BY_YOU_TITLE,
@@ -48,7 +55,6 @@ export interface SharedByYouSectionProps {
   readonly dataTestId?: string;
 }
 
-const ROW_CLASS = 'flex items-center gap-4 px-4 py-2.5 text-s';
 const ACCOUNT_PERSONAL_NAME = 'Personal';
 
 /**
@@ -68,28 +74,36 @@ export function SharedByYouSection({
   return (
     <div data-testid={dataTestId}>
       <ComponentSection title={SHARED_BY_YOU_TITLE}>
-        <ul className="divide-y">
-          {audiences.map((audience) =>
-            audience.id === 'account' ? (
-              <SharedByYouAccountRow
-                key={audience.id}
-                kind={kind}
-                name={name}
-                audience={audience}
-                onUnshared={onUnshared}
-              />
-            ) : (
-              <SharedByYouPublicLinkRow
-                // Keyed on the link's identity: a re-published link is a new
-                // row, so a removed link's disabled state never carries over.
-                key={`${audience.id}:${audience.linkId ?? audience.sinceIso ?? ''}`}
-                name={name}
-                audience={audience}
-                onUnshared={onUnshared}
-              />
-            ),
-          )}
-        </ul>
+        <DataTableFrame caption="Shared by you" layout="fixed">
+          <DataTableHead>
+            <DataTableHeaderCell width="34%">Shared with</DataTableHeaderCell>
+            <DataTableHeaderCell width="18%">Access</DataTableHeaderCell>
+            <DataTableHeaderCell width="16%">Since</DataTableHeaderCell>
+            <DataTableHeaderCell align="right">Actions</DataTableHeaderCell>
+          </DataTableHead>
+          <DataTableBody>
+            {audiences.map((audience) =>
+              audience.id === 'account' ? (
+                <SharedByYouAccountRow
+                  key={audience.id}
+                  kind={kind}
+                  name={name}
+                  audience={audience}
+                  onUnshared={onUnshared}
+                />
+              ) : (
+                <SharedByYouPublicLinkRow
+                  // Keyed on the link's identity: a re-published link is a new
+                  // row, so a removed link's disabled state never carries over.
+                  key={`${audience.id}:${audience.linkId ?? audience.sinceIso ?? ''}`}
+                  name={name}
+                  audience={audience}
+                  onUnshared={onUnshared}
+                />
+              ),
+            )}
+          </DataTableBody>
+        </DataTableFrame>
       </ComponentSection>
     </div>
   );
@@ -108,7 +122,7 @@ function RowSince({
       data-testid={`shared-by-you-since-${id}`}
       className="shrink-0 text-xs fg-tertiary"
     >
-      {sharedByYouSinceLabel(sinceIso)}
+      {sharedByYouSinceLabel(sinceIso).replace(/^Since /, '')}
     </span>
   );
 }
@@ -133,7 +147,7 @@ function RowUnshare({
 }): JSX.Element {
   const reasonId = useId();
   return (
-    <div className="ml-auto flex shrink-0 items-center gap-3">
+    <div className="flex items-center justify-end gap-3">
       {leading}
       {!action.available && (
         <span
@@ -227,32 +241,38 @@ function SharedByYouAccountRow({
     restoreFocusRef: triggerRef,
   });
   return (
-    <li data-testid="shared-by-you-row-account" className={ROW_CLASS}>
-      <span className={`min-w-0 truncate fg-primary ${REPLAY_MASK_CLASS}`}>
+    <DataTableRow data-testid="shared-by-you-row-account">
+      <DataTableCell tone="primary" replay="mask" overflow="truncate">
         {displayName}
-      </span>
-      <ShareAudienceLabel audience={audience.audience} />
-      <RowSince id="account" sinceIso={audience.sinceIso} />
-      <RowUnshare
-        id="account"
-        ariaLabel={sharedByYouUnshareAriaLabel(name, displayName)}
-        action={action}
-        disabled={unshare.disabled}
-        onClick={unshare.open}
-        buttonRef={triggerRef}
-        leading={
-          audience.copyLink ? (
-            <RowCopyLink
-              key={`${audience.copyLink.link.url}:${audience.copyLink.link.audienceName}:${String(audience.copyLink.link.hasPublicLink)}:${String(audience.copyLink.link.personal)}`}
-              name={name}
-              audienceName={displayName}
-              copyLink={audience.copyLink}
-            />
-          ) : undefined
-        }
-      />
-      {unshare.dialog}
-    </li>
+      </DataTableCell>
+      <DataTableCell>
+        <ShareAudienceLabel audience={audience.audience} />
+      </DataTableCell>
+      <DataTableCell>
+        <RowSince id="account" sinceIso={audience.sinceIso} />
+      </DataTableCell>
+      <DataTableCell align="right" overflow="wrap">
+        <RowUnshare
+          id="account"
+          ariaLabel={sharedByYouUnshareAriaLabel(name, displayName)}
+          action={action}
+          disabled={unshare.disabled}
+          onClick={unshare.open}
+          buttonRef={triggerRef}
+          leading={
+            audience.copyLink ? (
+              <RowCopyLink
+                key={`${audience.copyLink.link.url}:${audience.copyLink.link.audienceName}:${String(audience.copyLink.link.hasPublicLink)}:${String(audience.copyLink.link.personal)}`}
+                name={name}
+                audienceName={displayName}
+                copyLink={audience.copyLink}
+              />
+            ) : undefined
+          }
+        />
+        {unshare.dialog}
+      </DataTableCell>
+    </DataTableRow>
   );
 }
 
@@ -307,31 +327,38 @@ function SharedByYouPublicLinkRow({
   }, [action, audience, onUnshared]);
 
   return (
-    <li data-testid="shared-by-you-row-public" className={ROW_CLASS}>
-      <span className="min-w-0 truncate fg-primary">{audience.name}</span>
-      <RowSince id="public" sinceIso={audience.sinceIso} />
-      <RowUnshare
-        id="public"
-        ariaLabel={sharedByYouRemoveLinkAriaLabel(name)}
-        action={action}
-        disabled={busy || removed}
-        onClick={(): void => setOpen(true)}
-        buttonRef={triggerRef}
-      />
-      {open && (
-        <RemovePublicLinkConfirmDialog
-          testIdPrefix="shared-by-you"
-          trapFocus
-          restoreFocusRef={triggerRef}
-          {...(audience.remainingAudience
-            ? { remainingAudience: audience.remainingAudience }
-            : {})}
-          busy={busy}
-          onCancel={close}
-          onConfirm={confirm}
-          errorMessage={error}
+    <DataTableRow data-testid="shared-by-you-row-public">
+      <DataTableCell tone="primary" overflow="truncate">
+        {audience.name}
+      </DataTableCell>
+      <DataTableCell>Public link</DataTableCell>
+      <DataTableCell>
+        <RowSince id="public" sinceIso={audience.sinceIso} />
+      </DataTableCell>
+      <DataTableCell align="right" overflow="wrap">
+        <RowUnshare
+          id="public"
+          ariaLabel={sharedByYouRemoveLinkAriaLabel(name)}
+          action={action}
+          disabled={busy || removed}
+          onClick={(): void => setOpen(true)}
+          buttonRef={triggerRef}
         />
-      )}
-    </li>
+        {open && (
+          <RemovePublicLinkConfirmDialog
+            testIdPrefix="shared-by-you"
+            trapFocus
+            restoreFocusRef={triggerRef}
+            {...(audience.remainingAudience
+              ? { remainingAudience: audience.remainingAudience }
+              : {})}
+            busy={busy}
+            onCancel={close}
+            onConfirm={confirm}
+            errorMessage={error}
+          />
+        )}
+      </DataTableCell>
+    </DataTableRow>
   );
 }

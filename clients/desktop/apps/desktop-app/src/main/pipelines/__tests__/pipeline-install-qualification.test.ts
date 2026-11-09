@@ -19,8 +19,8 @@ import {
 } from '@canopy/desktop-shared/pipelines/store';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
-import type { InstallReceipt } from '@canopy/desktop-shared/lib/resource-context-policy';
-import type { PipelinePackageInstallRecordV1 } from '@canopy/desktop-shared/types/pipeline';
+import type { InstallReceipt } from '@canopy/execution-engine/lib/resource-context-policy';
+import type { PipelinePackageInstallRecordV1 } from '@canopy/execution-engine/types/pipeline';
 
 let mockRoot = '';
 let mockUnstatableDocument = '';
@@ -393,6 +393,60 @@ describe('pipeline install crash qualification (CAN-5633)', () => {
       expect(await intentFiles()).toEqual([]);
     },
   );
+
+  async function seedReplaced(id: string, before: string): Promise<void> {
+    save(id, before, true);
+    await upsertPipelinePackageInstall(
+      `${mockRoot}/installs.json`,
+      record(id, before, OLD_DIGEST),
+    );
+    await receipts().record(receipt([id], before));
+  }
+
+  it('restores the receipt of a rolled-back replacement, so the organization content check still knows the restored copy', async () => {
+    const id = 'replaced-org';
+    const before = yaml('Before');
+    await seedReplaced(id, before);
+    const intent = await beginPipelineInstallIntent('shared');
+    for (const step of installSteps(intent, id, yaml('After'), 'replaced'))
+      await step();
+
+    await intent.rollBack();
+
+    expect(getStoredPipelineText(id).data).toBe(before);
+    expect((await receipts().find('pipelines', REMOTE))?.hash).toBe(
+      hashPipelinePackageYaml(before),
+    );
+    // What assertNewPipelineShareContent reads to refuse sharing this
+    // organization's workflow into another context (CAN-5678).
+    expect(
+      await receipts().listOrganizationContentOwners(
+        'pipelines',
+        hashPipelinePackageYaml(before),
+      ),
+    ).toEqual(['33333333-3333-4333-8333-333333333333']);
+  });
+
+  it('keeps a receipt a later install recorded after the rolled-back replacement', async () => {
+    const id = 'replaced-later';
+    await seedReplaced(id, yaml('Before'));
+    const intent = await beginPipelineInstallIntent('shared');
+    for (const step of installSteps(
+      intent,
+      id,
+      yaml('After'),
+      'replaced',
+    ).slice(0, 4))
+      await step();
+    const later = yaml('Later');
+    await receipts().record(receipt([id], later));
+
+    await intent.rollBack();
+
+    expect((await receipts().find('pipelines', REMOTE))?.hash).toBe(
+      hashPipelinePackageYaml(later),
+    );
+  });
 
   it('keeps a definition changed after the install wrote it, with its record and receipt', async () => {
     const id = 'edited-1';

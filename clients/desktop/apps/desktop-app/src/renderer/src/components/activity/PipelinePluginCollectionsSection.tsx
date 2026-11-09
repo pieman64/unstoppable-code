@@ -12,11 +12,11 @@ import {
   ensureCollectionPreference,
   groupPreviewItemsByCollection,
 } from '@/lib/pipelinePluginCollections';
-import type { Pipeline } from '@canopy/desktop-shared/types/pipeline';
+import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import type {
   PipelinePluginCollectionPreference,
   PipelinePluginDefaultPreviewItem,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { Heading } from '@canopy/ui-shared/components';
 
 interface PipelinePluginCollectionsSectionProps {
@@ -47,7 +47,7 @@ export function PipelinePluginCollectionsSection({
 
   return (
     <section
-      className="space-y-1.5"
+      className="flex flex-col gap-1.5"
       data-testid="pipeline-plugin-collections-section"
     >
       <Heading level={3} variant="label">
@@ -58,7 +58,7 @@ export function PipelinePluginCollectionsSection({
         other extras are saved only on this machine.
       </p>
 
-      <div className="space-y-2 pt-1">
+      <div className="flex flex-col pt-1 gap-2">
         {collections.map((collection) => (
           <PipelinePluginCollectionEditor
             key={collection.id}

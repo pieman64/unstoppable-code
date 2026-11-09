@@ -1,0 +1,56 @@
+[
+  {
+    "claims": {
+      "v": 1,
+      "userId": "vector-user",
+      "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+      "expiresAt": 1700000000000
+    },
+    "secret": "relay-compatibility-vector-secret",
+    "token": "eyJ2IjoxLCJ1c2VySWQiOiJ2ZWN0b3ItdXNlciIsImRldmljZUlkIjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsImV4cGlyZXNBdCI6MTcwMDAwMDAwMDAwMH0.ATe02pYfiTw53ZF_RNOr5Kd9hV0GUQS6Oerrm42e9FE"
+  },
+  {
+    "claims": {
+      "v": 1,
+      "userId": "vector-user",
+      "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+      "expiresAt": 1700000000000,
+      "kind": "desktop"
+    },
+    "secret": "relay-compatibility-vector-secret",
+    "token": "eyJ2IjoxLCJ1c2VySWQiOiJ2ZWN0b3ItdXNlciIsImRldmljZUlkIjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsImV4cGlyZXNBdCI6MTcwMDAwMDAwMDAwMCwia2luZCI6ImRlc2t0b3AifQ.lnlleKR1bDcYjBRuamm_b2-GbPho8-AzFrS7cNcx7nw"
+  },
+  {
+    "claims": {
+      "v": 1,
+      "userId": "vector-user",
+      "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+      "expiresAt": 1700000000000,
+      "kind": "mobile"
+    },
+    "secret": "relay-compatibility-vector-secret",
+    "token": "eyJ2IjoxLCJ1c2VySWQiOiJ2ZWN0b3ItdXNlciIsImRldmljZUlkIjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsImV4cGlyZXNBdCI6MTcwMDAwMDAwMDAwMCwia2luZCI6Im1vYmlsZSJ9.ETdsyfrxQFjjt1tn9bD48Sz4XyXY0oixAcX7NDFZDZ0"
+  },
+  {
+    "claims": {
+      "v": 1,
+      "userId": "vector-user",
+      "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+      "expiresAt": 1700000000000,
+      "kind": "browser"
+    },
+    "secret": "relay-compatibility-vector-secret",
+    "token": "eyJ2IjoxLCJ1c2VySWQiOiJ2ZWN0b3ItdXNlciIsImRldmljZUlkIjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsImV4cGlyZXNBdCI6MTcwMDAwMDAwMDAwMCwia2luZCI6ImJyb3dzZXIifQ.cfyOVTqZF1ynUiIJIXmHce-qRzCWKGDMGLGkW1kzxfc"
+  },
+  {
+    "claims": {
+      "v": 1,
+      "userId": "vector-user",
+      "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+      "expiresAt": 1700000000000,
+      "kind": "hosted"
+    },
+    "secret": "relay-compatibility-vector-secret",
+    "token": "eyJ2IjoxLCJ1c2VySWQiOiJ2ZWN0b3ItdXNlciIsImRldmljZUlkIjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsImV4cGlyZXNBdCI6MTcwMDAwMDAwMDAwMCwia2luZCI6Imhvc3RlZCJ9.0pkrz8TGoACuaEWcGAaV53DmD-FZcXYntdmqIbc64gI"
+  }
+]

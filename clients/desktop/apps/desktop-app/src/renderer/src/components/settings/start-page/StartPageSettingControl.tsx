@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import {
   useEffect,
   useId,
@@ -192,132 +193,135 @@ export function StartPageSettingControl({
       {/* One settings row in both layouts: the label and its explanation
           leading, the 144px dropdown trailing. The card frames that row for
           a dialog of cards. */}
-      <SettingsRowsRow
-        htmlFor="start-page-choice"
-        label={layout === 'row' ? 'Open on start' : 'Start page'}
-        description={
-          layout === 'row'
-            ? 'The first tab in each new worktree.'
-            : 'Choose what opens first in each new work area.'
-        }
-        control={
-          <Button
-            ref={choiceTriggerRef}
-            id="start-page-choice"
-            variant="secondary"
-            size="compact"
-            className="w-36"
-            onClick={() => setChoiceOpen((open) => !open)}
-            aria-haspopup="listbox"
-            aria-expanded={choiceOpen}
-            aria-controls={choiceOpen ? choiceMenuId : undefined}
-            data-testid="start-page-choice-trigger"
-          >
-            <span className="min-w-0 flex-1 truncate text-left">
-              {CHOICE_LABELS[choice]}
-            </span>
-            <PickerTriggerChevron open={choiceOpen} variant="capsule" />
-          </Button>
-        }
-      />
-      <FloatingPickerMenu
-        id={choiceMenuId}
-        open={choiceOpen}
-        onOpenChange={setChoiceOpen}
-        anchorRef={choiceTriggerRef}
-        placement="bottom-left"
-        interaction="listbox"
-        role="listbox"
-        aria-label="Start page choice"
-        data-testid="start-page-choice-menu"
-      >
-        {choices.map((option) => (
-          <PickerMenuOption
-            key={option}
-            role="option"
-            aria-selected={choice === option}
-            selected={choice === option}
-            onClick={() => choose(option)}
-            data-testid={`start-page-choice-${option}`}
-          >
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>
-                {CHOICE_LABELS[option]}
-              </PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
-            <PickerMenuOptionCheck selected={choice === option} />
-          </PickerMenuOption>
-        ))}
-      </FloatingPickerMenu>
+      <Stack gap="item">
+        <SettingsRowsRow
+          htmlFor="start-page-choice"
+          label={layout === 'row' ? 'Open on start' : 'Start page'}
+          description={
+            layout === 'row'
+              ? 'The first tab in each new worktree.'
+              : 'Choose what opens first in each new work area.'
+          }
+          control={
+            <Button
+              ref={choiceTriggerRef}
+              id="start-page-choice"
+              variant="secondary"
+              size="compact"
+              className="w-36"
+              onClick={() => setChoiceOpen((open) => !open)}
+              aria-haspopup="listbox"
+              aria-expanded={choiceOpen}
+              aria-controls={choiceOpen ? choiceMenuId : undefined}
+              data-testid="start-page-choice-trigger"
+            >
+              <span className="min-w-0 flex-1 truncate text-left">
+                {CHOICE_LABELS[choice]}
+              </span>
+              <PickerTriggerChevron open={choiceOpen} variant="capsule" />
+            </Button>
+          }
+        />
+        <FloatingPickerMenu
+          id={choiceMenuId}
+          open={choiceOpen}
+          onOpenChange={setChoiceOpen}
+          anchorRef={choiceTriggerRef}
+          placement="bottom-left"
+          interaction="listbox"
+          role="listbox"
+          aria-label="Start page choice"
+          data-testid="start-page-choice-menu"
+        >
+          {choices.map((option) => (
+            <PickerMenuOption
+              key={option}
+              role="option"
+              aria-selected={choice === option}
+              selected={choice === option}
+              onClick={() => choose(option)}
+              data-testid={`start-page-choice-${option}`}
+            >
+              <PickerMenuOptionContent>
+                <PickerMenuOptionLabel>
+                  {CHOICE_LABELS[option]}
+                </PickerMenuOptionLabel>
+              </PickerMenuOptionContent>
+              <PickerMenuOptionCheck selected={choice === option} />
+            </PickerMenuOption>
+          ))}
+        </FloatingPickerMenu>
 
-      {choice === 'file' && (
-        <div className="mt-3 space-y-1.5">
-          <SearchField
-            size="sm"
-            aria-label="Find a start page file"
-            value={query}
-            onValueChange={(next) => {
-              setQuery(next);
-              onValidityChange?.(value?.kind === 'file' && next === value.path);
-            }}
-            placeholder="Find a file"
-          />
-          {files.length > 0 && (
-            <Surface variant="outline" className="overflow-hidden">
-              <div className="max-h-44 overflow-y-auto p-1">
-                {files.map((file) => (
-                  <PickerMenuOption
-                    key={`${file.repoId}:${file.relativePath}`}
-                    onClick={() => chooseFile(file)}
-                  >
-                    <PickerMenuOptionContent>
-                      <PickerMenuOptionLabel>
-                        {projectType === 'multi-repo'
-                          ? `${file.repoName} / ${file.relativePath}`
-                          : file.relativePath}
-                      </PickerMenuOptionLabel>
-                    </PickerMenuOptionContent>
-                  </PickerMenuOption>
-                ))}
-              </div>
-            </Surface>
-          )}
-          {(loadFailed || !selectedFileExists) && (
-            <p className="text-xs fg-warning">File not found</p>
-          )}
-        </div>
-      )}
+        {choice === 'file' && (
+          <div className="flex flex-col gap-1.5">
+            <SearchField
+              size="sm"
+              aria-label="Find a start page file"
+              value={query}
+              onValueChange={(next) => {
+                setQuery(next);
+                onValidityChange?.(
+                  value?.kind === 'file' && next === value.path,
+                );
+              }}
+              placeholder="Find a file"
+            />
+            {files.length > 0 && (
+              <Surface variant="outline" className="overflow-hidden">
+                <div className="max-h-44 overflow-y-auto p-1">
+                  {files.map((file) => (
+                    <PickerMenuOption
+                      key={`${file.repoId}:${file.relativePath}`}
+                      onClick={() => chooseFile(file)}
+                    >
+                      <PickerMenuOptionContent>
+                        <PickerMenuOptionLabel>
+                          {projectType === 'multi-repo'
+                            ? `${file.repoName} / ${file.relativePath}`
+                            : file.relativePath}
+                        </PickerMenuOptionLabel>
+                      </PickerMenuOptionContent>
+                    </PickerMenuOption>
+                  ))}
+                </div>
+              </Surface>
+            )}
+            {(loadFailed || !selectedFileExists) && (
+              <p className="text-xs fg-warning">File not found</p>
+            )}
+          </div>
+        )}
 
-      {choice === 'url' && (
-        <div className="mt-3 flex items-center gap-2">
-          <TextInput
-            density="settings"
-            aria-label="Start page URL"
-            value={url}
-            onChange={(event) => {
-              setUrl(event.target.value);
-              onValidityChange?.(
-                value?.kind === 'url' &&
-                  event.target.value.trim() === value.url,
-              );
-            }}
-            onBlur={applyUrl}
-            placeholder="https://example.com"
-            className="min-w-0 flex-1"
-          />
-          <Button
-            size="compact"
-            variant="secondary"
-            disabled={!isHttpStartPageUrl(url)}
-            onClick={applyUrl}
-          >
-            Use
-          </Button>
-        </div>
-      )}
-
+        {choice === 'url' && (
+          <div className="flex items-center gap-2">
+            <TextInput
+              density="settings"
+              aria-label="Start page URL"
+              value={url}
+              onChange={(event) => {
+                setUrl(event.target.value);
+                onValidityChange?.(
+                  value?.kind === 'url' &&
+                    event.target.value.trim() === value.url,
+                );
+              }}
+              onBlur={applyUrl}
+              placeholder="https://example.com"
+              className="min-w-0 flex-1"
+            />
+            <Button
+              size="compact"
+              variant="secondary"
+              disabled={!isHttpStartPageUrl(url)}
+              onClick={applyUrl}
+            >
+              Use
+            </Button>
+          </div>
+        )}
+      </Stack>
       {value && (
-        <p className="mt-2 truncate text-xs fg-secondary">
+        <p className="truncate text-xs fg-secondary">
           Opens to: {startPageLabel(value)}
         </p>
       )}

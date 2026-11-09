@@ -3,6 +3,7 @@ import type { SharedContainerLinkLanding } from '@canopy/protocol/shared-contain
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
+  Stack,
   Button,
   DialogModal,
   LoadingSpinner,
@@ -244,12 +245,15 @@ export function SharedContainerLinkLandingModal({
       plural(contents.fileCount, 'file', 'files'),
     ].filter((item): item is string => item !== null);
     body = (
-      <div className="space-y-4" data-testid={`${TEST_ID}-summary`}>
-        <section className="space-y-1">
+      <Stack gap="group" data-testid={`${TEST_ID}-summary`}>
+        <section className="flex flex-col gap-1">
           <Heading level={3} variant="title">
             What’s inside
           </Heading>
-          <ul className="space-y-0.5" data-testid={`${TEST_ID}-contents`}>
+          <ul
+            className="flex flex-col gap-0.5"
+            data-testid={`${TEST_ID}-contents`}
+          >
             {items.map((item) => (
               <li key={item} className="truncate text-s fg-secondary">
                 {item}
@@ -261,7 +265,7 @@ export function SharedContainerLinkLandingModal({
           testIdPrefix={TEST_ID}
           error={openError}
         />
-      </div>
+      </Stack>
     );
     primary = (
       <Button

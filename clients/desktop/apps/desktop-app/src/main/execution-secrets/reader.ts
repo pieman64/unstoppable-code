@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import type {
   ExecutionSecretRead,
   ExecutionSecretReader,
@@ -12,6 +13,16 @@ import { readSharedContainerRunEnvironment } from '../shared-containers/run-env-
 import { readGitHubPatForExecution } from '../lib/github-pat-env';
 import { resolveLinearToken } from '../lib/linear-auth';
 import { storedSecretRef } from '../lib/stored-secrets';
+import { getMcpServerFilePath } from '../lib/paths';
+import {
+  classifyServerDocument,
+  readDocument,
+  requireMutableState,
+} from '../mcp/config-repository-format';
+import {
+  MCP_OAUTH_CLIENT_SECRET_SLOT,
+  mcpServerStoredSecretSlots,
+} from '../mcp/server-secret-view';
 
 type StoredSource = Extract<
   ExecutionSecretSourceRef,
@@ -36,13 +47,36 @@ async function storedValues(
           );
       }
     }
-  } else {
+  } else if (source.family === 'shared_container.run_env') {
     const entries = await readSharedContainerRunEnvironment(source.record);
     for (const entry of entries)
       values.set(
         storedSecretRef('shared_container.run_env', source.record, entry.key),
         entry.value,
       );
+  } else if (source.family === 'mcp.server') {
+    // Strict read (CAN-4125 D9): damaged state throws, which the grants
+    // report as unavailable. The OAuth client secret is never mapped.
+    const document = requireMutableState(
+      'server',
+      classifyServerDocument(
+        await readDocument(() =>
+          readFile(getMcpServerFilePath(source.record), 'utf8'),
+        ),
+        source.record,
+      ),
+    );
+    if (document === undefined) return values;
+    for (const slot of mcpServerStoredSecretSlots(document.file.server)) {
+      if (slot.slot !== MCP_OAUTH_CLIENT_SECRET_SLOT)
+        values.set(
+          storedSecretRef('mcp.server', source.record, slot.slot),
+          slot.value,
+        );
+    }
+  } else {
+    const family: never = source.family;
+    throw new Error(`Unknown stored secret family: ${String(family)}`);
   }
   return values;
 }

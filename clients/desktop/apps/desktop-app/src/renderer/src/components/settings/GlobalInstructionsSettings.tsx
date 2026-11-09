@@ -17,8 +17,8 @@ import {
   getModelDisplayName,
 } from '@canopy/desktop-shared/types';
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
-import type { GlobalInstructionOverlapWarning } from '@canopy/desktop-shared/lib/global-instructions';
-import { computeGlobalInstructionOverlapWarnings } from '@canopy/desktop-shared/lib/global-instructions';
+import type { GlobalInstructionOverlapWarning } from '@canopy/execution-engine/lib/global-instructions';
+import { computeGlobalInstructionOverlapWarnings } from '@canopy/execution-engine/lib/global-instructions';
 import {
   Button,
   ChoiceList,

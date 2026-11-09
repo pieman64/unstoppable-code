@@ -999,7 +999,7 @@ export function ChatPanel({
     queueEditNotice !== '' ||
     unsavedQueueEdits.length > 0 ? (
       <div
-        className={`${REPLAY_BLOCK_CLASS} space-y-2 px-4 pb-2`}
+        className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-2 px-4 pb-2`}
         data-testid="queued-message-list"
       >
         {creditHeld && (

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { toOpenCodeModelId } from '@canopy/desktop-shared/lib/opencode-models';
+import { toOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import type { AgentDelegationEvent } from '@canopy/protocol/delegation';
 import type { AgentRunRequest } from '@canopy/desktop-shared/node/delegation';
 import { routeFixture } from '@canopy/desktop-shared/node/delegation/__tests__/fixtures';
@@ -102,6 +102,13 @@ jest.mock('../copilot/connection', () => ({
   openManagedCopilotRuntime: (...args: unknown[]): unknown =>
     mockCopilotOpen(...args),
   assertCopilotConnectionGeneration: jest.fn(),
+}));
+jest.mock('../agent-runs/copilot-worker-runtime', () => ({
+  getCopilotWorkerRuntime: (): Record<string, unknown> => ({
+    openSessionRuntime: (_entry: string, options: unknown): unknown =>
+      mockCopilotOpen(options),
+    acknowledgeToolResult: (): boolean => false,
+  }),
 }));
 jest.mock('@canopy/desktop-shared/node/copilot/turn-driver', () => ({
   runCopilotTurn: (options: unknown): unknown => mockCopilotTurn(options),

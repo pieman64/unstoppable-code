@@ -3,7 +3,7 @@ import type {
   BrowserActionTargetState,
   BrowserInputOption,
   BrowserOptionChoice,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import {
   isCDPRecord,
   readCDPArray,

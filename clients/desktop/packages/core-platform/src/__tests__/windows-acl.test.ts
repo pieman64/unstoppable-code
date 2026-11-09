@@ -8,6 +8,8 @@ import type * as Runtime from '@canopy/core-runtime';
 import { createSecureFileServices } from '../secure-files';
 import {
   readWindowsAcl,
+  readWindowsAclSync,
+  evaluateWindowsAcl,
   windowsAclEnvironment,
 } from '../secure-files/windows-acl';
 
@@ -159,6 +161,7 @@ describe('secure files: Windows ACL receipts', () => {
 
 describe('secure files: Windows ACL reader environment', () => {
   const ROOT = 'C:\\Windows';
+  const PROFILE = 'C:\\temp\\acl-profile';
   const PINNED = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules';
   const isModulePath = (key: string): boolean => /^psmodulepath$/i.test(key);
 
@@ -167,26 +170,49 @@ describe('secure files: Windows ACL reader environment', () => {
       PSModulePath: 'C:\\Program Files\\PowerShell\\7\\Modules',
       PSMODULEPATH: 'C:\\Users\\x\\Documents\\PowerShell\\Modules',
       psmodulepath: 'C:\\Program Files\\PowerShell\\Modules',
+      PSModuleAnalysisCachePath: 'C:\\untrusted-cache',
+      psmoduleanalysiscachepath: 'C:\\another-cache',
       Path: 'C:\\Windows\\System32',
       USERPROFILE: 'C:\\Users\\x',
+      userprofile: 'C:\\Users\\other',
+      HOME: 'C:\\Users\\x',
+      home: 'C:\\Users\\other',
+      APPDATA: 'C:\\Users\\x\\AppData\\Roaming',
+      appdata: 'C:\\Users\\other\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\x\\AppData\\Local',
+      localappdata: 'C:\\Users\\other\\AppData\\Local',
     };
     const snapshot = { ...input };
-    const env = windowsAclEnvironment(input, ROOT, 'C:\\data\\token');
+    const env = windowsAclEnvironment(input, ROOT, 'C:\\data\\token', PROFILE);
     expect(Object.keys(env).filter(isModulePath)).toEqual(['PSModulePath']);
     expect(env).toEqual({
       PSModulePath: PINNED,
+      PSModuleAnalysisCachePath: 'NUL',
       Path: 'C:\\Windows\\System32',
-      USERPROFILE: 'C:\\Users\\x',
+      HOME: PROFILE,
+      USERPROFILE: PROFILE,
+      APPDATA: `${PROFILE}\\AppData\\Roaming`,
+      LOCALAPPDATA: `${PROFILE}\\AppData\\Local`,
       CANOPY_SECURE_FILE_PATH: 'C:\\data\\token',
     });
     expect(input).toEqual(snapshot);
   });
 
   it('pins the System32 modules when none were inherited', () => {
-    const env = windowsAclEnvironment({ TEMP: 'C:\\t' }, ROOT, "it's $(x)");
+    const env = windowsAclEnvironment(
+      { TEMP: 'C:\\t' },
+      ROOT,
+      "it's $(x)",
+      PROFILE,
+    );
     expect(env).toEqual({
       TEMP: 'C:\\t',
+      HOME: PROFILE,
+      USERPROFILE: PROFILE,
+      APPDATA: `${PROFILE}\\AppData\\Roaming`,
+      LOCALAPPDATA: `${PROFILE}\\AppData\\Local`,
       PSModulePath: PINNED,
+      PSModuleAnalysisCachePath: 'NUL',
       CANOPY_SECURE_FILE_PATH: "it's $(x)",
     });
   });
@@ -194,7 +220,10 @@ describe('secure files: Windows ACL reader environment', () => {
 
 async function nativeAclFlow(): Promise<void> {
   const run = promisify(execFile);
-  const system = path.win32.join(process.env.SystemRoot ?? '', 'System32');
+  const system = path.win32.join(
+    process.env.SystemRoot ?? process.env.SYSTEMROOT ?? '',
+    'System32',
+  );
   const icacls = path.win32.join(system, 'icacls.exe');
   const ps = path.win32.join(system, 'WindowsPowerShell/v1.0/powershell.exe');
   const identity = await run(ps, ['-NoProfile', '-Command', SID_COMMAND]);
@@ -218,11 +247,17 @@ async function nativeAclFlow(): Promise<void> {
     await run(icacls, [p, '/setowner', `*${sid}`]);
     await run(icacls, [p, '/inheritance:r', '/grant:r', grant]);
     expect(await result(p, kind)).toEqual({ state: 'private' });
+    expect(evaluateWindowsAcl(readWindowsAclSync(p), kind)).toEqual({
+      state: 'private',
+    });
   }
   // Direct read: a reader crash surfaces PowerShell's stderr here.
   const direct: unknown = JSON.parse(await readWindowsAcl(token));
   expect(direct).toMatchObject({ user: sid, owner: sid, directory: false });
   await run(icacls, [token, '/grant', '*S-1-5-11:R']);
+  expect(evaluateWindowsAcl(readWindowsAclSync(token), 'file').state).toBe(
+    'insecure',
+  );
   expect(await result(token, 'file')).toEqual({
     state: 'insecure',
     reason: 'ACL grants access to S-1-5-11',
@@ -232,6 +267,40 @@ async function nativeAclFlow(): Promise<void> {
 describe('secure files: native Windows ACL', () => {
   jest.setTimeout(60_000);
   nativeIt('accepts a private ACL, rejects a broad grant', nativeAclFlow);
+
+  nativeIt(
+    'reads ACLs without creating a profile or cache under HOME',
+    async () => {
+      const home = path.join(dir, 'isolated-home');
+      await fs.mkdir(home);
+      const environment = process.env;
+      const before = { ...process.env };
+      Object.assign(process.env, {
+        HOME: home,
+        USERPROFILE: home,
+        APPDATA: path.join(home, 'AppData', 'Roaming'),
+        LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
+      });
+      try {
+        expect(await fs.readdir(home)).toEqual([]);
+        expect(
+          evaluateWindowsAcl(await readWindowsAcl(target), 'file').state,
+        ).not.toBe('unverifiable');
+        expect(
+          evaluateWindowsAcl(readWindowsAclSync(target), 'file').state,
+        ).not.toBe('unverifiable');
+        expect(await fs.readdir(home)).toEqual([]);
+      } finally {
+        // Replacing process.env drops Windows' case-insensitive lookup.
+        for (const key of Object.keys(process.env)) {
+          if (!Object.hasOwn(before, key)) delete process.env[key];
+        }
+        Object.assign(process.env, before);
+      }
+      expect(process.env).toBe(environment);
+      expect({ ...process.env }).toEqual(before);
+    },
+  );
 
   nativeIt('ignores inherited PowerShell 7 module paths', async () => {
     const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files';
@@ -249,7 +318,10 @@ describe('secure files: native Windows ACL', () => {
       return;
     }
     const inherited = process.env.PSModulePath;
-    const system = path.win32.join(process.env.SystemRoot ?? '', 'System32');
+    const system = path.win32.join(
+      process.env.SystemRoot ?? process.env.SYSTEMROOT ?? '',
+      'System32',
+    );
     process.env.PSModulePath = [
       core,
       path.win32.join(system, 'WindowsPowerShell/v1.0/Modules'),

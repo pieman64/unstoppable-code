@@ -1,4 +1,4 @@
-import { classifyResourceOwner } from '@canopy/desktop-shared/lib/resource-context';
+import { classifyResourceOwner } from '@canopy/execution-engine/lib/resource-context';
 import { assertResourceShareDestination } from '../lib/resource-share-context';
 import { assertShareScopeTarget } from '../lib/share-scope-target';
 import type { SharedAutomationSummary } from '@canopy/protocol/automations';

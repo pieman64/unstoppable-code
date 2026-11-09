@@ -13,7 +13,7 @@ import type { PublicShareVersion } from '../sharing';
 //
 // The shapes here are the canonical request/response payloads. Local-only
 // concerns (registry overlay, ID derivation, persisted app-data shape) live in
-// `packages/desktop-shared/src/types/agent-models.ts`.
+// `packages/execution-engine/src/types/agent-models.ts`.
 //
 // Intentional divergence from Skills: a shared Skill ships the raw `SKILL.md`
 // bytes as `rawSkill: string`. An Agent has no single canonical source file —

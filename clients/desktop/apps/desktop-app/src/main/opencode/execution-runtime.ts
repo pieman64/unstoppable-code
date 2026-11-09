@@ -1,8 +1,8 @@
-import { getRawOpenCodeModelId } from '@canopy/desktop-shared/lib/opencode-models';
+import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import {
   resolveGatewayModelEntry,
   resolveOwnerScopedModelId,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   prepareOpenCodeInferenceRoute,
   type OpenCodeInferenceRoute,

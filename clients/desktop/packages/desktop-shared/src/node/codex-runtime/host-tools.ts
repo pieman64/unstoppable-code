@@ -2,7 +2,7 @@ import {
   ASK_USER_HTTP_TIMEOUT_MS,
   CANOPY_MCP_TOOL_TIMEOUT_MS,
   isCanopyAskUserToolName,
-} from '../../lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { JsonValue } from './generated/serde_json/JsonValue';
 import type { DynamicToolCallParams } from './generated/v2/DynamicToolCallParams';
 import type { DynamicToolCallResponse } from './generated/v2/DynamicToolCallResponse';

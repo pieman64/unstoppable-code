@@ -3,7 +3,7 @@ import type {
   PauseInputRequest,
   PauseInputType,
   PipelineScalar,
-} from '../types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 const FIELD_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export interface PauseInputAnswerError {

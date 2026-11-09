@@ -5,7 +5,7 @@ import { isSafeCapabilityRelativePath } from '@canopy/protocol/capability-files'
 import type { PipelinePackageResource } from '@canopy/protocol/pipelines';
 import { PIPELINE_ASSET_ID_PATTERN } from '@canopy/pipeline-interop/assets';
 import type { AutomationPipelineAssetChanges } from '@canopy/desktop-shared/types';
-import type { PipelineAssetInstallMode } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineAssetInstallMode } from '@canopy/execution-engine/types/pipeline';
 import {
   getPipelineAssetsDir,
   getPipelineAssetsManifestPath,

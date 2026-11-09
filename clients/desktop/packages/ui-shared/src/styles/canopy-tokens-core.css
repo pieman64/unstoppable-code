@@ -1,29 +1,5 @@
 @import './app-icons.css';
 
-/* Action controls share the native app arrow on desktop, web, and UI mocks.
- * Base rules leave text, resize, drag, and disabled utilities free to express
- * their functional cursors. */
-@layer base {
-  a[href],
-  button,
-  summary,
-  [role='button'],
-  [role='link'],
-  [role='checkbox'],
-  [role='radio'],
-  [role='switch'],
-  [role='tab'],
-  [role='menuitem'] {
-    cursor: default;
-  }
-}
-
-/* Existing and third-party controls still request this Tailwind utility.
- * Override its hand cursor centrally, including its hover/state variants. */
-@utility cursor-pointer {
-  cursor: default;
-}
-
 :root {
   /* Document canvases retain their own surfaces across app appearances.
    * Resolve selection with the matching default light/dark bg-muted value. */
@@ -537,6 +513,15 @@
   min-height: 0;
 }
 
+/* Use these instead of Tailwind's `group-has-*`. It compiles to
+ * `.x:is(:where(.group):has(…) *)`, and Chromium then restyles the whole
+ * `main` subtree on every DOM insert or removal, so each streamed chat reply
+ * restyles every transcript table. The same selector without `:is()` matches
+ * the same elements at the same specificity and stays local. */
+@custom-variant group-focus-visible-inside (:where(.group):has(:focus-visible) &);
+@custom-variant option-focus-visible-inside (:where(.group\/option):has(:focus-visible) &);
+@custom-variant workspace-header-actions-focused (:where(.group\/workspace-header):has([data-workspace-header-actions]:focus-within) &);
+
 /* Literal foreground utilities. These intentionally use `fg-*` instead of
  * Tailwind's overloaded `text-*` namespace, and support the same opacity
  * modifiers and variants as built-in color utilities. */
@@ -804,6 +789,21 @@ body {
  * Base-layer rules keep explicit select-text/select-none utilities authoritative.
  */
 @layer base {
+  /* Chromium 156's UA if(media()) rule retains a MediaQuerySet on every
+   * thead/tfoot restyle. Avoid that rule while preserving print behavior.
+   * Remove this workaround once Electron ships Chromium 158 or later. */
+  thead,
+  tfoot {
+    break-inside: auto;
+  }
+
+  @media print {
+    thead,
+    tfoot {
+      break-inside: avoid;
+    }
+  }
+
   /* Keep native selection theme-aware without recoloring syntax or links. */
   @media (forced-colors: none) {
     /* Let descendants inherit the highlight. A universal descendant highlight

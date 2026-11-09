@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type {
   PipelineLookupRequest,
   PipelinePackageReadiness as PipelinePackageReadinessData,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { PipelinePackageRef } from '@canopy/protocol/pipelines';
 import { isPipelinePackageRunBlocked } from '@canopy/desktop-shared/pipelines/package-readiness';
 

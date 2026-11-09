@@ -2,7 +2,7 @@ import type {
   BrowserActionErrorCode,
   BrowserAutomationCommand,
   BrowserJavaScriptDialog,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import type {
   ActionTargetRequest,
   ActionTargetResolution,

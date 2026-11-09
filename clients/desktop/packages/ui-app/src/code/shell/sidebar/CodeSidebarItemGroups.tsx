@@ -975,11 +975,11 @@ export function CodeSidebarItemGroups({
       );
     };
     return (
-      <div key={unit.rootId} className="space-y-px">
+      <div key={unit.rootId} className="flex flex-col gap-px">
         {visibleIds.includes(unit.rootId) && renderItem(unit.rootId)}
         {childIds.length > 0 && (
           <div
-            className={stackGap ? 'space-y-px' : undefined}
+            className={stackGap ? 'flex flex-col gap-px' : undefined}
             data-testid="worktree-branch-group-children"
             data-parent-worktree-id={unit.rootId}
           >
@@ -1054,7 +1054,7 @@ export function CodeSidebarItemGroups({
     >
       <div
         ref={rootRef}
-        className={`min-w-0 ${SIDEBAR_ROW_GAP_CLASS_NAMES[rowGap]}`}
+        className={`flex min-w-0 flex-col ${SIDEBAR_ROW_GAP_CLASS_NAMES[rowGap]}`}
         data-testid="sidebar-code-item-groups"
       >
         {blocks.map((block, blockIndex): ReactNode => {
@@ -1079,7 +1079,11 @@ export function CodeSidebarItemGroups({
             itemGap === 'none' ? (
               rows
             ) : (
-              <div className={SIDEBAR_ROW_GAP_CLASS_NAMES[itemGap]}>{rows}</div>
+              <div
+                className={`flex flex-col ${SIDEBAR_ROW_GAP_CLASS_NAMES[itemGap]}`}
+              >
+                {rows}
+              </div>
             );
           const ungroupedPlaceholder =
             pendingGroupId === null &&

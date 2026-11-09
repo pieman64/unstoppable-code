@@ -7,9 +7,9 @@ export * from './pipelines/package-contract';
 export * from './pipelines/package-cache';
 export * from './pipelines/package-runtime';
 export * from './pipelines/package-analyzer';
-export * from './lib/path-lookup';
+export * from '@canopy/execution-engine/node/lib/path-lookup';
 export * from './lib/packaged-module-loader';
-export * from './lib/windows-process';
+export * from '@canopy/execution-engine/node/lib/windows-process';
 export * from './lib/canopy-json';
 export * from './git-request-context';
 export * from './code-graph';
@@ -21,4 +21,4 @@ export * from './ollama';
 export type {
   InstallReceipt,
   ResourceContextInput,
-} from '../lib/resource-context-policy';
+} from '@canopy/execution-engine/lib/resource-context-policy';

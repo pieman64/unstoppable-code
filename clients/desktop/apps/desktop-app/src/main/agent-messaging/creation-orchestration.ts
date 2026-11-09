@@ -1,3 +1,10 @@
+import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
+import { removeUnstartedWorkEntry } from '../lib/cowork-work-entries';
+import { getChatStateService } from '../services/chat-state-service';
+import {
+  assertCoworkWorkspaceRootPresent,
+  CoworkFolderMissingError,
+} from '../lib/cowork-folder-guard';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -5,7 +12,7 @@ import {
   type ChatCreationAction,
   type CreatedTaskChatReceipt,
 } from '@canopy/desktop-shared/lib/chat-send-actions';
-import { mergeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
+import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import {
   APP_ADVISOR_PROJECT_ID,
   type ChatCommand,
@@ -139,6 +146,8 @@ export async function dispatchAgentChatCreation(
           : 'not_found',
         'The target chat is not available.',
       );
+    if (error instanceof CoworkFolderMissingError)
+      throw new AgentChatSendError(error.code, error.message, error);
     if (error instanceof AgentChatSendError) throw error;
     // Entry, chat and send are separate durable commits. Do not suggest retrying
     // a send whose acknowledgement may have been lost.
@@ -302,7 +311,10 @@ async function create(
     }
     // Renderer project selection awaits this scaffold through standaloneChat.init.
     // Agent creation bypasses selection, but the first turn needs the same cwd.
-    if (project.type === 'cowork') await ensureCoworkHomeScaffold(projectId);
+    if (project.type === 'cowork') {
+      await assertCoworkWorkspaceRootPresent(projectId);
+      await ensureCoworkHomeScaffold(projectId);
+    }
   } else {
     await requireBotAccess(caller);
     const bot = requireBot(action.botId);
@@ -395,6 +407,7 @@ async function create(
       starterTabId = only.id;
   }
   let allocatedEntry = false;
+  let allocatedEntryCreatedAt: string | undefined;
   let ambiguousInput = false;
   try {
     if (chatCreated && !replayedTab) {
@@ -517,6 +530,7 @@ async function create(
           ...(title ? { title } : {}),
         });
         allocatedEntry = !created.reusedExistingEmpty;
+        if (allocatedEntry) allocatedEntryCreatedAt = created.entry.createdAt;
       }
       // A created task's founding tab shares its id; the pipeline host journal relies on this (host-create-entry.ts).
       const tabId = taskCreated ? taskId : (fixedTabId ?? randomUUID());
@@ -650,6 +664,36 @@ async function create(
     }
     return { address, taskCreated, chatCreated, ...selected };
   } catch (error) {
+    const missingFolder = readCoworkFolderMissing(error);
+    if (missingFolder) {
+      try {
+        const service = getChatStateService();
+        const scope = { projectId, worktreeId: taskId };
+        await service.runWithScopeDeletion(scope, async () => {
+          if (chatCreated && !replayedTab && chatId)
+            await service.rollbackUnstartedCoworkTab(scope, chatId, [], true);
+          if (allocatedEntryCreatedAt !== undefined)
+            await removeUnstartedWorkEntry(
+              projectId,
+              taskId,
+              allocatedEntryCreatedAt,
+            );
+        });
+      } catch (cleanupError) {
+        throw Object.assign(
+          new AgentChatSendError(
+            'cowork_folder_missing',
+            `${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+            error instanceof Error ? error : undefined,
+          ),
+          {
+            workspaceId: missingFolder.workspaceId,
+            folderName: missingFolder.folderName,
+          },
+        );
+      }
+      throw error;
+    }
     if (allocatedEntry && !ambiguousInput) {
       // The available removal API only edits the registry, not chat storage.
       // Keep even our empty founding tab: safely removing an entry AND its tab

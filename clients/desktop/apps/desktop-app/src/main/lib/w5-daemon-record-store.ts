@@ -15,7 +15,7 @@ import type {
 import {
   admitStorageWrite,
   routeStorageAdmissionToAuthority,
-} from '@canopy/desktop-shared/node/lib/storage-admission';
+} from '@canopy/execution-engine/node/lib/storage-admission';
 import { logMainProcessWarn } from './main-process-logging';
 import { getWorkspacesRootDir } from './paths';
 import { __setDesktopW5FileStoreForTests } from './w5-commit-log-file-store';

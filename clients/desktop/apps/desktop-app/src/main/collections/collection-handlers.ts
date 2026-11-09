@@ -56,7 +56,7 @@ import {
   getMcpServerStatusByName,
 } from '../mcp/connection-status';
 import type { PipelinePackageEnvironmentRequirement } from '@canopy/protocol/pipelines';
-import type { McpServerStatusEntry } from '@canopy/desktop-shared/types/mcp-servers';
+import type { McpServerStatusEntry } from '@canopy/execution-engine/types/mcp-servers';
 
 const COLLECTIONS_CAPABILITY = 'collections-crud-v1';
 

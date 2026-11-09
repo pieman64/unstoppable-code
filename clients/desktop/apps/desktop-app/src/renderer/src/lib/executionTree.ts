@@ -1,4 +1,4 @@
-import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionSummary } from '@canopy/execution-engine/types/pipeline';
 import {
   buildExecutionTree as buildExecutionTreeImpl,
   pruneExpandedIdsToExpandableNodes as pruneExpandedIdsToExpandableNodesImpl,

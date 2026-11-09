@@ -11,7 +11,7 @@ import type {
   PipelineInfo,
   SharedPipelineSummary,
   SharedPipelineTriggerType,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { DEFAULT_PIPELINE_SCOPES } from '@canopy/desktop-shared/pipelines/scope';
 import { buildSharedPipelineId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';

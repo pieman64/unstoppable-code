@@ -1,6 +1,6 @@
 import type { PipelineRepairShareTarget } from '@canopy/protocol/capability-package-repair';
 import type { InvocableInventoryEnableRef } from '../types/invocable-inventory';
-import type { IPCResult } from '../types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 
 /** Installed identity, not display text. Renaming/reinstalling/recreating it can change its lifetime count. */
 export type SkillShareTarget =

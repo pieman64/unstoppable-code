@@ -32,6 +32,16 @@ export interface CoreChatQuestionHost {
   ): Promise<ChatQuestionRespondOutcome>;
 }
 
+/**
+ * The trusted renderer relay principals of this app's own windows
+ * (renderer-relay/trusted-surface.ts): the only callers of this operation
+ * whose answer is a person's. Every other caller's answer is an agent's.
+ */
+const PERSON_PRINCIPAL_IDS: ReadonlySet<string> = new Set([
+  'local-desktop-renderer:main',
+  'local-desktop-renderer:app-advisor',
+]);
+
 export const QUESTION_ANSWER_SHAPE_MESSAGE =
   'Send answers keyed by question ID, or dismissed: true.';
 
@@ -94,6 +104,7 @@ export function createCoreChatQuestionAdapter(
   return {
     'core.chat.question.respond': async (
       params,
+      context,
     ): Promise<NonNullable<ReturnType<typeof chatSummaryOf>>> => {
       const { chatId, questionId, answers, dismissed } = params;
       const shapeValid =
@@ -151,6 +162,9 @@ export function createCoreChatQuestionAdapter(
         questionId,
         response,
         commandId: randomUUID(),
+        ...(PERSON_PRINCIPAL_IDS.has(context.caller.principalId)
+          ? { executionOptions: { answeredByPerson: true } }
+          : {}),
       });
       switch (outcome.status) {
         case 'applied': {

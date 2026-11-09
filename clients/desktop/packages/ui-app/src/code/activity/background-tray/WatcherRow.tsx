@@ -120,7 +120,7 @@ export function WatcherRow({
           open,
           onToggle,
           render: (): JSX.Element => (
-            <div className="mr-2.5 flex min-w-0 flex-col gap-3">
+            <div className="flex min-w-0 flex-col gap-3">
               <FactList
                 layout="stacked"
                 columns={1}

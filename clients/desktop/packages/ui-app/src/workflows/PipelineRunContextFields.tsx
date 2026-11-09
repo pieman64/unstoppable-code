@@ -5,6 +5,7 @@ import {
   SegmentedControl,
   Select,
   type SelectOption,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import { NO_PROJECT_LABEL } from './workflow-run-model';
 
@@ -193,13 +194,13 @@ function OwnerControl({
             data-testid="pipeline-run-owner-select"
           />
           {owner.stale ? (
-            <p
-              role="alert"
-              className="text-xs fg-destructive"
+            <FieldError
+              id="pipeline-run-owner-stale"
+              announce
               data-testid="pipeline-run-owner-stale"
             >
               {PIPELINE_RUN_CONTEXT_COPY.ownerStale}
-            </p>
+            </FieldError>
           ) : null}
         </>
       );

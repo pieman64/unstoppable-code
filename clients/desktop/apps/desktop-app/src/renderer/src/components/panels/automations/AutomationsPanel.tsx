@@ -25,6 +25,7 @@
  * even from a pop-out. A pipeline run opens its run panel. Watcher clicks open
  * the {@link WatcherManagementModal} scoped to the clicked watcher.
  */
+import { Count, type BadgeTone } from '@canopy/ui-shared/components/Badge';
 import {
   memo,
   useCallback,
@@ -44,6 +45,7 @@ import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { getAutomationTriggerLabel } from '@canopy/desktop-shared/lib/automations';
 import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
 import {
+  Surface,
   Badge,
   Button,
   Notice,
@@ -81,7 +83,7 @@ import { useExecutionFeedStore } from '@/lib/workflows/execution-feed';
 import { pipelineEditLinkFromLocator } from '@/lib/workflows/edit-target';
 import { pipelineInfoToDocumentLocator } from '@/lib/pipelineDocument';
 import { pipelineLibraryKey } from '@/lib/workflows/library-projection';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import { useAutomationsStore } from '@/stores/automationsStore';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -164,9 +166,7 @@ function PanelSectionShell({
         )}
         {icon}
         <span>{title}</span>
-        <span className="rounded-full bg-fg-primary/[0.06] px-1.5 py-0.5 text-2xs fg-secondary">
-          {count}
-        </span>
+        <Count value={count} />
       </button>
       {!collapsed && children}
     </div>
@@ -381,23 +381,23 @@ function OverviewSection({
 }
 
 /** The status chip's colors, by how the run stands. */
-function runStatusClasses(status: WorkflowRunStatus): string {
+function runStatusTone(status: WorkflowRunStatus): BadgeTone {
   switch (status) {
     case 'failure':
     case 'delivery-failed':
-      return 'bg-destructive-subtle fg-destructive';
+      return 'danger';
     case 'skipped':
     case 'canceled':
     case 'missed':
-      return 'bg-fg-primary/[0.06] fg-secondary';
+      return 'neutral';
     case 'queued':
     case 'running':
     case 'waiting':
     case 'watching':
-      return 'bg-accent-subtle fg-accent';
+      return 'info';
     case 'success':
     case 'fired':
-      return 'bg-success-subtle fg-success';
+      return 'success';
   }
 }
 
@@ -421,11 +421,9 @@ const RUN_COLUMNS: ReadonlyArray<DataTableColumn<WorkflowRunRow>> = [
     header: 'Result',
     width: '15%',
     render: (row) => (
-      <span
-        className={`inline-flex max-w-full truncate rounded-full px-1.5 py-0.5 text-2xs font-medium ${runStatusClasses(row.status)}`}
-      >
+      <Badge tone={runStatusTone(row.status)}>
         {WORKFLOW_RUN_STATUS_LABELS[row.status]}
-      </span>
+      </Badge>
     ),
   },
   {
@@ -807,59 +805,63 @@ export const AutomationsPanel = memo(function AutomationsPanel({
       data-variant={variant}
       className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
     >
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
-        <div className="min-w-0 truncate text-xs fg-secondary">
-          {project ? getWorkspaceDisplayName(project) : projectId}
-          {!isCowork && worktreeOnly ? (
-            <span className="fg-secondary"> · {worktreeLabel}</span>
-          ) : null}
+      <Surface variant="section" boundary="bottom" className="shrink-0">
+        <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-2">
+          <div className="min-w-0 truncate text-xs fg-secondary">
+            {project ? getWorkspaceDisplayName(project) : projectId}
+            {!isCowork && worktreeOnly ? (
+              <span className="fg-secondary"> · {worktreeLabel}</span>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            {!isCowork && (
+              <IconToggleButton
+                pressed={worktreeOnly}
+                label={worktreeToggleLabel}
+                tooltip={worktreeToggleLabel}
+                icon={<BranchIcon size="sm" aria-hidden="true" />}
+                onClick={(): void => setWorktreeOnly((prev) => !prev)}
+                testId="automations-panel-worktree-toggle"
+              />
+            )}
+            {projectId !== APP_ADVISOR_PROJECT_ID && (
+              <Tooltip label="New workflow">
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
+                  aria-label="New workflow"
+                  onClick={openCreate}
+                  data-testid="automations-panel-add"
+                >
+                  <PlusIcon size="sm" aria-hidden="true" />
+                </Button>
+              </Tooltip>
+            )}
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {!isCowork && (
-            <IconToggleButton
-              pressed={worktreeOnly}
-              label={worktreeToggleLabel}
-              tooltip={worktreeToggleLabel}
-              icon={<BranchIcon size="sm" aria-hidden="true" />}
-              onClick={(): void => setWorktreeOnly((prev) => !prev)}
-              testId="automations-panel-worktree-toggle"
-            />
-          )}
-          {projectId !== APP_ADVISOR_PROJECT_ID && (
-            <Tooltip label="New workflow">
-              <Button
-                variant="ghost"
-                size="compact"
-                iconOnly
-                aria-label="New workflow"
-                onClick={openCreate}
-                data-testid="automations-panel-add"
-              >
-                <PlusIcon size="sm" aria-hidden="true" />
-              </Button>
-            </Tooltip>
-          )}
-        </div>
-      </div>
+      </Surface>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loadErrors.length > 0 ? (
-          <Notice
-            intent="destructive"
-            data-testid="automations-panel-load-error"
-            className="m-3"
-            title="Could not load workflows."
-            actions={
-              <NoticeButton
-                variant="primary"
-                data-testid="automations-panel-retry"
-                onClick={retryHydration}
-              >
-                Try again
-              </NoticeButton>
-            }
-          >
-            {loadErrors.join(' ')}
-          </Notice>
+          <div className="shrink-0 p-3">
+            <Notice
+              intent="destructive"
+              data-testid="automations-panel-load-error"
+              className=""
+              title="Could not load workflows."
+              actions={
+                <NoticeButton
+                  variant="primary"
+                  data-testid="automations-panel-retry"
+                  onClick={retryHydration}
+                >
+                  Try again
+                </NoticeButton>
+              }
+            >
+              {loadErrors.join(' ')}
+            </Notice>
+          </div>
         ) : dataLoading ? (
           <div
             data-testid="automations-panel-loading"

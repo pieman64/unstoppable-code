@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   McpServerAuthStatus,
   StartMcpOAuthLoginResponse,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 
 /** Cadence of the post-login usability probe. */
 export const MCP_AUTH_RECOVERY_POLL_INTERVAL_MS = 2_000;

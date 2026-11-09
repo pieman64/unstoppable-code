@@ -1,9 +1,10 @@
 import { type JSX, useId, useState } from 'react';
+import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { ErrorBanner, ToggleSwitch } from '@canopy/ui-shared';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 
 const SAVE_ERROR_MESSAGE = 'Could not save this setting. Try again.';
-const TOGGLE_LABEL = 'Remote access';
+const TOGGLE_LABEL = REMOTE_CONTROL_LABEL;
 
 interface RemoteControlOptInSectionProps {
   /** The saved `remoteControlEnabled` preference. */
@@ -16,7 +17,7 @@ interface RemoteControlOptInSectionProps {
 }
 
 /**
- * Settings → Labs → Remote access: the per-user opt-in for
+ * Settings → Labs → Remote Control: the per-user opt-in for
  * device-to-device remote control. Mounted only while the
  * `canopy-device-remote-control` flag is on, in a window that shows this
  * computer. The save is optimistic and rolls back if it fails.
@@ -53,7 +54,7 @@ export function RemoteControlOptInSection({
 
   return (
     <SettingsSection
-      title="Remote access"
+      title={REMOTE_CONTROL_LABEL}
       dataTestId="settings-experiments-remote-control"
     >
       <ErrorBanner className="" error={saveError} />
@@ -61,7 +62,7 @@ export function RemoteControlOptInSection({
         <SettingsRow
           label={TOGGLE_LABEL}
           htmlFor={toggleId}
-          description="Pair your computers and control one from another. Adds Remote access to Settings and your computers to the account menu."
+          description={`Pair your devices and control one from another. Adds ${REMOTE_CONTROL_LABEL} to Settings and your computers to the account menu.`}
           control={
             <ToggleSwitch
               id={toggleId}

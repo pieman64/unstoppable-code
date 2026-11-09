@@ -3,6 +3,7 @@ import {
   limitAllowRules,
   narrowSessionApprovalRules,
 } from '@canopy/desktop-shared/lib/send-approval-narrowing';
+import { advanceApprovalAuthorityRevision } from './rule-revisions';
 
 const liveApprovalModeBySession = new Map<string, ApprovalMode>();
 const approvalModeOperationsBySession = new Map<string, Promise<void>>();
@@ -45,6 +46,7 @@ export function setLiveApprovalMode(
     approvalModeKey(projectId, worktreeId, chatId),
     mode,
   );
+  advanceApprovalAuthorityRevision();
 }
 
 export function clearLiveApprovalMode(
@@ -58,6 +60,7 @@ export function clearLiveApprovalMode(
   pendingApprovalModeBySession.delete(
     approvalModeKey(projectId, worktreeId, chatId),
   );
+  advanceApprovalAuthorityRevision();
 }
 
 export function getPendingApprovalMode(
@@ -81,6 +84,7 @@ export function beginApprovalModeTransition(
     approvalModeKey(projectId, worktreeId, chatId),
     { generation, mode },
   );
+  advanceApprovalAuthorityRevision();
   return generation;
 }
 
@@ -106,6 +110,7 @@ export function endApprovalModeTransition(
   const key = approvalModeKey(projectId, worktreeId, chatId);
   if (pendingApprovalModeBySession.get(key)?.generation === generation) {
     pendingApprovalModeBySession.delete(key);
+    advanceApprovalAuthorityRevision();
   }
 }
 

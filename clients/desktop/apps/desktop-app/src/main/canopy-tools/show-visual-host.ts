@@ -1,14 +1,13 @@
-import type {
-  StageVisualDocument,
-  VisualStagingSidecar,
-} from '../lib/chat-visual-contracts';
+import type { StageVisualDocument } from '../lib/chat-visual-contracts';
 import type { ShowVisualHost } from './show-visual-runtime';
 import type { VisualMeasureResult } from '../browser/visual-preview-types';
+import { stageVisualThroughCore } from './visual-core-client';
 
 /**
  * The trusted ShowVisual host for one authenticated chat route. Scope, chat,
- * and working directory come from the session, never from tool arguments, and
- * staging goes through the main-owned chat-state writer.
+ * and working directory come from the session, never from tool arguments.
+ * Staging goes through `core.chat.visual.stage`; measuring stays a main host
+ * render capability (CAN-6040).
  */
 export function createShowVisualHost(target: {
   projectId: string;
@@ -27,15 +26,9 @@ export function createShowVisualHost(target: {
         await import('../browser/visual-preview-service');
       return getVisualPreviewService().measure({ prepared, ...options });
     },
-    stageVisual: async (
-      document: StageVisualDocument,
-    ): Promise<VisualStagingSidecar> => {
-      // Loaded on first use so tool routes stay off the chat-state module graph.
-      const { getChatStateService } =
-        await import('../services/chat-state-service');
-      return getChatStateService().stageVisual(
-        scope,
-        { chatId: target.chatId },
+    stageVisual: async (document: StageVisualDocument): Promise<void> => {
+      await stageVisualThroughCore(
+        { ...scope, chatId: target.chatId },
         document,
       );
     },

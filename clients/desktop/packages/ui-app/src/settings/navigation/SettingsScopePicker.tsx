@@ -110,8 +110,7 @@ export function SettingsScopePicker({
         aria-controls={open ? menuId : undefined}
         data-settings-control="picker"
         data-testid={`${testIdPrefix}scope-picker`}
-        // Web gives every button a hand cursor; rail controls keep the arrow.
-        className="focus-ring flex w-full min-w-0 cursor-default items-center gap-2.5 rounded-row px-2 py-2 text-left hover:bg-subtle aria-expanded:bg-subtle pointer-coarse:min-h-11"
+        className="focus-ring flex w-full min-w-0 items-center gap-2.5 rounded-row px-2 py-2 text-left hover:bg-subtle aria-expanded:bg-subtle pointer-coarse:min-h-11"
       >
         {scope.kind === 'account' ? (
           <MemberAvatar

@@ -23,9 +23,9 @@ import type {
   SharedAgentPublicShareInfo,
   SharedAgentImportReadiness,
   UpdateSharedAgentRequest,
-} from '@canopy/desktop-shared/types/agent-models';
-import type { PipelinePackageAnalysisSummary } from '@canopy/desktop-shared/types/pipeline';
-import type { PipelinePackageReadiness } from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/agent-models';
+import type { PipelinePackageAnalysisSummary } from '@canopy/execution-engine/types/pipeline';
+import type { PipelinePackageReadiness } from '@canopy/execution-engine/types/pipeline';
 
 export type { AgentModelsAPI };
 

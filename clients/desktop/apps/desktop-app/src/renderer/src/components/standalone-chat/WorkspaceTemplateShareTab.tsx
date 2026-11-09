@@ -7,6 +7,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER } from '@canopy/protocol';
 import {
+  Stack,
   CopyLinkButton,
   ShareActionButton,
   ShareAudienceLabel,
@@ -119,19 +120,16 @@ export function WorkspaceTemplateShareTab({
   const audience = share ? audienceFor(share) : null;
 
   return (
-    <div
-      className="flex flex-col gap-3"
-      data-testid="workspace-template-share-tab"
-    >
+    <Stack gap="item" data-testid="workspace-template-share-tab">
       <div className="flex items-start justify-between gap-4">
-        <div>
+        <Stack gap="tight">
           <Heading level={3} variant="title">
             {`Share ${WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER}`}
           </Heading>
-          <p className="mt-1 text-xs fg-secondary">
+          <p className="text-xs fg-secondary">
             Shares this project’s setup. Chats and files stay private.
           </p>
-        </div>
+        </Stack>
         <ShareActionButton
           ariaLabel={`Share ${draft.name}`}
           placement="header"
@@ -174,7 +172,7 @@ export function WorkspaceTemplateShareTab({
       ) : null}
 
       {omitted ? <p className="text-xs fg-secondary">{omitted}</p> : null}
-      <ErrorBanner error={error} className="" />
+      <ErrorBanner className="" error={error} />
 
       {dialogOpen && built ? (
         <ShareProjectTemplateModal
@@ -186,6 +184,6 @@ export function WorkspaceTemplateShareTab({
           onClose={(): void => setDialogOpen(false)}
         />
       ) : null}
-    </div>
+    </Stack>
   );
 }

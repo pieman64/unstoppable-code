@@ -1,14 +1,12 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import { useState, type JSX, type KeyboardEvent } from 'react';
 import type { BackgroundTaskStopRequest } from '@canopy/app-core';
-import type {
-  BackgroundTask,
-  BackgroundTaskStatus,
-} from '@canopy/protocol/background-tasks';
-import { AnsiOutput, Disclosure } from '@canopy/ui-shared/components';
+import type { BackgroundTask } from '@canopy/protocol/background-tasks';
+import { Stack, AnsiOutput, Disclosure } from '@canopy/ui-shared/components';
 import {
-  getBackgroundProcessStatusClassName as getStatusClassName,
+  backgroundProcessStatusBadgeTone,
   isTerminalBackgroundProcessStatus as isTerminalStatus,
 } from '@canopy/ui-shared/lib';
 import { WorkflowIcon } from '@canopy/ui-shared/icons';
@@ -24,19 +22,6 @@ export interface BackgroundProcessesSectionBodyProps {
   ) => BackgroundTaskStopRequest | null;
   readonly onStopError?: (error: unknown) => void;
   readonly onOpenDetail: (task: BackgroundTask) => void;
-}
-
-function getMutedStatusClassName(status: BackgroundTaskStatus): string {
-  switch (status) {
-    case 'completed':
-      return 'bg-success-subtle fg-success-strong/70';
-    case 'failed':
-      return 'bg-destructive-subtle fg-destructive-strong';
-    case 'stopped':
-      return 'bg-warning-subtle fg-warning/70';
-    default:
-      return 'bg-fg-primary/[0.05] fg-secondary/60';
-  }
 }
 
 /** Names what a background task's Stop ends; the card and its detail share it. */
@@ -114,7 +99,7 @@ export function BackgroundProcessesSectionBody({
   };
 
   return (
-    <div className="space-y-2" data-testid="activity-bg-body">
+    <Stack gap="inline" data-testid="activity-bg-body">
       {/* Active processes */}
       {activeProcesses.map((process) => (
         <Surface
@@ -129,7 +114,7 @@ export function BackgroundProcessesSectionBody({
           onKeyDown={(event): void => handleKeyDown(event, process)}
           data-testid="activity-bg-item"
         >
-          <div className="space-y-3">
+          <div className="flex flex-col gap-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -141,11 +126,11 @@ export function BackgroundProcessesSectionBody({
                   <span className="text-xs font-medium fg-secondary">
                     {process.kind}
                   </span>
-                  <span
-                    className={`rounded-full px-2 py-1 text-3xs font-medium ${getStatusClassName(process.status)}`}
+                  <Badge
+                    tone={backgroundProcessStatusBadgeTone(process.status)}
                   >
                     {process.status}
-                  </span>
+                  </Badge>
                 </div>
                 {/* Descriptions fall back to the command or prompt, and
                   summaries quote agent output, so replay blocks them. */}
@@ -197,7 +182,7 @@ export function BackgroundProcessesSectionBody({
             dataTestId="activity-bg-stopped"
             toggleTestId="activity-bg-stopped-toggle"
           >
-            <div className="space-y-1.5">
+            <div className="flex flex-col gap-1.5">
               {stoppedProcesses.map((process) => (
                 <Surface
                   variant="group"
@@ -215,11 +200,12 @@ export function BackgroundProcessesSectionBody({
                       <span className="text-xs font-medium fg-secondary/60">
                         {process.kind}
                       </span>
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-3xs font-medium ${getMutedStatusClassName(process.status)}`}
+                      <Badge
+                        tone={backgroundProcessStatusBadgeTone(process.status)}
+                        muted
                       >
                         {process.status}
-                      </span>
+                      </Badge>
                     </div>
                     <div className="mt-1 truncate text-xs fg-secondary">
                       {process.title}
@@ -236,6 +222,6 @@ export function BackgroundProcessesSectionBody({
           </Disclosure>
         </div>
       )}
-    </div>
+    </Stack>
   );
 }

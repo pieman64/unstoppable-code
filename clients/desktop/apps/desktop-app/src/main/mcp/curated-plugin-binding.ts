@@ -6,7 +6,7 @@ import {
   type AccountMcpConnection,
   type McpServerConfigData,
   type McpServerFile,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { CURATED_PLUGIN_MARKETPLACE_ID } from '@canopy/desktop-shared/types/plugins';
 import { safeReadJson } from '../lib/fs-utils';
 import { getMcpServerFilePath, getMcpServersIndexFilePath } from '../lib/paths';

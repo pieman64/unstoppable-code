@@ -1013,18 +1013,20 @@ export function BrowserPane({
           ) : failed && (hasUrl || openFailed) ? (
             <div
               data-testid="browser-pane-failed"
-              className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-s fg-secondary"
+              className="flex h-full flex-col items-center justify-center px-6 text-center text-s fg-secondary gap-3"
             >
-              <div className="font-medium fg-primary">
-                {openFailed ? "Couldn't open Browser" : 'Unable to load page'}
-              </div>
-              <div className="max-w-full break-words font-mono text-xs">
-                {snapshot.lastError ?? snapshot.url}
+              <div className="flex max-w-full flex-col items-center gap-2">
+                <div className="font-medium fg-primary">
+                  {openFailed ? "Couldn't open Browser" : 'Unable to load page'}
+                </div>
+                <div className="max-w-full break-words font-mono text-xs">
+                  {snapshot.lastError ?? snapshot.url}
+                </div>
               </div>
               <Button
+                className=""
                 variant="secondary"
                 size="compact"
-                className="mt-1"
                 onClick={handleRetry}
               >
                 <RefreshIcon size={14} />

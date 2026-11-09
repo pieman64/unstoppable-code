@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import {
   damagedCopiesOf,
   pruneDamagedCopies,
-} from '@canopy/desktop-shared/node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import {
   isPipelineContentHash,
   isPipelinePackageDigest,
@@ -12,8 +12,8 @@ import type {
   CapabilityPackageInstallOwner,
   CapabilityPackageInstallRecordV1,
   PipelinePackageInstallRecordV1,
-} from '@canopy/desktop-shared/types/pipeline';
-import { CAPABILITY_PACKAGE_INSTALL_OWNER_KINDS } from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
+import { CAPABILITY_PACKAGE_INSTALL_OWNER_KINDS } from '@canopy/execution-engine/types/pipeline';
 import { writeStoreFileDurably } from '../lib/durable-store-write';
 
 interface PipelinePackageInstallStoreV1 {

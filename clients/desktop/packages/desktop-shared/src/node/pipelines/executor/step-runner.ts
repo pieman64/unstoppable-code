@@ -1,12 +1,18 @@
-import { backgroundExecutionDeniedMessage } from '../../../lib/automation-context-copy';
-import type { ResourceContextInput } from '../../../lib/resource-context-policy';
+import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/automation-context-copy';
+import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
+import {
+  effectiveClaudeConfigDir,
+  isSameClaudePath,
+  type ClaudeModAdmissionLaunch,
+} from '../../plugins/claude-mod-admission';
+import type { ResourceContextInput } from '@canopy/execution-engine/lib/resource-context-policy';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
 import type {
   ChildPipelineAuthorization,
   ResolvedChildPipeline,
 } from './child-pipeline-resolver';
-import { requireHeadlessHarness } from '../../../model-harnesses';
-import type { ModelHarnessInvocation } from '../../../types/model-harnesses';
+import { requireHeadlessHarness } from '@canopy/execution-engine/model-harnesses';
+import type { ModelHarnessInvocation } from '@canopy/execution-engine/types/model-harnesses';
 import {
   isShutdownSignal,
   readShutdownAgentMetadata,
@@ -17,13 +23,13 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { finished } from 'node:stream/promises';
-import { resolveAnthropicMockEnvOverride } from '../../e2e-mock-env';
-import { isPathInside } from '../../lib/path-safety';
+import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
+import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 import { stepTimedOutMessage } from '../step-timeout';
 import {
   redactSecrets,
   redactSerializedJsonLine,
-} from '../../../lib/redaction';
+} from '@canopy/execution-engine/lib/redaction';
 import {
   // Whitespace-insensitive matching that preserves every unmatched byte. The
   // verbatim helpers these replaced gave durable copies strictly weaker
@@ -34,8 +40,8 @@ import {
 import {
   appendUserOverallPreferencesBlock,
   buildPipelineGlobalInstructionsBlock,
-} from '../../../lib/global-instructions';
-import { killChildProcessGroup } from '../../lib/process-kill';
+} from '@canopy/execution-engine/lib/global-instructions';
+import { killChildProcessGroup } from '@canopy/execution-engine/node/lib/process-kill';
 import { getPipelineExecutionPluginRuntimeDir } from '../../lib/paths';
 import { resolvePlugins } from '../../plugins/plugin-resolver';
 import { validatePauseInputRequest } from '@canopy/desktop-shared/pipelines/pause-input-validation';
@@ -45,7 +51,7 @@ import {
   brandEnvName,
   getBrandEnv,
   setBrandEnv,
-} from '@canopy/desktop-shared/brand/env';
+} from '@canopy/execution-engine/brand/env';
 import { BRAND } from '@canopy/brand/current';
 import {
   getBundledBinDir,
@@ -80,9 +86,9 @@ import type {
   AgentRecoveryCheckpoint,
   ResolvedPipelineExecutionTarget,
   PipelinePackageCapabilityOverlay,
-} from '@canopy/desktop-shared/types/pipeline';
-import type { AgentActionFailureMetadata } from '@canopy/desktop-shared/agent-failures';
-import { getTriggerTypes } from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
+import type { AgentActionFailureMetadata } from '@canopy/execution-engine/agent-failures';
+import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import { BASE_BRANCH_MANAGED_ENV_KEYS } from '@canopy/desktop-shared/pipelines/base-branch-env';
 import {
   buildExpressionAssets,
@@ -98,6 +104,7 @@ import {
   interpolateExpression,
 } from './expression-evaluator';
 import { interpolateNormalizedStep } from './step-interpolation';
+import { buildModelRegistrySnapshot } from './model-registry-snapshot';
 import {
   normalizePipeline,
   resolvePipelineModelAlias,
@@ -114,14 +121,11 @@ import {
   getModelSource,
   getEffectiveSupportedThinkingLevelsForModel,
   getProviderForModel,
-  getModelAliases,
-  getGatewayModelEntries,
-  getModelHarnessAssignmentSnapshot,
   resolveModelAlias,
 } from '@canopy/desktop-shared/types';
 import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
-import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
-import { readCodexSpeedRecord } from '@canopy/desktop-shared/lib/codex-speed';
+import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
+import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 import type {
   AgentModelConfig,
   AgentProviderType,
@@ -129,9 +133,10 @@ import type {
   ModelHarness,
   UsageInitiationSource,
 } from '@canopy/desktop-shared/types';
-import { AGENT_MODEL_PREFIX } from '@canopy/desktop-shared/types/agent-models';
+import { AGENT_MODEL_PREFIX } from '@canopy/execution-engine/types/agent-models';
 import type {
   AgentPromptWorkerPermission,
+  ClaudeModAdmissionContext,
   CodexPromptRunnerResult,
   ExecutionEvent,
   ExecutionState,
@@ -181,13 +186,13 @@ import type {
   PipelineExecutionInitiator,
   PipelineScalar,
   ResolvedPipelinePluginCollectionSnapshot,
-} from '@canopy/desktop-shared/types/pipeline';
-import { resolveClaudeCompatibleInvocation as resolveSharedClaudeCompatibleInvocation } from '../../ollama/claude-compatible';
-import { findExecutableOnPath } from '../../lib/path-lookup';
+} from '@canopy/execution-engine/types/pipeline';
+import { resolveClaudeCompatibleInvocation as resolveSharedClaudeCompatibleInvocation } from '@canopy/execution-engine/node/ollama/claude-compatible';
+import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import {
   buildCmdCommandLine,
   wrapWindowsCommandShim,
-} from '../../lib/windows-process';
+} from '@canopy/execution-engine/node/lib/windows-process';
 import { getDefaultShellTypeForCurrentProcess } from '../default-shell';
 import { sanitizeCodexSpawnEnvironment } from '../../codex-runtime/profile';
 import {
@@ -208,6 +213,11 @@ import {
 const FORCE_KILL_DELAY_MS = 5_000;
 const DEFAULT_AGENT_TERMINAL_RESULT_GRACE_MS = 30_000;
 const MAX_NESTED_DEPTH = 10;
+const DEFAULT_AGENT_SETTING_SOURCES: readonly SettingSource[] = [
+  'user',
+  'project',
+  'local',
+];
 export const PIPELINE_OUTPUT_ENV_KEY = 'PIPELINE_OUTPUT';
 export const PIPELINE_JOB_RESTART_OUTPUT_KEY = 'PIPELINE_JOB_RESTART';
 export const PAUSE_OUTPUT_KEYS = brandEnvCandidates('PAUSE');
@@ -527,7 +537,8 @@ export function buildPipelineAssetEnvValues(
   return values;
 }
 
-function getSecretValues(
+/** The secret values step output masks (CAN-5095: also a daemon run's Ledger masking). */
+export function getSecretValues(
   secretEnv: Record<string, string> | undefined,
 ): string[] {
   return Object.values(secretEnv ?? {}).filter((value) => value.length >= 6);
@@ -567,6 +578,23 @@ export function applyClaudeMockPipelineEnv(
   return safe;
 }
 
+/**
+ * Whether an inherited variable looks like a credential a step must not get
+ * by inheritance: its value is the one `inherited` holds, under a sensitive
+ * suffix. A value the user configured differently still passes.
+ */
+export function isInheritedSensitiveEnv(
+  key: string,
+  value: string,
+  inherited: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  const upper = key.toUpperCase();
+  return (
+    inherited[key] === value &&
+    SENSITIVE_ENV_SUFFIXES.some((suffix) => upper.endsWith(suffix))
+  );
+}
+
 function buildSafeProcessEnv(
   source?: Readonly<Record<string, string>>,
 ): Record<string, string> {
@@ -579,71 +607,13 @@ function buildSafeProcessEnv(
     if (EXECUTOR_MANAGED_ENV_KEYS.has(key)) {
       continue;
     }
-    const upper = key.toUpperCase();
-    const isUserConfiguredValue =
-      process.env[key] === undefined || process.env[key] !== value;
-    if (
-      !isUserConfiguredValue &&
-      SENSITIVE_ENV_SUFFIXES.some((suffix) => upper.endsWith(suffix))
-    ) {
-      continue;
-    }
+    if (isInheritedSensitiveEnv(key, value)) continue;
     safe[key] = value;
   }
   // Propagate model IDs and aliases so action subprocesses can validate
   // and resolve models without needing Electron's app.getAppPath().
-  if (CLAUDE_MODELS.length > 0) {
-    setBrandEnv(safe, 'CLAUDE_MODELS', JSON.stringify(CLAUDE_MODELS));
-  }
-  if (CODEX_MODELS.length > 0) {
-    setBrandEnv(safe, 'CODEX_MODELS', JSON.stringify(CODEX_MODELS));
-  }
-  if (OLLAMA_MODELS.length > 0) {
-    setBrandEnv(safe, 'OLLAMA_MODELS', JSON.stringify(OLLAMA_MODELS));
-  }
-  const aliases = getModelAliases();
-  if (Object.keys(aliases).length > 0) {
-    setBrandEnv(safe, 'MODEL_ALIASES', JSON.stringify(aliases));
-  }
-  const gatewayRoutes = getGatewayModelEntries();
-  setBrandEnv(
-    safe,
-    'MODEL_CATALOG',
-    JSON.stringify({
-      version: 1,
-      claudeModels: [...CLAUDE_MODELS],
-      codexModels: [...CODEX_MODELS],
-      ollamaModels: [...OLLAMA_MODELS],
-      aiGatewayModels: gatewayRoutes
-        .filter((route) => route.gatewayOnly)
-        .map((route) => route.modelId),
-      gatewayRoutes: gatewayRoutes.map((route) => ({
-        modelId: route.modelId,
-        gatewayId: route.gatewayId,
-        family: route.family,
-        recommendedHarness: route.recommendedHarness,
-        gatewayOnly: route.gatewayOnly,
-        contextWindow: route.contextWindow,
-        supportsPromptCaching: route.supportsPromptCaching,
-        supportedThinkingLevels: [...route.supportedThinkingLevels],
-        toolSchemaProfile: route.toolSchemaProfile,
-      })),
-      modelAliases: aliases,
-    }),
-  );
-  setBrandEnv(
-    safe,
-    'MODEL_HARNESS_ASSIGNMENTS',
-    JSON.stringify(getModelHarnessAssignmentSnapshot()),
-  );
-  const supportedThinkingLevels = getConfiguredSupportedThinkingLevelsMap();
-  if (Object.keys(supportedThinkingLevels).length > 0) {
-    setBrandEnv(
-      safe,
-      'MODEL_THINKING_LEVELS',
-      JSON.stringify(supportedThinkingLevels),
-    );
-  }
+  for (const [key, value] of Object.entries(buildModelRegistrySnapshot()))
+    setBrandEnv(safe, key, value);
   if (source?.PATH !== undefined) {
     // A supplied base environment brings the PATH its core resolved.
     safe.PATH = source.PATH;
@@ -842,14 +812,16 @@ const FANOUT_AGENT_ACTIONS = new Set(['builtin/parallel-agents']);
 const AGENT_MODEL_SYNTHETIC_PLUGIN_COLLECTION_PREFIX =
   '__canopy_agent_model__:';
 
-function getTsxCommand(): ProcessSpec {
+function getTsxCommand(
+  nodeProcess?: ExecutionRuntime['nodeProcess'],
+): ProcessSpec {
   const localCli = findLocalNodeModuleFile(
     ['tsx', 'dist', 'cli.mjs'],
     [process.cwd(), __dirname],
   );
 
   if (localCli) {
-    return getNodeProcessSpec([localCli]);
+    return getNodeProcessSpec([localCli], nodeProcess);
   }
 
   return {
@@ -1140,9 +1112,9 @@ async function buildRunProcessSpec(
     }
     case 'tsx': {
       const scriptPath = await writeInlineScript(tempDir, step.shell, step.run);
-      const tsx = getTsxCommand();
+      const tsx = getTsxCommand(nodeProcess);
       return {
-        command: tsx.command,
+        ...tsx,
         args: [...tsx.args, scriptPath],
         scriptPath,
       };
@@ -1279,7 +1251,10 @@ export function buildNestedPipelineOutputs(
 
 function isPipelineTriggerType(value: string): value is PipelineTriggerType {
   return (
-    value === 'dispatch' || value === 'plan_ready' || value === 'task_ready'
+    value === 'dispatch' ||
+    value === 'plan_ready' ||
+    value === 'task_ready' ||
+    value === 'workflow'
   );
 }
 
@@ -1300,14 +1275,19 @@ function resolveChildEventName(
   canopy: ExpressionCanopyContext | undefined,
 ): PipelineTriggerType | undefined {
   const inheritedTrigger = extractTriggerType(canopy);
-  if (!inheritedTrigger) {
-    return undefined;
-  }
-
   const childTriggers = getTriggerTypes(pipeline.on);
-  return childTriggers.includes(inheritedTrigger)
-    ? inheritedTrigger
-    : undefined;
+  if (inheritedTrigger && childTriggers.includes(inheritedTrigger)) {
+    return inheritedTrigger;
+  }
+  // A child that declares only `workflow` runs as `workflow`, so its inputs
+  // resolve from `on.workflow.inputs` rather than an undeclared `dispatch`.
+  if (
+    !childTriggers.includes('dispatch') &&
+    childTriggers.includes('workflow')
+  ) {
+    return 'workflow';
+  }
+  return undefined;
 }
 
 async function runNestedPipelineAction(
@@ -3471,8 +3451,51 @@ export function mergePipelinePluginSelections(
   };
 }
 
+/**
+ * The CLAUDE_CONFIG_DIR a step's child gets: the child env spreads `secretEnv`
+ * and then `env`, so `env` wins.
+ */
+function stepClaudeConfigDir(options: RunStepOptions): string | undefined {
+  return (
+    options.env?.CLAUDE_CONFIG_DIR ??
+    options.secretEnv?.CLAUDE_CONFIG_DIR ??
+    stepBaseEnv(options).CLAUDE_CONFIG_DIR
+  );
+}
+
+/**
+ * The base a step's child env is built on: the run's own environment when the
+ * start supplied one (a daemon run's, CAN-5086), else this process's.
+ * buildSafeProcessEnv adds no user variables to either.
+ */
+function stepBaseEnv(
+  options: RunStepOptions,
+): Readonly<Record<string, string | undefined>> {
+  return options.runtime.processEnvironment ?? process.env;
+}
+
+/** Compare a child env's CLAUDE_CONFIG_DIR with the folder admission read. */
+function sameClaudeConfigDir(
+  childEnv: Record<string, string | undefined>,
+  inspected: string | undefined,
+  cwd: string,
+): boolean {
+  return isSameClaudePath(
+    effectiveClaudeConfigDir(childEnv.CLAUDE_CONFIG_DIR, cwd, childEnv.HOME),
+    effectiveClaudeConfigDir(inspected, cwd, childEnv.HOME),
+  );
+}
+
+function stepHome(options: RunStepOptions): string | undefined {
+  return (
+    options.env?.HOME ?? options.secretEnv?.HOME ?? stepBaseEnv(options).HOME
+  );
+}
+
 async function materializePluginCollectionRuntime(
   options: RunStepOptions & {
+    effectiveCwd: string;
+    settingSources: readonly SettingSource[];
     logFile: string;
     agentProvider?: AgentProviderType;
     pluginCollectionIds?: string[];
@@ -3484,15 +3507,37 @@ async function materializePluginCollectionRuntime(
   mcpServers: Record<string, unknown>;
   hasLocalClaudePlugins: boolean;
   selections?: ChatTabPluginSelections;
+  claudeModAdmission?: ClaudeModAdmissionLaunch;
+  claudeModAdmissionConfigDir?: string;
 }> {
   const collectionIds = options.pluginCollectionIds ?? [
     ...resolveStepPluginCollectionIds(options.step),
   ];
+  const shouldResolveClaudeRuntime =
+    options.agentProvider !== 'codex' &&
+    options.agentProvider !== 'cursor' &&
+    options.agentProvider !== 'copilot' &&
+    options.agentProvider !== 'opencode';
+  const claudeModAdmissionContext: ClaudeModAdmissionContext | undefined =
+    shouldResolveClaudeRuntime
+      ? await options.runtime.resolveClaudeModAdmissionContext?.({
+          cwd: options.effectiveCwd,
+          settingSources: options.settingSources,
+          // Always the folder the step child uses, so admission and the child
+          // never resolve it from different environments.
+          claudeConfigDir: effectiveClaudeConfigDir(
+            stepClaudeConfigDir(options),
+            options.effectiveCwd,
+            stepHome(options),
+          ),
+        })
+      : undefined;
   if (
     collectionIds.length === 0 &&
     !options.legacyExtraPluginSelections &&
     !options.syntheticSelectionsByCollectionId &&
-    !options.pipelinePackageOverlay
+    !options.pipelinePackageOverlay &&
+    !claudeModAdmissionContext
   ) {
     return { env: {}, mcpServers: {}, hasLocalClaudePlugins: false };
   }
@@ -3544,11 +3589,6 @@ async function materializePluginCollectionRuntime(
   // Cursor step with a resolved plugin_collection_id must fall straight
   // through to maybeRunAccountProviderPrompt's own PLUGIN_WARNING (the `selections`
   // merge above still carries the collection through for that warning).
-  const shouldResolveClaudeRuntime =
-    options.agentProvider !== 'codex' &&
-    options.agentProvider !== 'cursor' &&
-    options.agentProvider !== 'copilot' &&
-    options.agentProvider !== 'opencode';
   const claudeRuntime = shouldResolveClaudeRuntime
     ? resolvePlugins(
         selections ?? {
@@ -3565,6 +3605,9 @@ async function materializePluginCollectionRuntime(
           // session; HTTP MCP auth falls back to provider-side handling for v1.
           runtimeDirs,
           packageOverlay: options.pipelinePackageOverlay,
+          claudeModAdmissionContext,
+          claudeModAdmissionCwd: options.effectiveCwd,
+          claudeModAdmissionSettingSources: options.settingSources,
         },
       )
     : undefined;
@@ -3589,6 +3632,17 @@ async function materializePluginCollectionRuntime(
     env,
     mcpServers: claudeRuntime?.mcpServers ?? {},
     hasLocalClaudePlugins: (claudeRuntime?.sdkPlugins.length ?? 0) > 0,
+    ...(claudeRuntime?.claudeModAdmission
+      ? {
+          claudeModAdmission: claudeRuntime.claudeModAdmission,
+          ...(claudeModAdmissionContext?.claudeConfigDir
+            ? {
+                claudeModAdmissionConfigDir:
+                  claudeModAdmissionContext.claudeConfigDir,
+              }
+            : {}),
+        }
+      : {}),
     ...(selections ? { selections } : {}),
   };
 }
@@ -4525,6 +4579,7 @@ async function maybeRunAgentPromptWorker(options: {
     mcpServers: Record<string, unknown>;
     hasLocalClaudePlugins: boolean;
     selections?: ChatTabPluginSelections;
+    claudeModAdmission?: ClaudeModAdmissionLaunch;
   };
   effectiveCwd: string;
   tempDir: string;
@@ -4657,6 +4712,9 @@ async function maybeRunAgentPromptWorker(options: {
     settingSources,
     maxTurns,
     mcpServers: pluginCollectionRuntime.mcpServers,
+    // The worker terminal decides admission itself, in its own environment
+    // (the step's decision read the Node step child's config folder). It
+    // only runs with no local Claude plugins, so nothing selected is lost.
     claudeEnvOverride,
     ...(ledgerAttempt ? { ledgerAttemptKey: ledgerAttempt.attemptKey } : {}),
     aiCreditsRouteSessionId,
@@ -6094,8 +6152,13 @@ async function runStepBody(
       // every non-Claude harness anyway.
       recoveryCheckpoint?.harness,
     );
+    const settingSources =
+      parseSettingSources(resolvedAgentInputs.inputValues.setting_sources) ??
+      DEFAULT_AGENT_SETTING_SOURCES;
     const pluginCollectionRuntime = await materializePluginCollectionRuntime({
       ...options,
+      effectiveCwd,
+      settingSources,
       logFile,
       agentProvider: logMetadata.agent_provider,
       pluginCollectionIds: [
@@ -6357,6 +6420,33 @@ async function runStepBody(
           delete runtimeEnv[name];
         }
       }
+      if (options.runtime.resolveClaudeModAdmissionContext) {
+        for (const name of brandEnvCandidates('CLAUDE_MOD_ADMISSION')) {
+          delete runtimeEnv[name];
+        }
+        if (pluginCollectionRuntime.claudeModAdmission) {
+          // Admission read ambient plugins from one config folder; refuse a
+          // step whose final env would point Claude at another.
+          if (
+            !sameClaudeConfigDir(
+              runtimeEnv,
+              pluginCollectionRuntime.claudeModAdmissionConfigDir,
+              effectiveCwd,
+            )
+          ) {
+            throw new Error(
+              'Claude Mod admission checked a different Claude config folder than this step uses.',
+            );
+          }
+          // Pipeline env merges come after getEnhancedEnv()'s filter.
+          delete runtimeEnv.CLAUDE_CODE_PLUGIN_DIRS;
+          setBrandEnv(
+            runtimeEnv,
+            'CLAUDE_MOD_ADMISSION',
+            JSON.stringify(pluginCollectionRuntime.claudeModAdmission),
+          );
+        }
+      }
       let processSpec: ProcessSpec;
       if (runsUsing === 'node') {
         processSpec = getNodeProcessSpec(
@@ -6366,9 +6456,9 @@ async function runStepBody(
       } else if (runsUsing === 'python') {
         processSpec = getPythonProcessSpec(action.mainPath ?? '');
       } else {
-        const tsxProcessSpec = getTsxCommand();
+        const tsxProcessSpec = getTsxCommand(options.runtime.nodeProcess);
         processSpec = {
-          command: tsxProcessSpec.command,
+          ...tsxProcessSpec,
           args: [...tsxProcessSpec.args, action.mainPath ?? ''],
         };
       }

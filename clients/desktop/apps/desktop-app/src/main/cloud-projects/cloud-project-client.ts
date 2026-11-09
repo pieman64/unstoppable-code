@@ -4,11 +4,13 @@ import {
   CloudProjectEventCursorSchema,
   CloudProjectInstanceSelectionSchema,
   CloudProjectLifecycleEventsPageSchema,
+  CloudProjectListSchema,
   CloudProjectManifestSchema,
   CloudProjectMatchResponseSchema,
   type CloudProjectCreateRequest,
   type CloudProjectInstanceSelection,
   type CloudProjectLifecycleEventsPage,
+  type CloudProjectList,
   type CloudProjectManifest,
   type CloudProjectManifestUpdateRequest,
   type CloudProjectMatchRequest,
@@ -111,6 +113,11 @@ export interface CloudProjectClient {
     after: string | null,
     context?: CloudProjectRequestContext,
   ): Promise<CloudProjectLifecycleEventsPage>;
+  /** The account's Personal cloud projects with this installation's setups. */
+  list(
+    device: { deviceId: string; installationGeneration: number },
+    context?: CloudProjectRequestContext,
+  ): Promise<CloudProjectList>;
   /**
    * Release this device's setup of a project. With a fence, only the claim
    * it names while still pending; a newer claim of the instance stays.
@@ -216,15 +223,14 @@ export function createCloudProjectClient(
         ),
       );
     },
-    async events(
-      projectId,
-      after,
-      context,
-    ): Promise<CloudProjectLifecycleEventsPage> {
-      const query = after === null ? '' : `?${new URLSearchParams({ after })}`;
-      return CloudProjectLifecycleEventsPageSchema.parse(
+    async list(device, context): Promise<CloudProjectList> {
+      const query = new URLSearchParams({
+        deviceId: device.deviceId,
+        installationGeneration: String(device.installationGeneration),
+      });
+      return CloudProjectListSchema.parse(
         await transport(
-          `${CLOUD_PROJECT_ROUTES.events(projectId)}${query}`,
+          `${CLOUD_PROJECT_ROUTES.listPersonal()}?${query}`,
           undefined,
           context,
         ),
@@ -242,6 +248,20 @@ export function createCloudProjectClient(
         await transport(
           `${CLOUD_PROJECT_ROUTES.detachInstance(instanceId)}${query}`,
           { method: 'POST' },
+          context,
+        ),
+      );
+    },
+    async events(
+      projectId,
+      after,
+      context,
+    ): Promise<CloudProjectLifecycleEventsPage> {
+      const query = after === null ? '' : `?${new URLSearchParams({ after })}`;
+      return CloudProjectLifecycleEventsPageSchema.parse(
+        await transport(
+          `${CLOUD_PROJECT_ROUTES.events(projectId)}${query}`,
+          undefined,
           context,
         ),
       );

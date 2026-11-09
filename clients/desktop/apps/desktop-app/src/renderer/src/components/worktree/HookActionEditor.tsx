@@ -1,3 +1,5 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
+import { PipelineSourceLabel } from '@canopy/ui-shared/components/EntrySourceLabel';
 import {
   useCallback,
   useEffect,
@@ -8,6 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  Stack,
   Button,
   ChoiceField,
   ErrorBanner,
@@ -35,11 +38,10 @@ import { ConfigurationChatComposer } from '@/components/shared/ConfigurationChat
 import type { ConfigurationComposerContext } from '@/lib/configurationComposerTargets';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { FastModeButton } from '@/components/chat/FastModeButton';
-import { pipelineSourceBadgeClassName } from '@canopy/ui-shared/lib';
 import {
   getTriggerInputDefs,
   type PipelineInputDef,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   formatPipelineInputDefault,
   shouldShowPipelineInputInUi,
@@ -128,15 +130,6 @@ const PIPELINE_HOOK_SOURCE_LABELS: Record<PipelineHookSource, string> = {
   curated: 'Curated',
   local: 'Local',
   project: 'Project',
-};
-
-// `local` is the hook vocabulary for the user's own pipelines; it wears the
-// same tone every other surface gives `user`.
-const PIPELINE_HOOK_SOURCE_BADGE_CLASS: Record<PipelineHookSource, string> = {
-  bundled: pipelineSourceBadgeClassName('bundled'),
-  curated: pipelineSourceBadgeClassName('curated'),
-  local: pipelineSourceBadgeClassName('user'),
-  project: pipelineSourceBadgeClassName('project'),
 };
 
 type PipelineSourceFilter = PipelineHookSource | 'all';
@@ -258,7 +251,7 @@ function CommandShellFields({
   onChange: (next: CommandShellDefinition | undefined) => void;
 }): JSX.Element {
   return (
-    <div className="space-y-1.5 pt-1">
+    <div className="flex flex-col pt-1 gap-1.5">
       <span className="text-2xs font-medium fg-secondary">Shell</span>
       <div className="grid gap-2 sm:grid-cols-2">
         {COMMAND_SHELL_PLATFORMS.map((entry) => (
@@ -575,8 +568,8 @@ function PipelineActionFields({
   };
 
   return (
-    <div className="space-y-3">
-      <div className="space-y-2">
+    <Stack gap="item">
+      <Stack gap="inline">
         <span className="block text-xs fg-secondary">Workflow</span>
 
         <SearchField
@@ -593,9 +586,9 @@ function PipelineActionFields({
         )}
         {/* Settings never show a raw exception: our own sentence. */}
         <ErrorBanner
+          className=""
           error={pipelineLoadError ? "Couldn't load this workflow." : undefined}
           details={pipelineLoadError}
-          className=""
         />
         {sourceFilterOptions.length > 0 && (
           <SettingsSelect<PipelineSourceFilter>
@@ -629,7 +622,7 @@ function PipelineActionFields({
                 No workflows match your search.
               </div>
             ) : (
-              <div className="space-y-0.5 p-1">
+              <div className="flex flex-col p-1 gap-0.5">
                 {filteredOptions.map((option) => {
                   const isSelected =
                     option.actionSource === action.source &&
@@ -646,11 +639,9 @@ function PipelineActionFields({
                       icon={<PipelineRowIcon icon={option.data.info.icon} />}
                       description={option.data.info.description || undefined}
                       trailing={
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-3xs font-medium leading-none ${PIPELINE_HOOK_SOURCE_BADGE_CLASS[option.actionSource]}`}
-                        >
+                        <PipelineSourceLabel>
                           {PIPELINE_HOOK_SOURCE_LABELS[option.actionSource]}
-                        </span>
+                        </PipelineSourceLabel>
                       }
                     >
                       {displayName}
@@ -668,12 +659,12 @@ function PipelineActionFields({
             {PIPELINE_HOOK_SOURCE_LABELS[action.source]})
           </p>
         )}
-      </div>
+      </Stack>
 
       {inputDefs.length > 0 && (
-        <div className="space-y-2">
+        <Stack gap="inline">
           <span className="block text-xs fg-secondary">Inputs</span>
-          <div className="space-y-2">
+          <Stack gap="inline">
             {inputDefs.map(([key, def]) => {
               const value = action.inputs?.[key] ?? '';
               const description = def.description;
@@ -690,38 +681,36 @@ function PipelineActionFields({
               return (
                 <Surface key={key} variant="group" padding="tight">
                   <div className="grid gap-3 md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
-                    <div className="flex min-w-0 flex-col">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="break-all font-mono text-2xs fg-primary/80">
-                          {key}
-                        </span>
-                        {def.required === true && (
-                          <span className="rounded-full bg-warning-subtle px-1.5 py-0.5 text-3xs font-medium fg-warning">
-                            Required
+                    <Stack gap="inline" className="min-w-0">
+                      <Stack gap="tight">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="break-all font-mono text-2xs fg-primary/80">
+                            {key}
+                          </span>
+                          {def.required === true && (
+                            <Badge tone="warning">Required</Badge>
+                          )}
+                          <Badge>{inputType}</Badge>
+                        </div>
+                        {description && (
+                          <span className="text-2xs fg-secondary">
+                            {description}
                           </span>
                         )}
-                        <span className="rounded-full bg-fg-primary/[0.06] px-1.5 py-0.5 text-3xs font-medium fg-secondary">
-                          {inputType}
-                        </span>
-                      </div>
-                      {description && (
-                        <span className="mt-1 text-2xs fg-secondary">
-                          {description}
-                        </span>
-                      )}
+                      </Stack>
                       {typedWidget && (
                         <Button
                           variant="ghost"
                           size="compact"
                           onClick={() => toggleRawForKey(key, def)}
                           aria-pressed={raw}
-                          className="mt-2 self-start"
+                          className="self-start"
                         >
                           <AppCatalogWorkflowIcon size="sm" />
                           {raw ? 'Use typed input' : 'Raw override'}
                         </Button>
                       )}
-                    </div>
+                    </Stack>
                     {raw ? (
                       <TextArea
                         mono
@@ -791,12 +780,12 @@ function PipelineActionFields({
                 </Surface>
               );
             })}
-          </div>
+          </Stack>
           <VariableInsertDropdown
             variables={hookVariables}
             onInsert={(variableName) => insertVariable(variableName)}
           />
-        </div>
+        </Stack>
       )}
 
       <ChoiceField
@@ -818,7 +807,7 @@ function PipelineActionFields({
           onChange(applyPipelineFastModeSelection(action, nextFastMode))
         }
       />
-    </div>
+    </Stack>
   );
 }
 
@@ -948,7 +937,7 @@ function HookActionFields(props: {
 
   if (action.type === 'command') {
     return (
-      <div className="space-y-2">
+      <Stack gap="inline">
         <FormField label="Command">
           {(control) => (
             <TextArea
@@ -996,7 +985,7 @@ function HookActionFields(props: {
           testId="hook-command-runtime-mode"
           ariaLabel="Command action runtime"
         />
-      </div>
+      </Stack>
     );
   }
 
@@ -1019,7 +1008,7 @@ function HookActionFields(props: {
     ? resolvePipelineModelAliasLenient(action.model)
     : undefined;
   return (
-    <div className="space-y-3">
+    <Stack gap="item">
       <ConfigurationChatComposer
         editorId={editorId}
         dataTestId={editorId}
@@ -1113,7 +1102,7 @@ function HookActionFields(props: {
         label="Auto-archive when finished"
         description="Archive this hook chat automatically as soon as its agent turn finishes (kept retrievable from the archive, unread if unseen)."
       />
-    </div>
+    </Stack>
   );
 }
 
@@ -1126,11 +1115,11 @@ function TriggerFrame({
   readonly children: ReactNode;
 }): JSX.Element {
   return framed ? (
-    <Surface variant="outline" padding="compact">
+    <Surface variant="outline" padding="compact" gap="inline">
       {children}
     </Surface>
   ) : (
-    <div className="space-y-3">{children}</div>
+    <div className="flex flex-col gap-3">{children}</div>
   );
 }
 
@@ -1143,8 +1132,16 @@ function ActionFrame({
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <Surface variant="group" padding={framed ? 'compact' : undefined}>
-      {framed ? children : <div className="px-4 py-3">{children}</div>}
+    <Surface
+      variant="group"
+      padding={framed ? 'compact' : undefined}
+      gap={framed ? 'item' : undefined}
+    >
+      {framed ? (
+        children
+      ) : (
+        <div className="flex flex-col gap-3 px-4 py-3">{children}</div>
+      )}
     </Surface>
   );
 }
@@ -1158,11 +1155,18 @@ function AddFormFrame({
   readonly children: ReactNode;
 }): JSX.Element {
   return framed ? (
-    <Surface variant="dashed" padding="compact" data-testid="hook-add-form">
+    <Surface
+      variant="dashed"
+      padding="compact"
+      gap="item"
+      data-testid="hook-add-form"
+    >
       {children}
     </Surface>
   ) : (
-    <div data-testid="hook-add-form">{children}</div>
+    <div className="flex flex-col gap-3" data-testid="hook-add-form">
+      {children}
+    </div>
   );
 }
 
@@ -1256,7 +1260,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
         <div
           className={
             framed
-              ? 'mb-2 flex items-center justify-between'
+              ? 'flex items-center justify-between'
               : 'flex items-center justify-end'
           }
         >
@@ -1285,10 +1289,10 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
             This local override disables the inherited hook for this trigger.
           </p>
         ) : (
-          <div className="space-y-3">
+          <Stack gap="item">
             {actions.map((action, index) => (
               <ActionFrame key={action.uiId} framed={framed}>
-                <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="flex items-center justify-between gap-3">
                   <FormField label="Action type">
                     {(control) => (
                       <SettingsSelect
@@ -1403,7 +1407,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
                 />
               </ActionFrame>
             ))}
-          </div>
+          </Stack>
         )}
       </TriggerFrame>
     );
@@ -1412,7 +1416,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
   const showTriggers = visibleTrigger !== null;
   const showAddForm = typeof visibleTrigger !== 'string' || addFormOpen;
   return (
-    <div className="space-y-4">
+    <Stack gap="group">
       {showTriggers &&
         (visibleTrigger === undefined
           ? SUPPORTED_HOOK_TRIGGERS.map(renderTriggerEditor)
@@ -1429,6 +1433,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
 
       {!showAddForm && (
         <Button
+          className="self-start"
           size="compact"
           onClick={() => setAddFormOpen(true)}
           data-testid="hook-add-another"
@@ -1438,48 +1443,48 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
       )}
       {showAddForm && (
         <AddFormFrame framed={framed}>
-          {framed && (
-            <p className="mb-2 text-s font-medium fg-primary">
-              Add hook action
-            </p>
-          )}
+          <Stack gap="inline">
+            {framed && (
+              <p className="text-s font-medium fg-primary">Add hook action</p>
+            )}
 
-          <div className="grid gap-3 md:grid-cols-2">
-            <FormField label="Trigger">
-              {(control) => (
-                <SettingsSelect
-                  {...control}
-                  width="fill"
-                  data-testid="hook-add-trigger"
-                  value={newHookTrigger}
-                  onValueChange={setNewHookTrigger}
-                  options={SUPPORTED_HOOK_TRIGGERS.map((trigger) => ({
-                    value: trigger,
-                    label: getHookTriggerDisplayName(trigger),
-                  }))}
-                />
-              )}
-            </FormField>
+            <div className="grid gap-3 md:grid-cols-2">
+              <FormField label="Trigger">
+                {(control) => (
+                  <SettingsSelect
+                    {...control}
+                    width="fill"
+                    data-testid="hook-add-trigger"
+                    value={newHookTrigger}
+                    onValueChange={setNewHookTrigger}
+                    options={SUPPORTED_HOOK_TRIGGERS.map((trigger) => ({
+                      value: trigger,
+                      label: getHookTriggerDisplayName(trigger),
+                    }))}
+                  />
+                )}
+              </FormField>
 
-            <FormField label="Action type">
-              {(control) => (
-                <SettingsSelect
-                  {...control}
-                  width="fill"
-                  data-testid="hook-add-action-type"
-                  value={newActionType}
-                  options={HOOK_ACTION_TYPE_OPTIONS}
-                  onValueChange={(next) => {
-                    const nextType = parseActionType(next);
-                    setNewActionType(nextType);
-                    setNewAction(createBlankHookAction(nextType));
-                  }}
-                />
-              )}
-            </FormField>
-          </div>
+              <FormField label="Action type">
+                {(control) => (
+                  <SettingsSelect
+                    {...control}
+                    width="fill"
+                    data-testid="hook-add-action-type"
+                    value={newActionType}
+                    options={HOOK_ACTION_TYPE_OPTIONS}
+                    onValueChange={(next) => {
+                      const nextType = parseActionType(next);
+                      setNewActionType(nextType);
+                      setNewAction(createBlankHookAction(nextType));
+                    }}
+                  />
+                )}
+              </FormField>
+            </div>
+          </Stack>
 
-          <div className="mt-3">
+          <div>
             <HookActionFields
               key={newActionGeneration}
               action={newAction}
@@ -1494,7 +1499,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
             />
           </div>
 
-          <div className="mt-3 flex items-end gap-2">
+          <div className="flex items-end gap-2">
             {allowDisable && (
               <Button
                 size="compact"
@@ -1533,6 +1538,6 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
           </div>
         </AddFormFrame>
       )}
-    </div>
+    </Stack>
   );
 }

@@ -212,6 +212,15 @@ export function useWorkflowRunRowActions(
         case 'open-library':
           openInLibrary(row);
           return;
+        case 'open-workflow':
+          // The schedule's edit link lands on its Workflow page's Runs
+          // section with this run selected (CAN-5782).
+          if (row.kind !== 'automation') return;
+          useNavigationStore.getState().openAutomationEdit({
+            activityId: row.activityId,
+            runId: row.runId,
+          });
+          return;
         case 'go-to-chat': {
           // An automation row that opens its execution reaches its chat here.
           if (row.kind === 'automation') {

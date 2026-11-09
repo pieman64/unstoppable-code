@@ -10,6 +10,7 @@ import {
   type ReactNode,
   type UIEventHandler,
 } from 'react';
+import { Button } from '@canopy/ui-shared/components/Button';
 import {
   MARKDOWN_ROOT_PROPS,
   Markdown,
@@ -146,13 +147,9 @@ export function useFileMarkdownOptions(
         if (onOpenRelativePath) {
           const open = onOpenRelativePath;
           return (
-            <button
-              type="button"
-              className="cursor-pointer text-left fg-accent underline underline-offset-2"
-              onClick={(): void => open(target)}
-            >
+            <Button variant="link" onClick={(): void => open(target)}>
               {children}
-            </button>
+            </Button>
           );
         }
         // No resolver on this host: render the link text inert rather than as a
@@ -235,11 +232,11 @@ function FileMarkdownPreviewImpl({
       className={`${REPLAY_BLOCK_CLASS} min-h-0 flex-1 overflow-auto`}
       data-testid="file-viewer-markdown-scroll"
     >
-      <div className="min-w-0 px-6 py-6" data-testid="file-markdown-preview">
-        <FrontmatterBlock
-          frontmatter={parsedContent.frontmatter}
-          className="mb-4"
-        />
+      <div
+        className="flex flex-col min-w-0 px-6 py-6 gap-4"
+        data-testid="file-markdown-preview"
+      >
+        <FrontmatterBlock frontmatter={parsedContent.frontmatter} />
         <div className={FILE_MARKDOWN_PROSE_CLASSES} {...MARKDOWN_ROOT_PROPS}>
           <MermaidExportProvider destination={diagramSaveDestination}>
             <Markdown options={options}>{parsedContent.body}</Markdown>

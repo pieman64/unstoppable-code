@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import {
   Button,
@@ -7,6 +8,17 @@ import {
   NoticeButton,
 } from '@canopy/ui-shared';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import {
+  inlineFailure,
+  inlineFailureText,
+  type InlineFailure,
+} from '@/lib/inline-app-error';
 import type { BrowserProfileRecord } from '@canopy/protocol/browser-profiles';
 import type {
   BrowserClearPreview,
@@ -100,6 +112,7 @@ function stoppedEnding(job: BrowserDataJob): string {
   if (job.status === 'cancelled') return 'stopped';
   return job.status === 'interrupted' ? 'was interrupted' : 'could not finish';
 }
+const LOAD_FAILED = "Couldn't load this profile's browser data.";
 const isActive = (job: BrowserDataJob): boolean =>
   ['queued', 'running', 'irreversible'].includes(job.status);
 const isBlockingMaintenance = (job: BrowserDataJob): boolean =>
@@ -127,7 +140,11 @@ export function BrowserProfileDataSettings({
   const [inventory, setInventory] = useState<BrowserProfileInventory>();
   const [job, setJob] = useState<BrowserDataJob>();
   const [preview, setPreview] = useState<BrowserClearPreview>();
-  const [error, setError] = useState('');
+  // A failed load offers Try again; any other failed action keeps the data
+  // refresh beside it.
+  const [error, setError] = useState<
+    (InlineFailure & { readonly failedLoad: boolean }) | null
+  >(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const focusReturn = useRef<HTMLElement | null>(null);
@@ -144,7 +161,7 @@ export function BrowserProfileDataSettings({
     setJob(undefined);
     setInventory(undefined);
     setPreview(undefined);
-    setError('');
+    setError(null);
     setBusy(false);
     void api
       .jobList({ profileId })
@@ -164,10 +181,14 @@ export function BrowserProfileDataSettings({
               ),
           );
       })
-      .catch(() => undefined);
-    void refresh().catch((cause) =>
-      setError(cause instanceof Error ? cause.message : String(cause)),
-    );
+      .catch((cause: unknown) => {
+        reportClientAppError(cause);
+      });
+    void refresh().catch((cause: unknown) => {
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError)
+        setError({ ...inlineFailure(appError, LOAD_FAILED), failedLoad: true });
+    });
     return (): void => {
       generation.current = epoch + 1;
     };
@@ -199,18 +220,27 @@ export function BrowserProfileDataSettings({
                     : 'Browser data operation complete.',
                 );
               } catch (cause) {
-                if (epoch === generation.current)
-                  setError(
-                    cause instanceof Error ? cause.message : String(cause),
-                  );
+                const appError = toAppError(resolveClientAppError(cause));
+                if (appError && epoch === generation.current)
+                  setError({
+                    ...inlineFailure(appError, LOAD_FAILED),
+                    failedLoad: true,
+                  });
               }
             }
           })
-          .catch((cause) => {
-            if (!cancelled) {
-              setError(cause instanceof Error ? cause.message : String(cause));
-              poll();
-            }
+          .catch((cause: unknown) => {
+            if (cancelled) return;
+            const appError = toAppError(resolveClientAppError(cause));
+            if (appError)
+              setError({
+                ...inlineFailure(
+                  appError,
+                  "Couldn't check on the browser data job.",
+                ),
+                failedLoad: false,
+              });
+            poll();
           });
       }, 500);
     };
@@ -220,16 +250,21 @@ export function BrowserProfileDataSettings({
       if (timer) clearTimeout(timer);
     };
   }, [api, job, onChanged, refresh]);
-  const run = async (action: () => Promise<void>): Promise<void> => {
+  const run = async (
+    action: () => Promise<void>,
+    failureSentence: string,
+    failedLoad = false,
+  ): Promise<void> => {
     const epoch = generation.current;
     setBusy(true);
-    setError('');
+    setError(null);
     setNotice('');
     try {
       await action();
     } catch (cause) {
-      if (epoch === generation.current)
-        setError(cause instanceof Error ? cause.message : String(cause));
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && epoch === generation.current)
+        setError({ ...inlineFailure(appError, failureSentence), failedLoad });
     } finally {
       if (epoch === generation.current) setBusy(false);
     }
@@ -251,7 +286,7 @@ export function BrowserProfileDataSettings({
         operation,
       });
       if (epoch === generation.current) setPreview(result);
-    });
+    }, "Couldn't check what this cleanup clears.");
   };
   const blocked =
     busy || !!(job && (isActive(job) || isBlockingMaintenance(job)));
@@ -265,8 +300,9 @@ export function BrowserProfileDataSettings({
             data-testid="browser-profile-cancel-job"
             disabled={busy}
             onClick={() =>
-              void run(async () =>
-                setJob(await api.jobCancel({ jobId: job.jobId })),
+              void run(
+                async () => setJob(await api.jobCancel({ jobId: job.jobId })),
+                `Couldn't cancel the ${jobKindLabel(job).toLowerCase()}.`,
               )
             }
           >
@@ -279,8 +315,9 @@ export function BrowserProfileDataSettings({
             data-testid="browser-profile-retry-job"
             disabled={busy}
             onClick={() =>
-              void run(async () =>
-                setJob(await api.retryJob({ jobId: job.jobId })),
+              void run(
+                async () => setJob(await api.retryJob({ jobId: job.jobId })),
+                `Couldn't restart the ${jobKindLabel(job).toLowerCase()}.`,
               )
             }
           >
@@ -296,18 +333,23 @@ export function BrowserProfileDataSettings({
       ariaLabel="Profile browser data"
       dataTestId="browser-profile-data"
     >
-      {error && (
-        <Notice
-          intent="destructive"
-          actions={
-            <NoticeButton onClick={() => void run(refresh)}>
-              Refresh data
-            </NoticeButton>
-          }
-        >
-          {error}
-        </Notice>
-      )}
+      <DesktopErrorBanner
+        className=""
+        error={error?.error}
+        {...(error?.details === undefined ? {} : { details: error.details })}
+        {...(error?.failedLoad
+          ? { onRetry: (): void => void run(refresh, LOAD_FAILED, true) }
+          : {
+              secondaryAction: (
+                <NoticeButton
+                  onClick={() => void run(refresh, LOAD_FAILED, true)}
+                >
+                  Refresh data
+                </NoticeButton>
+              ),
+            })}
+        testId="browser-profile-data-error"
+      />
       {notice && <Notice intent="neutral">{notice}</Notice>}
       {job && (
         <Notice
@@ -351,7 +393,7 @@ export function BrowserProfileDataSettings({
                       storageGeneration,
                     });
                     if (epoch === generation.current) setJob(result);
-                  })
+                  }, "Couldn't start measuring browser data.")
                 }
               >
                 Measure data
@@ -456,7 +498,7 @@ export function BrowserProfileDataSettings({
                           ...next.cookieDomains,
                         ],
                       });
-                  })
+                  }, "Couldn't load more sites.")
                 }
               >
                 Load more sites
@@ -473,7 +515,7 @@ export function BrowserProfileDataSettings({
             }`}
             dataTestId="browser-profile-cookie-domains"
           >
-            <ul className="max-h-32 space-y-1 overflow-auto break-all text-xs fg-secondary">
+            <ul className="flex flex-col max-h-32 overflow-auto break-all text-xs fg-secondary gap-1 [&>*]:shrink-0">
               {inventory.cookieDomains.map((entry) => (
                 <li key={entry.domain}>
                   {entry.domain} ({entry.count})
@@ -494,7 +536,7 @@ export function BrowserProfileDataSettings({
                   : `Reset ${profile.displayName}?`
             }
             message={
-              <div className="flex flex-col gap-1">
+              <Stack gap="tight">
                 <p>{preview.warning}</p>
                 <p>
                   Clears{' '}
@@ -507,12 +549,15 @@ export function BrowserProfileDataSettings({
                     ? ` Cookies also clear across ports and subdomains in ${preview.cookieDomains.join(', ')}.`
                     : ''}
                 </p>
-              </div>
+              </Stack>
             }
             confirmLabel="Confirm cleanup"
             destructive
             busy={busy}
-            errorMessage={error || null}
+            errorMessage={inlineFailureText(error)}
+            {...(error?.details === undefined
+              ? {}
+              : { errorDetails: error.details })}
             // The control that asked for the preview is disabled while the
             // preview loads, so name it rather than restore to <body>.
             restoreFocusRef={focusReturn}
@@ -532,7 +577,7 @@ export function BrowserProfileDataSettings({
                   setJob(result);
                   closePreview();
                 }
-              })
+              }, "Couldn't clear browser data.")
             }
           />
         )}

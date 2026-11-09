@@ -417,4 +417,123 @@ describe('InterfaceToolRegistry (CAN-4131)', () => {
       errors.filter((c) => c === 'interface tool availability listener'),
     ).toHaveLength(4);
   });
+
+  it('a lease serves only calls of its own audience (CAN-5823)', async () => {
+    const { registry } = harness();
+    const local = open(registry, 'local');
+    const remote = recordingPort();
+    registry.openLease(
+      {
+        leaseId: 'remote',
+        surface: 'main',
+        interfaceKind: 'desktop',
+        audience: 'controller-a',
+      },
+      remote.port,
+    );
+    register(registry, 'local', ['ui.show_files']);
+    register(registry, 'remote', ['ui.show_files', 'ui.get_current_ui_state']);
+    // A remote lease never counts as this computer's own windows.
+    expect(registry.available().toolNames).toEqual(['ui.show_files']);
+    expect(registry.availableFor('controller-a')).toEqual([
+      'ui.get_current_ui_state',
+      'ui.show_files',
+    ]);
+    expect(registry.availableFor('controller-b')).toEqual([]);
+    const fromLocal = call(registry);
+    const fromRemote = registry.invoke({
+      toolName: 'ui.show_files',
+      input: {},
+      scope,
+      audience: 'controller-a',
+    });
+    expect(local.delivered).toHaveLength(1);
+    expect(remote.delivered).toHaveLength(1);
+    expect(registry.reply('remote', local.delivered[0]?.callId ?? '', {})).toBe(
+      'wrong_lease',
+    );
+    registry.reply('local', local.delivered[0]?.callId ?? '', {});
+    registry.reply('remote', remote.delivered[0]?.callId ?? '', {});
+    expect((await fromLocal).ok).toBe(true);
+    expect((await fromRemote).ok).toBe(true);
+    const otherController = await registry.invoke({
+      toolName: 'ui.get_current_ui_state',
+      input: {},
+      scope,
+      audience: 'controller-b',
+    });
+    expect(errorKind(otherController)).toBe('capability_unavailable');
+    expect(
+      errorKind(
+        await registry.invoke({
+          toolName: 'ui.get_current_ui_state',
+          input: {},
+          scope,
+        }),
+      ),
+    ).toBe('capability_unavailable');
+    registry.endLease('local');
+    expect(registry.hasLiveLease()).toBe(false);
+  });
+
+  it('a settled call reports the lease that served it and nothing of its content (CAN-5828)', async () => {
+    const settled: unknown[] = [];
+    let clock = 5_000;
+    let ids = 0;
+    const registry = new InterfaceToolRegistry({
+      now: (): number => clock,
+      newCallId: (): string => `call-${++ids}`,
+      onSettled: (event): void => {
+        settled.push(event);
+      },
+    });
+    // No serving lease: nothing answered, nothing recorded.
+    expect(errorKind(await call(registry))).toBe('capability_unavailable');
+    const port = recordingPort();
+    registry.openLease(
+      {
+        leaseId: 'remote',
+        surface: 'main',
+        interfaceKind: 'desktop',
+        audience: 'controller-a',
+      },
+      port.port,
+    );
+    register(registry, 'remote', ['ui.show_files']);
+    const pending = registry.invoke({
+      toolName: 'ui.show_files',
+      input: { payload: { files: [{ path: 'secret-plan.md' }] } },
+      scope,
+      audience: 'controller-a',
+    });
+    clock += 250;
+    registry.reply('remote', 'call-1', { ok: true, note: 'private reply' });
+    expect((await pending).ok).toBe(true);
+    const aborted = new AbortController();
+    const cancelled = registry.invoke({
+      toolName: 'ui.show_files',
+      input: {},
+      scope,
+      audience: 'controller-a',
+      signal: aborted.signal,
+    });
+    aborted.abort();
+    expect(errorKind(await cancelled)).toBe('cancelled');
+    expect(settled).toEqual([
+      {
+        toolName: 'ui.show_files',
+        callId: 'call-1',
+        leaseId: 'remote',
+        surface: 'main',
+        interfaceKind: 'desktop',
+        audience: 'controller-a',
+        scope,
+        outcome: 'answered',
+        deliveredAt: 5_000,
+        settledAt: 5_250,
+      },
+      expect.objectContaining({ callId: 'call-2', outcome: 'cancelled' }),
+    ]);
+    expect(JSON.stringify(settled)).not.toMatch(/secret-plan|private reply/);
+  });
 });

@@ -24,7 +24,7 @@ export function NoticeList({
   ...rest
 }: NoticeListProps): JSX.Element {
   return (
-    <span role="list" className="mt-2 block space-y-0.5" {...rest}>
+    <span role="list" className="mt-2 block flex flex-col gap-0.5" {...rest}>
       {children}
     </span>
   );

@@ -14,7 +14,7 @@
     "src/preload/**/*.d.ts",
     "src/renderer/src/components/activity/dag-tiers.ts",
     "src/brand-defines.d.ts",
-    "../../packages/desktop-shared/src/build-constants.d.ts",
+    "../../packages/execution-engine/src/build-constants.d.ts",
     "../../packages/desktop-instrumentation/src/build-constants.d.ts",
     "../../.cache/brand/**/*.ts"
   ],
@@ -37,6 +37,7 @@
     { "path": "../../packages/artifact-crypto" },
     { "path": "../../packages/plugin-interop" },
     { "path": "../../packages/desktop-shared" },
+    { "path": "../../packages/execution-engine" },
     { "path": "../../packages/desktop-instrumentation" },
     { "path": "../../packages/ui-shared" },
     { "path": "../../packages/ui-app" },

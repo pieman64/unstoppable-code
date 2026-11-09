@@ -201,6 +201,21 @@ export function normalizeOrgEnforcedPolicy(
       promptCachePassthrough: value.promptCachePassthrough !== false,
     };
   }
+  if (value.kind === 'usage-data') {
+    // Prohibitions only narrow, so a missing or malformed flag reads as
+    // "not prohibited" and unknown keys from a newer server are ignored.
+    const prohibited = isRecord(value.prohibited) ? value.prohibited : {};
+    return {
+      kind: 'usage-data',
+      prohibited: {
+        productAnalytics: prohibited.productAnalytics === true,
+        errorReports: prohibited.errorReports === true,
+        sessionReplay: prohibited.sessionReplay === true,
+        activeUseSignal: prohibited.activeUseSignal === true,
+        featureFlagIdentity: prohibited.featureFlagIdentity === true,
+      },
+    };
+  }
   return null;
 }
 

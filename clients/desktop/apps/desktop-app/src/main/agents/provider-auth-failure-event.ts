@@ -1,9 +1,9 @@
-import { toAuthDependencyFailure } from '@canopy/desktop-shared/agent-failures';
+import { toAuthDependencyFailure } from '@canopy/execution-engine/agent-failures';
 import {
   CANOPY_AUTH_FAILURE_EVENT_TYPE,
   type CanopyAuthFailureEventData,
 } from '@canopy/desktop-shared/types';
-import type { AgentFailureClassification } from '@canopy/desktop-shared/types/agent-failures';
+import type { AgentFailureClassification } from '@canopy/execution-engine/types/agent-failures';
 
 /**
  * Build the transcript event for a provider authentication failure, or decline.

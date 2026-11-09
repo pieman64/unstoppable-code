@@ -514,7 +514,7 @@ function EnforcedSettingsCard({
           Data sharing
         </Heading>
         <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
-          {`Choose what agent activity members may share with ${brand.displayName} from this organization's work. Anything turned off here is not shared. Basic usage counts are still collected. Personal work follows each member's own settings.`}
+          {`Choose what agent activity members may share with ${brand.displayName} from this organization's work. Anything turned off here is not shared. Usage counts are set under Member usage data. Personal work follows each member's own settings.`}
         </p>
       </div>
       <div className={SETTINGS_CARD_GROUP_CLASS}>

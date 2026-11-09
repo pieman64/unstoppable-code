@@ -539,6 +539,34 @@ export async function updateEnforceMemberDataSharing(
   );
 }
 
+/** One member usage-data prohibition the org admin can set. */
+export type MemberUsageDataPolicyField =
+  | 'prohibitMemberProductAnalytics'
+  | 'prohibitMemberErrorReports'
+  | 'prohibitMemberSessionReplay'
+  | 'prohibitMemberActiveUseSignal'
+  | 'prohibitMemberFeatureFlagIdentity';
+
+/**
+ * Turn one usage-data flow off (or back to the member's choice) for members'
+ * desktop app while they work in this organization. Sends ONLY the changed
+ * field, so the rest of the policies row, including the other prohibitions,
+ * is left untouched. Narrowing only and not plan-gated.
+ */
+export async function updateMemberUsageDataPolicy(
+  client: AccountOrganizationSettingsClient,
+  orgId: string,
+  field: MemberUsageDataPolicyField,
+  prohibited: boolean,
+): Promise<OrganizationConfigDetail> {
+  return settle(() =>
+    client.write('organization.settings.policies.update', {
+      organizationId: orgId,
+      [field]: prohibited,
+    }),
+  );
+}
+
 /**
  * Allow or stop members sharing worktrees and Cowork work with people outside
  * the organization. Sends ONLY `allowExternalContainerSharing`, so the

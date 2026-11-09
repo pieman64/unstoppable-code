@@ -41,7 +41,7 @@ import {
 import type {
   ResourceContextDecision,
   ResourceContextInput,
-} from '@canopy/desktop-shared/lib/resource-context-policy';
+} from '@canopy/execution-engine/lib/resource-context-policy';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
 import { getFeatureFlagService } from '../feature-flags';
@@ -59,7 +59,7 @@ import {
   workspaceContextDisplayLabel,
   type AutomationContextRefusalAction,
   type BackgroundContextMismatchDetails,
-} from '@canopy/desktop-shared/lib/automation-context-copy';
+} from '@canopy/execution-engine/lib/automation-context-copy';
 import {
   isGlobalPipelineAutomationAction,
   resolveAutomationPipelineTarget,

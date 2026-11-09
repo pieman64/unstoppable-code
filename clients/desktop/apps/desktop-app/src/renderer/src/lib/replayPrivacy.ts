@@ -1,5 +1,5 @@
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import type { Toast, ToastCategory } from '@/stores/githubStore';
+import type { Toast, ToastCategory } from '@/stores/toastStore';
 
 /**
  * Session-replay class for a toast or notification message. Chat messages

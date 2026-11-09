@@ -8,6 +8,7 @@ import type {
   InstalledItemTarget,
   InstalledItemUninstallTarget,
 } from '@canopy/protocol/installed-items';
+import { INSTALLED_ITEM_MARKETPLACE_OWNED_REASON } from '@canopy/protocol/installed-items';
 import {
   installedItemTargetKey,
   installedItemStatusDescription,
@@ -19,6 +20,7 @@ import { Button } from './Button';
 import { Skeleton } from './Skeleton';
 import { DetailPageActions } from './DetailActionBar';
 import {
+  DetailMoreMenu,
   DetailMoreMenuRows,
   focusMenuTrigger,
   useDetailMoreItems,
@@ -30,10 +32,15 @@ import {
   InstalledItemStatusUnavailable,
 } from './InstalledItemStatusPicker';
 import { Notice } from './Notice';
+import {
+  DETAIL_FACT_GRID_CLASS,
+  DETAIL_FACT_VALUE_OFFSET_CLASS,
+} from './DetailFact';
+import { IconCircleQuestionmark } from '../icons/AppGlyphs.generated';
+import { ArrowUpRightIcon } from '../icons/AppIcons';
 import { ErrorBanner } from './StatusBlocks';
 import { Tooltip } from './Tooltip';
 import { UninstallConfirmDialog } from './UninstallConfirmDialog';
-import { Heading } from './Heading';
 
 /**
  * Installed-item status surfaces (CAN-4255).
@@ -266,7 +273,48 @@ function InstalledItemMoreMenu({
   );
 }
 
+/**
+ * The ⋯ More menu of an item its marketplace owns. Only a menu that renders may
+ * ask for the host's rows: the first to ask gets them, so a row that asked
+ * while loading would leave a later Uninstall menu without them.
+ */
+function ManageSourceMoreMenu({
+  itemName,
+  testId,
+  onManageSource,
+}: {
+  readonly itemName: string;
+  readonly testId: string;
+  readonly onManageSource: () => void;
+}): JSX.Element {
+  const hostItems = useDetailMoreItems();
+  return (
+    <DetailPageActions
+      more={
+        <DetailMoreMenu
+          name={itemName}
+          triggerTestId={`${testId}-more`}
+          menuTestId={`${testId}-menu`}
+          placement="bottom-right"
+          items={[
+            ...hostItems,
+            {
+              id: 'manage-source',
+              label: 'Manage in marketplace',
+              icon: <ArrowUpRightIcon />,
+              testId: `${testId}-manage-source`,
+              onSelect: onManageSource,
+            },
+          ]}
+        />
+      }
+    />
+  );
+}
+
 export interface InstalledItemStatusRowProps {
+  /** Opens the marketplace that owns an item this page can't remove. */
+  readonly onManageSource?: () => void;
   readonly itemName: string;
   readonly state: InstalledEntryStatusState | undefined;
   readonly pendingKeys: ReadonlySet<string>;
@@ -280,6 +328,7 @@ export interface InstalledItemStatusRowProps {
 }
 
 export function InstalledItemStatusRow({
+  onManageSource,
   itemName,
   state,
   pendingKeys,
@@ -367,28 +416,45 @@ export function InstalledItemStatusRow({
     onUninstall !== undefined;
 
   return (
-    <section data-testid={testId} className="flex flex-col gap-3">
+    <section
+      aria-label="Status"
+      data-testid={testId}
+      className="flex flex-col gap-1"
+    >
       {/* One unit (CAN-4261): the heading, the current state right beside
           it, and what that state means. */}
-      <div
-        className="flex flex-wrap items-center gap-x-3 gap-y-1"
-        data-testid={`${testId}-line`}
-      >
-        <Heading level={3} variant="title">
-          Status
-        </Heading>
-        {body}
-        {describedStatus && (
-          <p
-            className="text-xs fg-tertiary"
-            data-testid={`${testId}-description`}
-          >
-            {installedItemStatusDescription(
-              describedStatus,
-              ready?.item.target.kind,
-            )}
-          </p>
-        )}
+      <div className={DETAIL_FACT_GRID_CLASS} data-testid={`${testId}-line`}>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="text-s fg-secondary">Status</span>
+          {describedStatus && (
+            <Tooltip
+              label={installedItemStatusDescription(
+                describedStatus,
+                ready?.item.target.kind,
+              )}
+            >
+              <span
+                tabIndex={0}
+                role="img"
+                aria-label={installedItemStatusDescription(
+                  describedStatus,
+                  ready?.item.target.kind,
+                )}
+                data-testid={`${testId}-description`}
+                className="focus-ring inline-flex rounded-sm fg-tertiary"
+              >
+                <IconCircleQuestionmark size={12} />
+              </span>
+            </Tooltip>
+          )}
+        </span>
+        <div
+          className={`flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1${
+            state.kind === 'ready' || state.kind === 'fixed' ? ' -ml-2' : ''
+          }`}
+        >
+          {body}
+        </div>
       </div>
       {ready && ready.configurations.length > 1 && (
         <ul
@@ -450,14 +516,25 @@ export function InstalledItemStatusRow({
           testId={`${testId}-notices`}
         />
       )}
-      {ready && !canUninstall && !ready.item.removable && ready.item.reason && (
-        <p
-          data-testid={`${testId}-not-removable`}
-          className="text-xs fg-tertiary"
-        >
-          {ready.item.reason}
-        </p>
-      )}
+      {ready &&
+        !canUninstall &&
+        !ready.item.removable &&
+        ready.item.reason &&
+        (onManageSource &&
+        ready.item.reason === INSTALLED_ITEM_MARKETPLACE_OWNED_REASON ? (
+          <ManageSourceMoreMenu
+            itemName={itemName}
+            testId={testId}
+            onManageSource={onManageSource}
+          />
+        ) : (
+          <p
+            data-testid={`${testId}-not-removable`}
+            className={`text-xs fg-tertiary ${DETAIL_FACT_VALUE_OFFSET_CLASS}`}
+          >
+            {ready.item.reason}
+          </p>
+        ))}
       {canUninstall && (
         // Uninstall is rare and destructive, so it lives in the ⋯ More menu
         // that leads the detail's action bar, not in the Status body.

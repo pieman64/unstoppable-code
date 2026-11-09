@@ -1,5 +1,5 @@
 import { DESKTOP_INTEGRATION_TOKEN_ENV_VAR } from '@canopy/desktop-shared/lib/desktop-integration-transport';
-import { brandEnvName } from '@canopy/desktop-shared/brand/env';
+import { brandEnvName } from '@canopy/execution-engine/brand/env';
 
 const ELECTRON_NODE_PATH_ENV = brandEnvName('ELECTRON_NODE_PATH');
 const APPROVAL_TRANSPORT_TIMEOUT_MS = 590_000;

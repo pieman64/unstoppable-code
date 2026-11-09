@@ -8,7 +8,7 @@ import {
   UninstallConfirmDialog,
   UpdateMarker,
   UsageActionRow,
-  UsageDisclosureChevron,
+  UsageExpandableRow,
   UsageLimitNotice,
   UsageResetIcon,
   UsageSectionHeader,
@@ -98,11 +98,27 @@ function UsageActionsSection(): JSX.Element {
         <SpecimenCell label="UsageTextAction">
           <UsageTextAction label="Manage" onClick={noop} />
         </SpecimenCell>
-        <SpecimenCell label="UsageDisclosureChevron, closed and open">
-          <span className="inline-flex items-center gap-2 fg-secondary">
-            <UsageDisclosureChevron open={false} />
-            <UsageDisclosureChevron open />
-          </span>
+        <SpecimenCell label="UsageExpandableRow, closed">
+          <div className="flex w-64 flex-col">
+            <UsageExpandableRow
+              label="Context"
+              value="48.2k / 200k (24%)"
+              open={false}
+              onToggle={noop}
+              bodyId="lab-usage-row-closed"
+            />
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="UsageExpandableRow, open">
+          <div className="flex w-64 flex-col">
+            <UsageExpandableRow
+              label="Cost"
+              value="$1.24"
+              open
+              onToggle={noop}
+              bodyId="lab-usage-row-open"
+            />
+          </div>
         </SpecimenCell>
         <SpecimenCell label="UsageResetIcon, 14, 16 and 20px, quiet and primary ink">
           <span className="inline-flex items-center gap-3">

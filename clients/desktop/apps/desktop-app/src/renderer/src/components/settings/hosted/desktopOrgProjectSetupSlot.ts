@@ -6,6 +6,7 @@ import {
   type OrgProjectSummary,
 } from '@canopy/protocol/org-projects';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import type {
   OrgProjectLocalSetupSlot,
   OrgProjectLocalStatus,
@@ -18,7 +19,6 @@ import {
 } from '@/lib/orgProjectCatalogAdd';
 import { deriveOrgProjectLocalStatuses } from '@/lib/orgProjectLocalState';
 import { openOrgProject } from '@/lib/openOrgProjectDeepLink';
-import { useGitHubStore } from '@/stores/githubStore';
 import { useLinkedPersonalWorkspacesStore } from '@/stores/linkedPersonalWorkspacesStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -26,10 +26,10 @@ import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 
 // Desktop's local status and Set up / Open for the organization Projects
 // page. Set up and Open run in the organization's context, as they would from
-// its sidebar, so both switch to it first. Settings close only once setup is
-// starting or the project is open: a failure before then leaves the user on
-// the page, and a setup that fails to start afterwards is reported as a toast.
-// Cancelling the setup dialog leaves the user in the organization's context.
+// its sidebar, so both switch to it first. Settings close only once setup has
+// started, its dialog is opening, or the project is open: any failure before
+// then rejects, and the page shows it on the project's row. Cancelling the
+// setup dialog leaves the user in the organization's context.
 
 type OrganizationContext = Extract<WorkspaceContext, { kind: 'organization' }>;
 
@@ -126,7 +126,11 @@ function waitForLinks(
 async function rememberedDestination(): Promise<string> {
   const preferences = await window.api
     .loadPreferences()
-    .catch((): null => null);
+    .catch((error: unknown): null => {
+      // Setup falls back to asking for a folder.
+      reportClientAppError(error);
+      return null;
+    });
   return preferences === null || preferences.__error !== undefined
     ? ''
     : (preferences.orgProjectDefaultDestinationRoot ?? '');
@@ -155,7 +159,12 @@ async function openLinkedCheckout(
   await enterOrganization({ kind: 'organization', organizationId }, signal);
   const fresh = await window.api.orgProjects
     .linksList()
-    .catch((): null => null);
+    .catch((error: unknown): null => {
+      // Treated as nothing linked: the open then reports the project as not
+      // available.
+      reportClientAppError(error);
+      return null;
+    });
   throwIfAborted(signal);
   const linked = new Set(
     fresh?.status === 'resolved'
@@ -303,28 +312,27 @@ export function createDesktopOrgProjectSetupSlot(
       context,
       project,
       destination: orgProjectAddDestination(project, state, folder),
-      onBeforeSetup: (): void => {
-        useNavigationStore.getState().closeSettings();
-      },
       signal,
     });
     switch (outcome.kind) {
       case 'linked':
+        return;
       case 'setup-requested':
       case 'setup-started':
+        // The sidebar now carries the setup (its dialog or its progress).
+        // Settings stay open if the person already left this page.
+        if (!signal.aborted) useNavigationStore.getState().closeSettings();
         return;
       case 'cancelled':
         throw abortError();
-      case 'setup-failed': {
-        // Settings closed before setup started, so the page cannot show it:
-        // report it as the Add project dialog does.
-        const message =
+      case 'setup-failed':
+        // Settings are still open, so the page shows this on the row; its
+        // copy never quotes the reason.
+        throw new Error(
           outcome.message === ''
             ? OUTCOME_MESSAGES['setup-failed']
-            : outcome.message;
-        useGitHubStore.getState().addToast(message, 'error');
-        throw new Error(message);
-      }
+            : outcome.message,
+        );
       default:
         throw new Error(OUTCOME_MESSAGES[outcome.kind]);
     }

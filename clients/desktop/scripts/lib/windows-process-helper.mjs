@@ -9,6 +9,10 @@ import { isX64PeImage, stripPeAuthenticodeSignature } from './pe-signature.mjs';
 export const PROCESS_HELPER = 'canopy-process-identity.exe';
 export const PROCESS_SOURCE =
   'packages/core-platform/native/windows-process/process-identity.c';
+export const PROCESS_SOURCES = Object.freeze([
+  PROCESS_SOURCE,
+  'packages/core-platform/native/windows-process/cold-observation.h',
+]);
 export const PROCESS_FLAGS = [
   '/nologo',
   '/std:c11',
@@ -19,9 +23,14 @@ export const PROCESS_FLAGS = [
   '/D_WIN32_WINNT=0x0600',
 ];
 // advapi32 supplies OpenProcessToken/GetTokenInformation for --token-user.
-export const PROCESS_LINK = ['/MACHINE:X64', 'advapi32.lib'];
+export const PROCESS_LINK = [
+  '/MACHINE:X64',
+  'advapi32.lib',
+  'wtsapi32.lib',
+  'psapi.lib',
+];
 export const PROCESS_RECIPE = JSON.stringify([
-  'v3:msvc-x64',
+  'v21:msvc-x64-cold-observation-file-type-fail-closed',
   ...PROCESS_FLAGS,
   ...PROCESS_LINK,
   'authenticode-image-digest',
@@ -30,7 +39,7 @@ const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 export function processSourceDigest(root) {
   return hash(
     Buffer.concat([
-      readFileSync(join(root, PROCESS_SOURCE)),
+      ...PROCESS_SOURCES.map((source) => readFileSync(join(root, source))),
       Buffer.from(PROCESS_RECIPE),
     ]),
   );

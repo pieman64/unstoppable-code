@@ -4,6 +4,7 @@ import type {
   TrackedPlanData,
 } from '@canopy/desktop-shared/types';
 import {
+  Stack,
   Disclosure,
   HeaderActionButton,
   Markdown,
@@ -11,7 +12,7 @@ import {
   PlanReviewStatusBadge,
   PlanStatusNote,
 } from '@canopy/ui-shared/components';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import { PlanReadyPipelineModal } from '@/components/chat/PlanReadyPipelineModal';
 import type { PipelinePluginCollectionRunContext } from '@/components/activity/PipelineTriggerModal';
 import { PlanActionControls } from '@/components/shared/PlanActionControls';
@@ -145,7 +146,7 @@ function PlanCard({
           onOpen();
         }
       }}
-      className="group/plan focus-ring relative w-full cursor-pointer rounded-lg border bg-fg-primary/[0.03] p-3 text-left transition-colors hover:bg-fg-primary/[0.06]"
+      className="group/plan focus-ring relative flex flex-col gap-2 w-full cursor-pointer rounded-lg border bg-fg-primary/[0.03] p-3 text-left transition-colors hover:bg-fg-primary/[0.06]"
     >
       {!readOnly && (
         <div className="absolute right-2 top-2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/plan:opacity-100">
@@ -171,21 +172,21 @@ function PlanCard({
           size={14}
           className="mt-0.5 shrink-0"
         />
-        <div className="min-w-0 flex-1">
+        <Stack gap="tight" className="min-w-0 flex-1">
           <div className="truncate text-s font-semibold fg-primary">
             <Markdown options={INLINE_PLAN_MARKDOWN_OPTIONS}>
               {plan.title}
             </Markdown>
           </div>
           {body && (
-            <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert mt-1 line-clamp-3 max-w-none text-xs leading-5 fg-secondary prose-p:my-0 prose-pre:my-0 prose-code:fg-success prose-code:before:content-none prose-code:after:content-none prose-headings:text-xs prose-headings:fg-primary/80 prose-strong:fg-primary/80 prose-li:my-0">
+            <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert line-clamp-3 max-w-none text-xs leading-5 fg-secondary prose-p:my-0 prose-pre:my-0 prose-code:fg-success prose-code:before:content-none prose-code:after:content-none prose-headings:text-xs prose-headings:fg-primary/80 prose-strong:fg-primary/80 prose-li:my-0">
               <Markdown options={PLAN_MARKDOWN_OPTIONS}>{body}</Markdown>
             </div>
           )}
-        </div>
+        </Stack>
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs fg-secondary">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs fg-secondary">
         <span className="shrink-0">Rev {plan.latestRevisionNumber}</span>
         <PlanReviewStatusBadge
           className="shrink-0"
@@ -236,7 +237,7 @@ function PlanCard({
 
       {!readOnly && !plan.hidden && (
         <div
-          className="mt-2 flex items-center justify-end"
+          className="flex items-center justify-end"
           onClick={(event): void => event.stopPropagation()}
         >
           <PlanActionControls
@@ -646,11 +647,12 @@ export function PlansSection(): JSX.Element {
           >
             <div
               data-testid="activity-plans-empty"
-              className="space-y-2 text-xs fg-secondary"
+              className="flex flex-col text-xs fg-secondary gap-2"
             >
               <PlansEmptyMessage canImport={!readOnly} />
               {!readOnly && pendingSuggestionCount > 0 && (
                 <Button
+                  className="self-start"
                   size="compact"
                   data-testid="activity-plans-suggestions-chip"
                   onClick={(event): void => {
@@ -686,15 +688,17 @@ export function PlansSection(): JSX.Element {
         >
           <div
             className={
-              frameless ? 'flex min-h-0 flex-1 flex-col gap-2' : 'space-y-2'
+              frameless
+                ? 'flex min-h-0 flex-1 flex-col gap-2'
+                : 'flex flex-col gap-3'
             }
           >
             <div
               data-testid="plans-primary-list"
               className={
                 frameless
-                  ? 'min-h-0 flex-1 space-y-2 overflow-y-auto'
-                  : 'max-h-76 space-y-2 overflow-y-auto'
+                  ? 'flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto [&>*]:shrink-0'
+                  : 'flex max-h-76 flex-col gap-2 overflow-y-auto [&>*]:shrink-0'
               }
             >
               {visiblePlans.map((plan) => (
@@ -719,7 +723,7 @@ export function PlansSection(): JSX.Element {
             </div>
 
             {hiddenPlans.length > 0 && (
-              <div className={frameless ? 'shrink-0' : 'mt-1'}>
+              <div className={frameless ? 'shrink-0' : ''}>
                 <Disclosure
                   open={hiddenExpanded}
                   onOpenChange={setHiddenExpanded}
@@ -731,8 +735,8 @@ export function PlansSection(): JSX.Element {
                   <div
                     className={
                       frameless
-                        ? `${FRAMELESS_HIDDEN_GROUP_MAX_H} space-y-2 overflow-y-auto`
-                        : 'max-h-76 space-y-2 overflow-y-auto'
+                        ? `${FRAMELESS_HIDDEN_GROUP_MAX_H} flex flex-col gap-2 overflow-y-auto [&>*]:shrink-0`
+                        : 'flex max-h-76 flex-col gap-2 overflow-y-auto [&>*]:shrink-0'
                     }
                   >
                     {hiddenPlans.map((plan) => (

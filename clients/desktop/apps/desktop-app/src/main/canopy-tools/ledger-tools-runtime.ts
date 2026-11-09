@@ -42,7 +42,7 @@ import {
   type AssistantMode,
   type WorkspaceType,
 } from '@canopy/desktop-shared/types';
-import type { CanopyInjectedToolKey } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import type { CanopyInjectedToolKey } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { z } from 'zod';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
@@ -66,6 +66,7 @@ import {
   ledgerToolNames,
   type LedgerToolNames,
 } from './prompting';
+import { agentCoreOperations } from './agent-core-operations';
 
 /*
  * The Agent Ledger tools for chat sessions (native Code and Cowork chats,
@@ -1051,7 +1052,7 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     const unavailable = await this.executionGate();
     if (unavailable !== null)
       throw new Error(UNAVAILABLE_MESSAGES[unavailable]);
-    const dispatcher = this.host.dispatcher();
+    const dispatcher = this.agentDispatcher();
     if (dispatcher === null)
       throw new Error(UNAVAILABLE_MESSAGES.ledger_runtime_unavailable);
     const resolution = await this.resolveCaller();
@@ -1098,7 +1099,7 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
   ): Promise<string | undefined> {
     if ((await this.executionGate()) !== null) return undefined;
     if (!(await this.host.databaseMayExist())) return undefined;
-    const dispatcher = this.host.dispatcher();
+    const dispatcher = this.agentDispatcher();
     if (dispatcher === null || signal.aborted) return undefined;
     const resolution = await this.resolveCaller();
     if (resolution.kind !== 'caller' || signal.aborted) return undefined;
@@ -1328,6 +1329,14 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     return `<feed_assignments revision="${revision}" open="${open}">${changeNote}Use ${searchName} with owner "self" to refresh them before continuing.${lines.length === 0 ? '' : `\n${lines.join('\n')}`}</feed_assignments>`;
   }
 
+  /** The host's dispatcher behind the agent tools' table of granted operations (CAN-4125). */
+  private agentDispatcher(): LedgerToolsDispatcher | null {
+    const dispatcher = this.host.dispatcher();
+    return dispatcher === null
+      ? null
+      : agentCoreOperations('ledger', dispatcher);
+  }
+
   private async executionGate(): Promise<LedgerToolsUnavailableReason | null> {
     if (this.hasEnded()) return 'session_ended';
     try {
@@ -1338,7 +1347,7 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     }
     // A delegate's run can stop while the setting is read.
     if (this.hasEnded()) return 'session_ended';
-    if (this.host.dispatcher() === null) return 'ledger_runtime_unavailable';
+    if (this.agentDispatcher() === null) return 'ledger_runtime_unavailable';
     return null;
   }
 
@@ -1417,7 +1426,7 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
       caller: CanopyCallerDescriptor,
     ) => Promise<string | undefined>,
   ): Promise<CanopyInjectedToolTextResult> {
-    const dispatcher = this.host.dispatcher();
+    const dispatcher = this.agentDispatcher();
     if (dispatcher === null) {
       return ledgerUnavailableResult('ledger_runtime_unavailable');
     }
@@ -1498,7 +1507,7 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
       'SearchFeedEntries',
     );
     if (!parsed.success) return parsed.result;
-    const dispatcher = this.host.dispatcher();
+    const dispatcher = this.agentDispatcher();
     if (dispatcher === null) {
       return ledgerUnavailableResult('ledger_runtime_unavailable');
     }

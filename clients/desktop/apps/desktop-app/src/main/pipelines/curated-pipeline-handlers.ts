@@ -1,5 +1,5 @@
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type {
   ImportCuratedPipelineRequest,
   ListCuratedPipelinesRequest,

@@ -12,6 +12,7 @@ import type { AgentModelsAPI } from './api/agents-api';
 import type { InvocableInventoryAPI } from './api/invocable-inventory-api';
 import type { InstalledItemsAPI } from '@canopy/desktop-shared/types/installed-items';
 import type { CanopyCoreRelayApi } from '../shared/canopy-core-relay';
+import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 
 /**
  * In-app browser preload bridge surface, declared on `window.api.browser`.
@@ -28,6 +29,14 @@ export type { BrowserApi } from '@canopy/desktop-shared/types';
 declare global {
   interface Window {
     electron: ElectronAPI;
+    appErrors?: {
+      resolve(message: string): unknown;
+      resolveOperationFailure(message: string): unknown;
+      resolveCoworkFolderMissing?(
+        message: string,
+        workspaceId: string,
+      ): unknown;
+    };
     platform: NodeJS.Platform;
     /**
      * This computer's platform; differs from `platform` in a window that
@@ -35,6 +44,12 @@ declare global {
      */
     localPlatform?: NodeJS.Platform;
     api: CanopyApi;
+    /**
+     * The renderer CanopyClient's transport, limited to the portable
+     * adapter's channels (`@canopy/ipc-canopy-client`). Absent outside the
+     * app's preload.
+     */
+    canopyClientTransport?: RemoteIpcTransport;
     canopyCore: CanopyCoreRelayApi;
     /**
      * @deprecated Use `window.collections` for new code. `window.bundles` is

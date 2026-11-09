@@ -20,6 +20,7 @@ import type { WorkspaceOwnerManifestRead } from './workspace-owner-projection';
 import {
   listStandaloneChats,
   projectStandaloneChatSnapshot,
+  withStandalonePendingQuestions,
 } from './standalone-chat-service';
 
 /** Placeholders belong to the unscoped overview only; a scoped snapshot names real rows. */
@@ -42,11 +43,12 @@ function isActivityId(value: string): boolean {
 export async function buildDesktopSessionSnapshot(
   args?: DesktopSessionSnapshotArgs,
 ): Promise<PortalSessionShellState> {
-  const { includeChatSummaries, ...scope } = args ?? {};
+  const { includeChatSummaries, standaloneChatLocalId, ...scope } = args ?? {};
   const target = args === undefined ? undefined : scope;
   const includeStandalone =
-    !target?.workspaceLocalId &&
-    !(includeChatSummaries === true && !isOverviewTarget(target));
+    standaloneChatLocalId !== undefined ||
+    (!target?.workspaceLocalId &&
+      !(includeChatSummaries === true && !isOverviewTarget(target)));
   const workspaces: PortalSessionShellState['workspaces'] = [];
   const worktrees: PortalSessionShellState['worktrees'] = [];
   // Share discovery, not composition: default-project provisioning and runtime
@@ -108,27 +110,37 @@ export async function buildDesktopSessionSnapshot(
       // Catalog availability must never prevent local session discovery.
     }
   }
-  let standaloneChats = !includeStandalone
+  const listedStandaloneChats = !includeStandalone
     ? []
-    : (
-        await listStandaloneChats(
-          includeChatSummaries === true
-            ? {
-                sidebarSnapshot,
-                ownerEvidence,
-                strict: true,
-                projectIds: workspaces
-                  .filter(
-                    (workspace) =>
-                      !workspace.hidden &&
-                      workspace.type === 'cowork' &&
-                      isActivityId(workspace.localId),
-                  )
-                  .map((workspace) => workspace.localId),
-              }
-            : { sidebarSnapshot, ownerEvidence },
+    : await listStandaloneChats(
+        includeChatSummaries === true
+          ? {
+              sidebarSnapshot,
+              ownerEvidence,
+              strict: true,
+              projectIds: workspaces
+                .filter(
+                  (workspace) =>
+                    !workspace.hidden &&
+                    workspace.type === 'cowork' &&
+                    isActivityId(workspace.localId),
+                )
+                .map((workspace) => workspace.localId),
+            }
+          : { sidebarSnapshot, ownerEvidence },
+      );
+  // Compact listings carry no turn end, so a chat whose session is gone would
+  // read as never having ended. One chat's read takes them from its tabs
+  // file, as the Portal `standalone_chat` snapshot does.
+  let standaloneChats = (
+    standaloneChatLocalId === undefined
+      ? listedStandaloneChats
+      : await Promise.all(
+          listedStandaloneChats
+            .filter((chat) => chat.chatId === standaloneChatLocalId)
+            .map(withStandalonePendingQuestions),
         )
-      ).map(projectStandaloneChatSnapshot);
+  ).map(projectStandaloneChatSnapshot);
 
   let chatSummaries: PortalSessionShellState['chatSummaries'] = [];
   if (includeChatSummaries === true) {

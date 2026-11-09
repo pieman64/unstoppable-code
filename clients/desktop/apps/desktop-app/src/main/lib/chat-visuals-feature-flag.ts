@@ -2,7 +2,7 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS,
   type CanopyInjectedToolSurface,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { getFeatureFlagService } from '../feature-flags';
 
 /** Read the live desktop kill switch, including changes during an active turn. */

@@ -1,5 +1,5 @@
-import { canopyModelName } from '@canopy/desktop-shared/lib/cursor-models';
-import { parseCursorModelVariant } from '@canopy/desktop-shared/lib/cursor-thinking';
+import { canopyModelName } from '@canopy/execution-engine/lib/cursor-models';
+import { parseCursorModelVariant } from '@canopy/execution-engine/lib/cursor-thinking';
 import { getMockApiKey, getMockLlmOrigin } from '../lib/e2e-mock-control-plane';
 import { isRecord } from '../lib/type-guards';
 import { readCursorAccessToken } from './account-credentials';

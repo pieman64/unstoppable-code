@@ -17,11 +17,11 @@ import {
   OpenCodeAccountCard,
   PageColumn,
   PickerMenuOptionLabel,
+  PickerMenuTab,
+  PickerMenuTabList,
   PickList,
   PickListResults,
   PipelineDispatchedTime,
-  PickerMenuTab,
-  PickerMenuTabList,
   SearchField,
   Surface,
   pickListOptionId,
@@ -304,6 +304,14 @@ export function OpenCodeAccountSpecimen(): JSX.Element {
       <SpecimenPanel title="Provider accounts">
         <SpecimenGrid min={320}>
           <SpecimenCell label="Ready: every method, selected, sign in again, no name, no account">
+            <div className="w-full">
+              <OpenCodeAccountCard
+                snapshot={OPENCODE_READY}
+                onManageProviders={noop}
+              />
+            </div>
+          </SpecimenCell>
+          <SpecimenCell label="Management unavailable: desktop handoff">
             <div className="w-full">
               <OpenCodeAccountCard snapshot={OPENCODE_READY} />
             </div>

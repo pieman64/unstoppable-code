@@ -5,6 +5,7 @@ import type { ChatTabsFile } from '@canopy/desktop-shared/types';
 import type * as DesktopSharedTypesModule from '@canopy/desktop-shared/types';
 import type { ChildToolLiveness } from '@canopy/agent-transcript';
 import type * as AiCreditsRoutingModule from '../agents/ai-credits-routing';
+import type * as ClaudeModAdmissionLaunchModule from '../agents/claude-mod-admission-launch';
 import type * as LedgerToolsRuntimeModule from '../canopy-tools/ledger-tools-runtime';
 import type * as PreferencesStoreModule from '../lib/preferences-store';
 import type * as WorkOwnerModule from '../agents/work-owner';
@@ -46,6 +47,7 @@ const mockResolveSessionWorkOwner = jest.fn<
 >(() => Promise.resolve({ kind: 'personal' as const }));
 
 jest.mock('electron', () => ({
+  app: { isPackaged: false },
   BrowserWindow: class MockBrowserWindow {
     public isDestroyed(): boolean {
       return false;
@@ -114,6 +116,17 @@ jest.mock('../plugins/plugin-resolver', () => ({
     mcpServers: {},
     warnings: [],
   }),
+}));
+// Mod admission reads the real Claude config before each launch; this golden
+// runs with it off, and the admission goldens cover it.
+jest.mock('../agents/claude-mod-admission-launch', () => ({
+  ...jest.requireActual<typeof ClaudeModAdmissionLaunchModule>(
+    '../agents/claude-mod-admission-launch',
+  ),
+  resolveClaudeModAdmissionContext: (): Promise<undefined> =>
+    Promise.resolve(undefined),
+  resolveClaudeModAdmissionLaunch: (): Promise<undefined> =>
+    Promise.resolve(undefined),
 }));
 jest.mock('../plugins/invocable-inventory-service', () => ({
   get loadCachedInventory(): typeof mockLoadCachedInventory {
@@ -328,8 +341,27 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+// Captured before any test installs fake timers, which replace the global Date.
+const realDateNow = Date.now;
+// Per wait, below Jest's default 5 s test timeout, so a test's one long wait
+// reports a stall here rather than as a generic Jest timeout.
+const FLUSH_UNTIL_DEADLINE_MS = 4_000;
+
+/**
+ * Yields event-loop turns until `done` holds. The bound is wall-clock, not a
+ * turn count: a session's startup can wait on real I/O, which a loaded CI
+ * shard delivers after an unpredictable number of turns.
+ */
 async function flushUntil(done: () => boolean): Promise<void> {
-  for (let tick = 0; tick < 50 && !done(); tick += 1) await flush();
+  const deadline = realDateNow() + FLUSH_UNTIL_DEADLINE_MS;
+  while (!done()) {
+    if (realDateNow() > deadline) {
+      throw new Error(
+        `flushUntil: condition not met within ${FLUSH_UNTIL_DEADLINE_MS} ms`,
+      );
+    }
+    await flush();
+  }
 }
 
 function getNoWindow(): null {

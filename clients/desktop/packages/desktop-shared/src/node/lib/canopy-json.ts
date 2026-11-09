@@ -46,16 +46,22 @@ import type {
 } from '../../types';
 import { isThinkingLevel } from '../../types';
 import type { AgentModelConfig } from '../../types';
-import { codexSpeedFastMode, isCodexSpeed } from '../../lib/codex-speed';
+import {
+  codexSpeedFastMode,
+  isCodexSpeed,
+} from '@canopy/execution-engine/lib/codex-speed';
 import { normalizePlanDetectionRule } from '../../plan-detection';
 import {
   isApprovalMode,
   normalizeApprovalRules,
 } from '../../lib/approval-engine';
 import type { ApprovalRule } from '../../types/approvals';
-import { validateId } from './validation';
+import { validateId } from '@canopy/execution-engine/node/lib/validation';
 import { isMissingFileError } from './fs-utils';
-import { isErrnoException, isRecord } from './type-guards';
+import {
+  isErrnoException,
+  isRecord,
+} from '@canopy/execution-engine/node/lib/type-guards';
 import { normalizePipelineDependency } from '@canopy/protocol/pipelines';
 import {
   isProjectStartPage,

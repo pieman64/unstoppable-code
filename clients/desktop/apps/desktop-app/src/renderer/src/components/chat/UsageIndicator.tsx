@@ -1,7 +1,7 @@
-import { isCopilotModel } from '@canopy/desktop-shared/lib/copilot-models';
+import { isCopilotModel } from '@canopy/execution-engine/lib/copilot-models';
 import { isCostWorkScope } from '@canopy/desktop-shared/lib/cost-scope';
 import { CopilotAccountUsage } from './CopilotAccountUsage';
-import { isCursorModel } from '@canopy/desktop-shared/lib/cursor-models';
+import { isCursorModel } from '@canopy/execution-engine/lib/cursor-models';
 import {
   useCallback,
   useEffect,
@@ -20,7 +20,7 @@ import {
 import {
   CODEX_LONG_CONTEXT_THRESHOLD,
   type CodexContextWindowSetting,
-} from '@canopy/desktop-shared/lib/codex-context-window';
+} from '@canopy/execution-engine/lib/codex-context-window';
 import { useCodexContextWindowControl } from './useCodexContextWindowControl';
 import { useCostChatSummaryStore } from '@canopy/ui-app/cost';
 import { UsageCostPreviewRow } from '@canopy/ui-shared/components/cost';

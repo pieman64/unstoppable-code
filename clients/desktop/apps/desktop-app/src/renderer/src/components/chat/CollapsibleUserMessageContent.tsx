@@ -305,7 +305,9 @@ export const CollapsibleUserMessageContent = memo(
       // While collapsed the wrapper cancels the bubble's bottom padding
       // (`py-1.5` in `UserBubble`), so the sliced row runs to the bubble's
       // edge instead of stopping short of it with a band of padding beneath.
-      <div className={`group/collapse relative${collapsed ? ' -mb-1.5' : ''}`}>
+      <div
+        className={`group/collapse relative flex flex-col gap-1${collapsed ? ' -mb-1.5' : ''}`}
+      >
         <div
           ref={contentRef}
           data-testid="user-message-content"
@@ -343,7 +345,7 @@ export const CollapsibleUserMessageContent = memo(
           // the reveal never shifts layout.
           <div
             className={`flex justify-center opacity-0 transition-opacity focus-within:opacity-100 group-hover/collapse:opacity-100 ${
-              expanded ? 'mt-1' : 'absolute inset-x-0 bottom-1'
+              expanded ? '' : 'absolute inset-x-0 bottom-1'
             }`}
           >
             <Button

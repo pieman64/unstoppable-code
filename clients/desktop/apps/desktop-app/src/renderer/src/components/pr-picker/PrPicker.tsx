@@ -61,9 +61,11 @@ export function PrPicker({ options, onClose }: PrPickerProps): JSX.Element {
           renderItem={(option) => (
             <>
               <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
+                <PickerMenuOptionLabel
+                  // Keep prefix/value text nodes: merging them changes native shaping/clipping.
+                  meta={<>#{option.prNumber}</>}
+                >
                   {option.repoName}
-                  <span className="ml-2 fg-secondary">#{option.prNumber}</span>
                 </PickerMenuOptionLabel>
                 <PickerMenuOptionDescription>
                   {option.prTitle}

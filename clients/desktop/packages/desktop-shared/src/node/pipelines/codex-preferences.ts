@@ -1,9 +1,9 @@
 import {
   applyCodexMultiAgentConfig,
   normalizeCodexMaxConcurrentSubagents,
-} from '../../lib/codex-multi-agent';
-import { getBrandEnv } from '../../brand/env';
-import { type CodexConfig } from '../../lib/codex-model-config';
+} from '@canopy/execution-engine/lib/codex-multi-agent';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
+import { type CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { CODEX_PROJECT_DOC_THREAD_CONFIG } from '../codex-runtime/thread-config';
 
 /**

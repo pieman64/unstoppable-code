@@ -1,3 +1,4 @@
+import { Dot, type DotTone } from './Badge';
 import { ChoiceMark } from './Choice';
 import type {
   CSSProperties,
@@ -1075,7 +1076,7 @@ export function PrBadgeTooltipContent({
     ? mergeQueuePhaseLabel(pr.mergeQueuePhase)
     : undefined;
   return (
-    <div className="space-y-1.5">
+    <div className="flex flex-col gap-1.5">
       {title && (
         <div
           className={`${textScale === 'sidebar' ? 'font-normal' : 'font-medium'} fg-primary`}
@@ -1091,7 +1092,7 @@ export function PrBadgeTooltipContent({
         </div>
       )}
       <div
-        className={`space-y-0.5 ${textScale === 'sidebar' ? 'text-xs' : 'text-2xs'} fg-secondary`}
+        className={`flex flex-col gap-0.5 ${textScale === 'sidebar' ? 'text-xs' : 'text-2xs'} fg-secondary`}
       >
         <div className="grid grid-cols-2 gap-x-3">
           <div>
@@ -1201,10 +1202,8 @@ function splitStatusHeaderLabel(status: WorktreeSplitStatus): string {
 }
 
 /** Status-dot color for the tooltip's detail row. */
-function splitStatusDotColor(status: WorktreeSplitStatus): string {
-  if (status === 'active') return OPERATIONAL_STATUS_COLORS.active.background;
-  if (status === 'review') return 'bg-fg-warning';
-  return OPERATIONAL_STATUS_COLORS.unread.background;
+function splitStatusDotTone(status: WorktreeSplitStatus): DotTone {
+  return status === 'review' ? 'attention' : 'unread';
 }
 
 /** Split badge tint: an active run stays neutral (the rail spinner marks it),
@@ -1491,7 +1490,7 @@ export function WorktreeRowActionChip({
             // block below it is a fixed mt-0.5 + h-4 = 1.125rem. Coarse
             // pointers instead center the 44px hitbox in the 44px row; lifting
             // that full hitbox overlaps the workspace-header actions above it.
-            `absolute right-1 top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center justify-end gap-0.5 group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2 [&_button]:cursor-default ${
+            `absolute right-1 top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center justify-end gap-0.5 group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2 ${
               // While the row's own menu is open the actions are hidden: the
               // menu already identifies its row, and its trigger holds focus,
               // so `group-focus-within` would otherwise keep the whole cluster
@@ -1502,7 +1501,7 @@ export function WorktreeRowActionChip({
               // over these) is redundant once they are invisible.
               menuOpen ? 'opacity-0' : ''
             }`
-          : `flex w-full items-center gap-0.5 [&_button]:cursor-default ${menuOpen ? 'opacity-0' : ''}`
+          : `flex w-full items-center gap-0.5 ${menuOpen ? 'opacity-0' : ''}`
       }
     >
       {children}
@@ -1561,7 +1560,7 @@ export function DepthBadgeTooltipContent({
   textScale?: 'default' | 'sidebar';
 }): JSX.Element {
   return (
-    <div className="space-y-1 text-xs">
+    <div className="flex flex-col gap-1 text-xs">
       <p
         className={`${textScale === 'sidebar' ? 'font-normal' : 'font-semibold'} fg-primary`}
       >
@@ -1977,7 +1976,7 @@ function WorktreeRowImpl(
   ) : splitStatus ? (
     <RichHoverTooltip
       content={
-        <div className="space-y-1">
+        <div className="flex flex-col gap-1">
           <div
             className={`${textScale === 'sidebar' ? 'text-xs font-normal' : 'text-3xs font-semibold'} fg-secondary`}
           >
@@ -1985,9 +1984,7 @@ function WorktreeRowImpl(
           </div>
           {splitStatusMessage && (
             <div className="flex items-center gap-1.5 text-xs">
-              <span
-                className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${splitStatusDotColor(splitStatus)}`}
-              />
+              <Dot tone={splitStatusDotTone(splitStatus)} />
               <span className="fg-primary">{splitStatusMessage}</span>
             </div>
           )}
@@ -2418,10 +2415,7 @@ function WorktreeRowImpl(
           testIdSuffix,
         )}
       >
-        <span
-          className="h-2 w-2 shrink-0 rounded-full bg-fg-warning"
-          aria-hidden="true"
-        />
+        <Dot tone="attention" />
         {specialStatusLabel}
       </span>
     ) : (
@@ -2746,10 +2740,7 @@ function WorktreeRowImpl(
                   testIdSuffix,
                 )}
               >
-                <span
-                  className="h-2 w-2 rounded-full bg-fg-warning"
-                  aria-hidden="true"
-                />
+                <Dot tone="attention" />
               </span>,
             )}
           {classicToolApprovalDot &&
@@ -2771,10 +2762,7 @@ function WorktreeRowImpl(
                   testIdSuffix,
                 )}
               >
-                <span
-                  className="h-2 w-2 rounded-full bg-fg-warning"
-                  aria-hidden="true"
-                />
+                <Dot tone="attention" />
               </span>,
             )}
           {classicUnreadPreviewDot &&
@@ -2796,10 +2784,7 @@ function WorktreeRowImpl(
                   testIdSuffix,
                 )}
               >
-                <span
-                  className="h-2 w-2 rounded-full bg-fg-blue"
-                  aria-hidden="true"
-                />
+                <Dot tone="unread" />
               </span>,
             )}
           {classicPipelineAttentionDot &&
@@ -2839,13 +2824,10 @@ function WorktreeRowImpl(
               >
                 {/* Failure paints destructive (matching the leading glyph);
                   a successful unseen run keeps the calm blue. */}
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    pipelineStatus === 'unseen-failure'
-                      ? 'bg-fg-destructive'
-                      : 'bg-fg-blue'
-                  }`}
-                  aria-hidden="true"
+                <Dot
+                  tone={
+                    pipelineStatus === 'unseen-failure' ? 'danger' : 'unread'
+                  }
                 />
               </span>,
             )}
@@ -3332,15 +3314,13 @@ function WorktreeRowImpl(
           ) : classicLeadingFallback === 'split' ? (
             <RichHoverTooltip
               content={
-                <div className="space-y-1">
+                <div className="flex flex-col gap-1">
                   <div className="text-3xs font-semibold fg-secondary">
                     Split PR {splitStatusHeaderLabel(splitStatus ?? 'active')}
                   </div>
                   {splitStatusMessage && (
                     <div className="flex items-center gap-1.5 text-xs">
-                      <span
-                        className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${splitStatusDotColor(splitStatus ?? 'active')}`}
-                      />
+                      <Dot tone={splitStatusDotTone(splitStatus ?? 'active')} />
                       <span className="fg-primary">{splitStatusMessage}</span>
                     </div>
                   )}
@@ -3881,15 +3861,13 @@ function WorktreeRowImpl(
                 !focusedStatus && (
                   <RichHoverTooltip
                     content={
-                      <div className="space-y-1">
+                      <div className="flex flex-col gap-1">
                         <div className="text-3xs font-semibold fg-secondary">
                           Split PR {splitStatusHeaderLabel(splitStatus)}
                         </div>
                         {splitStatusMessage && (
                           <div className="flex items-center gap-1.5 text-xs">
-                            <span
-                              className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${splitStatusDotColor(splitStatus)}`}
-                            />
+                            <Dot tone={splitStatusDotTone(splitStatus)} />
                             <span className="fg-primary">
                               {splitStatusMessage}
                             </span>

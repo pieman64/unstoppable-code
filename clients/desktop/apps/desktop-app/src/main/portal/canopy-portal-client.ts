@@ -44,9 +44,15 @@ export class CanopyPortalClientError extends Error {
       | 'unsupported-capability',
     message: string,
     readonly status?: number,
+    cause?: unknown,
   ) {
     super(message);
     this.name = 'CanopyPortalClientError';
+    if (cause !== undefined)
+      Object.defineProperty(this, 'cause', {
+        value: cause,
+        configurable: true,
+      });
   }
 }
 
@@ -99,6 +105,7 @@ async function requestJson<T>(
             : `${REMOTE_CONTROL_LABEL} request timed out.`
           : error.message,
         error.status,
+        error,
       );
     }
 
@@ -196,6 +203,7 @@ export async function openPortalCommandStream(input: {
         error.code,
         error.message,
         error.status,
+        error,
       );
     }
     throw error;

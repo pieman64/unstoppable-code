@@ -1,5 +1,7 @@
+import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
 import type { JSX } from 'react';
 import {
+  Stack,
   Heading,
   SettingsRowsGroup,
   SettingsRowsRow,
@@ -46,10 +48,10 @@ const BADGE_COPY: Record<SharedAutomationLocalBadge, string> = {
   'update-available': 'Update available',
 };
 
-const BADGE_CLASSES: Record<SharedAutomationLocalBadge, string> = {
-  'shared-by-you': 'border-line-accent/40 bg-accent-subtle fg-accent',
-  installed: 'border-line-positive/40 bg-success-subtle fg-primary',
-  'update-available': 'border-fg-info/40 bg-info-subtle fg-primary',
+const BADGE_TONES: Record<SharedAutomationLocalBadge, BadgeTone> = {
+  'shared-by-you': 'neutral',
+  installed: 'success',
+  'update-available': 'info',
 };
 
 /**
@@ -123,12 +125,14 @@ export function SharedAutomationPreview({
   return (
     <Surface
       variant="inset"
+      gap="group"
       padding="default"
       data-testid="shared-automation-preview"
     >
-      <div className="space-y-4">
+      <div className="flex flex-col gap-4">
         <div className="flex items-start justify-between gap-3">
-          <div
+          <Stack
+            gap="tight"
             className="min-w-0"
             data-testid="shared-automation-preview-heading"
           >
@@ -136,21 +140,18 @@ export function SharedAutomationPreview({
               {automation.name}
             </Heading>
             {hasMarkdownDescriptionText(automation.description) && (
-              <DescriptionMarkdown
-                className="mt-1"
-                dataTestId="share-description"
-              >
+              <DescriptionMarkdown className="" dataTestId="share-description">
                 {automation.description}
               </DescriptionMarkdown>
             )}
-          </div>
+          </Stack>
           {localBadge && (
-            <span
-              className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-3xs font-medium ${BADGE_CLASSES[localBadge]}`}
+            <Badge
+              tone={BADGE_TONES[localBadge]}
               data-testid={`shared-automation-badge-${localBadge}`}
             >
               {BADGE_COPY[localBadge]}
-            </span>
+            </Badge>
           )}
         </div>
 
@@ -244,39 +245,34 @@ export function SharedAutomationPreview({
         )}
 
         {preview && (
-          <div>
-            <p className="mb-1 text-xs fg-secondary">Prompt</p>
+          <Stack gap="tight">
+            <p className="text-xs fg-secondary">Prompt</p>
             <pre
               className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-40 overflow-auto whitespace-pre-wrap rounded-md border bg-fg-primary/[0.03] px-3 py-2 text-xs fg-primary`}
               data-testid="shared-automation-preview-prompt"
             >
               {preview}
             </pre>
-          </div>
+          </Stack>
         )}
 
         {inputKeys.length > 0 && (
-          <div data-testid="shared-automation-preview-input-keys">
-            <p className="mb-1 text-xs fg-secondary">
+          <Stack gap="tight" data-testid="shared-automation-preview-input-keys">
+            <p className="text-xs fg-secondary">
               Inputs you provide at install
             </p>
             <div className="flex flex-wrap gap-1.5">
               {inputKeys.map((key) => (
-                <span
-                  key={key}
-                  className="rounded-full border bg-fg-primary/[0.04] px-2 py-0.5 text-3xs fg-primary"
-                >
-                  {key}
-                </span>
+                <Badge key={key}>{key}</Badge>
               ))}
             </div>
-          </div>
+          </Stack>
         )}
 
         {plugins.length > 0 && (
-          <div data-testid="shared-automation-preview-plugins">
-            <p className="mb-1 text-xs fg-secondary">Plugins</p>
-            <ul className="space-y-1">
+          <Stack gap="tight" data-testid="shared-automation-preview-plugins">
+            <p className="text-xs fg-secondary">Plugins</p>
+            <ul className="flex flex-col gap-1">
               {plugins.map((ref, index) => {
                 const display = buildShareablePluginDisplay(ref);
                 return (
@@ -290,7 +286,7 @@ export function SharedAutomationPreview({
                 );
               })}
             </ul>
-          </div>
+          </Stack>
         )}
 
         {detail.savedFrom && (

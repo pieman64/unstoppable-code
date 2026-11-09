@@ -1,4 +1,4 @@
-import type { BrowserAutomationCommand } from '@canopy/desktop-shared/types/browser';
+import type { BrowserAutomationCommand } from '@canopy/execution-engine/types/browser';
 import {
   browserTypingBudgetMs,
   BROWSER_TYPING_BUDGET_MAX_MS,

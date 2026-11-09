@@ -1,5 +1,5 @@
 import { runWithSynchronousActionEnvironment } from '../_lib/action-env';
-import { brandEnvName } from '../../brand/env';
+import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import { setOutput, writeOutputFile } from '../_lib/output';
 
 const TEXT_FORMAT = 'text';

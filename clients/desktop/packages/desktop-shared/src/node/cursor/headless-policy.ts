@@ -181,7 +181,7 @@ export const CURSOR_PLAN_MODE_STEERING =
  * round. Changing the established semantics would alter Codex and Claude
  * behaviour this work has no mandate to touch.
  */
-export { extractProposedPlan } from '../../codex-plan-mode';
+export { extractProposedPlan } from '@canopy/execution-engine/codex-plan-mode';
 
 const NO_TOOLS_STEERING =
   'This run has no tools available. Answer from the prompt alone.';

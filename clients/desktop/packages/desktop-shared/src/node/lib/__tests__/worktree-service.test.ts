@@ -1,4 +1,4 @@
-import { isRecord } from '../type-guards';
+import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import * as corePlatform from '@canopy/core-platform';
 import * as cliReads from '../worktree-cli-reads';
 import * as processLocks from '../../w5-host-cohort/process-file-lock';

@@ -50,12 +50,14 @@ export function BrowserFilesPanel({
         {announcement}
       </div>
       {failed && transfers.length > 0 && (
-        <ErrorBanner
-          className="m-2"
-          error="Couldn't load downloads."
-          onRetry={load}
-          retrying={loadState === 'retrying'}
-        />
+        <div className="shrink-0 p-2">
+          <ErrorBanner
+            className=""
+            error="Couldn't load downloads."
+            onRetry={load}
+            retrying={loadState === 'retrying'}
+          />
+        </div>
       )}
       {failed && transfers.length === 0 ? (
         <ErrorState

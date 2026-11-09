@@ -561,6 +561,76 @@ it('refuses an omitted external checkout, and exposes recovery preimages before 
   expect(await git(checkout, ['branch', '--show-current'])).toBe('feature\n');
 });
 
+const windowsGitSpelling = process.platform === 'win32' ? it : it.skip;
+windowsGitSpelling(
+  'canonicalizes Windows Git separators and drive case without duplicating inventoried checkouts',
+  async () => {
+    const common = join(oldRoot, 'repository');
+    const checkout = join(oldRoot, 'linked');
+    await repository(common);
+    await git(common, ['worktree', 'add', '-b', 'feature', checkout]);
+    const expected = await prepareRelocationGit(git, [common, checkout]);
+    const alternate = (path: string): string =>
+      gitPathSpelling(path).replace(/^[A-Za-z]:/, (drive) =>
+        drive === drive.toUpperCase()
+          ? drive.toLowerCase()
+          : drive.toUpperCase(),
+      );
+    const differentlySpelledGit = async (
+      cwd: string,
+      args: readonly string[],
+    ): Promise<string> => {
+      const result = await git(cwd, args);
+      if (
+        args.includes('--git-common-dir') ||
+        args.includes('--absolute-git-dir')
+      )
+        return alternate(result);
+      if (args[0] === 'worktree')
+        return result.replace(
+          /worktree ([^\0]+)/g,
+          (_, path: string) => `worktree ${alternate(path)}`,
+        );
+      return result;
+    };
+    expect(
+      await prepareRelocationGit(differentlySpelledGit, [
+        alternate(common),
+        common,
+        alternate(checkout),
+      ]),
+    ).toEqual(expected);
+  },
+);
+
+it.each(['checkout', 'checkout ancestor', 'common directory'])(
+  'refuses a real directory symlink or Windows junction at the %s',
+  async (location) => {
+    const common = join(oldRoot, 'repository');
+    await repository(common);
+    const link = join(dir, 'alias');
+    const linkKind = process.platform === 'win32' ? 'junction' : 'dir';
+    if (location === 'common directory') {
+      const metadata = join(dir, 'git-metadata');
+      await rename(join(common, '.git'), metadata);
+      await symlink(metadata, join(common, '.git'), linkKind);
+      const probe = jest.fn(git);
+      const preparation = prepareRelocationGit(probe, [common]);
+      await expect(preparation).rejects.toMatchObject({
+        reason: 'symlink-git-directory',
+      });
+      expect(probe).not.toHaveBeenCalled();
+    } else {
+      await symlink(location === 'checkout' ? common : oldRoot, link, linkKind);
+      await expect(
+        prepareRelocationGit(git, [
+          location === 'checkout' ? link : join(link, 'repository'),
+        ]),
+      ).rejects.toMatchObject({ reason: 'symlink-checkout' });
+    }
+  },
+);
+
 it.each(['write', 'publish'])(
   'resumes mixed backlink images after an interrupted %s without truncation or repeated writes',
   async (failure) => {

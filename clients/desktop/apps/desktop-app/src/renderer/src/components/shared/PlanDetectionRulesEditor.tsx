@@ -5,6 +5,7 @@ import {
   SegmentedControl,
   TextInput,
   ToggleSwitch,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import { TrashIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -207,12 +208,12 @@ export function PlanDetectionRulesEditor({
               </Button>
             </div>
             {error !== null && (
-              <p
-                className="text-xs fg-destructive"
+              <FieldError
+                id={`${dataTestIdPrefix}-error`}
                 data-testid={`${dataTestIdPrefix}-error`}
               >
                 {error}
-              </p>
+              </FieldError>
             )}
           </div>
         </SettingsGroup>

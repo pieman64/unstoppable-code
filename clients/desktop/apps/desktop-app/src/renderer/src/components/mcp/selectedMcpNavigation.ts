@@ -1,4 +1,4 @@
-import type { DetectedMcpServerInfo } from '@canopy/desktop-shared/types/mcp-servers';
+import type { DetectedMcpServerInfo } from '@canopy/execution-engine/types/mcp-servers';
 import { CURATED_PLUGIN_MARKETPLACE_ID } from '@canopy/desktop-shared/types/plugins';
 import { unifiedEntryIdForRef } from '@canopy/ui-app/capability';
 import type { PluginsNavigationIntent } from '@/stores/navigationStore';

@@ -17,7 +17,7 @@ import {
   type CanopyJsonValue,
   type CatalogSkillRow,
 } from '@canopy/protocol/canopy-core';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import { sanitizeName } from '../skills/installer';
 import type * as SkillContext from '../skills/skill-install-context';
 import type * as SkillService from '../skills/skill-service';

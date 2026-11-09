@@ -2,7 +2,7 @@ import type {
   PipelineExecutionScope,
   PipelineInfo,
   PipelineScopeConfig,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   DEFAULT_PIPELINE_SCOPES,
   executionContextSatisfies,

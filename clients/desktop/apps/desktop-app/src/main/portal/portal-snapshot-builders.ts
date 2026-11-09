@@ -12,7 +12,7 @@ import {
 import {
   isGatewayRoutableModel,
   isOrgGatewayRoute,
-} from '@canopy/desktop-shared/lib/gateway-model-availability';
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isRecord } from '@canopy/desktop-shared/portal/persisted-chat-projection';
 import { probeEntitlementsWithModelLibrary } from '../canopy-cloud/model-library-access';
 import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
@@ -304,6 +304,95 @@ async function listPipelineEntitiesForWorktree(input: {
     ...pipelines.map(pipelineToPortalEntity),
     ...pipelineRuns.map(pipelineRunToPortalEntity),
   ];
+}
+
+async function listPlanEntitiesForWorktree(input: {
+  workspaceLocalId: string;
+  worktreeLocalId: string;
+}): Promise<PortalEntityEnvelope[]> {
+  const plans = await listPlans({
+    projectId: input.workspaceLocalId,
+    worktreeId: input.worktreeLocalId,
+  }).catch(() => []);
+  return plans.map(planToPortalEntity);
+}
+
+async function listHookEntitiesForWorktree(input: {
+  workspaceLocalId: string;
+  worktreeLocalId: string;
+}): Promise<PortalEntityEnvelope[]> {
+  const hookInput = {
+    ...input,
+    workspaceId: input.workspaceLocalId,
+    worktreeId: input.worktreeLocalId,
+    projectId: input.workspaceLocalId,
+  };
+  const [hooks, hookRuns] = await Promise.all([
+    listHooks(hookInput).catch(() => []),
+    listHookRuns(hookInput).catch(() => []),
+  ]);
+  return [
+    ...hooks.map(hookToPortalEntity),
+    ...hookRuns.map(hookRunToPortalEntity),
+  ];
+}
+
+async function listSummaryEntitiesForWorktree(input: {
+  workspaceLocalId: string;
+  worktreeLocalId: string;
+}): Promise<PortalEntityEnvelope[]> {
+  const { workspaceLocalId, worktreeLocalId } = input;
+  const summary = await readWorktreeSummary(
+    workspaceLocalId,
+    worktreeLocalId,
+  ).catch(() => null);
+  if (!summary) return [];
+  return [
+    {
+      entityType: 'worktree_summary',
+      localId: worktreeLocalId,
+      parentLocalId: worktreeScopedParentLocalId(
+        workspaceLocalId,
+        worktreeLocalId,
+      ),
+      payload: {
+        workspaceLocalId,
+        worktreeLocalId,
+        title: summary.title,
+        description: summary.description,
+        highlights: summary.highlights,
+        repos: summary.repos,
+        generatedAt: summary.generatedAt,
+        lastFullRefreshAt: summary.lastFullRefreshAt,
+        generating: isWorktreeSummaryGenerating(
+          workspaceLocalId,
+          worktreeLocalId,
+        ),
+      },
+    },
+  ];
+}
+
+/**
+ * One worktree's plan, script, hook, pipeline and summary entities, built by
+ * the same section readers as a Portal `worktree` snapshot. Browser Remote
+ * Control controllers read them over `worktree:activity-entities` (CAN-5985),
+ * so their panels list exactly the rows a Portal session would.
+ */
+export async function listWorktreeActivityEntities(input: {
+  workspaceLocalId: string;
+  worktreeLocalId: string;
+}): Promise<PortalEntityEnvelope[]> {
+  validateId(input.workspaceLocalId, 'projectId');
+  validateId(input.worktreeLocalId, 'worktreeId');
+  const sections = await Promise.all([
+    listPlanEntitiesForWorktree(input),
+    listScriptEntitiesForWorktree(input),
+    listHookEntitiesForWorktree(input),
+    listPipelineEntitiesForWorktree(input),
+    listSummaryEntitiesForWorktree(input),
+  ]);
+  return sections.flat();
 }
 
 function safeListTerminalPortalEntities(
@@ -781,16 +870,8 @@ export async function buildPortalSnapshot(
   ) {
     sections.push({
       name: 'plans',
-      run: async (): Promise<PortalEntityEnvelope[]> => {
-        const sectionEntities: PortalEntityEnvelope[] = [];
-        const plans = await listPlans({
-          projectId: workspaceLocalId,
-          worktreeId: worktreeLocalId,
-        }).catch(() => []);
-        sectionEntities.push(...plans.map(planToPortalEntity));
-
-        return sectionEntities;
-      },
+      run: (): Promise<PortalEntityEnvelope[]> =>
+        listPlanEntitiesForWorktree({ workspaceLocalId, worktreeLocalId }),
     });
   }
 
@@ -822,26 +903,8 @@ export async function buildPortalSnapshot(
   ) {
     sections.push({
       name: 'hooks',
-      run: async (): Promise<PortalEntityEnvelope[]> => {
-        const sectionEntities: PortalEntityEnvelope[] = [];
-        const hookInput = {
-          workspaceLocalId,
-          worktreeLocalId,
-          workspaceId: workspaceLocalId,
-          worktreeId: worktreeLocalId,
-          projectId: workspaceLocalId,
-        };
-        const [hooks, hookRuns] = await Promise.all([
-          listHooks(hookInput).catch(() => []),
-          listHookRuns(hookInput).catch(() => []),
-        ]);
-        sectionEntities.push(
-          ...hooks.map(hookToPortalEntity),
-          ...hookRuns.map(hookRunToPortalEntity),
-        );
-
-        return sectionEntities;
-      },
+      run: (): Promise<PortalEntityEnvelope[]> =>
+        listHookEntitiesForWorktree({ workspaceLocalId, worktreeLocalId }),
     });
   }
 
@@ -1224,39 +1287,8 @@ export async function buildPortalSnapshot(
   if (request.scope === 'worktree' && workspaceLocalId && worktreeLocalId) {
     sections.push({
       name: 'summary',
-      run: async (): Promise<PortalEntityEnvelope[]> => {
-        const sectionEntities: PortalEntityEnvelope[] = [];
-        const summary = await readWorktreeSummary(
-          workspaceLocalId,
-          worktreeLocalId,
-        ).catch(() => null);
-        if (summary) {
-          sectionEntities.push({
-            entityType: 'worktree_summary',
-            localId: worktreeLocalId,
-            parentLocalId: worktreeScopedParentLocalId(
-              workspaceLocalId,
-              worktreeLocalId,
-            ),
-            payload: {
-              workspaceLocalId,
-              worktreeLocalId,
-              title: summary.title,
-              description: summary.description,
-              highlights: summary.highlights,
-              repos: summary.repos,
-              generatedAt: summary.generatedAt,
-              lastFullRefreshAt: summary.lastFullRefreshAt,
-              generating: isWorktreeSummaryGenerating(
-                workspaceLocalId,
-                worktreeLocalId,
-              ),
-            },
-          });
-        }
-
-        return sectionEntities;
-      },
+      run: (): Promise<PortalEntityEnvelope[]> =>
+        listSummaryEntitiesForWorktree({ workspaceLocalId, worktreeLocalId }),
     });
   }
 

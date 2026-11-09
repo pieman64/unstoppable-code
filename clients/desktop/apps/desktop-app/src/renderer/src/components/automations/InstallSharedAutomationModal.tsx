@@ -1,3 +1,4 @@
+import { Fieldset } from '@canopy/ui-shared/components';
 import {
   type JSX,
   type ReactNode,
@@ -17,7 +18,7 @@ import type {
 import type {
   PipelineData,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   projectKindToTargetContext,
   type SharedAutomationInstallSource,
@@ -2035,7 +2036,7 @@ function InstallSharedAutomationForm({
 
       {packagedPipelineRows.length > 0 && (
         <section
-          className="space-y-1.5"
+          className="flex flex-col gap-1.5"
           data-testid="install-automation-packaged-pipelines"
         >
           <Heading level={3} variant="title">
@@ -2046,7 +2047,7 @@ function InstallSharedAutomationForm({
             {packagedPipelineRows.map((row) => (
               <li
                 key={`${row.status}:${row.key}`}
-                className="py-1.5 text-s"
+                className="flex flex-col py-1.5 text-s gap-1"
                 data-testid={`install-automation-packaged-pipeline-${row.key}`}
                 data-status={row.status}
               >
@@ -2060,7 +2061,7 @@ function InstallSharedAutomationForm({
                 </div>
                 {row.fileChanges && (
                   <ul
-                    className="mt-1 space-y-0.5 text-xs"
+                    className="flex flex-col text-xs gap-0.5"
                     data-testid={`install-automation-packaged-pipeline-${row.key}-files`}
                   >
                     {packagedPipelineFileChangeLines(row.fileChanges).map(
@@ -2081,8 +2082,8 @@ function InstallSharedAutomationForm({
                 )}
                 {row.rawPipeline !== undefined && (
                   <Disclosure
+                    className=""
                     label={PACKAGED_PIPELINE_REVIEW_LABEL}
-                    className="mt-1"
                     dataTestId={`install-automation-packaged-pipeline-${row.key}-review-disclosure`}
                     toggleTestId={`install-automation-packaged-pipeline-${row.key}-review`}
                   >
@@ -2198,8 +2199,11 @@ function InstallSharedAutomationForm({
       )}
 
       {inputKeys.length > 0 && (
-        <fieldset className="space-y-2" data-testid="install-automation-inputs">
-          <legend className="text-s fg-secondary">Workflow inputs</legend>
+        <Fieldset
+          gap="inline"
+          legend={<span className="text-s fg-secondary">Workflow inputs</span>}
+          data-testid="install-automation-inputs"
+        >
           {inputKeys.map((key) => (
             <FormField key={key} label={key}>
               {(control) => (
@@ -2216,12 +2220,12 @@ function InstallSharedAutomationForm({
               )}
             </FormField>
           ))}
-        </fieldset>
+        </Fieldset>
       )}
 
       {sharedRunCondition !== null && (
         <div
-          className="space-y-1.5"
+          className="flex flex-col gap-1.5"
           data-testid="install-automation-run-condition"
         >
           <ShareCheckbox

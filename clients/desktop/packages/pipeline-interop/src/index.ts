@@ -5,3 +5,4 @@ export * from './normalize-pipeline';
 export * from './catalog-validation';
 export * from './automation-target';
 export * from './assets';
+export * from './portability';

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import {
   createPlatformEndpointServices,
   createOwnedChildServices,
@@ -302,13 +302,98 @@ describe('daemon host', () => {
     },
   );
 
+  const verifyStorageOverrideEnvironment = async (): Promise<void> => {
+    for (const runtimeMode of ['prod', 'rc', 'dev'] as const) {
+      const data = join(root, 'custom data');
+      const secure = join(root, 'custom secrets');
+      const out = join(root, 'environment.json');
+      const script = `process.chdir(process.argv[2]);require('fs').writeFileSync(process.argv[1],JSON.stringify({environment:process.env,data:process.env.CANOPY_DATA_DIR&&require('path').resolve(process.env.CANOPY_DATA_DIR),secure:process.env.CANOPY_SECURE_DATA_DIR&&require('path').resolve(process.env.CANOPY_SECURE_DATA_DIR)}))`;
+      const overrideCases: Readonly<Record<string, string | undefined>>[] = [
+        { CANOPY_DATA_DIR: ` ${data} ` },
+        { CANOPY_SECURE_DATA_DIR: ` ${secure} ` },
+        { CANOPY_DATA_DIR: data, CANOPY_SECURE_DATA_DIR: secure },
+        {
+          CANOPY_DATA_DIR: relative(process.cwd(), data),
+          CANOPY_SECURE_DATA_DIR: relative(process.cwd(), secure),
+        },
+        { canopy_data_dir: data, CaNoPy_SeCuRe_DaTa_DiR: secure },
+        { CANOPY_DATA_DIR: data, canopy_data_dir: data },
+        { CANOPY_DATA_DIR: data, CANOPY_SECURE_DATA_DIR: '  ' },
+        { CANOPY_DATA_DIR: '  ', CANOPY_SECURE_DATA_DIR: secure },
+        { CANOPY_DATA_DIR: '', CANOPY_SECURE_DATA_DIR: '' },
+        { CANOPY_DATA_DIR: ' \t ', CANOPY_SECURE_DATA_DIR: ' \t ' },
+        {},
+      ];
+      for (const overrides of overrideCases) {
+        const environmentSource = {
+          ...(windows
+            ? {
+                SystemRoot: process.env.SystemRoot,
+                USERPROFILE: root,
+                APPDATA: root,
+              }
+            : { HOME: root }),
+          ...overrides,
+          SENTINEL_SECRET: 'env-leak',
+          NODE_OPTIONS: '--invalid-option',
+        };
+        const { supervisor } = host({ runtimeMode, environmentSource }).ports;
+        const child = await supervisor.spawnDaemon({
+          executable: node,
+          args: ['-e', script, out, root],
+          signal,
+        });
+        try {
+          await expect(child.exited).resolves.toEqual({
+            code: 0,
+            signal: null,
+          });
+          const received: unknown = JSON.parse(await fs.readFile(out, 'utf8'));
+          expect(received).toMatchObject({
+            environment: windows ? { USERPROFILE: root } : { HOME: root },
+          });
+          for (const name of [
+            'CANOPY_DATA_DIR',
+            'CANOPY_SECURE_DATA_DIR',
+          ] as const) {
+            const value = Object.entries(overrides)
+              .find(
+                ([key]) => (windows ? key.toUpperCase() : key) === name,
+              )?.[1]
+              ?.trim();
+            if (value) {
+              expect(received).toHaveProperty(
+                ['environment', name],
+                resolve(value),
+              );
+              expect(received).toHaveProperty(
+                name === 'CANOPY_DATA_DIR' ? 'data' : 'secure',
+                resolve(value),
+              );
+            } else expect(received).not.toHaveProperty(['environment', name]);
+          }
+          for (const name of [
+            'canopy_data_dir',
+            'CaNoPy_SeCuRe_DaTa_DiR',
+            'SENTINEL_SECRET',
+            'NODE_OPTIONS',
+          ])
+            expect(received).not.toHaveProperty(['environment', name]);
+        } finally {
+          await supervisor.terminateDaemon(child, signal);
+        }
+      }
+    }
+  };
+
   // Darwin and Linux share these native cases; Windows registers its own
   // variants (below), so no OS reports another's cases as skipped.
   const posixIt = windows ? undefined : it;
 
   posixIt?.(
-    'hands the claim to a real child over stdin, never argv or env',
+    'hands the claim over stdin, never argv or env, and forwards only allowed storage overrides',
     async () => {
+      await verifyStorageOverrideEnvironment();
       const out = join(root, 'child.txt');
       const script = `let s='';process.stdin.on('data',d=>s+=d).on('end',()=>require('fs').writeFileSync(process.argv[1],[s,process.env.CANOPY_DAEMON_CLAIM_HANDOFF??'-',JSON.stringify([process.argv,process.env])].join('\\n')))`;
       const handle = { claimId: 'bearer-claim-secret', dataRoot: root };
@@ -328,7 +413,38 @@ describe('daemon host', () => {
       expect(visible).not.toContain('env-leak');
       expect((await run()).slice(0, 2)).toEqual(['', '-']);
     },
+    30_000,
   );
+
+  it('forwards only the two explicit storage overrides through the daemon environment filter', async () => {
+    const out = join(root, 'storage-environment.json');
+    const overrides = {
+      CANOPY_DATA_DIR: root,
+      CANOPY_SECURE_DATA_DIR: join(root, 'custom-secure'),
+    };
+    const { supervisor } = host({
+      environmentSource: {
+        ...process.env,
+        ...overrides,
+        SENTINEL_SECRET: 'must-not-leak',
+      },
+    }).ports;
+    const script = `require('node:fs').writeFileSync(process.argv[1], JSON.stringify(process.env));`;
+    const child = await supervisor.spawnDaemon({
+      executable: node,
+      args: ['-e', script, out],
+      signal,
+    });
+    try {
+      // Existing child-lifecycle helper waits for the actual emitted file.
+      await child.exited;
+      const environment: unknown = JSON.parse(await fs.readFile(out, 'utf8'));
+      expect(environment).toMatchObject(overrides);
+      expect(environment).not.toHaveProperty('SENTINEL_SECRET');
+    } finally {
+      await supervisor.terminateDaemon(child, signal);
+    }
+  });
 
   it('rejects before any child exists for missing or foreign executables and oversized handles', async () => {
     const missing = join(
@@ -561,8 +677,9 @@ describe('daemon host', () => {
   const windowsIt = windows ? it : undefined;
 
   windowsIt?.(
-    'refuses a startup claim handoff, which Windows never passes to a child',
+    'refuses a startup claim handoff on Windows and forwards only allowed storage overrides',
     async () => {
+      await verifyStorageOverrideEnvironment();
       const { supervisor } = host().ports;
       await expect(
         supervisor.spawnDaemon({
@@ -578,6 +695,7 @@ describe('daemon host', () => {
         },
       });
     },
+    30_000,
   );
 
   windowsIt?.(

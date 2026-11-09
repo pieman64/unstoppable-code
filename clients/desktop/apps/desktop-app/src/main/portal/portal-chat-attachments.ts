@@ -1,5 +1,11 @@
+import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
+import { filesystemErrorCode } from '@canopy/core-runtime/node/workspace/cowork-folder';
+import {
+  ensureWorkspaceWriteDirectory,
+  assertCoworkChatRootPresent,
+} from '../lib/cowork-folder-guard';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   CLOUD_ATTACHMENT_MAX_BYTES,
@@ -9,7 +15,7 @@ import {
   portalAttachmentMediaTypeForFilename,
 } from '@canopy/protocol/cloud-attachments';
 import type { PortalChatCloudAttachmentRef } from '@canopy/desktop-shared/types';
-import { resolveAgentAttachmentsDir } from '../lib/agent-attachments';
+import { prepareAgentAttachmentsDir } from '../lib/agent-attachments';
 import {
   consumePortalChatAttachment,
   downloadPortalChatAttachment,
@@ -206,7 +212,10 @@ export async function materializePortalChatAttachments(
       'Attachments need an active Remote Control session on the desktop.',
     );
   }
-  const dir = resolveAgentAttachmentsDir(input.projectId, input.worktreeId);
+  const dir = await prepareAgentAttachmentsDir(
+    input.projectId,
+    input.worktreeId,
+  );
   const controller = new AbortController();
   const deadline = setTimeout(() => {
     controller.abort();
@@ -249,7 +258,7 @@ export async function materializePortalChatAttachments(
         );
       }
       const itemDir = join(dir, `portal-${randomUUID()}`);
-      await mkdir(itemDir, { recursive: true });
+      await ensureWorkspaceWriteDirectory(itemDir);
       const path = join(itemDir, ref.filename);
       try {
         await writeFile(path, bytes, { flag: 'wx' });
@@ -269,6 +278,9 @@ export async function materializePortalChatAttachments(
         ),
       ),
     );
+    if (readCoworkFolderMissing(error)) throw error;
+    if (['ENOENT', 'ENOTDIR'].includes(String(filesystemErrorCode(error))))
+      await assertCoworkChatRootPresent(input.projectId, input.worktreeId);
     if (error instanceof PortalChatAttachmentError) throw error;
     throw new PortalChatAttachmentError(
       'execution_failed',

@@ -22,6 +22,7 @@ export interface CanopyDescriptorClassifyInput {
   readonly supervisor: CanopyDaemonProcessInspector;
   readonly protocolVersions: readonly number[];
   readonly signal: AbortSignal;
+  readonly secureStorageLayout?: string;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -53,6 +54,9 @@ export function parseCanopyRuntimeDescriptor(
   return {
     version: 1,
     ...fields,
+    ...(isText(value.secureStorageLayout) && {
+      secureStorageLayout: value.secureStorageLayout,
+    }),
     endpoint: { kind, path },
     protocolRange: { min, max },
   };
@@ -116,6 +120,14 @@ export async function classifyCanopyDescriptor(
   if (!running) return { kind: 'stale', reason: 'process_exited' };
   if (running.startIdentity !== descriptor.startIdentity)
     return { kind: 'stale', reason: 'identity_mismatch' };
+  if (
+    input.secureStorageLayout !== undefined &&
+    descriptor.secureStorageLayout !== input.secureStorageLayout
+  )
+    throw canopyConnectError(
+      'failed_precondition',
+      'The running daemon uses an older secure storage layout. Quit all app, CLI and daemon processes, then start the current app or CLI.',
+    );
   const { min, max } = descriptor.protocolRange;
   const compatible = protocolVersions.some((v) => v >= min && v <= max);
   return { kind: compatible ? 'live' : 'incompatible', descriptor };

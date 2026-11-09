@@ -1,5 +1,6 @@
 import { useState, type JSX, type ReactNode } from 'react';
 import {
+  Stack,
   Button,
   Disclosure,
   ErrorBanner,
@@ -279,7 +280,7 @@ export function CapabilityPackageProblems({
             label={`Marked as not commands (${String(dismissedInvocations.length)})`}
             dataTestId={`${testIdPrefix}-dependency-problems-dismissed-list-disclosure`}
           >
-            <ul className="space-y-1">
+            <Stack as="ul" gap="tight">
               {dismissedInvocations.map((dismissal) => (
                 <li
                   key={`${dismissal.provider}:${dismissal.token}`}
@@ -302,7 +303,7 @@ export function CapabilityPackageProblems({
                   </Button>
                 </li>
               ))}
-            </ul>
+            </Stack>
           </Disclosure>
         </div>
       )}
@@ -339,7 +340,7 @@ function DismissedReferenceList({
         label={`Pipeline mentions left out (${String(dismissals.length)})`}
         dataTestId={`${testIdPrefix}-dependency-problems-dismissed-references-disclosure`}
       >
-        <ul className="space-y-1">
+        <Stack as="ul" gap="tight">
           {dismissals.map((dismissal) => {
             const slug = `${dismissal.kind === 'pipeline_reference' ? 'name' : 'child'}-${slugifyProblemPart(dismissal.token)}`;
             return (
@@ -364,7 +365,7 @@ function DismissedReferenceList({
               </li>
             );
           })}
-        </ul>
+        </Stack>
       </Disclosure>
     </div>
   );
@@ -530,7 +531,7 @@ function ProblemRow({
 }: ProblemRowProps): JSX.Element {
   return (
     <li
-      className={`space-y-0.5 py-2 text-xs ${COPY_INSET_CLASS}`}
+      className={`flex flex-col gap-0.5 py-2 text-xs ${COPY_INSET_CLASS}`}
       {...problemAttributes(problem, testIdPrefix)}
     >
       <p className="font-medium fg-primary">{problem.title}</p>

@@ -5,6 +5,7 @@
 // `workspace.json` writer:
 //
 //   POST /api/v1/projects/personal/match           → match decision
+//   GET  /api/v1/projects/personal?deviceId=       → this device's list (CAN-5192)
 //   POST /api/v1/projects/personal                 → create (by creationKey)
 //   GET  /api/v1/projects/:id/manifest             → manifest
 //   PUT  /api/v1/projects/:id/manifest             → compare-and-set update
@@ -14,6 +15,7 @@
 //                                                    first event)
 //   POST /api/v1/projects/:id/instances/claim      → claim this device
 //   POST /api/v1/projects/instances/:id/complete   → mark the claim ready
+//   POST /api/v1/projects/instances/:id/detach     → release a device setup
 //   GET  /api/v1/projects/instances/:id/repositories
 //   PUT  /api/v1/projects/instances/:id/repositories
 //
@@ -193,6 +195,7 @@ const MANIFEST = /^\/api\/v1\/projects\/([^/]+)\/manifest$/;
 const EVENTS = /^\/api\/v1\/projects\/([^/]+)\/events$/;
 const CLAIM = /^\/api\/v1\/projects\/([^/]+)\/instances\/claim$/;
 const COMPLETE = /^\/api\/v1\/projects\/instances\/([^/]+)\/complete$/;
+const DETACH = /^\/api\/v1\/projects\/instances\/([^/]+)\/detach$/;
 const SELECTION = /^\/api\/v1\/projects\/instances\/([^/]+)\/repositories$/;
 
 /**
@@ -216,6 +219,39 @@ export async function handleCloudProjectsRequest(request, response, url) {
   if (method === 'POST' && pathname === '/api/v1/projects/personal/match') {
     record('cloudProjectMatch');
     jsonResponse(response, 200, match(state, await readJsonBody(request)));
+    return true;
+  }
+  if (method === 'GET' && pathname === '/api/v1/projects/personal') {
+    const deviceId = url.searchParams.get('deviceId');
+    const generation = Number(url.searchParams.get('installationGeneration'));
+    record('cloudProjectList');
+    jsonResponse(response, 200, {
+      projects: state.projects.map((project) => {
+        const instance = state.instances.find(
+          (candidate) =>
+            candidate.projectId === project.projectId &&
+            candidate.deviceId === deviceId &&
+            candidate.installationGeneration === generation &&
+            candidate.state !== 'DETACHED',
+        );
+        return {
+          projectId: project.projectId,
+          name: project.name,
+          kind: project.kind,
+          topology: project.topology,
+          repositoryCount: project.repositories.length,
+          updatedAt: '2026-11-03T10:00:00.000Z',
+          instance: instance
+            ? {
+                instanceId: instance.instanceId,
+                state: instance.state,
+                selectedRepositoryIds: instance.selectedRepositoryIds,
+                dismissedRepositoryIds: instance.dismissedRepositoryIds,
+              }
+            : null,
+        };
+      }),
+    });
     return true;
   }
   if (method === 'POST' && pathname === '/api/v1/projects/personal') {
@@ -295,8 +331,16 @@ export async function handleCloudProjectsRequest(request, response, url) {
       (candidate) =>
         candidate.projectId === claimMatch[1] &&
         candidate.deviceId === body.deviceId &&
-        candidate.localWorkspaceId === body.localWorkspaceId,
+        candidate.installationGeneration === body.installationGeneration &&
+        candidate.state !== 'DETACHED',
     );
+    if (instance && instance.localWorkspaceId !== body.localWorkspaceId) {
+      jsonResponse(response, 409, {
+        error: 'This device already has a different active setup',
+        code: 'conflict',
+      });
+      return true;
+    }
     if (!instance) {
       instance = {
         instanceId: randomUUID(),
@@ -305,6 +349,7 @@ export async function handleCloudProjectsRequest(request, response, url) {
         state: 'CLAIMED',
         projectId: claimMatch[1],
         deviceId: body.deviceId,
+        installationGeneration: body.installationGeneration,
         localWorkspaceId: body.localWorkspaceId,
         revision: 1,
         selectedRepositoryIds: [],
@@ -344,6 +389,18 @@ export async function handleCloudProjectsRequest(request, response, url) {
       instanceId: target.instanceId,
       state: target.state,
       readyAt: new Date().toISOString(),
+    });
+    return true;
+  }
+
+  const detachMatch = pathname.match(DETACH);
+  if (method === 'POST' && detachMatch && instance(detachMatch[1])) {
+    const target = instance(detachMatch[1]);
+    record(`cloudProjectDetach:${target.projectId}`);
+    target.state = 'DETACHED';
+    jsonResponse(response, 200, {
+      instanceId: target.instanceId,
+      state: target.state,
     });
     return true;
   }

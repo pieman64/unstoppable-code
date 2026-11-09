@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import {
   type JSX,
   type ReactNode,
@@ -363,7 +364,7 @@ export function OverviewPage(): JSX.Element {
         recommendations={
           // The `recommendations` slot is a single node, so compose: readiness
           // first (actionable), mobile-app promo second (a nudge).
-          <div className="space-y-4">
+          <Stack gap="group">
             {showWorkspaceReadiness && (
               <WorkspaceReadinessOverview
                 projects={projects}
@@ -371,7 +372,7 @@ export function OverviewPage(): JSX.Element {
               />
             )}
             <MobileAppPromoCard />
-          </div>
+          </Stack>
         }
       />
     </div>

@@ -76,4 +76,59 @@ describe('interface tools client (CAN-4131)', () => {
     ).resolves.toBeUndefined();
     expect(warn).not.toHaveBeenCalled();
   });
+
+  it('two contributors share one lease registration', async () => {
+    const invoke = jest.fn().mockResolvedValue({
+      ok: true,
+      value: { registrationRevision: 1, effectiveToolNames: [] },
+    });
+    stubRelay(invoke);
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: { randomUUID: (): string => 'key' },
+    });
+    const settle = (): Promise<void> =>
+      new Promise((resolve) => setTimeout(resolve, 0));
+    await jest.isolateModulesAsync(async () => {
+      const { contributeInterfaceTools } =
+        await import('../interface-tools-client');
+      const withdrawAdvisor = contributeInterfaceTools([
+        'ui.show_files',
+        'ui.get_current_ui_state',
+      ]);
+      const withdrawEditor = contributeInterfaceTools([
+        'ui.pipeline_editor.list',
+      ]);
+      await settle();
+      const registered = invoke.mock.calls.map(
+        ([request]: [{ params: { tools?: { name: string }[] } }]) =>
+          request.params.tools?.map((tool) => tool.name),
+      );
+      // Each registration names every contributor's tools, never just one.
+      expect(registered.at(-1)).toEqual([
+        'ui.get_current_ui_state',
+        'ui.pipeline_editor.list',
+        'ui.show_files',
+      ]);
+      invoke.mockClear();
+      withdrawEditor();
+      await settle();
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledWith({
+        kind: 'request',
+        method: 'core.client.tools.unregister',
+        params: { toolNames: ['ui.pipeline_editor.list'] },
+      });
+      invoke.mockClear();
+      withdrawAdvisor();
+      withdrawAdvisor();
+      await settle();
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledWith({
+        kind: 'request',
+        method: 'core.client.tools.unregister',
+        params: { all: true },
+      });
+    });
+  });
 });

@@ -20,7 +20,7 @@ import type {
   PipelinePackageAnalysisSummary,
   PipelinePackageInvocationDismissal,
   PipelinePackageReadiness,
-} from './pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 /** A published listing plus this device's existing, context-visible install. */
 export interface DesktopPublisherSkill extends PublisherSkillSummary {

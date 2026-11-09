@@ -1,7 +1,11 @@
 import { type JSX } from 'react';
 import { ActionTooltip } from '@canopy/ui-shared';
-import type { PipelineTriggerType } from '@canopy/desktop-shared/types/pipeline';
-import { TriggerIcon, type IconSize } from '@canopy/ui-shared/icons/AppIcons';
+import type { PipelineTriggerType } from '@canopy/execution-engine/types/pipeline';
+import {
+  TriggerIcon,
+  WorkflowIcon,
+  type IconSize,
+} from '@canopy/ui-shared/icons/AppIcons';
 import { PlanModeIcon, TaskIcon } from '@canopy/ui-shared/icons';
 import { getTriggerMeta } from './pipeline-trigger-meta';
 
@@ -24,6 +28,7 @@ export function PipelineTriggerTypeIcon({
 }: PipelineTriggerTypeIconProps): JSX.Element {
   if (type === 'dispatch') return <TriggerIcon size={size} />;
   if (type === 'task_ready') return <TaskIcon size={size} />;
+  if (type === 'workflow') return <WorkflowIcon size={size} />;
   return <PlanModeIcon size={size} />;
 }
 

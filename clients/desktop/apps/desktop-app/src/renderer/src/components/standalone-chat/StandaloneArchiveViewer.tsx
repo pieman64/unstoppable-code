@@ -160,15 +160,15 @@ export function StandaloneArchiveViewer({
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto">
-      <div className="mx-auto w-full max-w-3xl px-6 py-8">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
+      <div className="mx-auto flex flex-col gap-4 w-full max-w-3xl px-6 py-8">
+        <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2 text-xs fg-secondary">
               <AppCatalogArchiveBoxIcon size="sm" />
               <span>Archived chat</span>
             </div>
             <div
-              className={`${POSTHOG_REPLAY_MASK_CLASS} mt-1 text-s font-medium fg-primary`}
+              className={`${POSTHOG_REPLAY_MASK_CLASS} text-s font-medium fg-primary`}
             >
               {archiveTitle}
             </div>
@@ -196,79 +196,83 @@ export function StandaloneArchiveViewer({
             </Button>
           </div>
         </div>
-        {meta && (
-          <div className="mb-5 flex flex-wrap gap-x-4 gap-y-1 text-xs fg-secondary">
-            <span>Created {formatDate(meta.createdAt)}</span>
-            {meta.archivedAt && (
-              <span>Archived {formatDate(meta.archivedAt)}</span>
-            )}
-          </div>
-        )}
-        {tab ? (
-          // `ChatMessageList` renders an `absolute inset-0` scroller inside a
-          // `relative flex-1` root, so it only has height inside a flex column
-          // with a resolved height. A plain `min-h` block collapses that
-          // scroller to 0px and the transcript renders invisibly, so give it an
-          // explicit flex-column height here.
-          <Surface variant="group" className="overflow-hidden">
-            <div className="flex flex-col h-[min(70vh,800px)] min-h-80">
-              <Suspense
-                fallback={
-                  <div className="flex min-h-80 items-center justify-center">
-                    <LoadingSpinner tone="secondary" />
-                  </div>
-                }
-              >
-                <ChatMessageList
-                  pagingControls={
-                    <TranscriptPagingControls
-                      needsLoad={Boolean(
-                        tab?.transcript &&
-                        tab.transcriptWindow?.view !== 'turns',
-                      )}
-                      hasEarlier={tab.transcriptWindow?.before !== undefined}
-                      loading={loading && turnPageId === null}
-                      suspended={loading}
-                      error={
-                        error && turnPageId === null
-                          ? "Couldn't load archived messages."
-                          : null
-                      }
-                      onLoadEarlier={() => void loadPage(true)}
-                      onReload={() => void loadPage(false)}
-                    />
-                  }
-                  transcriptTurns={tab?.transcriptWindow?.turns}
-                  onLoadTurn={loadTurn}
-                  turnPageId={turnPageId}
-                  turnLoading={loading}
-                  turnError={error ? "Couldn't load archived messages." : null}
-                  targetOverride={transcriptScope}
-                  standaloneHistory={transcriptScope?.standaloneHistory}
-                  messages={tab.messages}
-                  queuedMessages={[]}
-                  chatId={tab.id}
-                  agentUsage={tab.agentUsage}
-                  turnDiffs={tab.turnDiffs}
-                  onClearQueuedMessage={() => undefined}
-                />
-              </Suspense>
+        <div className="flex flex-col gap-5">
+          {meta && (
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs fg-secondary">
+              <span>Created {formatDate(meta.createdAt)}</span>
+              {meta.archivedAt && (
+                <span>Archived {formatDate(meta.archivedAt)}</span>
+              )}
             </div>
-          </Surface>
-        ) : summary ? (
-          <div
-            data-testid="standalone-archive-summary"
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-success prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5`}
-          >
-            <Markdown>{summary}</Markdown>
-          </div>
-        ) : (
-          <div className="py-8 text-center text-s fg-secondary">
-            {legacySummaryOnly
-              ? 'No summary available for this archived chat.'
-              : 'Archived chat is unavailable.'}
-          </div>
-        )}
+          )}
+          {tab ? (
+            // `ChatMessageList` renders an `absolute inset-0` scroller inside a
+            // `relative flex-1` root, so it only has height inside a flex column
+            // with a resolved height. A plain `min-h` block collapses that
+            // scroller to 0px and the transcript renders invisibly, so give it an
+            // explicit flex-column height here.
+            <Surface variant="group" className="overflow-hidden">
+              <div className="flex flex-col h-[min(70vh,800px)] min-h-80">
+                <Suspense
+                  fallback={
+                    <div className="flex min-h-80 items-center justify-center">
+                      <LoadingSpinner tone="secondary" />
+                    </div>
+                  }
+                >
+                  <ChatMessageList
+                    pagingControls={
+                      <TranscriptPagingControls
+                        needsLoad={Boolean(
+                          tab?.transcript &&
+                          tab.transcriptWindow?.view !== 'turns',
+                        )}
+                        hasEarlier={tab.transcriptWindow?.before !== undefined}
+                        loading={loading && turnPageId === null}
+                        suspended={loading}
+                        error={
+                          error && turnPageId === null
+                            ? "Couldn't load archived messages."
+                            : null
+                        }
+                        onLoadEarlier={() => void loadPage(true)}
+                        onReload={() => void loadPage(false)}
+                      />
+                    }
+                    transcriptTurns={tab?.transcriptWindow?.turns}
+                    onLoadTurn={loadTurn}
+                    turnPageId={turnPageId}
+                    turnLoading={loading}
+                    turnError={
+                      error ? "Couldn't load archived messages." : null
+                    }
+                    targetOverride={transcriptScope}
+                    standaloneHistory={transcriptScope?.standaloneHistory}
+                    messages={tab.messages}
+                    queuedMessages={[]}
+                    chatId={tab.id}
+                    agentUsage={tab.agentUsage}
+                    turnDiffs={tab.turnDiffs}
+                    onClearQueuedMessage={() => undefined}
+                  />
+                </Suspense>
+              </div>
+            </Surface>
+          ) : summary ? (
+            <div
+              data-testid="standalone-archive-summary"
+              className={`${POSTHOG_REPLAY_BLOCK_CLASS} prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-success prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5`}
+            >
+              <Markdown>{summary}</Markdown>
+            </div>
+          ) : (
+            <div className="py-8 text-center text-s fg-secondary">
+              {legacySummaryOnly
+                ? 'No summary available for this archived chat.'
+                : 'Archived chat is unavailable.'}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

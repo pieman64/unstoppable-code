@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { BrowserRecordingStep } from '@canopy/desktop-shared/types/browser';
+import type { BrowserRecordingStep } from '@canopy/execution-engine/types/browser';
 
 const BY_NAME =
   '// Files by name only: put them beside the script, or use their paths.';

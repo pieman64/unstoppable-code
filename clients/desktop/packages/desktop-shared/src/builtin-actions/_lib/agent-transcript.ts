@@ -1,4 +1,4 @@
-import { redactStructuredValue } from '@canopy/desktop-shared/lib/redaction';
+import { redactStructuredValue } from '@canopy/execution-engine/lib/redaction';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
 
 export interface TranscriptCapture {

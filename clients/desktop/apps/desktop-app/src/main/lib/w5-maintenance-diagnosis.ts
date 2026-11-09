@@ -26,6 +26,8 @@ export interface W5FileIssue {
     /** An unreadable lifecycle journal entry the user moved aside (CAN-5335). */
     | 'quarantined-journal';
 }
+export type W5DiagnosisScope = 'all-artifacts' | 'w5-owned';
+
 export interface W5Diagnosis {
   readonly files: readonly W5FileIssue[];
   /** Filename-matching regular files, not operations; null if inspection is unavailable. */
@@ -176,7 +178,10 @@ async function copyLogForDiagnosis(logPath: string): Promise<DiagnosticCopy> {
  * No migration, recovery, compensation, reservation transition or file write.
  * Kept outside the running desktop graph; production exposure remains blocked.
  */
-export async function diagnoseW5State(dataRoot: string): Promise<W5Diagnosis> {
+export async function diagnoseW5State(
+  dataRoot: string,
+  scope: W5DiagnosisScope = 'all-artifacts',
+): Promise<W5Diagnosis> {
   const root = join(dataRoot, 'workspaces');
   const issues: W5FileIssue[] = [];
   const images = new Map<string, Buffer | null>();
@@ -212,17 +217,19 @@ export async function diagnoseW5State(dataRoot: string): Promise<W5Diagnosis> {
         ids.add(entry.name);
         if (!workspaceTypes.has(entry.name))
           issues.push({ path: entry.name, reason: 'unknown-artifact' });
-        for (const child of await readdir(join(root, entry.name), {
-          withFileTypes: true,
-        }))
-          if (
-            child.name !== 'workspace.json' &&
-            child.name !== 'worktrees.json'
-          )
-            issues.push({
-              path: `${entry.name}/${child.name}`,
-              reason: 'unknown-artifact',
-            });
+        // Workspace payloads are cloned, not owned or interpreted by W5.
+        if (scope === 'all-artifacts')
+          for (const child of await readdir(join(root, entry.name), {
+            withFileTypes: true,
+          }))
+            if (
+              child.name !== 'workspace.json' &&
+              child.name !== 'worktrees.json'
+            )
+              issues.push({
+                path: `${entry.name}/${child.name}`,
+                reason: 'unknown-artifact',
+              });
       } else if (
         entry.name !== 'index.json' &&
         entry.name !== 'index.json.bak'

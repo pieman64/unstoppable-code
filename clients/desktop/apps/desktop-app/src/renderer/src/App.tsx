@@ -18,7 +18,6 @@ import {
 } from '@/lib/navigation/settings-destinations';
 import { canTransferChatSession } from '@/lib/session-transfer-eligibility';
 import { resolveSharedRunUrl } from '@/lib/share-links';
-import { installAutoArchiveAfterDelegates } from '@/stores/chat/slices/revisioned';
 import { initializeDelegationActivityStore } from '@/stores/delegationActivityStore';
 import { initializeLiveBackgroundTaskStore } from '@/stores/liveBackgroundTaskStore';
 import { initializeSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
@@ -32,7 +31,7 @@ import {
   CONSENT_TOS_VERSION,
   type CanopyGuestConsent,
 } from '@canopy/desktop-shared/constants/consent';
-import { codexSpeedFromFastMode } from '@canopy/desktop-shared/lib/codex-speed';
+import { codexSpeedFromFastMode } from '@canopy/execution-engine/lib/codex-speed';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -76,6 +75,7 @@ import { ImportProjectsInvite } from './components/import-projects/ImportProject
 import { ImportProjectsModalHost } from './components/import-projects/ImportProjectsModalHost';
 import { DevPagesShell } from './components/pages/DevPagesShell';
 import { MainPage } from './components/pages/MainPage';
+import { WorktreeErrorNotice } from './components/worktree/WorktreeErrorNotice';
 import { isDevPage } from './components/pages/dev-pages';
 import { PipelineEditorRuntimeBridge } from './components/pipeline/PipelineEditorRuntimeBridge';
 import { ReleaseHighlightsHost } from './components/release-highlights/ReleaseHighlightsHost';
@@ -182,6 +182,7 @@ import { useBranchGroupingPreferenceStore } from './stores/branchGroupingPrefere
 import { ensureBrowserEventSubscription } from './stores/browserEventSubscription';
 import { useBrowserStore } from './stores/browserStore';
 import { invalidateApprovalDefaults } from './stores/chat/approval-defaults';
+import { followClaudeModAdmissionPreferences } from './stores/chat/claude-mod-discovery';
 import { useChatPrefetch } from './stores/chat/chat-prefetch';
 import { tabRequestedCodexSpeed } from './stores/chat/codex-speed';
 import { waitForWorktreeHydration } from './stores/chat/hydration';
@@ -202,6 +203,7 @@ import {
 } from './stores/chatStore';
 import { useCloudConnectGateStore } from './stores/cloudConnectGateStore';
 import { useFeatureFlagsStore } from './stores/featureFlagsStore';
+import { useRemoteControlStore } from './stores/remoteControlStore';
 import { useFileLabelsStore } from './stores/fileLabelsStore';
 import { useFileTabUiStore } from './stores/fileTabUiStore';
 import { useGitHubStore } from './stores/githubStore';
@@ -253,6 +255,11 @@ const HomePage = lazy(() =>
   })),
 );
 
+const CloudChatPage = lazy(() =>
+  import('./cloud-chats/CloudChatPage').then((m) => ({
+    default: m.CloudChatPage,
+  })),
+);
 const StandaloneChatPage = lazy(() =>
   import('./components/pages/StandaloneChatPage').then((m) => ({
     default: m.StandaloneChatPage,
@@ -269,6 +276,14 @@ const PluginsPage = lazy(() =>
   import('./components/pages/PluginsPage').then((m) => ({
     default: m.PluginsPage,
   })),
+);
+
+const DesktopStandingConditions = lazy(() =>
+  import('./components/standing-conditions/DesktopStandingConditions').then(
+    (m) => ({
+      default: m.DesktopStandingConditions,
+    }),
+  ),
 );
 
 const HeaderStateGalleryPage = lazy(() =>
@@ -495,6 +510,12 @@ function App(): JSX.Element {
   const canopyPortalEnabled = useFeatureFlagsStore((s) =>
     s.isEnabled(CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key),
   );
+  // The Remote Control dialog follows device Remote Control; Portal only
+  // follows its opt-in (CAN-5985). Unknown until main's first snapshot.
+  const remoteControlAvailable = useRemoteControlStore(
+    (s) => s.state.available,
+  );
+  const remoteControlHydrated = useRemoteControlStore((s) => s.hydrated);
   const cloudSignInRequired = useFeatureFlagsStore((s) =>
     s.isEnabled(CLIENT_FEATURE_FLAGS.canopyCloudSignInRequired.key),
   );
@@ -701,15 +722,19 @@ function App(): JSX.Element {
     };
   }, []);
 
-  // If the Canopy Portal flag flips off while the Portal modal is open,
-  // close the modal so the user sees the disabled state immediately. The
-  // conditional render below ALSO gates on `canopyPortalEnabled` so the
-  // modal never paints between snapshot broadcasts and this effect.
+  // If Remote Control becomes unavailable while its dialog is open, close the
+  // dialog. The conditional render below ALSO gates on availability so the
+  // dialog never paints between snapshot broadcasts and this effect.
   useEffect(() => {
-    if (!canopyPortalEnabled && canopyPortalOpen) {
+    if (remoteControlHydrated && !remoteControlAvailable && canopyPortalOpen) {
       closeCanopyPortal();
     }
-  }, [canopyPortalEnabled, canopyPortalOpen, closeCanopyPortal]);
+  }, [
+    remoteControlHydrated,
+    remoteControlAvailable,
+    canopyPortalOpen,
+    closeCanopyPortal,
+  ]);
 
   useEffect(() => {
     if (!activePageAvailable) {
@@ -722,18 +747,15 @@ function App(): JSX.Element {
   // broadcast. Both are account-scoped, not page-scoped, so they live here.
   useEffect(() => initializeSharedContainersStore(), []);
   // Per-chat managed delegation activity keeps a chat with live delegates
-  // open and shown as working, and defers its auto-archive until the
-  // delegates finish. The live provider background-task mirror keeps the
+  // open and shown as working. The live provider background-task mirror keeps the
   // background-process cards current. App-lifetime, like the other
   // main-pushed mirrors.
   useEffect(() => {
-    const disposeAutoArchive = installAutoArchiveAfterDelegates();
     const disposeActivity = initializeDelegationActivityStore();
     const disposeLiveBackgroundTasks = initializeLiveBackgroundTaskStore();
     return (): void => {
       disposeLiveBackgroundTasks();
       disposeActivity();
-      disposeAutoArchive();
     };
   }, []);
   useEffect(() => {
@@ -804,6 +826,7 @@ function App(): JSX.Element {
           preferences.openAppLinksInBuiltInBrowser === true,
         );
       useBrowserStore.getState().applySearchPreferences(preferences);
+      followClaudeModAdmissionPreferences(preferences);
     });
   }, []);
 
@@ -1446,6 +1469,7 @@ function App(): JSX.Element {
       void useGlobalPluginDefaultsStore.getState().hydrate(prefs);
       void useNavigationModeStore.getState().hydrate(prefs);
       applyDisplayPreferences(prefs);
+      followClaudeModAdmissionPreferences(prefs);
 
       // Startup always lands on the Home composer. The MRU context
       // (`lastActiveContext` / legacy `lastSelectedWorktree*`) no longer
@@ -2046,6 +2070,10 @@ function App(): JSX.Element {
             }
             data-main-frame={mainFrame}
           >
+            {/* Over whichever page is open: a worktree started, repaired,
+                joined, archived or deleted from the sidebar can fail while
+                another page shows. */}
+            <WorktreeErrorNotice />
             <div
               className={
                 visiblePage === 'main' || visiblePage === 'kanban'
@@ -2067,6 +2095,7 @@ function App(): JSX.Element {
               {visiblePage === 'overview' && <OverviewPage />}
               {visiblePage === 'home' && <HomePage />}
               {visiblePage === 'chat' && <StandaloneChatPage />}
+              {visiblePage === 'cloud-chat' && <CloudChatPage />}
               {visiblePage !== null && isWorkflowsTabId(visiblePage) && (
                 <WorkflowsPage tab={visiblePage} />
               )}
@@ -2180,7 +2209,7 @@ function App(): JSX.Element {
           <PrPicker options={prPickerOptions} onClose={closePrPicker} />
         </Suspense>
       )}
-      {canopyPortalOpen && canopyPortalEnabled && (
+      {canopyPortalOpen && remoteControlAvailable && (
         <Suspense fallback={null}>
           <CanopyPortalModal
             onClose={closeCanopyPortal}
@@ -2303,6 +2332,10 @@ function App(): JSX.Element {
           {/* While another computer controls this one; persistent until the
               session ends, so it sits above the transient layers. */}
           <RemoteAccessControlledNotice />
+          {/* The top standing condition, until it recovers. */}
+          <Suspense fallback={null}>
+            <DesktopStandingConditions />
+          </Suspense>
           {/* Persistent until the background service is reached again. */}
           <BackgroundServiceUnavailableNotice />
           <WorkspaceRecoveryNotice />

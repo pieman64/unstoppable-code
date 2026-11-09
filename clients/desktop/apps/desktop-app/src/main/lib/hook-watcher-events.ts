@@ -7,7 +7,7 @@ import {
   type HookScope,
 } from '@canopy/desktop-shared/hooks';
 import { BRAND } from '@canopy/brand/current';
-import { setBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { setBrandEnv } from '@canopy/execution-engine/brand/env';
 import { buildWorktreeDataEnv } from './worktree-data-env';
 import type { AppAdvisorHookTriggeredEvent } from '../app-advisor/watchers';
 import { getAppAdvisorWatcherService } from '../app-advisor/watchers';

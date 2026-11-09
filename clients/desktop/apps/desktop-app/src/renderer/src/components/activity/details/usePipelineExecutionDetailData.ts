@@ -4,7 +4,7 @@ import type {
   ExecutionState,
   ExecutionSummary,
   PipelineAdvisorSnapshot,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { useChatStore } from '@/stores/chatStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import {

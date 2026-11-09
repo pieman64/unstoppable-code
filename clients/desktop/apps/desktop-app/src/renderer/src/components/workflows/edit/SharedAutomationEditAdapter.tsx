@@ -132,8 +132,13 @@ export function SharedAutomationEditAdapter({
     }
     if (detail === null) {
       return (
-        <DelayedLoadingPlaceholder slowNote="Still loading automation…">
-          <CenteredLoadingSpinner className="my-8" />
+        <DelayedLoadingPlaceholder
+          className=""
+          slowNote="Still loading automation…"
+        >
+          <div className="box-content flex min-h-full flex-1 py-8">
+            <CenteredLoadingSpinner className="" />
+          </div>
         </DelayedLoadingPlaceholder>
       );
     }

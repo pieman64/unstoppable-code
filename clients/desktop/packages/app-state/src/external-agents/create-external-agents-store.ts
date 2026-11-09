@@ -112,6 +112,8 @@ export interface ExternalAgentState {
     readonly expiry: ExternalAgentExpiryChange;
     readonly confirmation?: ExternalAgentConfirmationChange;
     readonly textContentCompatibility?: boolean;
+    /** Omitted keeps the label; null removes it. */
+    readonly label?: string | null;
   }) => Promise<boolean>;
   readonly pause: () => Promise<boolean>;
   readonly resume: () => Promise<boolean>;
@@ -443,6 +445,7 @@ export function createExternalAgentStore(
                 : {
                     textContentCompatibility: change.textContentCompatibility,
                   }),
+              ...(change.label === undefined ? {} : { label: change.label }),
             }),
           { kind: 'saved' },
         ),

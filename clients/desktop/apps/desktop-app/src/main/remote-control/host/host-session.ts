@@ -1,14 +1,12 @@
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { RemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import type { BrowserWindow } from 'electron';
+import type { DeviceKind } from '@canopy/protocol/device-relay';
 import { ChatEventInterestFilter } from '../../ipc/chat-event-interest';
 import { shouldDropObservabilityEvent } from '../../ipc/observability-event-interest';
 import { getObservabilityService } from '../../observability';
 import type { RemoteSurface } from '@canopy/desktop-shared/remote-control/surfaces';
-import {
-  compatibleRemoteVersions,
-  describeLegacyControllerRefusal,
-} from '../protocol-version';
+import { describeLegacyControllerRefusal } from '../protocol-version';
 import {
   AppAdvisorWindowStateParamsSchema,
   AccountProxySignInCallbackParamsSchema,
@@ -16,10 +14,12 @@ import {
   HelloParamsSchema,
   FileReadParamsSchema,
   InvokeParamsSchema,
+  PairRevokeParamsSchema,
   REMOTE_EVENTS,
   REMOTE_METHODS,
   RemoteProtocolMismatchError,
   RemoteChannelUnavailableError,
+  RemoteControllerRefusedError,
   UnknownRemoteMethodError,
   UploadPutParamsSchema,
   type AppAdvisorWindowParams,
@@ -29,6 +29,7 @@ import {
   type DialogOpenParams,
   type DialogOpenResult,
   type HelloResult,
+  type PairRevokeResult,
   type RemoteVersion,
   type RemoteSessionEndReason,
 } from '../remote-protocol';
@@ -38,6 +39,16 @@ import type {
   SessionCloseReason,
 } from '../transport/session-manager';
 import type { HostBridge } from './bridge-window';
+import {
+  endRemoteInterfaceLease,
+  openRemoteInterfaceLease,
+} from '../../canopy-runtime/interface-tools/remote-interface-leases';
+import {
+  HOST_FEATURES,
+  controllerMayInvoke,
+  controllerMayUseChannel,
+  negotiateHello,
+} from './controller-profile';
 import type { HostFileReader } from './file-reads';
 import type { MainWindowPushSource } from './main-window-pushes';
 import { createPushForwarder, type PushForwarder } from './push-forwarder';
@@ -54,10 +65,31 @@ export interface HostSessionOptions {
   readFile: HostFileReader;
   disposition: (channel: string) => RemoteChannelDisposition;
   /**
+   * The controller profile the handshake authorized. Every invoke, send and
+   * push is checked against it; it never changes during a session.
+   */
+  kind: DeviceKind;
+  /**
+   * The pinned device the session acts for: the controller itself, or the
+   * hosted root a delegated session is attributed to.
+   */
+  attributedDeviceId: string;
+  /**
+   * Removes the attributed device's pairing and ends its sessions, saved
+   * before it resolves. Without it the host does not serve `pair.revoke`.
+   */
+  revokeOwnPairing?: () => Promise<void>;
+  /**
    * Whether the controller may still control this computer. Checked on every
    * request, so a revocation holds even if a session outlived it.
    */
   isAuthorized: () => boolean;
+  /**
+   * Serves a hosted session's `chat:command` on this computer instead of the
+   * bridge window, stamping the agent attribution it derives from the
+   * session (CAN-5985). A hosted session without it is refused the channel.
+   */
+  hostedChat?: (request: unknown) => Promise<unknown>;
   /** This computer's version; a controller on another protocol is refused. */
   version: RemoteVersion;
   hello: () => Pick<HelloResult, 'name' | 'platform'>;
@@ -88,6 +120,8 @@ export class RemoteHostSession {
   readonly rpc: RpcPeer;
   private readonly bridges = new Map<RemoteSurface, Promise<HostBridge>>();
   private readonly startedBridges = new Map<RemoteSurface, HostBridge>();
+  /** Each bridge's WebContents id, kept for its lease: a closed window has none. */
+  private readonly leasedWebContents = new Map<RemoteSurface, number>();
   private forwarder: PushForwarder | null = null;
   private readonly unsubscribers: Array<() => void> = [];
   private readonly chatEventInterestFilter = new ChatEventInterestFilter();
@@ -125,6 +159,34 @@ export class RemoteHostSession {
     return this.options.session.peerDeviceId;
   }
 
+  /** The pinned device this session is attributed to. */
+  get attributedDeviceId(): string {
+    return this.options.attributedDeviceId;
+  }
+
+  get kind(): DeviceKind {
+    return this.options.kind;
+  }
+
+  /** Whether this controller's profile allows the channel. */
+  private allows(channel: string): boolean {
+    return controllerMayUseChannel(
+      this.options.kind,
+      channel,
+      this.options.disposition,
+    );
+  }
+
+  /** Whether this controller's profile allows the call with these arguments. */
+  private allowsInvoke(channel: string, args: readonly unknown[]): boolean {
+    return controllerMayInvoke(
+      this.options.kind,
+      channel,
+      args,
+      this.options.disposition,
+    );
+  }
+
   /** Starts the main window's bridge and push forwarding. */
   start(): Promise<HostBridge> {
     return this.bridgeFor('main');
@@ -146,13 +208,34 @@ export class RemoteHostSession {
           throw new Error('The remote session ended.');
         }
         this.startedBridges.set(surface, created);
+        // CAN-5823: a desktop controller's window behind this bridge serves
+        // agent tools through its own lease, which ends with the bridge or
+        // session. Mobile and browser controllers implement none of them.
+        const webContentsId =
+          this.options.kind === 'desktop'
+            ? created.window?.webContents.id
+            : undefined;
+        if (webContentsId !== undefined) {
+          this.leasedWebContents.set(surface, webContentsId);
+          openRemoteInterfaceLease({
+            webContentsId,
+            surface,
+            controllerDeviceId: this.controllerDeviceId,
+          });
+        }
         this.unsubscribers.push(
           created.onPush((channel, args) =>
             forwarder.offer(channel, args, surface),
           ),
           // A bridge that dies (its renderer crashed) cannot be reused: end
           // the session, and the controller reconnects to a fresh one.
-          created.onClosed(() => this.rpc.close('protocol_error')),
+          created.onClosed(() => {
+            if (webContentsId !== undefined) {
+              this.leasedWebContents.delete(surface);
+              endRemoteInterfaceLease(webContentsId);
+            }
+            this.rpc.close('protocol_error');
+          }),
         );
         return created;
       },
@@ -186,7 +269,7 @@ export class RemoteHostSession {
     if (this.forwarder) return this.forwarder;
     const forwarder = createPushForwarder(
       (channel, args, surface) => {
-        if (this.options.disposition(channel) !== 'tunnel') return;
+        if (!this.allows(channel)) return;
         this.forwardPush(channel, args, surface);
       },
       undefined,
@@ -312,14 +395,26 @@ export class RemoteHostSession {
       case REMOTE_METHODS.invoke: {
         if (!this.compatible) throw this.mismatchError();
         const { channel, args, surface } = InvokeParamsSchema.parse(params);
-        if (this.options.disposition(channel) !== 'tunnel') {
+        if (!this.allowsInvoke(channel, args)) {
           throw new RemoteChannelUnavailableError(channel);
+        }
+        if (this.servesHostedChat(channel)) {
+          return this.dispatchHostedChat(channel, args[0]);
         }
         const bridge = await this.bridgeFor(surface ?? 'main');
         return bridge.invoke(channel, args);
       }
+      case REMOTE_METHODS.pairRevoke: {
+        const revoke = this.options.revokeOwnPairing;
+        if (!revoke) throw new UnknownRemoteMethodError(method);
+        PairRevokeParamsSchema.parse(params);
+        await revoke();
+        const result: PairRevokeResult = { revoked: true };
+        return result;
+      }
       case REMOTE_METHODS.uploadPut: {
         if (!this.compatible) throw this.mismatchError();
+        this.assertUploadProfile(method);
         const { fileName, bytes } = UploadPutParamsSchema.parse(params);
         const path = await this.options.uploads.put(
           this.controllerDeviceId,
@@ -330,11 +425,13 @@ export class RemoteHostSession {
       }
       case REMOTE_METHODS.fileRead:
         if (!this.compatible) throw this.mismatchError();
+        this.assertDesktopProfile(method);
         return this.options.readFile(FileReadParamsSchema.parse(params));
       case REMOTE_METHODS.accountProxySignInCallback: {
         const complete = this.options.completeAccountProxySignIn;
         if (!complete) throw new UnknownRemoteMethodError(method);
         if (!this.compatible) throw this.mismatchError();
+        this.assertDesktopProfile(method);
         await complete(
           this.controllerDeviceId,
           AccountProxySignInCallbackParamsSchema.parse(params),
@@ -356,16 +453,68 @@ export class RemoteHostSession {
       ...this.options.hello(),
       appVersion: this.options.version.appVersion,
       version: this.options.version,
+      features: { ...HOST_FEATURES },
     };
     const parsed = HelloParamsSchema.safeParse(params);
     if (!parsed.success) throw this.mismatchError();
-    if (!compatibleRemoteVersions(parsed.data.version, this.options.version)) {
-      return hello;
+    const decision = negotiateHello(
+      parsed.data,
+      this.options.kind,
+      this.options.version,
+    );
+    if (decision.outcome === 'refused') {
+      throw new RemoteControllerRefusedError(decision.reason);
     }
+    if (decision.outcome === 'incompatible') return hello;
     this.compatible = true;
     // Warm the bridge so the controller's first calls do not wait for it.
     this.start().catch((error: unknown) => this.options.onBridgeError?.(error));
     return hello;
+  }
+
+  /** A hosted session's chat dispatch, which this computer serves itself. */
+  private servesHostedChat(channel: string): boolean {
+    return (
+      this.options.kind === 'hosted' && channel === IPC_CHANNELS.chatCommand
+    );
+  }
+
+  private async dispatchHostedChat(
+    channel: string,
+    request: unknown,
+  ): Promise<unknown> {
+    const dispatch = this.options.hostedChat;
+    // Never through the bridge: that would send it unattributed.
+    if (!dispatch) throw new RemoteChannelUnavailableError(channel);
+    return dispatch(request);
+  }
+
+  /**
+   * Session methods outside the IPC allowlists (host file reads, account
+   * proxy sign-in) stay with full desktop controllers; uploads see
+   * {@link assertUploadProfile}.
+   */
+  private assertDesktopProfile(method: string): void {
+    if (this.options.kind !== 'desktop') {
+      throw new RemoteControllerRefusedError(
+        `"${method}" is not available to this controller.`,
+      );
+    }
+  }
+
+  /**
+   * Uploads also serve interactive browser controllers (CAN-5985): a file the
+   * person attaches in the browser is stored here before the send that names
+   * it, the effect of Portal's attachment upload. The store is per controller
+   * device and expires its files; nothing the browser sends selects a path.
+   * Mobile and hosted controllers stay refused.
+   */
+  private assertUploadProfile(method: string): void {
+    if (this.options.kind !== 'desktop' && this.options.kind !== 'browser') {
+      throw new RemoteControllerRefusedError(
+        `"${method}" is not available to this controller.`,
+      );
+    }
   }
 
   private mismatchError(): RemoteProtocolMismatchError {
@@ -389,7 +538,11 @@ export class RemoteHostSession {
     const parsed = InvokeParamsSchema.safeParse(payload);
     if (!parsed.success) return;
     const { channel, args, surface } = parsed.data;
-    if (this.options.disposition(channel) !== 'tunnel') return;
+    if (!this.allowsInvoke(channel, args)) return;
+    if (this.servesHostedChat(channel)) {
+      this.dispatchHostedChat(channel, args[0]).catch(() => undefined);
+      return;
+    }
     void this.bridgeFor(surface ?? 'main').then(
       (bridge) => bridge.post(channel, args),
       () => undefined,
@@ -402,6 +555,9 @@ export class RemoteHostSession {
     this.pushSummary.close();
     for (const unsubscribe of this.unsubscribers) unsubscribe();
     this.unsubscribers.length = 0;
+    for (const webContentsId of Array.from(this.leasedWebContents.values()))
+      endRemoteInterfaceLease(webContentsId);
+    this.leasedWebContents.clear();
     for (const bridge of Array.from(this.bridges.values())) {
       void bridge.then(
         (created) => created.destroy(),

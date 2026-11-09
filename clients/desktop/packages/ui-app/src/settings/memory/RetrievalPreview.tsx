@@ -4,6 +4,7 @@ import { useRef, useState, type FormEvent, type JSX } from 'react';
 import type { ExplorerRetrievalPreview } from '@canopy/protocol/settings/organization-memory';
 import { buildPreviewQuery } from '@canopy/protocol/settings/memory-preview-query';
 import {
+  Stack,
   Button,
   ChoiceList,
   ChoiceListRow,
@@ -88,7 +89,7 @@ export function RetrievalPreview({
   };
 
   return (
-    <div className="space-y-4">
+    <Stack gap="group">
       <Surface
         as="form"
         variant="card"
@@ -158,7 +159,7 @@ export function RetrievalPreview({
           />
         )
       ) : (
-        <div className="space-y-4">
+        <Stack gap="group">
           <Notice
             intent={preview.gatePassed ? 'positive' : 'attention'}
             title={preview.gatePassed ? 'Gate passed' : 'Gate blocked'}
@@ -210,11 +211,11 @@ export function RetrievalPreview({
             </Disclosure>
           )}
 
-          <Surface as="section" variant="card" padding="default">
+          <Surface gap="inline" as="section" variant="card" padding="default">
             <Heading level={3} variant="title">
               Diagnostics
             </Heading>
-            <div className="mt-2">
+            <div>
               <ValueRows>
                 <ValueRow
                   label="Lane counts"
@@ -258,8 +259,8 @@ export function RetrievalPreview({
               </ValueRows>
             </div>
           </Surface>
-        </div>
+        </Stack>
       )}
-    </div>
+    </Stack>
   );
 }

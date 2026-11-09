@@ -1,4 +1,4 @@
-import type { PipelinePackageInstallRecordV1 } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageInstallRecordV1 } from '@canopy/execution-engine/types/pipeline';
 import {
   serializePipelineToYaml,
   tryParseAndValidateYaml,

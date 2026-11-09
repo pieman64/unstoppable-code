@@ -1,5 +1,5 @@
 import { parseLocator } from '@canopy/desktop-shared/browser/locator-grammar';
-import type { BrowserLocatorCandidate } from '@canopy/desktop-shared/types/browser';
+import type { BrowserLocatorCandidate } from '@canopy/execution-engine/types/browser';
 import { locatorMatchesOnlyInModel } from './locators';
 import {
   attributeForNode,

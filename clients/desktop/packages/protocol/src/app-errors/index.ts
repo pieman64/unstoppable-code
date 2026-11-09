@@ -53,3 +53,6 @@ export type {
   AppErrorReportOptions,
   AppErrorHandler,
 } from './handler';
+
+export { classifyError, readErrorClassification } from './classification';
+export type { ErrorClassification } from './classification';

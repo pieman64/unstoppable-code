@@ -23,6 +23,7 @@ export function SidebarStyleSettingsRow(): JSX.Element | null {
   const compact = saving ? pending.sidebar === true : entry?.enabled === true;
   return (
     <SettingsRow
+      contentGap="block"
       label="Sidebar style"
       description={
         compact
@@ -43,7 +44,7 @@ export function SidebarStyleSettingsRow(): JSX.Element | null {
         />
       }
     >
-      <ErrorBanner error={error} className="mt-2" />
+      <ErrorBanner error={error} className="" />
     </SettingsRow>
   );
 }

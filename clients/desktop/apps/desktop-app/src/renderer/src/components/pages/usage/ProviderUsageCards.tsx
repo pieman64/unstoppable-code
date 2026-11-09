@@ -1,6 +1,7 @@
 import { OpenCodeAccountCard } from '@canopy/ui-shared';
 import { getCursorSettingsSection } from '@/lib/cursor-settings';
 import { getCopilotSettingsSection } from '@/lib/copilot-settings';
+import { getOpenCodeSettingsSection } from '@/lib/opencode-settings';
 /* eslint-disable react-refresh/only-export-components -- exports the shared
    provider-selection helpers (reused by the Usage panel) alongside the card
    components; splitting them would fragment a single cohesive display module. */
@@ -441,14 +442,7 @@ function UsageLimitedSessionsSection({
     ) : null;
   return (
     <>
-      {row &&
-        (boxed ? (
-          <div className="mt-2">
-            <UsageRowList>{row}</UsageRowList>
-          </div>
-        ) : (
-          row
-        ))}
+      {row && (boxed ? <UsageRowList>{row}</UsageRowList> : row)}
       {retainedReview && (
         <RetainedReviewChatDialog
           key={waitingSessionId(retainedReview)}
@@ -527,6 +521,7 @@ export function ProviderUsageCard({
         provider={provider.provider}
         plan="Account proxy"
         testId={`usage-provider-card-${provider.provider}`}
+        childrenGap="inline"
       >
         <AccountProxyUsageSection harness={provider.provider} nowMs={nowMs} />
         <UsageLimitedSessionsSection provider={provider} nowMs={nowMs} boxed />
@@ -666,9 +661,15 @@ export function OpenCodeUsageSection({
 }: {
   usage: AgentUsageOverview;
 }): JSX.Element | null {
+  const openSettings = useNavigationStore((state) => state.openSettings);
   const enabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key),
   );
   if (!enabled || !usage.openCodeAccounts) return null;
-  return <OpenCodeAccountCard snapshot={usage.openCodeAccounts} />;
+  return (
+    <OpenCodeAccountCard
+      snapshot={usage.openCodeAccounts}
+      onManageProviders={(): void => openSettings(getOpenCodeSettingsSection())}
+    />
+  );
 }

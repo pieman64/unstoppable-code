@@ -1,3 +1,4 @@
+import { assertCoworkChatRootPresent } from './cowork-folder-guard';
 import { chatLastMessageRole } from './chat-last-message-role';
 import {
   publishSidebarItemGroupsChanged,
@@ -1149,6 +1150,7 @@ export async function createWorkEntry(
   },
 ): Promise<{ entry: CoworkWorkEntryMeta; reusedExistingEmpty: boolean }> {
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
+  await assertCoworkChatRootPresent(workspaceId, options?.id ?? 'home');
   const result = await withRegistryLock(workspaceId, async () => {
     options?.assertCanCommit?.();
     let file = await readWorkEntriesFileStrict(workspaceId);
@@ -1695,4 +1697,29 @@ export async function resolveWorkEntryForChat(
     }
   }
   return { entryId: null, archivedInEntryId: null };
+}
+
+/** Rollback only this incarnation, and only while no concurrent chat survives. */
+export async function removeUnstartedWorkEntry(
+  projectId: string,
+  entryId: string,
+  createdAt: string,
+): Promise<void> {
+  const workspaceId = resolveWorkEntryWorkspaceId(projectId);
+  await withRegistryLock(workspaceId, async () => {
+    const file = await readWorkEntriesFileStrict(workspaceId);
+    const row = file.entries.find((entry) => entry.id === entryId);
+    if (!row || row.createdAt !== createdAt) return;
+    const [tabs, archives] = await Promise.all([
+      readChatTabsFile(workspaceId, entryId),
+      readChatArchivesFile(workspaceId, entryId),
+    ]);
+    if (tabs.tabs.length || archives.archived.length) return;
+    await writeWorkEntriesFile(workspaceId, {
+      ...file,
+      entries: file.entries.filter((entry) => entry !== row),
+    });
+    liveSummaries.delete(summaryCacheKey(workspaceId, entryId));
+    notifyWorkEntryListChanged(workspaceId);
+  });
 }

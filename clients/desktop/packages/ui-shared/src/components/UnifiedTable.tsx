@@ -496,7 +496,7 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
             toggleTestId="plugin-members-toggle"
           >
             <ul
-              className="space-y-2 border-l pl-3"
+              className="flex flex-col gap-2 border-l pl-3"
               aria-label={`${row.name} capabilities`}
             >
               {row.members.map((member, index) => (

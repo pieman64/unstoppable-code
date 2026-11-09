@@ -57,19 +57,23 @@ export function HeadlineCard({
   const testId = `usage-headline-card-${spec.key}`;
   return (
     <Surface variant="group" padding="compact" data-testid={testId}>
-      <div className="text-s">
+      <div className="flex flex-col gap-1 text-s">
         <div className="flex items-baseline justify-between gap-2">
           <div className="text-xs fg-secondary">{spec.title}</div>
           <div className={`text-xs ${trendColor}`}>{trend.text}</div>
         </div>
-        <div
-          className="mt-1 text-lg font-semibold fg-primary"
-          data-testid={`${testId}-value`}
-        >
-          {formatHeadlineValue(spec, last7d)}
+        <div className="flex flex-col gap-0">
+          <div
+            className="text-lg font-semibold fg-primary"
+            data-testid={`${testId}-value`}
+          >
+            {formatHeadlineValue(spec, last7d)}
+          </div>
+          {spec.unit && (
+            <div className="text-2xs fg-secondary">{spec.unit}</div>
+          )}
         </div>
-        {spec.unit && <div className="text-2xs fg-secondary">{spec.unit}</div>}
-        <div className="mt-1 text-2xs fg-secondary">
+        <div className="text-2xs fg-secondary">
           All time: {formatHeadlineValue(spec, allTime)} · since{' '}
           {formatStartingDate(earliestEventAt)}
         </div>

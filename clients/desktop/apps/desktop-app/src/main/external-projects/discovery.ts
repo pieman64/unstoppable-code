@@ -3,8 +3,9 @@ import { realpath, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { BRAND } from '@canopy/brand/current';
+import { readGitHeadState } from '@canopy/core-runtime/node/git';
 import {
-  getBrandDataDirCandidates,
+  getBrandOwnedDataDirRoots,
   getCanopySecureDataDir,
 } from '@canopy/desktop-shared/canopy-paths';
 import type {
@@ -104,11 +105,8 @@ async function collectExcludedRoots(): Promise<string[]> {
   const roots = new Set<string>();
   const candidates = [
     getDataDir(),
-    // The credential store is a sibling of the data dir, not inside it.
     getCanopySecureDataDir(),
-    ...getBrandDataDirCandidates('prod'),
-    ...getBrandDataDirCandidates('dev'),
-    ...getBrandDataDirCandidates('rc'),
+    ...getBrandOwnedDataDirRoots(),
   ];
   if (temporaryRootsExcluded()) {
     candidates.push(tmpdir(), '/tmp', '/private/tmp', '/private/var/folders');
@@ -231,7 +229,9 @@ export async function detectProviderPlugins(): Promise<
 
 export async function discoverExternalProjects(
   request: ExternalProjectDiscoverRequest,
+  signal?: AbortSignal,
 ): Promise<ExternalProjectDiscoverResponse> {
+  signal?.throwIfAborted();
   const providers = new Set<ExternalProjectProvider>(
     request.providers && request.providers.length > 0
       ? request.providers
@@ -353,6 +353,22 @@ export async function discoverExternalProjects(
   );
 
   const sessionsByCandidate = new Map<string, DiscoveredSession[]>();
+  // Bound filesystem concurrency and bytes; never launch Git per candidate.
+  // Read the final candidate root, not a linked sibling folded into its family.
+  let headStateIndex = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(4, candidates.length) }, async () => {
+      while (headStateIndex < candidates.length) {
+        signal?.throwIfAborted();
+        const candidate = candidates[headStateIndex++];
+        if (candidate.kind !== 'git') continue;
+        const state = await readGitHeadState(candidate.rootPath, { signal });
+        signal?.throwIfAborted();
+        if (state.headUnborn !== undefined)
+          candidate.headUnborn = state.headUnborn;
+      }
+    }),
+  );
   for (const candidate of candidates) {
     sessionsByCandidate.set(
       candidate.id,

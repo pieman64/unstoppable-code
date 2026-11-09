@@ -183,6 +183,32 @@ export const DESKTOP_OPERATIONS = {
       'outcome',
     ],
   },
+  // Remote Control host events (CAN-5985): bounded kinds and reasons only.
+  'canopy.remote_control_device_add': {
+    kind: 'product',
+    posthogEvent: 'remote_control:device_add',
+    contextKeys: ['device_kind', 'pair_method'],
+  },
+  'canopy.remote_control_pairing_fail': {
+    kind: 'product',
+    posthogEvent: 'remote_control:pairing_fail',
+    contextKeys: ['device_kind', 'pair_method', 'failure_reason'],
+  },
+  'canopy.remote_control_session_start': {
+    kind: 'product',
+    posthogEvent: 'remote_control:session_start',
+    contextKeys: ['device_kind', 'is_delegated'],
+  },
+  'canopy.remote_control_session_end': {
+    kind: 'product',
+    posthogEvent: 'remote_control:session_end',
+    contextKeys: ['device_kind', 'end_reason'],
+  },
+  'canopy.remote_control_device_remove': {
+    kind: 'product',
+    posthogEvent: 'remote_control:device_remove',
+    contextKeys: ['device_kind'],
+  },
 
   'canopy.git_commit': {
     kind: 'product',

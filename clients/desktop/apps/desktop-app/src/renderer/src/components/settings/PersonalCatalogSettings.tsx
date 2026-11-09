@@ -160,7 +160,7 @@ export function PersonalCatalogRows({
         keepMounted
         dataTestId="personal-catalog-disclosure"
       >
-        <div className="space-y-2 text-xs text-pretty fg-secondary">
+        <div className="flex flex-col text-xs text-pretty fg-secondary gap-2">
           <p>
             {DISCLOSURE} Revision and catalog generation numbers keep updates in
             order.

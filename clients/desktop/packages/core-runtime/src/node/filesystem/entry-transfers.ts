@@ -12,6 +12,7 @@ import {
   rename,
   rm,
   rmdir,
+  stat,
   symlink,
   unlink,
 } from 'node:fs/promises';
@@ -454,14 +455,18 @@ async function copyIntoStaging(
         await publishLinkEntry(stagingPath, targetPath);
       } catch (error) {
         const code = errorCode(error);
+        // libuv maps FAT/exFAT's ERROR_INVALID_FUNCTION from CreateHardLinkW to EISDIR.
         if (
           code !== 'EPERM' &&
           code !== 'ENOTSUP' &&
           code !== 'EOPNOTSUPP' &&
-          code !== 'ENOSYS'
+          code !== 'ENOSYS' &&
+          code !== 'EISDIR'
         ) {
           throw error;
         }
+        if (await pathExists(targetPath)) destinationExists(targetRelativePath);
+        // COPYFILE_EXCL can follow Windows links; lstat leaves a check-to-publish window.
         await copyFile(stagingPath, targetPath, constants.COPYFILE_EXCL);
       }
       await unlink(stagingPath);
@@ -470,7 +475,17 @@ async function copyIntoStaging(
 
     // Windows renames a folder only onto a missing name, so no reservation.
     if (host.os === 'win32') {
-      await publishRenameEntry(stagingPath, targetPath);
+      try {
+        await publishRenameEntry(stagingPath, targetPath);
+      } catch (error) {
+        const code = errorCode(error);
+        if (
+          (code === 'EPERM' || code === 'EACCES') &&
+          (await pathExists(targetPath))
+        )
+          destinationExists(targetRelativePath);
+        throw error;
+      }
       return;
     }
 
@@ -609,18 +624,23 @@ interface MoveSteps {
   readonly copyAcrossDevices: () => Promise<void>;
 }
 
-// macOS link(2) follows a symlink source, so recreate the link itself.
-async function moveSymlink({
-  plan,
-  signal,
-  unlinkEntry,
-}: MoveSteps): Promise<void> {
+// Recreate links where hard linking would follow them or is unsupported.
+async function moveSymlink(
+  { plan, signal, unlinkEntry }: MoveSteps,
+  type?: 'file',
+): Promise<void> {
   const { sourcePath, targetPath, targetRelativePath } = plan;
   const linkTarget = await readlink(sourcePath, { encoding: 'buffer' });
   try {
-    await symlink(linkTarget, targetPath);
+    await symlink(linkTarget, targetPath, type);
   } catch (error) {
-    if (errorCode(error) === 'EEXIST') destinationExists(targetRelativePath);
+    const code = errorCode(error);
+    if (
+      code === 'EEXIST' ||
+      ((code === 'EPERM' || code === 'EACCES') &&
+        (await pathExists(targetPath)))
+    )
+      destinationExists(targetRelativePath);
     throw error;
   }
   try {
@@ -642,13 +662,16 @@ async function moveSymlink({
   }
 }
 
-// Windows renames a folder only onto a missing name, so no reservation.
+// Windows directory destinations cannot be reserved by an empty folder.
 async function moveWindowsDirectory({
   plan,
   renameEntry,
   copyAcrossDevices,
 }: MoveSteps): Promise<void> {
   const { sourcePath, targetPath, targetRelativePath } = plan;
+  // MoveFileEx may replace a file even for a directory link. A native
+  // no-replace rename is still needed to close the check-to-rename window.
+  if (await pathExists(targetPath)) destinationExists(targetRelativePath);
   try {
     await renameEntry(sourcePath, targetPath);
   } catch (error) {
@@ -712,12 +735,14 @@ async function moveFile({
     if (code === 'EEXIST' || code === 'ERR_FS_CP_EEXIST') {
       destinationExists(targetRelativePath);
     }
+    // libuv maps FAT/exFAT's ERROR_INVALID_FUNCTION from CreateHardLinkW to EISDIR.
     if (
       code !== 'EXDEV' &&
       code !== 'EPERM' &&
       code !== 'ENOTSUP' &&
       code !== 'EOPNOTSUPP' &&
-      code !== 'ENOSYS'
+      code !== 'ENOSYS' &&
+      code !== 'EISDIR'
     ) {
       throw error;
     }
@@ -799,6 +824,30 @@ export async function moveFilesystemEntry(
     await steps.renameEntry(plan.sourcePath, plan.targetPath);
   } else if (plan.sourceIsSymlink && host.os === 'darwin') {
     await moveSymlink(steps);
+  } else if (plan.sourceIsSymlink && host.os === 'win32') {
+    let targetIsDirectory: boolean;
+    try {
+      targetIsDirectory = (await stat(plan.validatedSourcePath)).isDirectory();
+    } catch (error) {
+      const code = errorCode(error);
+      if (code === 'ENOENT' || code === 'ENOTDIR')
+        throw entryMutationError(
+          'worker.filesystem.entry.notFound',
+          'The file or folder does not exist.',
+          error,
+        );
+      throw error;
+    }
+    if (targetIsDirectory) {
+      await moveWindowsDirectory(steps);
+    } else {
+      // Hard linking preserves the reparse entry without symlink privilege.
+      // Unsupported links must recreate the link, never copy its referent.
+      await moveFile({
+        ...steps,
+        copyAcrossDevices: () => moveSymlink(steps, 'file'),
+      });
+    }
   } else if (plan.sourceIsDirectory) {
     await (host.os === 'win32' ? moveWindowsDirectory : movePosixDirectory)(
       steps,

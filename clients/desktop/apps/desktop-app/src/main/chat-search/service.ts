@@ -34,7 +34,7 @@ import {
   type WorkspaceOwnerBinding,
   type WorktreeSummaryData,
 } from '@canopy/desktop-shared/types';
-import { workspaceOwnerMatchesContext } from '@canopy/desktop-shared/lib/workspace-owner';
+import { workspaceOwnerMatchesContext } from '@canopy/execution-engine/lib/workspace-owner';
 import {
   getAppManagedChatWorkspaceDir,
   getArchivedContainerManifestPath,

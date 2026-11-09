@@ -1,5 +1,5 @@
 import { type JSX } from 'react';
-import { Button, Notice } from '@canopy/ui-shared/components';
+import { Stack, Button, Notice } from '@canopy/ui-shared/components';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { useActivityStore } from '@/stores/activityStore';
 import { useTerminalStore } from '@/stores/terminalStore';
@@ -100,20 +100,20 @@ export function SplitPreflightModal({
       maxWidth="lg"
       dataTestId="split-preflight-modal"
     >
-      <div className="space-y-4 px-6 py-4">
-        <div>
-          <p className="mb-2 text-xs font-semibold fg-secondary">
+      <div className="flex flex-col px-6 py-4 gap-4">
+        <Stack gap="inline">
+          <p className="text-xs font-semibold fg-secondary">
             What happens next
           </p>
           <ol
-            className="list-decimal space-y-1 pl-6 text-s fg-primary/90"
+            className="flex flex-col list-decimal pl-6 text-s fg-primary/90 gap-1"
             data-testid="split-preflight-steps"
           >
             {SPLIT_PREFLIGHT_STEPS.map((step) => (
               <li key={step}>{step}</li>
             ))}
           </ol>
-        </div>
+        </Stack>
 
         <Notice
           role="none"

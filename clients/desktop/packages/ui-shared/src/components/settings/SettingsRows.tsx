@@ -1,5 +1,6 @@
 'use client';
 
+import { SPACE_ROLE_GAP_CLASS, Stack, type SpaceRole } from '../Stack';
 import {
   useRef,
   type JSX,
@@ -37,6 +38,12 @@ export interface SettingsRowsSectionProps {
    * short page scrolls instead of clipping it; see {@link FILL_CLASS}.
    */
   readonly fill?: boolean;
+  /**
+   * One quiet line under the section's box, such as a note on how the data
+   * the rows control is handled or a link to read more. Text only; an action
+   * still lives in a row.
+   */
+  readonly footer?: ReactNode;
   readonly children?: ReactNode;
 }
 
@@ -60,6 +67,7 @@ export function SettingsRowsSection({
   ariaLabel,
   dataTestId,
   fill = false,
+  footer,
   children,
 }: SettingsRowsSectionProps): JSX.Element {
   return (
@@ -72,7 +80,7 @@ export function SettingsRowsSection({
       data-testid={dataTestId}
     >
       {title || description ? (
-        <div className="space-y-1">
+        <Stack gap="tight">
           {title ? (
             <Heading level={2} variant="section" id={headingId}>
               {title}
@@ -83,9 +91,12 @@ export function SettingsRowsSection({
               {description}
             </div>
           ) : null}
-        </div>
+        </Stack>
       ) : null}
       {children}
+      {footer ? (
+        <div className="text-xs text-pretty fg-secondary">{footer}</div>
+      ) : null}
     </section>
   );
 }
@@ -260,6 +271,8 @@ export interface SettingsRowsRowProps {
    * line, or `SettingsRowsSubRow`s for settings that depend on this one.
    */
   readonly children?: ReactNode;
+  /** Space before and between the row's child blocks; callers add no margins. */
+  readonly contentGap?: SpaceRole;
 }
 
 interface RowLineProps extends SettingsRowsRowProps {
@@ -294,8 +307,8 @@ function RowLine({
         <div
           className={
             fact
-              ? 'shrink-0 space-y-0.5'
-              : 'min-w-0 flex-1 space-y-0.5 max-sm:min-w-[min(100%,12rem)]'
+              ? 'shrink-0 flex flex-col gap-0.5'
+              : 'min-w-0 flex-1 flex flex-col gap-0.5 max-sm:min-w-[min(100%,12rem)]'
           }
         >
           {htmlFor ? (
@@ -350,7 +363,7 @@ export function SettingsRowsRow(props: SettingsRowsRowProps): JSX.Element {
     <RowLine
       {...props}
       labelClassName="block text-s font-medium fg-primary"
-      gapClassName="gap-3"
+      gapClassName={SPACE_ROLE_GAP_CLASS[props.contentGap ?? 'item']}
       rowLabel
     />
   );
@@ -406,7 +419,7 @@ export function SettingsRowsSubRow(
     <RowLine
       {...props}
       labelClassName="block text-s fg-primary"
-      gapClassName="gap-2"
+      gapClassName={SPACE_ROLE_GAP_CLASS[props.contentGap ?? 'inline']}
       rowLabel={false}
     />
   );

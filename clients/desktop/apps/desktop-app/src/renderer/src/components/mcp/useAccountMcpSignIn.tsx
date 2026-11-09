@@ -15,7 +15,7 @@ import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import {
   AccountMcpConnectionError,
   type AccountMcpConnectionSummary,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { overlayGeneration } from '@canopy/ui-shared/components';
 import { mcpConnectErrorMessage } from '@canopy/ui-shared/lib';
 import {

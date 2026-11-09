@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { Pipeline } from '@canopy/desktop-shared/types/pipeline';
+import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import type { PipelineEditorSelection } from '@/lib/pipelineEditor';
 import {
   BugReportIcon,

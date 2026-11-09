@@ -1,4 +1,4 @@
-import type { PostHogSessionState } from '@canopy/desktop-shared/types/observability';
+import type { PostHogSessionState } from '@canopy/execution-engine/types/observability';
 
 /** PostHog bootstrap requires UUIDv7, with a timestamp no more than one
  * minute in the future. The browser owns idle and maximum-age rotation. */

@@ -69,7 +69,7 @@ function notifyLedgerOfWorkEntryDeletion(
   }
 }
 
-function assertWorkEntryWorkspace(projectId: string): string {
+export function assertWorkEntryWorkspace(projectId: string): string {
   validateId(projectId, 'projectId');
   // App Advisor is an app-managed Work Entry workspace. It deliberately does
   // not participate in workspaces/index.json, so it must bypass cowork

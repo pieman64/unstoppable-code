@@ -521,6 +521,11 @@ export interface CommitAndPushRequest extends GitActionOperationRequest {
   commitOnly?: boolean;
   /** Validate the original head before resuming unprepared commits after login. */
   expectedHeadBranch?: string;
+  /**
+   * Skip a clean repository's pending commits (`commits_not_pushed`) instead
+   * of pushing them. A Try again must not push commits on its own.
+   */
+  skipCleanPush?: boolean;
 }
 
 export interface CommitAndPushCommitRepoResult {
@@ -549,7 +554,10 @@ export type CommitAndPushRepoResult =
 export interface CommitAndPushSkippedRepo {
   repoId?: string;
   repoName: string;
-  reason: 'no_uncommitted_changes' | 'no_remote_tracking';
+  reason:
+    | 'no_uncommitted_changes'
+    | 'no_remote_tracking'
+    | 'commits_not_pushed';
 }
 
 export type CommitAndPushFailedRepo = RepoFailureResult;

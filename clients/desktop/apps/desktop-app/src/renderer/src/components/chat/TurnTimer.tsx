@@ -1,7 +1,7 @@
 import type { JSX, ReactNode } from 'react';
+import { Button } from '@canopy/ui-shared/components/Button';
 import {
   AutoRoutedModelPill,
-  CLEAN_FOOTER_ICON_BUTTON_CLASS,
   TurnTimer as SharedTurnTimer,
   type TurnCompletionStatus,
   useCleanChatLook,
@@ -129,18 +129,15 @@ export function TurnTimer({
           title={`Branch ${CHAT_UNIT_LABEL}`}
           description="Create a new worktree from this one and continue the chat there."
         >
-          <button
-            type="button"
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
             onClick={onBranch}
-            className={
-              cleanChatLook
-                ? CLEAN_FOOTER_ICON_BUTTON_CLASS
-                : 'focus-ring flex h-6 w-6 items-center justify-center rounded-md border bg-fg-primary/[0.04] fg-primary/80 transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary'
-            }
             aria-label={`Branch ${CHAT_UNIT_LABEL} into new worktree`}
           >
             <BranchIcon size="sm" aria-hidden="true" />
-          </button>
+          </Button>
         </ActionTooltip>
       )}
       {shareButton}

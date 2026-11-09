@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import type { JSX } from 'react';
 import {
   impliedTargetContexts,
@@ -156,7 +157,7 @@ export function AutomationTargetContextsLine({
   verified: boolean;
 }): JSX.Element {
   return (
-    <div data-testid="automation-summary-runs-in">
+    <Stack gap="tight" data-testid="automation-summary-runs-in">
       <p className="text-xs fg-secondary">
         {contexts.length === 0
           ? AUTOMATION_TARGET_NONE_LABEL
@@ -164,13 +165,13 @@ export function AutomationTargetContextsLine({
       </p>
       {!verified && (
         <p
-          className="mt-1 text-xs fg-secondary"
+          className="text-xs fg-secondary"
           data-testid="automation-summary-runs-in-unverified"
         >
           {AUTOMATION_TARGET_UNVERIFIED_NOTE}
         </p>
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -279,12 +280,12 @@ export function AutomationDefinitionSummary({
     automation.hasRunCondition;
 
   return (
-    <div className="space-y-6" data-testid="automation-definition-summary">
-      <section data-testid="automation-summary-action">
+    <Stack gap="section" data-testid="automation-definition-summary">
+      <Stack as="section" gap="inline" data-testid="automation-summary-action">
         <Heading level={2} variant="title">
           What it does
         </Heading>
-        <div className="mt-2 rounded-xl border bg-card p-4 text-s">
+        <div className="rounded-xl border bg-card p-4 text-s">
           <p className="font-medium">{actionLabel(action)}</p>
           <div className="mt-1">
             <AutomationTargetRequirementLine
@@ -311,46 +312,46 @@ export function AutomationDefinitionSummary({
             </pre>
           )}
         </div>
-      </section>
+      </Stack>
 
       {hasNeeds && (
-        <section data-testid="automation-summary-needs">
+        <Stack as="section" gap="inline" data-testid="automation-summary-needs">
           <Heading level={2} variant="title">
             What it needs
           </Heading>
-          <div className="mt-2 space-y-3 rounded-xl border bg-card p-4 text-s">
+          <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 text-s">
             {plugins.length > 0 && (
-              <div>
+              <Stack gap="tight">
                 <p className="text-xs font-medium fg-secondary">Plugins</p>
-                <ul className="mt-1 space-y-1">
+                <Stack as="ul" gap="tight">
                   {plugins.map(
                     (ref): JSX.Element => (
                       <li key={JSON.stringify(ref)}>{pluginLabel(ref)}</li>
                     ),
                   )}
-                </ul>
-              </div>
+                </Stack>
+              </Stack>
             )}
             {pipelineNames.length > 0 && (
-              <div data-testid="automation-summary-pipelines">
+              <Stack gap="tight" data-testid="automation-summary-pipelines">
                 <p className="text-xs font-medium fg-secondary">
                   Pipelines included
                 </p>
-                <ul className="mt-1 space-y-1">
+                <Stack as="ul" gap="tight">
                   {pipelineNames.map(
                     (name, index): JSX.Element => (
                       <li key={`${String(index)}:${name}`}>{name}</li>
                     ),
                   )}
-                </ul>
-              </div>
+                </Stack>
+              </Stack>
             )}
             {inputKeys.length > 0 && (
-              <div>
+              <Stack gap="tight">
                 <p className="text-xs font-medium fg-secondary">
                   Inputs you provide at install
                 </p>
-                <div className="mt-1 flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-1.5">
                   {inputKeys.map(
                     (key): JSX.Element => (
                       <span
@@ -362,7 +363,7 @@ export function AutomationDefinitionSummary({
                     ),
                   )}
                 </div>
-              </div>
+              </Stack>
             )}
             {automation.hasRunCondition && (
               <p
@@ -385,8 +386,8 @@ export function AutomationDefinitionSummary({
               </p>
             )}
           </div>
-        </section>
+        </Stack>
       )}
-    </div>
+    </Stack>
   );
 }

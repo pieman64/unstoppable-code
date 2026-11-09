@@ -7,7 +7,7 @@ import type {
 import {
   classifyAgentFailure,
   type AgentFailureAccountScope,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 import { normalizeEpochMs } from '@canopy/desktop-shared/ai-credits-routing-state';
 
 export interface BuildUsageLimitedEntryInput {

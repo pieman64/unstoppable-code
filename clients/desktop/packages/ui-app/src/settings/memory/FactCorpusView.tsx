@@ -16,6 +16,7 @@ import {
   type ExplorerRankedFact,
 } from '@canopy/protocol/settings/organization-memory';
 import {
+  Stack,
   BusyLabel,
   Button,
   buttonClassName,
@@ -370,7 +371,7 @@ export function FactCorpusView({
   }
 
   return (
-    <div className="space-y-4">
+    <Stack gap="group">
       <SegmentedControl
         label="Facts tab mode"
         semantics="toggle"
@@ -384,7 +385,7 @@ export function FactCorpusView({
         <RetrievalPreview orgId={orgId} />
       ) : (
         <>
-          <Surface variant="card" padding="default">
+          <Surface gap="item" variant="card" padding="default">
             <form onSubmit={submitSearch} className="flex gap-2">
               <SearchField
                 value={query}
@@ -402,7 +403,7 @@ export function FactCorpusView({
                 Search
               </Button>
             </form>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <SettingsSelect
                 value={evidenceType}
                 onValueChange={onEvidenceTypeChange}
@@ -461,6 +462,7 @@ export function FactCorpusView({
           )}
           {nextCursor !== null && submittedQuery.length === 0 && (
             <Button
+              className="self-start"
               size="compact"
               disabled={loading}
               aria-busy={loading}
@@ -486,6 +488,6 @@ export function FactCorpusView({
           </Sheet>
         </>
       )}
-    </div>
+    </Stack>
   );
 }

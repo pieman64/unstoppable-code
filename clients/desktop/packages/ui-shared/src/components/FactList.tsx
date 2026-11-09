@@ -28,7 +28,8 @@ export type FactListLabelWidth =
   | '5rem'
   | '6rem'
   | '6.5rem'
-  | '7rem';
+  | '7rem'
+  | '9rem';
 export type FactListSize = '2xs' | 'xs' | 's' | 'inherit';
 export type FactListRowGap = '0.5' | '1' | '1.5' | '2' | '3';
 export type FactListColumnGap = '2' | '3' | '4';
@@ -42,6 +43,7 @@ const LABEL_WIDTH_CLASS: Record<FactListLabelWidth, string> = {
   '6rem': 'grid-cols-[6rem_minmax(0,1fr)]',
   '6.5rem': 'grid-cols-[6.5rem_minmax(0,1fr)]',
   '7rem': 'grid-cols-[7rem_minmax(0,1fr)]',
+  '9rem': 'grid-cols-[9rem_minmax(0,1fr)]',
 };
 
 const SIZE_CLASS: Record<FactListSize, string> = {
@@ -69,6 +71,14 @@ const LABEL_TONE_CLASS: Record<FactLabelTone, string> = {
   secondary: 'fg-secondary',
   tertiary: 'fg-tertiary',
   inherit: 'opacity-70',
+};
+
+/** `control`: every row at least a control's height, its cells centered. */
+export type FactListRowHeight = 'auto' | 'control';
+
+const ROW_HEIGHT_CLASS: Record<FactListRowHeight, string> = {
+  auto: '',
+  control: ' auto-rows-[minmax(1.75rem,auto)] items-center',
 };
 
 /** Placement only: margins around the list. */
@@ -138,6 +148,7 @@ export interface FactListProps {
   readonly labelWidth?: FactListLabelWidth;
   readonly size?: FactListSize;
   readonly rowGap?: FactListRowGap;
+  readonly rowHeight?: FactListRowHeight;
   readonly columnGap?: FactListColumnGap;
   readonly labelTone?: FactLabelTone;
   /** Monospaced labels, for literal keys such as a file's frontmatter. */
@@ -158,6 +169,7 @@ export function FactList({
   labelWidth = 'auto',
   size = 'xs',
   rowGap = '1.5',
+  rowHeight = 'auto',
   columnGap = '4',
   labelTone = 'tertiary',
   labelMono = false,
@@ -173,7 +185,7 @@ export function FactList({
     spread: 'flex flex-col',
     inline: 'flex flex-wrap',
   };
-  const className = `${layoutClass[layout]}${COLUMN_GAP_CLASS[columnGap]}${ROW_GAP_CLASS[rowGap]}${SIZE_CLASS[size]}${divided ? ' border-t pt-1.5' : ''}${placement ? PLACEMENT_CLASS[placement] : ''}`;
+  const className = `${layoutClass[layout]}${COLUMN_GAP_CLASS[columnGap]}${ROW_GAP_CLASS[rowGap]}${ROW_HEIGHT_CLASS[rowHeight]}${SIZE_CLASS[size]}${divided ? ' border-t pt-1.5' : ''}${placement ? PLACEMENT_CLASS[placement] : ''}`;
   return (
     <dl className={className} data-testid={dataTestId}>
       <FactListContext.Provider
@@ -188,17 +200,25 @@ export function FactList({
 /**
  * How a value meets the edge of its column: `wrap` breaks long words,
  * `truncate` keeps one line with an ellipsis, `break-all` breaks anywhere (a
- * path or URL), `inline` lays out chips or icons beside the text, and `row`
+ * path or URL), `inline` lays out chips or icons beside the text,
+ * `inline-spaced` does so with a detail page's wider gap, and `row`
  * keeps one line with a trailing control (a Copy button) right after the
  * text, the text truncating first.
  */
-export type FactValueFit = 'wrap' | 'truncate' | 'break-all' | 'inline' | 'row';
+export type FactValueFit =
+  | 'wrap'
+  | 'truncate'
+  | 'break-all'
+  | 'inline'
+  | 'inline-spaced'
+  | 'row';
 
 const VALUE_FIT_CLASS: Record<FactValueFit, string> = {
   wrap: ' break-words',
   truncate: ' truncate',
   'break-all': ' break-all',
   inline: ' flex flex-wrap items-center gap-1 break-words',
+  'inline-spaced': ' flex flex-wrap items-center gap-x-2 gap-y-1 break-words',
   row: ' flex items-center gap-1',
 };
 

@@ -22,8 +22,24 @@ import {
   mcpProviderRoutesDescription,
 } from './mcpConnectionCopy';
 import { buildProviderConnectorRows } from './providerConnectorRows';
-import { CheckIcon as AppCatalogCheckIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { Surface } from '@canopy/ui-shared/components';
+import {
+  ArrowUpRightIcon,
+  CheckIcon as AppCatalogCheckIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
+import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
+import {
+  ComponentSection,
+  DetailEntityType,
+  DetailFact,
+  DetailFactList,
+  ExternalTextLink,
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
+} from '@canopy/ui-shared/components';
 
 const PROVIDER_LABEL: Record<ProviderConnectorProvider, string> =
   MCP_PROVIDER_CONNECTOR_LABELS;
@@ -119,18 +135,24 @@ export function ProviderConnectorDetail({
     providers.length === 0 ? (
       <EmptyStateRow title="No provider offers this connector yet" />
     ) : (
-      <Surface variant="outline" className="overflow-hidden">
-        <ul className="divide-y">
-          {providers.map((entry) => (
-            <ProviderRow
-              key={entry.provider}
-              entry={entry}
-              busy={busy !== null}
-              onConnect={handleConnect}
-            />
-          ))}
-        </ul>
-      </Surface>
+      <ComponentSection title="Works with">
+        <DataTableFrame caption="Works with" layout="fixed">
+          <DataTableHead>
+            <DataTableHeaderCell width="50%">Harness</DataTableHeaderCell>
+            <DataTableHeaderCell align="right">Status</DataTableHeaderCell>
+          </DataTableHead>
+          <DataTableBody>
+            {providers.map((entry) => (
+              <ProviderRow
+                key={entry.provider}
+                entry={entry}
+                busy={busy !== null}
+                onConnect={handleConnect}
+              />
+            ))}
+          </DataTableBody>
+        </DataTableFrame>
+      </ComponentSection>
     );
 
   // Trails the list: the user reads what to do, acts on it, and only then
@@ -203,7 +225,10 @@ export function ProviderConnectorDetail({
         />
         <div className="min-w-0 flex-1">
           <Heading level={3} variant="section">
-            {displayName}
+            <span className="inline-flex flex-wrap items-baseline gap-x-2">
+              {displayName}
+              <DetailEntityType />
+            </span>
           </Heading>
           {catalogEntry?.authorName && (
             <p className="mt-0.5 text-xs fg-secondary">
@@ -213,13 +238,40 @@ export function ProviderConnectorDetail({
         </div>
       </div>
 
-      <p className="text-s leading-relaxed fg-secondary">
-        Connect {displayName} with {mcpProviderAccountPhrase(providerLabels)}.{' '}
-        {appName} never sees these credentials, and the tools become available
-        in any chat on that provider.
-      </p>
+      <div className="flex flex-col gap-2">
+        {(catalogEntry?.longDescription || catalogEntry?.shortDescription) && (
+          <p className="max-w-2xl text-s leading-relaxed fg-secondary">
+            {catalogEntry.longDescription || catalogEntry.shortDescription}
+          </p>
+        )}
+        <p className="text-s leading-relaxed fg-secondary">
+          Connect {displayName} with {mcpProviderAccountPhrase(providerLabels)}.{' '}
+          {appName} never sees these credentials, and the tools become available
+          in any chat on that provider.
+        </p>
+      </div>
 
-      <div className="mt-4">{providerRows}</div>
+      {(catalogEntry?.authorUrl || catalogEntry?.docsUrl) && (
+        <DetailFactList placement="mt-4">
+          {catalogEntry.authorUrl && (
+            <DetailFact label="Website">
+              <ExternalTextLink
+                href={catalogEntry.authorUrl}
+                label={catalogEntry.authorUrl
+                  .replace(/^https?:\/\/(www\.)?/, '')
+                  .replace(/\/$/, '')}
+              />
+            </DetailFact>
+          )}
+          {catalogEntry.docsUrl && (
+            <DetailFact label="Docs">
+              <ExternalTextLink href={catalogEntry.docsUrl} label="Open docs" />
+            </DetailFact>
+          )}
+        </DetailFactList>
+      )}
+
+      <div className="mt-6">{providerRows}</div>
       {recheck}
     </div>
   );
@@ -238,100 +290,118 @@ function ProviderRow({
   ) => Promise<void>;
 }): JSX.Element {
   const label = PROVIDER_LABEL[entry.provider];
+  const Logo = entry.provider === 'claude' ? ClaudeLogo : CodexLogo;
   const testId = `provider-connector-detail-connect-${entry.provider}`;
 
   return (
-    <li className="flex items-center justify-between gap-3 px-3 py-2.5">
-      <span className="text-s fg-primary">{label}</span>
-      {entry.unavailable ? (
-        // A provider Canopy could not read cannot honestly be offered as a
-        // route — clicking through would send the user to link something that
-        // still would not appear. The reason is on the tooltip.
-        <span
-          data-testid={`${testId.replace('-connect-', '-unavailable-')}`}
-          title={entry.unavailable}
-          className="text-xs fg-secondary"
-        >
-          Unavailable
+    <DataTableRow>
+      <DataTableCell tone="primary" rowHeader>
+        <span className="inline-flex items-center gap-2">
+          <Logo
+            width={14}
+            height={14}
+            aria-hidden="true"
+            className="shrink-0 fg-secondary"
+          />
+          {label}
         </span>
-      ) : entry.alternateRoute ? (
-        // Already served by another route — a plugin-provided server, say. A
-        // bare Connect here tells a user whose Slack works that they need to
-        // connect Slack: true about the connector, wrong about the capability.
-        <span className="flex items-center gap-2">
-          <span
-            data-testid={`provider-connector-detail-alternate-${entry.provider}`}
-            title={`Served by ${entry.alternateRoute}`}
-            className="inline-flex items-center gap-1.5 text-xs fg-success"
-          >
-            <AppCatalogCheckIcon size="sm" aria-hidden="true" />
-            Already available
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="compact"
-            data-testid={testId}
-            disabled={busy}
-            onClick={() => void onConnect(entry.provider, entry.installUrl)}
-          >
-            Connect anyway
-          </Button>
-        </span>
-      ) : entry.pending ? (
-        // The read has not answered. Rendering a Connect button here would
-        // invite the user to link something that may already be linked.
-        <span
-          data-testid={`provider-connector-detail-pending-${entry.provider}`}
-          className="text-xs fg-secondary"
-        >
-          Checking…
-        </span>
-      ) : entry.connected ? (
-        <span className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 text-xs fg-success">
-            <AppCatalogCheckIcon size="sm" aria-hidden="true" />
-            Connected
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="compact"
-            data-testid={testId}
-            disabled={busy}
-            onClick={() => void onConnect(entry.provider, entry.installUrl)}
-          >
-            Manage
-          </Button>
-        </span>
-      ) : (
-        <span className="flex items-center gap-2">
-          {entry.staleSince ? (
-            // Codex reports from a cache only Codex writes, and nothing Canopy
-            // can invoke refreshes it. Saying "not connected" would be a claim
-            // Canopy cannot support — and reads as broken to someone who just
-            // linked it.
+      </DataTableCell>
+      <DataTableCell align="right" overflow="wrap">
+        <span className="inline-flex items-center justify-end gap-2">
+          {entry.unavailable ? (
+            // A provider Canopy could not read cannot honestly be offered as a
+            // route — clicking through would send the user to link something that
+            // still would not appear. The reason is on the tooltip.
             <span
-              data-testid={`provider-connector-detail-stale-${entry.provider}`}
-              title={`${label} last refreshed its app list on ${new Date(
-                entry.staleSince,
-              ).toLocaleString()}. A link made since then shows up after ${label} next refreshes.`}
+              data-testid={`${testId.replace('-connect-', '-unavailable-')}`}
+              title={entry.unavailable}
               className="text-xs fg-secondary"
             >
-              Status may be out of date
+              Unavailable
             </span>
-          ) : null}
-          <Button
-            type="button"
-            size="compact"
-            data-testid={testId}
-            disabled={busy}
-            onClick={() => void onConnect(entry.provider, entry.installUrl)}
-          >
-            Connect with {label}
-          </Button>
+          ) : entry.alternateRoute ? (
+            // Already served by another route — a plugin-provided server, say. A
+            // bare Connect here tells a user whose Slack works that they need to
+            // connect Slack: true about the connector, wrong about the capability.
+            <span className="flex items-center gap-2">
+              <span
+                data-testid={`provider-connector-detail-alternate-${entry.provider}`}
+                title={`Served by ${entry.alternateRoute}`}
+                className="inline-flex items-center gap-1.5 text-xs fg-success"
+              >
+                <AppCatalogCheckIcon size="sm" aria-hidden="true" />
+                Already available
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="compact"
+                data-testid={testId}
+                disabled={busy}
+                onClick={() => void onConnect(entry.provider, entry.installUrl)}
+              >
+                Connect anyway
+              </Button>
+            </span>
+          ) : entry.pending ? (
+            // The read has not answered. Rendering a Connect button here would
+            // invite the user to link something that may already be linked.
+            <span
+              data-testid={`provider-connector-detail-pending-${entry.provider}`}
+              className="text-xs fg-secondary"
+            >
+              Checking…
+            </span>
+          ) : entry.connected ? (
+            <span className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 text-xs fg-success">
+                <AppCatalogCheckIcon size="sm" aria-hidden="true" />
+                Connected
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="compact"
+                data-testid={testId}
+                disabled={busy}
+                onClick={() => void onConnect(entry.provider, entry.installUrl)}
+              >
+                <span className="inline-flex items-center gap-1">
+                  Manage
+                  <ArrowUpRightIcon size="xs" aria-hidden="true" />
+                </span>
+              </Button>
+            </span>
+          ) : (
+            <span className="flex items-center gap-2">
+              {entry.staleSince ? (
+                // Codex reports from a cache only Codex writes, and nothing Canopy
+                // can invoke refreshes it. Saying "not connected" would be a claim
+                // Canopy cannot support — and reads as broken to someone who just
+                // linked it.
+                <span
+                  data-testid={`provider-connector-detail-stale-${entry.provider}`}
+                  title={`${label} last refreshed its app list on ${new Date(
+                    entry.staleSince,
+                  ).toLocaleString()}. A link made since then shows up after ${label} next refreshes.`}
+                  className="text-xs fg-secondary"
+                >
+                  Status may be out of date
+                </span>
+              ) : null}
+              <Button
+                type="button"
+                size="compact"
+                data-testid={testId}
+                disabled={busy}
+                onClick={() => void onConnect(entry.provider, entry.installUrl)}
+              >
+                Connect with {label}
+              </Button>
+            </span>
+          )}
         </span>
-      )}
-    </li>
+      </DataTableCell>
+    </DataTableRow>
   );
 }

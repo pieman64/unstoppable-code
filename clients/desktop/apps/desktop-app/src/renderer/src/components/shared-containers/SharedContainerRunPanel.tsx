@@ -46,9 +46,11 @@ import { DialogModal } from '@/components/shared/DialogModal';
 import { brandText } from '@/lib/brand';
 import type { SharedContainerRunState } from './useSharedContainerRun';
 import {
+  Stack,
   Disclosure,
   ErrorBanner,
   Heading,
+  FieldError,
   Surface,
 } from '@canopy/ui-shared/components';
 
@@ -140,7 +142,7 @@ function SharedContainerRunCommandRow({
         >
           {/* The body keeps its own test id, which specs key on. */}
           <div
-            className="space-y-0.5"
+            className="flex flex-col gap-0.5"
             data-testid={`shared-container-run-command-details-body-${command.name}`}
           >
             <p
@@ -218,7 +220,7 @@ export function SharedContainerRunPanel({
       maxWidth="lg"
       dataTestId="shared-container-run-panel"
     >
-      <div className="flex flex-col gap-4">
+      <Stack gap="group">
         <p className="text-s fg-secondary">
           {allowed ? (
             publisherMismatch ? (
@@ -242,7 +244,7 @@ export function SharedContainerRunPanel({
         </p>
 
         <section
-          className="space-y-1.5"
+          className="flex flex-col gap-1.5"
           data-testid="shared-container-run-commands"
         >
           <Heading level={3} variant="label">
@@ -253,7 +255,7 @@ export function SharedContainerRunPanel({
               {publisherLabel} did not publish any commands.
             </p>
           ) : (
-            <ul className="space-y-1">
+            <ul className="flex flex-col gap-1">
               {status.run.commands.map((command) => (
                 <SharedContainerRunCommandRow
                   key={command.name}
@@ -288,7 +290,7 @@ export function SharedContainerRunPanel({
 
         {allowed && requiredNames.length > 0 && (
           <section
-            className="space-y-1.5"
+            className="flex flex-col gap-1.5"
             data-testid="shared-container-run-environment"
           >
             <Heading level={3} variant="label">
@@ -317,6 +319,7 @@ export function SharedContainerRunPanel({
               )}
               {unsetNames.length > 0 && (
                 <Button
+                  className="self-start"
                   variant="outline"
                   size="sm"
                   data-testid="shared-container-run-env-placeholders"
@@ -351,7 +354,9 @@ export function SharedContainerRunPanel({
                   Save values
                 </Button>
                 {envInvalid !== null && (
-                  <span className="text-xs fg-destructive">{envInvalid}</span>
+                  <FieldError id="shared-container-run-env-error">
+                    {envInvalid}
+                  </FieldError>
                 )}
               </div>
             </>
@@ -420,7 +425,7 @@ export function SharedContainerRunPanel({
             </Button>
           )}
         </div>
-      </div>
+      </Stack>
 
       {confirming === 'allow' && (
         <DeleteConfirmModal

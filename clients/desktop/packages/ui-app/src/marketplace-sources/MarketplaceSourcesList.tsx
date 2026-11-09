@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import type { MarketplaceSource } from '@canopy/app-core/client';
 import {
@@ -13,7 +14,7 @@ import {
   RefreshButton,
   ProviderSupportIcons,
   Skeleton,
-  StatusLabel,
+  Notice,
 } from '@canopy/ui-shared/components';
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
@@ -290,11 +291,7 @@ function MarketplaceSourceRow({
             >
               {source.name}
             </span>
-            {invalid && (
-              <span className="shrink-0 rounded bg-destructive-subtle px-1.5 py-0.5 text-3xs font-medium fg-destructive">
-                Invalid
-              </span>
-            )}
+            {invalid && <Badge tone="danger">Invalid</Badge>}
             {source.status.state === 'syncing' && (
               <span className="shrink-0 text-3xs fg-tertiary">Syncing…</span>
             )}
@@ -374,15 +371,12 @@ function MarketplaceSourceRow({
         <MarketplaceSourceInvalidBanner source={source} state={state} />
       )}
       {(error || warning) && (
-        <p
-          role="alert"
-          className={REPLAY_MASK_CLASS}
+        <Notice
+          intent={error ? 'destructive' : 'attention'}
           data-testid="marketplace-source-message"
         >
-          <StatusLabel tone={error ? 'destructive' : 'attention'} size="xs">
-            {error ?? warning}
-          </StatusLabel>
-        </p>
+          <span className={REPLAY_MASK_CLASS}>{error ?? warning}</span>
+        </Notice>
       )}
     </li>
   );

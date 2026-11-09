@@ -257,7 +257,9 @@ export function registerOllamaHandlers(
     async (_event: IpcMainInvokeEvent, req?: unknown) => {
       const port =
         isRecord(req) && typeof req.port === 'number' ? req.port : undefined;
-      return ollamaService.testConnection(port);
+      return ollamaService.testConnection(port, {
+        background: isRecord(req) && req.background === true,
+      });
     },
   );
 

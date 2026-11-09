@@ -12,6 +12,10 @@ import {
 } from 'node:crypto';
 import { z } from 'zod';
 import {
+  HostedDelegationSchema,
+  type HostedDelegation,
+} from '@canopy/protocol/remote-control';
+import {
   decodeBase64Url,
   deriveDeviceId,
   encodeBase64Url,
@@ -53,6 +57,13 @@ export const Hello1Schema = z.object({
   purpose: z.enum(['control', 'pair']),
   initiatorKey: base64UrlField,
   commitment: base64UrlField,
+  /**
+   * A hosted agents root's signed grant for this ephemeral initiator key.
+   * Not part of the transcript: its session key must equal `initiatorKey`,
+   * which the transcript already binds. The responder authorizes it before
+   * hello2 and again after hello3.
+   */
+  delegation: HostedDelegationSchema.optional(),
 });
 export type Hello1 = z.infer<typeof Hello1Schema>;
 
@@ -82,6 +93,8 @@ export interface HandshakeResult {
   transcriptHash: Buffer;
   /** Six-digit short authentication string for first-time pairing. */
   shortAuthenticationString: string;
+  /** The initiator's hello1 delegation, on the responder side only. */
+  delegation: HostedDelegation | null;
 }
 
 export class HandshakeError extends Error {
@@ -243,6 +256,7 @@ function deriveResult(
       role === 'initiator' ? responderToInitiator : initiatorToResponder,
     transcriptHash: transcript,
     shortAuthenticationString: String(sas % 1_000_000).padStart(6, '0'),
+    delegation: null,
   };
 }
 
@@ -263,6 +277,8 @@ export interface HandshakeInitiatorOptions {
    * peer key must still hash to `peerDeviceId`.
    */
   pinnedPeerPublicKey: string | null;
+  /** Sent in hello1 when this initiator acts for a hosted root. */
+  delegation?: HostedDelegation;
 }
 
 export class HandshakeInitiator {
@@ -286,6 +302,9 @@ export class HandshakeInitiator {
       purpose: this.options.purpose,
       initiatorKey: this.options.identity.publicKey,
       commitment: commitmentFor(this.ephemeral.publicKey, this.ephemeral.nonce),
+      ...(this.options.delegation
+        ? { delegation: this.options.delegation }
+        : {}),
     };
   }
 
@@ -358,6 +377,16 @@ export class HandshakeInitiator {
   }
 }
 
+/** Throws unless hello1's initiator key hashes to the relay-reported sender. */
+export function assertHello1Sender(hello1: Hello1, peerDeviceId: string): void {
+  if (deriveDeviceId(hello1.initiatorKey) !== peerDeviceId) {
+    throw new HandshakeError(
+      'peer_key_mismatch',
+      'Initiator key does not match its device ID.',
+    );
+  }
+}
+
 export interface HandshakeResponderOptions {
   sessionId: Uint8Array;
   identity: DeviceKeyPair;
@@ -388,12 +417,7 @@ export class HandshakeResponder {
     if (this.stage !== 'new') {
       throw new HandshakeError('unexpected_message', 'Unexpected hello1.');
     }
-    if (deriveDeviceId(hello1.initiatorKey) !== this.options.peerDeviceId) {
-      throw new HandshakeError(
-        'peer_key_mismatch',
-        'Initiator key does not match its device ID.',
-      );
-    }
+    assertHello1Sender(hello1, this.options.peerDeviceId);
     if (!this.options.authorize(hello1.purpose, hello1.initiatorKey)) {
       throw new HandshakeError(
         'unauthorized_peer',
@@ -453,14 +477,17 @@ export class HandshakeResponder {
           transcript,
         ),
       },
-      result: deriveResult(
-        'responder',
-        hello1.purpose,
-        this.ephemeral,
-        hello3.ephemeral,
-        hello1.initiatorKey,
-        transcript,
-      ),
+      result: {
+        ...deriveResult(
+          'responder',
+          hello1.purpose,
+          this.ephemeral,
+          hello3.ephemeral,
+          hello1.initiatorKey,
+          transcript,
+        ),
+        delegation: hello1.delegation ?? null,
+      },
     };
   }
 }

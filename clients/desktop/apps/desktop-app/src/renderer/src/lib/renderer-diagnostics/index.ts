@@ -10,7 +10,7 @@
  * functions in `./recorder`.
  */
 import { useEffect } from 'react';
-import type { RendererDiagnosticsSummary } from '@canopy/desktop-shared/types/observability';
+import type { RendererDiagnosticsSummary } from '@canopy/execution-engine/types/observability';
 import { getChatInterest, subscribeChatInterest } from '@/lib/chat-interest';
 import { useChatStore } from '@/stores/chatStore';
 import { readRemoteControlContext } from '@/stores/remoteControlStore';

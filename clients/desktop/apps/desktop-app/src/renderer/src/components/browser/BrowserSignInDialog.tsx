@@ -7,7 +7,7 @@ import {
   type JSX,
 } from 'react';
 import { TextInput } from '@canopy/ui-shared';
-import type { BrowserAuthRequest } from '@canopy/desktop-shared/types/browser';
+import type { BrowserAuthRequest } from '@canopy/execution-engine/types/browser';
 import { Button } from '@/components/shared/Button';
 import { DialogModal } from '@canopy/ui-shared/components';
 

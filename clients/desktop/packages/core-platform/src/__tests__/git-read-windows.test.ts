@@ -8,10 +8,13 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { createGitReadHost, type GitReadHost } from '../git-read/host';
 import { createSupervisionServices } from '../supervision';
 import { createChildServices } from '../supervision/child';
 import {
@@ -344,6 +347,352 @@ nativeDescribe(
   'git read on native Windows (requires process.platform win32)',
   () => {
     jest.setTimeout(120_000);
+
+    describe('Windows daemon executable facts', () => {
+      function installedGit(label: string): {
+        root: string;
+        executable: string;
+      } {
+        let install = dirname(gitPath);
+        while (!existsSync(join(install, 'cmd', 'git.exe'))) {
+          const parent = dirname(install);
+          if (parent === install)
+            throw new Error(
+              'Git installation root with cmd/git.exe is required',
+            );
+          install = parent;
+        }
+        const root = join(fixture(label), 'Git with spaces');
+        symlinkSync(install, root, 'junction');
+        return { root, executable: join(root, 'cmd', 'git.exe') };
+      }
+
+      function selectionHost(environment: Record<string, string>): GitReadHost {
+        return createGitReadHost({
+          os: 'win32',
+          environment,
+          probeDirectory: dir,
+        });
+      }
+
+      async function facts(
+        host: ReturnType<typeof selectionHost>,
+        saved = '',
+        recheck = false,
+      ): ReturnType<GitReadHost['repository']['selectExecutable']> {
+        return host.repository.selectExecutable({
+          readSavedExecutablePath: () => Promise.resolve(saved),
+          signal: new AbortController().signal,
+          recheck,
+        });
+      }
+
+      it('reports native where.exe winget availability on both successful and failed Git detection', async () => {
+        const available = fixture('winget available', { 'winget.exe': '' });
+        for (const withPathExt of [true, false]) {
+          for (const path of [system32, `${available};${system32}`]) {
+            const environment = gitEnv({ PATH: path });
+            if (!withPathExt) delete environment.PATHEXT;
+            const control = spawnSync(join(system32, 'where.exe'), ['winget'], {
+              cwd: dir,
+              env: environment,
+              encoding: 'utf8',
+            });
+            expect(control.error).toBeUndefined();
+            const expected =
+              control.status === 0 && lines(control.stdout).length > 0;
+            expect(expected).toBe(withPathExt && path.includes(available));
+            const host = selectionHost(environment);
+            try {
+              await expect(facts(host)).resolves.toMatchObject({
+                ready: false,
+                code: 'git_unavailable',
+                wingetAvailable: expected,
+              });
+              await expect(facts(host, gitPath, true)).resolves.toMatchObject({
+                ready: true,
+                wingetAvailable: expected,
+              });
+            } finally {
+              expect(await host.stop(AbortSignal.timeout(10_000))).toEqual({
+                state: 'stopped',
+              });
+            }
+          }
+        }
+      });
+
+      it('discovers per-user winget aliases outside the sanitized daemon PATH without changing Git discovery', async () => {
+        const localAppData = fixture('Local App Data');
+        const windowsApps = join(localAppData, 'Microsoft', 'WindowsApps');
+        mkdirSync(windowsApps, { recursive: true });
+        const alias = join(windowsApps, 'winget.exe');
+        const environment = createChildServices('win32').childEnvironment({
+          source: {
+            ...gitEnv(),
+            APPDATA: join(home, 'AppData', 'Roaming'),
+            localappdata: localAppData,
+            PATH: `${windowsApps};${dirname(gitPath)};${system32}`,
+          },
+        });
+        expect(environment.PATH).not.toContain(windowsApps);
+        expect(environment.PATH).not.toContain(dirname(gitPath));
+        const host = selectionHost(environment);
+        try {
+          await expect(facts(host)).resolves.toMatchObject({
+            ready: false,
+            code: 'git_unavailable',
+            wingetAvailable: false,
+          });
+          writeFileSync(alias, '');
+          const control = spawnSync(join(system32, 'where.exe'), ['winget'], {
+            cwd: dir,
+            env: environment,
+            encoding: 'utf8',
+          });
+          expect(control.error).toBeUndefined();
+          expect(control.status).not.toBe(0);
+          await expect(facts(host, '', true)).resolves.toMatchObject({
+            ready: false,
+            code: 'git_unavailable',
+            wingetAvailable: true,
+          });
+          await expect(facts(host, gitPath, true)).resolves.toMatchObject({
+            ready: true,
+            wingetAvailable: true,
+          });
+          unlinkSync(alias);
+          await expect(facts(host, gitPath, true)).resolves.toMatchObject({
+            ready: true,
+            wingetAvailable: false,
+          });
+        } finally {
+          expect(await host.stop(AbortSignal.timeout(10_000))).toEqual({
+            state: 'stopped',
+          });
+        }
+      });
+
+      it('uses saved then mixed-case override then discovery with native paths containing spaces', async () => {
+        const saved = installedGit('saved');
+        const override = installedGit('override');
+        const discovered = installedGit('discovered');
+        const environment = gitEnv();
+        delete environment.PATH;
+        environment.pAtH = `${dirname(discovered.executable)};${system32}`;
+        environment.canopy_git_executable = override.executable.toUpperCase();
+        const host = selectionHost(environment);
+        try {
+          await expect(
+            facts(host, saved.executable.toUpperCase()),
+          ).resolves.toMatchObject({
+            ready: true,
+            origin: 'saved',
+            version: selectedGit.version,
+          });
+          await expect(
+            facts(host, join(dir, 'missing', 'git.exe'), true),
+          ).resolves.toMatchObject({ ready: true, origin: 'override' });
+          unlinkSync(override.root);
+          await expect(facts(host, '', true)).resolves.toMatchObject({
+            ready: true,
+            origin: 'discovered',
+          });
+          expect(
+            await host.selectWriteExecutable(
+              () => Promise.resolve(''),
+              new AbortController().signal,
+            ),
+          ).toBe(discovered.executable);
+        } finally {
+          expect(await host.stop(AbortSignal.timeout(10_000))).toEqual({
+            state: 'stopped',
+          });
+        }
+      });
+
+      it('discovers native standard installs through mixed-case environment names', async () => {
+        const installed = installedGit('standard install');
+        const programFiles = fixture('Program Files with spaces');
+        symlinkSync(installed.root, join(programFiles, 'Git'), 'junction');
+        const host = selectionHost(
+          gitEnv({
+            PATH: system32,
+            pRoGrAmFiLeS: programFiles,
+          }),
+        );
+        try {
+          await expect(facts(host)).resolves.toMatchObject({
+            ready: true,
+            origin: 'discovered',
+            version: selectedGit.version,
+          });
+          expect(
+            await host.selectWriteExecutable(
+              () => Promise.resolve(''),
+              new AbortController().signal,
+            ),
+          ).toBe(join(programFiles, 'Git', 'cmd', 'git.exe'));
+        } finally {
+          expect(await host.stop(AbortSignal.timeout(10_000))).toEqual({
+            state: 'stopped',
+          });
+        }
+      });
+
+      it('matches native Git selection before and after the Windows launch allowlist', async () => {
+        const installed = installedGit('launch standard install');
+        const override = installedGit('launch override');
+        const programFiles = fixture('launch Program Files');
+        symlinkSync(installed.root, join(programFiles, 'Git'), 'junction');
+        const overrideInputs: Record<string, Record<string, string>> = {
+          override: { canopy_git_executable: override.executable },
+          'invalid override': {
+            canopy_git_executable: join(dir, 'not-git.exe'),
+          },
+          'relative override': { canopy_git_executable: 'git' },
+          'relative executable override': {
+            canopy_git_executable: 'git.exe',
+          },
+          'drive-relative override': { canopy_git_executable: 'C:git.exe' },
+          'padded relative override': { canopy_git_executable: '  git.exe  ' },
+          'rooted override': { canopy_git_executable: '\\git.exe' },
+          'device override': { canopy_git_executable: '\\\\?\\C:\\git.exe' },
+          'whitespace override': { canopy_git_executable: ' ' },
+          'padded override': {
+            canopy_git_executable: `  ${override.executable}  `,
+          },
+        };
+        for (const mode of [
+          'ProgramFiles',
+          'ProgramFiles(x86)',
+          'override',
+          'invalid override',
+          'relative override',
+          'relative executable override',
+          'drive-relative override',
+          'padded relative override',
+          'rooted override',
+          'device override',
+          'whitespace override',
+          'padded override',
+        ] as const) {
+          const source = gitEnv({
+            PATH: system32,
+            APPDATA: join(home, 'AppData', 'Roaming'),
+            [mode === 'ProgramFiles(x86)'
+              ? 'programfiles(x86)'
+              : 'programfiles']: programFiles,
+            ...overrideInputs[mode],
+          });
+          const environment = createChildServices('win32').childEnvironment({
+            source,
+          });
+          const direct = selectionHost(source);
+          const launched = selectionHost(environment);
+          try {
+            const selectsOverride =
+              mode === 'override' || mode === 'padded override';
+            const expected = selectsOverride
+              ? override.executable
+              : join(programFiles, 'Git', 'cmd', 'git.exe');
+            const directFacts = await facts(direct);
+            expect(directFacts).toMatchObject({
+              ready: true,
+              origin: selectsOverride ? 'override' : 'discovered',
+              override: Boolean(source.canopy_git_executable?.trim()),
+              version: selectedGit.version,
+            });
+            await expect(facts(launched)).resolves.toEqual(directFacts);
+            for (const host of [direct, launched])
+              await expect(
+                host.selectWriteExecutable(
+                  () => Promise.resolve(''),
+                  AbortSignal.timeout(10_000),
+                ),
+              ).resolves.toBe(expected);
+            expect(environment.PATH).not.toContain(programFiles);
+            expect(environment.PATH).not.toContain(override.root);
+          } finally {
+            for (const host of [direct, launched])
+              expect(await host.stop(AbortSignal.timeout(10_000))).toEqual({
+                state: 'stopped',
+              });
+          }
+        }
+      });
+
+      it('rechecks native removed and replaced executables and distinguishes unusable from missing', async () => {
+        const saved = installedGit('replace');
+        const host = selectionHost(gitEnv({ PATH: system32 }));
+        try {
+          await expect(facts(host, saved.executable)).resolves.toMatchObject({
+            ready: true,
+          });
+          unlinkSync(saved.root);
+          await expect(
+            facts(host, saved.executable, true),
+          ).resolves.toMatchObject({
+            ready: false,
+            code: 'git_unavailable',
+            explicit: false,
+          });
+          mkdirSync(dirname(saved.executable), { recursive: true });
+          writeFileSync(saved.executable, 'not a Windows executable');
+          await expect(
+            facts(host, saved.executable, true),
+          ).resolves.toMatchObject({
+            ready: false,
+            code: 'selection_rejected',
+            explicit: false,
+          });
+          // A repaired saved choice is retried immediately, not after a rejection TTL.
+          rmSync(saved.root, { recursive: true });
+          const restored = installedGit('restored');
+          symlinkSync(restored.root, saved.root, 'junction');
+          await expect(facts(host, saved.executable)).resolves.toMatchObject({
+            ready: true,
+            version: selectedGit.version,
+          });
+        } finally {
+          expect(await host.stop(AbortSignal.timeout(10_000))).toEqual({
+            state: 'stopped',
+          });
+        }
+      });
+
+      it('shares one native selected executable between daemon ignored reads and the write selector', async () => {
+        const selected = installedGit('shared');
+        const host = selectionHost(
+          gitEnv({ canopy_git_executable: selected.executable }),
+        );
+        const readSavedExecutablePath = (): Promise<string> =>
+          Promise.resolve('');
+        try {
+          const repo = repository('*.log\n');
+          await expect(
+            host.port.checkIgnoredPaths({
+              root: repo,
+              relativePaths: ['a.log', 'keep.txt'],
+              readSavedExecutablePath,
+              signal: new AbortController().signal,
+            }),
+          ).resolves.toEqual(new Set(['a.log']));
+          const executable = await host.selectWriteExecutable(
+            readSavedExecutablePath,
+            new AbortController().signal,
+          );
+          expect(executable).toBe(selected.executable);
+          expect(
+            host.selections().selections.map(({ executable }) => executable),
+          ).toEqual([executable]);
+        } finally {
+          expect(await host.stop(AbortSignal.timeout(10_000))).toEqual({
+            state: 'stopped',
+          });
+        }
+      });
+    });
 
     // D2: where.exe is resolved through the supplied PATH and spawned by its
     // absolute path; where.exe itself then lists its cwd before PATH.

@@ -39,11 +39,15 @@ export const CANOPY_HOST_EXECUTION_OPERATIONS: ReadonlySet<string> = new Set([
   'worker.git.commit',
   'worker.git.push',
   'worker.git.merge',
+  'worker.git.worktree.add',
+  'worker.git.worktree.remove',
+  'worker.git.worktree.prune',
   // CAN-5087: keyed, but `_execution` is outside params, so a keyed repeat joins the running execution and never runs it with another environment.
   'worker.script.execute',
   // CAN-5086: a pipeline start carries its launch in pipelineLaunch; keyed, but a keyed replay never runs a launch again.
   'worker.pipeline.execution.start',
   // CAN-5095: an owner request's answer carries its capabilities in pipelineOwnerValues.
+  // CAN-5771: the owner's settlement carries its host-local values; idempotency inherent, so a repeat answers already_settled.
   'worker.pipeline.hostRequest.respond',
 ]);
 
@@ -156,12 +160,53 @@ function isSnapshotValue(
   }
 }
 
-/** A POSIX absolute host path; the daemon serves pipelines on macOS and Linux only. */
+/** The most a launch's model registry snapshot may hold, in UTF-8 bytes (CAN-5095). */
+export const WORKER_PIPELINE_MODEL_CATALOG_MAX_BYTES = 1_048_576;
+
+const modelRegistryValue = z
+  .string()
+  .min(1)
+  .max(WORKER_PIPELINE_MODEL_CATALOG_MAX_BYTES);
+
+/**
+ * The model registry a launch's model steps resolve against (CAN-5095): the
+ * values the step runner gives action subprocesses, by branded environment
+ * name. Not a secret; every action subprocess's environment carries it.
+ */
+const WorkerPipelineModelCatalogSchema = z
+  .strictObject({
+    CLAUDE_MODELS: modelRegistryValue.optional(),
+    CODEX_MODELS: modelRegistryValue.optional(),
+    OLLAMA_MODELS: modelRegistryValue.optional(),
+    MODEL_ALIASES: modelRegistryValue.optional(),
+    MODEL_CATALOG: modelRegistryValue,
+    MODEL_HARNESS_ASSIGNMENTS: modelRegistryValue,
+    MODEL_THINKING_LEVELS: modelRegistryValue.optional(),
+  })
+  .refine(
+    (catalog) =>
+      Object.values(catalog).reduce(
+        (total, value) => total + (value ? utf8ByteLength(value) : 0),
+        0,
+      ) <= WORKER_PIPELINE_MODEL_CATALOG_MAX_BYTES,
+    'The model catalog exceeds its limit.',
+  );
+
+/**
+ * An absolute host path: POSIX, or a Windows drive path (CAN-5091). A path
+ * that starts with two separators, in either direction, is refused: on
+ * Windows it is a UNC or device path.
+ */
 const HostPathSchema = z
   .string()
   .min(2)
   .max(4096)
-  .refine((value) => value.startsWith('/') && !value.includes('\0'));
+  .refine(
+    (value) =>
+      (value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)) &&
+      !/^[\\/]{2}/.test(value) &&
+      !value.includes('\0'),
+  );
 
 /**
  * What a pipeline start runs, host-local (CAN-5086): the snapshot core
@@ -211,6 +256,8 @@ export const WorkerPipelineHostLaunchSchema = z.strictObject({
   curatedPipelineSource: CanopyJsonValueSchema.optional(),
   initiator: CanopyJsonValueSchema.optional(),
   agentOrigin: CanopyJsonValueSchema.optional(),
+  /** The run needs its owner (host steps, CAN-5771; model steps, CAN-5095): it pauses when the owner is gone. */
+  ownerBound: z.boolean().optional(),
   /** How `node` steps and actions start (Electron's binary as Node). */
   nodeProcess: z
     .strictObject({
@@ -220,9 +267,53 @@ export const WorkerPipelineHostLaunchSchema = z.strictObject({
         .optional(),
     })
     .optional(),
+  /** `ExecutionOptions.modelConfig` (CAN-5095). */
+  modelConfig: CanopyJsonValueSchema.optional(),
+  /** The app's own provider CLIs, for model steps (CAN-5095 D21). */
+  providerBinaries: z
+    .strictObject({ claude: HostPathSchema, codex: HostPathSchema })
+    .optional(),
+  /** The model registry its model steps resolve against (CAN-5095). */
+  modelCatalog: WorkerPipelineModelCatalogSchema.optional(),
+  /** The run's Codex app-server environment, when it has a Codex step (CAN-5095 D20). */
+  codexEnvironment: z
+    .strictObject({
+      environment: CanopyChildEnvironmentSchema,
+      logicalWorkspaceEnvironmentId: z.string().min(1).max(512),
+    })
+    .optional(),
 });
 export type WorkerPipelineHostLaunch = z.output<
   typeof WorkerPipelineHostLaunchSchema
+>;
+
+/** The host-path outputs a host step returns host-locally (CAN-5771); equals WORKER_PIPELINE_HOST_PATH_OUTPUTS. */
+export const PIPELINE_HOST_STEP_PATH_OUTPUTS = [
+  'path',
+  'setup_log_file',
+  'setup_results_file',
+  'reply_file',
+] as const;
+
+/**
+ * What a host step's owner returns host-locally with its settlement
+ * (CAN-5771): the host-path outputs the portable result refuses, how the
+ * deadline ended the call, and an unexpected host error's own message.
+ */
+export const WorkerPipelineHostStepValuesSchema = z.strictObject({
+  /** An absolute host path, or `''` where the host reports no file (a skipped setup, no reply). */
+  pathOutputs: z.partialRecord(
+    z.enum(PIPELINE_HOST_STEP_PATH_OUTPUTS),
+    z.union([HostPathSchema, z.literal('')]),
+  ),
+  /** `none`: settled in time; `finalized`: the host's timeout finalizer's result; `unfinalized`: the deadline passed with no finalizer. */
+  timeout: z.enum(['none', 'finalized', 'unfinalized']),
+  errorMessage: z.string().min(1).max(8192).optional(),
+  /** The host returned a send record the boundary refuses; the executor reports an invalid receipt, as in process. */
+  invalidChatSend: z.literal(true).optional(),
+});
+export type WorkerPipelineHostStepValues = z.output<
+  typeof WorkerPipelineHostStepValuesSchema
 >;
 
 /** The operation whose `_execution` may carry pipeline owner values (CAN-5095). */
@@ -279,7 +370,29 @@ export const CanopyHostExecutionSchema = z.strictObject({
   pipelineLaunch: WorkerPipelineHostLaunchSchema.optional(),
   /** Only {@link CANOPY_PIPELINE_OWNER_VALUES_OPERATION} accepts it. */
   pipelineOwnerValues: WorkerPipelineOwnerValuesSchema.optional(),
+  /** Only {@link CANOPY_HOST_EXECUTION_MEMBER_OPERATIONS}.pipelineHostStep accepts it (CAN-5771). */
+  pipelineHostStep: WorkerPipelineHostStepValuesSchema.optional(),
 });
+
+/**
+ * The one operation that accepts each `_execution` member besides
+ * `childEnvironment`, and the refusal any other operation answers (CAN-5771).
+ * A member missing here is refused everywhere.
+ */
+export const CANOPY_HOST_EXECUTION_MEMBER_OPERATIONS = Object.freeze({
+  pipelineLaunch: Object.freeze({
+    operation: CANOPY_PIPELINE_LAUNCH_OPERATION,
+    refusal: 'This operation does not accept a pipeline launch.',
+  }),
+  pipelineOwnerValues: Object.freeze({
+    operation: CANOPY_PIPELINE_OWNER_VALUES_OPERATION,
+    refusal: 'This operation does not accept pipeline owner values.',
+  }),
+  pipelineHostStep: Object.freeze({
+    operation: 'worker.pipeline.hostRequest.respond',
+    refusal: 'This operation does not accept host step values.',
+  }),
+} as const);
 
 export type CanopyHostExecution = z.output<typeof CanopyHostExecutionSchema>;
 

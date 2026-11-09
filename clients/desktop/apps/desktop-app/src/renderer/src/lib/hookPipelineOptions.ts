@@ -2,8 +2,8 @@ import type {
   IPCResult,
   PipelineData,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
-import { getTriggerTypes } from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
+import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import type { PipelineHookSource } from '@canopy/desktop-shared/hooks';
 import { pipelineSupportsExecutionScope } from './pipelineExecutionScope';
 import { loadDisabledPipelineIdsBestEffort } from './pipelineEnablement';

@@ -31,7 +31,7 @@ import {
   authorizeDesktopGatewayScope,
   connectDesktopGateway,
 } from '../services/ai-gateway-settings';
-import { requestApprovalFromRenderer } from '../approvals/prompt-bridge';
+import { requestApprovalDecision } from '../approvals/prompt-bridge';
 import { requestSecretInputApproval } from '../approvals/secret-input';
 import { cancelApproval } from '../approvals/pending-approvals';
 import { isHostedSettingsEnabled } from '../services/hosted-settings-feature-flag';
@@ -275,7 +275,7 @@ export async function executeDesktopAiGateway(
     signal.addEventListener('abort', cancel, { once: true });
     let approved = false;
     try {
-      const decision = await requestApprovalFromRenderer({
+      const result = await requestApprovalDecision({
         sessionKey,
         getWindow,
         timeoutMs: 120_000,
@@ -288,12 +288,16 @@ export async function executeDesktopAiGateway(
             inputSummary: title,
           },
         },
+        // No tool policy applies to this prompt: a policy change shows it
+        // again at the new revision and never decides it (CAN-4129).
+        revalidate: () => Promise.resolve('prompt'),
         onRegistered: (id) => {
           approvalId = id;
           if (signal.aborted) cancel();
         },
       });
-      approved = decision.behavior === 'allow';
+      approved =
+        result.kind === 'decision' && result.decision.behavior === 'allow';
     } finally {
       signal.removeEventListener('abort', cancel);
     }

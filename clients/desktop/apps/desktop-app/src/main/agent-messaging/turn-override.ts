@@ -16,7 +16,7 @@ import {
   type ChatTabPluginSelections,
   type ModelHarness,
 } from '@canopy/desktop-shared/types';
-import { mergeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
+import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
 import { resolveSendModelPin } from '../agents/agent-default-model';

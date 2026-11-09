@@ -28,6 +28,7 @@ import { CHAT_QUEUE_LAB_ENTRIES } from './componentsLabChatQueue';
 import { CHAT_SUBAGENTS_LAB_ENTRIES } from './componentsLabChatSubagents';
 import { CHAT_TURN_LAB_ENTRIES } from './componentsLabChatTurn';
 import { AgentSentSpecimen } from './componentsLabAgentSent';
+import { DisclosuresSpecimen } from './componentsLabDisclosures';
 import { HeadingsSpecimen } from './componentsLabHeadings';
 import { LoadingSpecimen } from './componentsLabLoading';
 import { SurfacesSpecimen } from './componentsLabSurfaces';
@@ -468,6 +469,16 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
       'packages/ui-shared/src/components/{settings/SettingsBackButton,settings/SettingsButtonRow,settings/SettingsSaveBar,diff/DiffSourceSelector,external-agents/AgentAccessEditor}.tsx',
     prs: [],
     View: SettingsAndAgentsSpecimen,
+  },
+  {
+    id: 'disclosures',
+    name: 'Disclosures',
+    group: 'Unified',
+    note: 'Disclosure, and the parts for a body that lives apart from its toggle: sidebar section headers and list rows, tree toggles, the Usage rows and the settings list button, each in every state.',
+    source:
+      'packages/ui-shared/src/components/{Disclosure,SidebarSectionToggle,SidebarToggleRow}.tsx',
+    prs: [],
+    View: DisclosuresSpecimen,
   },
   {
     id: 'sidebar-parts',

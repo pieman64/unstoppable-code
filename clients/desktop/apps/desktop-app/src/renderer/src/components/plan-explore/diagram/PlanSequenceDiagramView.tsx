@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import {
   forwardRef,
   useCallback,
@@ -155,101 +156,121 @@ function SelectedNodeDetail({
 
   return (
     <PaneSheet placement="bottom" aria-label="Node detail">
-      <div className="mb-1 flex items-start justify-between gap-2">
-        <Heading level={4} variant="title">
-          {data.title}
-        </Heading>
-        <Button
-          variant="ghost"
-          size="compact"
-          iconOnly
-          onClick={onClose}
-          aria-label="Close node detail"
-        >
-          <AppCatalogCloseIcon size="sm" />
-        </Button>
-      </div>
-      <p className="mb-2 text-xs fg-secondary">{data.description}</p>
-      {data.detail && (
-        <p className="mb-2 whitespace-pre-wrap text-xs fg-primary">
-          {data.detail}
-        </p>
-      )}
-      {data.files && data.files.length > 0 && (
-        <div className="mb-2">
-          <p className="mb-1 text-3xs font-medium fg-secondary">Files</p>
-          <ul className="flex flex-col gap-0.5">
-            {data.files.map((file) => (
-              <li key={file} className="truncate font-mono text-2xs fg-primary">
-                {file}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {((data.headingPath && data.headingPath.length > 0) || data.quote) && (
-        <div>
-          <p className="mb-1 text-3xs font-medium fg-secondary">Plan anchor</p>
-          {data.headingPath && data.headingPath.length > 0 && (
-            <p className="text-2xs fg-secondary">
-              {data.headingPath.join(' › ')}
-            </p>
-          )}
-          {data.quote && (
-            <p className="mt-0.5 border-l-2 pl-2 text-2xs italic fg-secondary">
-              {data.quote}
-            </p>
-          )}
-        </div>
-      )}
-      {onAddNodeComment && (
-        <div className="mt-3">
-          <Divider />
-          <div className="pt-2">
-            {composing ? (
-              <div className="flex flex-col gap-1.5">
-                <TextArea
-                  aria-label="Comment"
-                  value={body}
-                  onChange={(e): void => setBody(e.target.value)}
-                  placeholder="Comment on this node…"
-                  rows={3}
-                  autoFocus
-                  data-testid="plan-node-comment-input"
-                />
-                <div className="flex items-center justify-end gap-1.5">
-                  <Button
-                    size="compact"
-                    onClick={(): void => {
-                      setComposing(false);
-                      setBody('');
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="primary"
-                    size="compact"
-                    onClick={handleSave}
-                    disabled={body.trim().length === 0}
-                    data-testid="plan-node-comment-save"
-                  >
-                    Save comment
-                  </Button>
+      <Stack gap="item">
+        <Stack gap="tight">
+          <div className="flex items-start justify-between gap-2">
+            <Heading level={4} variant="title">
+              {data.title}
+            </Heading>
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
+              onClick={onClose}
+              aria-label="Close node detail"
+            >
+              <AppCatalogCloseIcon size="sm" />
+            </Button>
+          </div>
+          <div
+            className={
+              !Boolean(
+                (data.headingPath && data.headingPath.length > 0) || data.quote,
+              )
+                ? 'flex flex-col gap-2 pb-2'
+                : 'flex flex-col gap-2'
+            }
+          >
+            <p className="text-xs fg-secondary">{data.description}</p>
+            {data.detail && (
+              <p className="whitespace-pre-wrap text-xs fg-primary">
+                {data.detail}
+              </p>
+            )}
+            {data.files && data.files.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <p className="text-3xs font-medium fg-secondary">Files</p>
+                <ul className="flex flex-col gap-0.5">
+                  {data.files.map((file) => (
+                    <li
+                      key={file}
+                      className="truncate font-mono text-2xs fg-primary"
+                    >
+                      {file}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {((data.headingPath && data.headingPath.length > 0) ||
+              data.quote) && (
+              <div className="flex flex-col gap-1">
+                <p className="text-3xs font-medium fg-secondary">Plan anchor</p>
+                <div className="flex flex-col gap-0.5">
+                  {data.headingPath && data.headingPath.length > 0 && (
+                    <p className="text-2xs fg-secondary">
+                      {data.headingPath.join(' › ')}
+                    </p>
+                  )}
+                  {data.quote && (
+                    <p className="border-l-2 pl-2 text-2xs italic fg-secondary">
+                      {data.quote}
+                    </p>
+                  )}
                 </div>
               </div>
-            ) : (
-              <Button
-                size="compact"
-                onClick={(): void => setComposing(true)}
-                data-testid="plan-node-add-comment"
-              >
-                + Add comment
-              </Button>
             )}
           </div>
-        </div>
-      )}
+        </Stack>
+        {onAddNodeComment && (
+          <div className="">
+            <Divider />
+            <div className="pt-2">
+              {composing ? (
+                <div className="flex flex-col gap-1.5">
+                  <TextArea
+                    aria-label="Comment"
+                    value={body}
+                    onChange={(e): void => setBody(e.target.value)}
+                    placeholder="Comment on this node…"
+                    rows={3}
+                    autoFocus
+                    data-testid="plan-node-comment-input"
+                  />
+                  <div className="flex items-center justify-end gap-1.5">
+                    <Button
+                      size="compact"
+                      onClick={(): void => {
+                        setComposing(false);
+                        setBody('');
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="compact"
+                      onClick={handleSave}
+                      disabled={body.trim().length === 0}
+                      data-testid="plan-node-comment-save"
+                    >
+                      Save comment
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  size="compact"
+                  onClick={(): void => setComposing(true)}
+                  data-testid="plan-node-add-comment"
+                >
+                  + Add comment
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </Stack>
     </PaneSheet>
   );
 }
@@ -429,14 +450,14 @@ export const PlanSequenceDiagram = forwardRef<
           <ErrorState
             space="panel"
             message={
-              <>
+              <Stack as="span" gap="tight">
                 Couldn’t generate the diagram.
                 {artifact?.error && (
-                  <span className="mt-1 block max-w-sm text-xs fg-secondary">
+                  <span className="block max-w-sm text-xs fg-secondary">
                     {artifact.error}
                   </span>
                 )}
-              </>
+              </Stack>
             }
             onRetry={onGenerate}
             retrying={isGenerating}

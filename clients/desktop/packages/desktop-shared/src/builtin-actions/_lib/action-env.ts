@@ -1,4 +1,4 @@
-import { brandEnvCandidates } from '../../brand/env';
+import { brandEnvCandidates } from '@canopy/execution-engine/brand/env';
 
 const ACTION_ENV_SUFFIXES = ['OUTPUT', 'OUTPUT_DIR'] as const;
 const ACTION_ENV_KEYS = ['CANOPY_GIT_EXECUTABLE'] as const;

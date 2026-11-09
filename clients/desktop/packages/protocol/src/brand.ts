@@ -1772,9 +1772,9 @@ export interface CanopyDataDirContract {
   getCanopySecureDataDir(): string;
   getCanopySecureStorageMode(): CanopySecureStorageMode;
   getInternalLegacySharedSecureDataDir(): string | null;
-  getBrandDataDirCandidates(mode?: CanopyRuntimeMode): string[];
-  getBrandSecureDataDir(mode?: CanopySecureStorageMode): string;
-  getPrimaryBrandDataDir(mode?: CanopyRuntimeMode): string;
+  getBrandDataDirCandidates(): string[];
+  getBrandSecureDataDir(): string;
+  getPrimaryBrandDataDir(): string;
   getResolvedCanopyDataDir(mode?: CanopyRuntimeMode): {
     path: string;
     source: 'override' | 'primary' | 'fallback' | 'fresh';

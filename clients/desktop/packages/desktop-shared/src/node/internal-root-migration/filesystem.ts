@@ -1,3 +1,4 @@
+import { observeStoragePathSync } from '@canopy/core-platform/storage-path-observation';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, createReadStream, type Stats } from 'node:fs';
 import {
@@ -27,7 +28,7 @@ import {
   type InternalRootFilesystemHost,
 } from './filesystem-host';
 import { execFile } from 'node:child_process';
-import { promisify, isDeepStrictEqual } from 'node:util';
+import { promisify } from 'node:util';
 import { z } from 'zod';
 import {
   createPlatformEndpointServices,
@@ -47,94 +48,51 @@ import {
   type InternalRootExternalSnapshot,
 } from '@canopy/core-runtime/node/internal-root-migration';
 
+import { internalRootSourceIsSeparate } from '@canopy/core-runtime/node/internal-root-source';
+import { validateInternalRootJournal } from '@canopy/core-runtime/node/internal-root-journal';
+
 const run = promisify(execFile);
-const digest = z.string().regex(/^[a-f0-9]{64}$/);
-const identitySchema = z
-  .object({
-    brandId: z.enum(['canopy', 'unstoppable-code']),
-    brandDisplayName: z.string(),
-    build: z.literal('internal'),
-    source: z.string(),
-    destination: z.string(),
-    historicalSecure: z.string(),
-    coordination: z.string(),
-  })
-  .strict();
-const inventorySchema = z
-  .object({
-    sourceIdentity: z.string().nullable(),
-    destinationIdentity: z.string().nullable(),
-    fingerprint: digest,
-    files: z.number().int().nonnegative(),
-    bytes: z.number().int().nonnegative(),
-    historicalSecure: z.boolean(),
-    nestedSecure: z.boolean(),
-    stableOwned: z.boolean(),
-  })
-  .strict();
-const journalSchema = z
-  .object({
-    version: z.literal(6),
-    transactionId: z.uuid(),
-    identity: identitySchema,
-    internalDeclaration: z.boolean(),
-    phase: z.enum([
-      'prepared',
-      'source-settled',
-      'building',
-      'publishing',
-      'rebuilding',
-      'restoring-external',
-      'complete',
-    ]),
-    inventory: inventorySchema,
-    externalFiles: z.array(z.string()),
-    stagingRoot: z.string(),
-    stagingIdentity: z.string().optional(),
-    externalSnapshots: z
-      .array(
-        z
-          .object({
-            path: z.string(),
-            preimage: digest,
-            mode: z.number().int().min(0).max(0o777),
-            postimage: digest.optional(),
-          })
-          .strict(),
-      )
-      .optional(),
-    publicationIdentity: z.string().optional(),
-    publicationFingerprint: digest.optional(),
-    settledFingerprint: digest.optional(),
-    secureRelocation: z.literal('pending'),
-  })
-  .strict();
 
 export function internalRootIdentity(
   home: string,
   brand: Pick<BrandCore, 'id' | 'displayName' | 'storage'>,
+  sourceDirectory?: string,
 ): InternalRootIdentity {
   if (brand.id !== 'canopy' && brand.id !== 'unstoppable-code')
     throw new Error('Unsupported internal brand.');
+  const trustedHome = observeStoragePathSync(home).canonicalPath;
   const pathFor = (build: 'stable' | 'internal'): string =>
     resolveBuildStoragePaths({
-      home,
+      home: trustedHome,
       brand,
       identity: { brandId: brand.id, build },
     }).dataRoot;
-  return {
+  const identity: InternalRootIdentity = {
     brandId: brand.id,
     brandDisplayName: brand.displayName,
     build: 'internal',
-    source: pathFor('stable'),
+    source: sourceDirectory ?? pathFor('stable'),
     destination: pathFor('internal'),
     historicalSecure: historicalSecureDataDir(
-      home,
+      trustedHome,
       brand.storage.secureDataDirNames,
       'internal',
     ),
-    coordination: join(home, `.${brand.id}-internal-migration`),
+    coordination: join(trustedHome, `.${brand.id}-internal-migration`),
   };
+  if (
+    !internalRootSourceIsSeparate(identity.source, [
+      identity.destination,
+      identity.historicalSecure,
+      identity.coordination,
+      `${identity.destination}.migration-staging`,
+      join(trustedHome, `.${brand.id}-internal-startup.json`),
+    ])
+  )
+    refuseLayout(
+      'The source must be an absolute canonical directory separate from the internal destination and maintenance paths.',
+    );
+  return identity;
 }
 
 function refuseLayout(detail: string): never {
@@ -305,7 +263,15 @@ async function manifest(
       ]);
       files += 1;
       bytes += stat.size;
-      if (durable) await flush(path);
+      if (durable) {
+        if (windows && windows.attributes & 1) {
+          if (!windowsFilesystem(host).hasReadonlyCopyFlush(path))
+            throw new InternalRootMigrationRefused(
+              'recovery-required',
+              `Readonly construction file lacks a matching in-process copy-flush receipt: ${path}. Retain the journal and rerun to rebuild staging; never clear readonly to force a seal.`,
+            );
+        } else await flush(path);
+      }
     } else if (!(stat.isSocket() && relative.startsWith(`runtime${sep}`)))
       // Sockets carry no recoverable data; C must discard stale runtime state.
       refuseLayout(`Special file: ${path}`);
@@ -334,9 +300,24 @@ export async function inspectInternalRoot(
   inspectDestination = false,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<InternalRootInventory> {
-  const home = dirname(identity.source);
-  if (resolve(home) !== home || (await realpath(home)) !== home)
+  const home = dirname(identity.destination);
+  const observedHome = observeStoragePathSync(home);
+  if (
+    resolve(home) !== home ||
+    observedHome.kind !== 'directory' ||
+    observedHome.canonicalPath !== home
+  )
     refuseLayout('HOME must be canonical, not an alias.');
+  if (
+    !internalRootSourceIsSeparate(identity.source, [
+      identity.destination,
+      identity.historicalSecure,
+      identity.coordination,
+      internalRootStaging(identity),
+      join(home, `.${identity.brandId}-internal-startup.json`),
+    ])
+  )
+    refuseLayout('The source overlaps internal storage or maintenance paths.');
   for (const path of [
     identity.source,
     identity.destination,
@@ -344,12 +325,27 @@ export async function inspectInternalRoot(
     identity.coordination,
     internalRootStaging(identity),
   ]) {
-    if (dirname(path) !== home)
-      refuseLayout('Migration paths must be canonical siblings.');
-    if (await statIfPresent(path)) await privateDirectory(path, host);
+    if (path !== identity.source && dirname(path) !== home)
+      refuseLayout(
+        'Destination and maintenance paths must be canonical HOME siblings.',
+      );
+    const observed = observeStoragePathSync(path);
+    if (
+      observed.symbolicLinkComponents.length ||
+      observed.canonicalPath !== path ||
+      !['directory', 'missing'].includes(observed.kind)
+    )
+      refuseLayout(
+        'Migration paths must be canonical directories, not aliases.',
+      );
+    if (observed.kind !== 'missing') await privateDirectory(path, host);
   }
-  const source = await statIfPresent(identity.source);
-  const destination = await statIfPresent(identity.destination);
+  const source = observeStoragePathSync(identity.source).stat ?? null;
+  const destination = observeStoragePathSync(identity.destination).stat ?? null;
+  if (source && source.dev !== observedHome.stat?.dev)
+    refuseLayout(
+      'The source and internal destination must share the HOME volume. No cross-volume copying is supported.',
+    );
   if (source && hostOperatingSystem() === 'linux')
     await qualifyCopyVolume(identity.source, identity.destination);
   const live = inspectDestination ? identity.destination : identity.source;
@@ -389,10 +385,11 @@ export async function inspectInternalRoot(
     sourceIdentity: await inodeAt(identity.source, source),
     destinationIdentity: await inodeAt(identity.destination, destination),
     ...tree,
-    historicalSecure: (await statIfPresent(identity.historicalSecure)) !== null,
+    historicalSecure:
+      observeStoragePathSync(identity.historicalSecure).kind !== 'missing',
     nestedSecure:
       exists !== null &&
-      (await statIfPresent(join(live, 'secure-storage'))) !== null,
+      observeStoragePathSync(join(live, 'secure-storage')).kind !== 'missing',
     stableOwned,
   };
 }
@@ -432,48 +429,14 @@ export async function readInternalRootJournal(
     )
       throw new Error('Unsafe journal');
     await observeMigrationNode(path, stat, host);
-    const journal = journalSchema.parse(
+    const journal = validateInternalRootJournal(
       JSON.parse(
         hostOperatingSystem() === 'win32'
           ? windowsFilesystem(host).read(path).toString('utf8')
           : await readFile(path, 'utf8'),
       ),
+      identity,
     );
-    if (
-      !isDeepStrictEqual(journal.identity, identity) ||
-      journal.stagingRoot !== internalRootStaging(identity) ||
-      !journal.inventory.sourceIdentity ||
-      journal.inventory.destinationIdentity !== null ||
-      journal.inventory.stableOwned ||
-      (identity.brandId === 'unstoppable-code' &&
-        (!journal.internalDeclaration || journal.inventory.nestedSecure)) ||
-      (journal.phase !== 'prepared' && !journal.settledFingerprint) ||
-      (['publishing', 'complete', 'restoring-external', 'rebuilding'].includes(
-        journal.phase,
-      ) &&
-        (!journal.publicationIdentity ||
-          !journal.publicationFingerprint ||
-          journal.stagingIdentity !== journal.publicationIdentity)) ||
-      new Set(journal.externalFiles).size !== journal.externalFiles.length ||
-      (journal.externalSnapshots !== undefined &&
-        !isDeepStrictEqual(
-          journal.externalSnapshots.map((entry) => entry.path),
-          journal.externalFiles,
-        )) ||
-      ([
-        'building',
-        'publishing',
-        'complete',
-        'restoring-external',
-        'rebuilding',
-      ].includes(journal.phase) &&
-        !journal.externalSnapshots) ||
-      (['publishing', 'complete', 'restoring-external', 'rebuilding'].includes(
-        journal.phase,
-      ) &&
-        journal.externalSnapshots?.some((entry) => !entry.postimage))
-    )
-      throw new Error('Unrecognized transaction');
     await validateExternalRootFiles(identity, journal.externalFiles, host);
     return journal;
   } catch {
@@ -772,7 +735,23 @@ export async function sealInternalRootExternal(
     await readPreimage(journal, entry, host);
     // C syncs replacement contents; B also makes their directory entries durable
     // before the journal can seal these external postimages for publication.
-    await flush(entry.path);
+    if (
+      hostOperatingSystem() === 'win32' &&
+      windowsFilesystem(host).inspect(entry.path).attributes & 1
+    ) {
+      const windows = windowsFilesystem(host);
+      if (!windows.hasReadonlyCopyFlush(entry.path)) {
+        // Unchanged readonly backlinks need no new content flush. A changed
+        // postimage must carry the private replacement's retained flush receipt.
+        const original = await readExternalMetadata(entry.path, host);
+        if (
+          externalFingerprint(original.bytes, original.mode) !== entry.preimage
+        )
+          refuseExternalRecovery(
+            'Readonly external replacement lacks a matching flush receipt.',
+          );
+      }
+    } else await flush(entry.path);
     await flush(dirname(entry.path));
     const { bytes, mode } = await readExternalMetadata(entry.path, host);
     entries.push({
@@ -907,7 +886,14 @@ export async function buildInternalRoot(
     )
       refuseLayout('Private staging was replaced. Preserve it for recovery.');
     if (portableCopy) await manifest(staging, false, host);
-    await rm(staging, { recursive: true });
+    if (hostOperatingSystem() === 'win32') {
+      if (!journal.stagingIdentity)
+        refuseLayout('Missing recorded staging identity.');
+      windowsFilesystem(host).removeRecordedTree(
+        staging,
+        journal.stagingIdentity,
+      );
+    } else await rm(staging, { recursive: true });
   }
   if (portableCopy) {
     await createPrivateMigrationDirectory(staging, host);
@@ -1110,7 +1096,14 @@ export async function discardInternalRootDestination(
   }
   if (hostOperatingSystem() !== 'darwin')
     await manifest(discarded, false, host);
-  await rm(discarded, { recursive: true });
+  if (hostOperatingSystem() === 'win32') {
+    if (!journal.publicationIdentity)
+      refuseLayout('Missing recorded publication identity.');
+    windowsFilesystem(host).removeRecordedTree(
+      discarded,
+      journal.publicationIdentity,
+    );
+  } else await rm(discarded, { recursive: true });
   await flush(journal.identity.coordination);
 }
 
@@ -1123,7 +1116,12 @@ async function replaceMigrationFile(
     await rename(from, to);
     return;
   }
-  if (await statIfPresent(to)) windowsFilesystem(host).finish(to, from);
+  if (await statIfPresent(to)) {
+    const windows = windowsFilesystem(host);
+    windows.finish(to, from);
+    windows.replace(from, to);
+    return;
+  }
   const result = await hostPlatformServices(
     createPlatformEndpointServices('win32'),
   ).secureFiles.rename({ from, to, mode: 'replace' });

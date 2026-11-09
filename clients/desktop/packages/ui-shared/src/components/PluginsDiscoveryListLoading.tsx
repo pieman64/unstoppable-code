@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import type { JSX } from 'react';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
 
@@ -13,19 +14,19 @@ const ROWS = ['one', 'two', 'three', 'four'] as const;
  */
 export function PluginsDiscoveryListLoading(): JSX.Element {
   return (
-    <div
+    <Stack
       role="status"
       aria-label={`Loading ${CUSTOMIZE_LABEL}`}
       aria-busy="true"
       data-testid="plugins-discovery-list-skeleton"
-      className="space-y-10"
+      gap="hero"
     >
       {SECTIONS.map((section) => (
-        <div key={section}>
+        <Stack gap="item" key={section}>
           <div className="box-content flex h-7 items-center border-b pb-2">
             <span className="h-4 w-32 rounded bg-fg-primary/[0.06]" />
           </div>
-          <div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-2 md:grid-cols-2">
+          <div className="grid grid-cols-1 gap-x-8 gap-y-2 md:grid-cols-2">
             {ROWS.map((row) => (
               <div
                 key={row}
@@ -39,8 +40,8 @@ export function PluginsDiscoveryListLoading(): JSX.Element {
               </div>
             ))}
           </div>
-        </div>
+        </Stack>
       ))}
-    </div>
+    </Stack>
   );
 }

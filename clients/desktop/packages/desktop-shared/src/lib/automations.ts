@@ -47,7 +47,7 @@ import {
   codexSpeedFastMode,
   isCodexSpeed,
   readCodexSpeedRecord,
-} from './codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   APP_ADVISOR_PROJECT_ID,
   THINKING_LEVELS,
@@ -59,7 +59,7 @@ import {
   resolveAutomationPipelineTarget,
 } from './automation-pipeline-target';
 import { isChatTabPluginSelections } from './plugin-selections-normalization';
-import { brandEnvCandidates } from '../brand/env';
+import { brandEnvCandidates } from '@canopy/execution-engine/brand/env';
 import { isApprovalMode } from './approval-engine';
 import {
   mapConfiguredPromptText,

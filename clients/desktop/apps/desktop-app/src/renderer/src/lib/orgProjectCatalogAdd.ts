@@ -68,7 +68,8 @@ export type OrgProjectAddOutcome =
   /** The setup dialog asks the member for a folder; nothing is set up yet. */
   | { kind: 'setup-requested' }
   | { kind: 'setup-started' }
-  | { kind: 'setup-failed'; message: string };
+  /** `message` is the raw reason, for agents; `cause` is what was thrown. */
+  | { kind: 'setup-failed'; message: string; cause: unknown };
 
 /**
  * Main's fresh answer to whether a checkout here is linked to the project,
@@ -100,6 +101,7 @@ async function startOrgProjectSetup(
     return {
       kind: 'setup-failed',
       message: cause instanceof Error ? cause.message : 'Project setup failed',
+      cause,
     };
   }
 }

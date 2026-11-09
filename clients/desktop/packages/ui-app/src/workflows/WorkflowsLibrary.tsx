@@ -49,6 +49,7 @@ import {
   TimeslotIcon,
   TrashIcon,
   WarningIcon,
+  WorkflowIcon,
   type AppIconProps,
   type IconSize,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -95,6 +96,7 @@ const TRIGGER_GLYPHS: Readonly<Record<WorkflowTriggerKind, Glyph>> = {
   manual: PlayIcon,
   'plan-approved': PlansIcon,
   'task-ready': TaskIcon,
+  workflow: WorkflowIcon,
 };
 
 const STEP_GLYPHS: Readonly<Record<WorkflowStepGlyph, Glyph>> = {
@@ -556,6 +558,13 @@ export function WorkflowsLibraryTableRow({
                       onChange={(): void => onAction(row, 'toggle')}
                     />
                   </Tooltip>
+                ) : row.scheduleCounts ? (
+                  <span
+                    className="shrink-0 whitespace-nowrap text-xs fg-secondary"
+                    data-testid="workflows-library-schedule-counts"
+                  >
+                    {`${String(row.scheduleCounts.on)} of ${String(row.scheduleCounts.total)} on`}
+                  </span>
                 ) : (
                   // Quiet gap where the switch sits, so Run stays aligned.
                   <span className="w-8 shrink-0" aria-hidden="true" />

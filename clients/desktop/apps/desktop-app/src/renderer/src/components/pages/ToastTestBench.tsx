@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Heading, NoticeButton } from '@canopy/ui-shared/components';
+import { Stack, Heading, NoticeButton } from '@canopy/ui-shared/components';
 import { useGitHubStore } from '@/stores/githubStore';
 import { TOAST_TEST_SAMPLES, type ToastSample } from './toastTestSamples';
 
@@ -20,14 +20,16 @@ function raiseToast(sample: ToastSample): void {
 
 export function ToastTestBench(): JSX.Element {
   return (
-    <section className="mb-12" data-testid="toast-test-bench">
-      <Heading level={2} variant="title" className="mb-1">
-        Toasts
-      </Heading>
-      <p className="mb-3 max-w-3xl text-xs fg-secondary">
-        Each button shows a real toast. Press several to see them stack. They
-        also land in notification history.
-      </p>
+    <section className="flex flex-col gap-3" data-testid="toast-test-bench">
+      <Stack gap="tight">
+        <Heading className="" level={2} variant="title">
+          Toasts
+        </Heading>
+        <p className="max-w-3xl text-xs fg-secondary">
+          Each button shows a real toast. Press several to see them stack. They
+          also land in notification history.
+        </p>
+      </Stack>
       <div className="flex max-w-3xl flex-wrap gap-2">
         {TOAST_TEST_SAMPLES.map((sample) => (
           <NoticeButton

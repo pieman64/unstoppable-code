@@ -7,6 +7,7 @@ import {
   HomeSections,
   InterruptedSessionRow,
   Notice,
+  SourceBranchCommitHint,
 } from '@canopy/ui-shared/components';
 import {
   SpecimenCell,
@@ -75,6 +76,29 @@ function SignInLink(label: string, className: string): JSX.Element {
 export function HomeAndResumeSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
+      <SpecimenPanel title="SourceBranchCommitHint">
+        <SpecimenCell label="Verified branch with no commits">
+          <SourceBranchCommitHint headUnborn />
+        </SpecimenCell>
+        <SpecimenCell label="Inline after repository details">
+          <span>
+            Git repository{' '}
+            <SourceBranchCommitHint headUnborn leadingSeparator />
+          </span>
+        </SpecimenCell>
+        <SpecimenCell label="Committed branch: no hint">
+          <span>
+            Git repository{' '}
+            <SourceBranchCommitHint headUnborn={false} leadingSeparator />
+          </span>
+        </SpecimenCell>
+        <SpecimenCell label="Unknown state: no hint">
+          <span>
+            Git repository <SourceBranchCommitHint leadingSeparator />
+          </span>
+        </SpecimenCell>
+      </SpecimenPanel>
+
       <SpecimenPanel title="HomeSection, grouped in HomeSections (hide one, then restore)">
         <HomeSections>
           <HomeSection

@@ -164,10 +164,32 @@ function getWorktreeWriteKeyPrefix(
   return `${getWorktreeLogKey(projectId, worktreeId)}\0`;
 }
 
-export function createRunLogCoordinator(files: RunLogFiles): RunLogCoordinator {
+/**
+ * Holds a worktree's log writes against writers in other processes
+ * (CAN-5839). `work` runs while no other holder of the same worktree runs.
+ */
+export type RunLogExclusive = <T>(
+  projectId: string,
+  worktreeId: string,
+  work: () => Promise<T>,
+) => Promise<T>;
+
+export interface RunLogCoordinatorOptions {
+  /**
+   * When set, every write-chain section and a worktree's log removal run
+   * inside it, one section per worktree at a time in this process.
+   */
+  exclusive?: RunLogExclusive;
+}
+
+export function createRunLogCoordinator(
+  files: RunLogFiles,
+  options: RunLogCoordinatorOptions = {},
+): RunLogCoordinator {
   const writeChains = new Map<string, Promise<void>>();
   const activeRunStates = new Map<string, ActiveRunLogState>();
   const deletingWorktreeLogKeys = new Set<string>();
+  const worktreeSections = new Map<string, Promise<void>>();
 
   function getWriteKey(
     projectId: string,
@@ -175,6 +197,33 @@ export function createRunLogCoordinator(files: RunLogFiles): RunLogCoordinator {
     runKey: string,
   ): string {
     return `${projectId}\0${worktreeId}\0${runKey}`;
+  }
+
+  /**
+   * One worktree section at a time in this process, so this process's own
+   * writers queue here instead of contending for the cross-process lock.
+   */
+  async function inWorktreeSection<T>(
+    projectId: string,
+    worktreeId: string,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const exclusive = options.exclusive;
+    if (!exclusive) return work();
+    const key = getWorktreeLogKey(projectId, worktreeId);
+    const previous = worktreeSections.get(key) ?? Promise.resolve();
+    let release = (): void => undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    worktreeSections.set(key, current);
+    await previous;
+    try {
+      return await exclusive(projectId, worktreeId, work);
+    } finally {
+      release();
+      if (worktreeSections.get(key) === current) worktreeSections.delete(key);
+    }
   }
 
   function isDeletingWorktreeLogs(
@@ -223,7 +272,9 @@ export function createRunLogCoordinator(files: RunLogFiles): RunLogCoordinator {
     writeChains.set(key, current);
     await prev;
     try {
-      return await fn();
+      // Keys come from getWriteKey; workspace and worktree ids hold no NUL.
+      const [projectId = '', worktreeId = ''] = key.split('\0');
+      return await inWorktreeSection(projectId, worktreeId, fn);
     } finally {
       if (release) {
         release();
@@ -251,7 +302,7 @@ export function createRunLogCoordinator(files: RunLogFiles): RunLogCoordinator {
         }
       }
 
-      await removeLogs();
+      await inWorktreeSection(projectId, worktreeId, removeLogs);
     } finally {
       deletingWorktreeLogKeys.delete(worktreeLogKey);
     }

@@ -1,3 +1,5 @@
+import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Stack } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
 import type { SplitPrMap } from '@canopy/desktop-shared/types/github';
 
@@ -29,16 +31,13 @@ function splitStatusLabel(status: SplitPrMap['status']): string {
 export function SplitResultSummary({ map }: { map: SplitPrMap }): JSX.Element {
   const childTotal = map.children.length;
   return (
-    <div className="min-w-0 space-y-2" data-testid="split-result-summary">
-      <span
-        className={`inline-flex rounded-full border px-2 py-0.5 text-3xs font-medium ${
-          map.status === 'completed'
-            ? 'border-fg-success-strong/30 bg-success-subtle fg-success-strong'
-            : 'border-line-attention/40 bg-warning-subtle fg-warning'
-        }`}
+    <Stack gap="inline" className="min-w-0" data-testid="split-result-summary">
+      <Badge
+        className="self-start"
+        tone={map.status === 'completed' ? 'success' : 'warning'}
       >
         {splitStatusLabel(map.status)}
-      </span>
+      </Badge>
       {map.integrationPrUrl !== undefined &&
         map.integrationPrNumber !== undefined && (
           <p className="break-words text-xs fg-secondary">
@@ -64,7 +63,7 @@ export function SplitResultSummary({ map }: { map: SplitPrMap }): JSX.Element {
         </a>
         {map.status === 'completed' ? ' (closed)' : ''}
       </p>
-      <div className="space-y-1.5">
+      <div className="flex flex-col gap-1.5">
         {map.children.map((child) => (
           // Two-line stacked row so long branch names and PR links wrap within
           // the card at any width instead of spilling past the border. Both
@@ -102,6 +101,6 @@ export function SplitResultSummary({ map }: { map: SplitPrMap }): JSX.Element {
           </div>
         ))}
       </div>
-    </div>
+    </Stack>
   );
 }

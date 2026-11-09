@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+  catalogMaterializationSecretBindings,
   WorkerCatalogMaterializationReleaseResultSchema,
   WorkerCatalogMaterializationSchema,
   type CanopyErrorPayload,
@@ -11,6 +12,10 @@ import {
   type WorkerCatalogMaterialization,
 } from '@canopy/protocol/canopy-core';
 
+import {
+  executionSecretFingerprints,
+  type ExecutionSecretStager,
+} from '../execution-secrets';
 import type { LocalWorkerExecution } from '../operations/local-worker';
 import type { OperationService } from '../operations/service';
 import { catalogMaterializationIdentity } from './revision';
@@ -131,6 +136,8 @@ function withResolution(
 }
 
 export class CoreCatalogMaterializations {
+  /** Attempts that hold a staged grant, by id; a release does not detach these. */
+  private readonly granted = new Map<string, Promise<unknown>>();
   /** Attempts in flight by id; concurrent calls for one id share a dispatch. */
   private readonly inFlight = new Map<
     string,
@@ -142,6 +149,8 @@ export class CoreCatalogMaterializations {
       operations: OperationService;
       localWorker: LocalWorkerExecution;
       resolver: CatalogMaterializationResolver;
+      /** Stages the MCP secret grant each dispatched attempt redeems (CAN-4125). */
+      secrets: ExecutionSecretStager;
     },
   ) {
     options.operations.registerDomain({
@@ -251,6 +260,46 @@ export class CoreCatalogMaterializations {
     fingerprint: string;
     materializationId: string;
   }): Promise<CatalogMaterializationOutcome> {
+    const { resolution, materializationId } = request;
+    const bindings = catalogMaterializationSecretBindings(resolution.items);
+    if (bindings.length === 0) return this.dispatchAttempt(request, bindings);
+    // One grant per materialization id at a time: an attempt a release
+    // detached keeps its grant until it settles, so a later attempt waits.
+    const previous = this.granted.get(materializationId);
+    const run = (async (): Promise<CatalogMaterializationOutcome> => {
+      await previous?.catch(() => undefined);
+      // Staged before admission so a refusal admits nothing; revoked once the
+      // attempt ends, whether or not the worker redeemed it.
+      const grant = this.options.secrets.stage(
+        { operation: WORKER_CATALOG_MATERIALIZE, key: materializationId },
+        bindings,
+      );
+      try {
+        return await this.dispatchAttempt(request, bindings);
+      } finally {
+        grant.revoke();
+      }
+    })();
+    this.granted.set(materializationId, run);
+    try {
+      return await run;
+    } finally {
+      if (this.granted.get(materializationId) === run)
+        this.granted.delete(materializationId);
+    }
+  }
+
+  private async dispatchAttempt(
+    request: {
+      scope: { workspaceId: string; worktreeId: string; chatId: string };
+      origin: OperationOrigin;
+      owner: OperationOwner;
+      resolution: CatalogMaterializationResolution;
+      fingerprint: string;
+      materializationId: string;
+    },
+    bindings: ReturnType<typeof catalogMaterializationSecretBindings>,
+  ): Promise<CatalogMaterializationOutcome> {
     const { operations, localWorker } = this.options;
     const { scope, resolution, fingerprint, materializationId } = request;
     const { operation: parent } = await operations.admit({
@@ -282,9 +331,15 @@ export class CoreCatalogMaterializations {
           scope,
           itemDescriptors: [...resolution.items].sort(byEntryId),
           expectedFingerprint: fingerprint,
+          ...(bindings.length > 0
+            ? { secretGrantIds: [materializationId] }
+            : {}),
           _meta: { idempotencyKey: materializationId },
         },
         idempotencyKey: materializationId,
+        ...(bindings.length > 0
+          ? { secrets: executionSecretFingerprints(bindings) }
+          : {}),
       });
       const parsed = WorkerCatalogMaterializationSchema.safeParse(
         dispatched.result,

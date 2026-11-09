@@ -6,12 +6,12 @@ import type {
   McpServerIndexEntry,
   SaveMcpServerRequest,
   RewriteMcpServerRefsRequest,
-} from '@canopy/desktop-shared/types/mcp-servers';
-import { AccountMcpConnectionError } from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
+import { AccountMcpConnectionError } from '@canopy/execution-engine/types/mcp-servers';
 import {
   isStoredSecretValue,
   type SecretValueInput,
-} from '@canopy/desktop-shared/types/stored-secrets';
+} from '@canopy/execution-engine/types/stored-secrets';
 import {
   MAX_MCP_EXTRA_HEADERS,
   mcpExtraHeadersProblem,

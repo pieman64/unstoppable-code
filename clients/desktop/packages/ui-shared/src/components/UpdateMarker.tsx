@@ -1,3 +1,4 @@
+import { Dot } from './Badge';
 import type { JSX } from 'react';
 import { updateMenuLabel } from '../lib/customize-row-copy';
 import { updateMarkerLabel } from '../lib/display-version';
@@ -15,7 +16,7 @@ export interface UpdateMarkerProps {
   readonly dataTestId?: string;
 }
 
-/** The small accent dot beside an installed version when an update exists. */
+/** The small blue dot beside an installed version when an update exists. */
 export function UpdateMarker({
   latestVersion,
   dataTestId,
@@ -30,7 +31,7 @@ export function UpdateMarker({
         tabIndex={0}
         className="focus-ring inline-flex h-4 w-4 items-center justify-center rounded-full"
       >
-        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />
+        <Dot tone="unread" />
       </span>
     </Tooltip>
   );

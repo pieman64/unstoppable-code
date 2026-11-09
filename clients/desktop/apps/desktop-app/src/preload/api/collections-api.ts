@@ -17,7 +17,7 @@ import type {
   SharedCollectionImportReadiness,
   UpdateSharedCollectionRequest,
 } from '@canopy/desktop-shared/types/collections';
-import type { PipelinePackageAnalysisSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageAnalysisSummary } from '@canopy/execution-engine/types/pipeline';
 import type { PipelinePackageRef } from '@canopy/protocol/pipelines';
 
 export type { CollectionsAPI };

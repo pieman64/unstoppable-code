@@ -23,7 +23,7 @@ import type {
   PortalPluginsInstallBuiltinPayload,
   PortalPluginsInstallExternalPayload,
 } from '@canopy/protocol/portal';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { MarketplaceInfo } from '@canopy/desktop-shared/types/plugins';
 import {
   resetPluginMutationQueueForTests,

@@ -1,6 +1,7 @@
 import { type JSX } from 'react';
 import { Notice, NoticeButton } from '@canopy/ui-shared';
 import { useBrowserStore } from '@/stores/browserStore';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface BrowserAuthRequestNoticeProps {
   browserId: string;
@@ -38,32 +39,34 @@ export function BrowserAuthRequestNotice({
       .catch(() => undefined);
   };
   return (
-    <div className="flex flex-col gap-2 border-b px-2 py-2">
-      <Notice
-        data-testid="browser-pending-surface-auth"
-        intent="attention"
-        actions={
-          <>
-            <NoticeButton
-              data-testid="browser-auth-request-cancel"
-              onClick={cancel}
-            >
-              Cancel
-            </NoticeButton>
-            <NoticeButton
-              data-testid="browser-auth-request-sign-in"
-              variant="primary"
-              onClick={onSignIn}
-            >
-              Sign in…
-            </NoticeButton>
-          </>
-        }
-      >
-        <span className="block truncate" title={request.origin}>
-          {`${authRequestHost(request.origin)} needs you to sign in`}
-        </span>
-      </Notice>
-    </div>
+    <Surface variant="section" boundary="bottom">
+      <div className="flex flex-col gap-2 px-2 py-2">
+        <Notice
+          data-testid="browser-pending-surface-auth"
+          intent="attention"
+          actions={
+            <>
+              <NoticeButton
+                data-testid="browser-auth-request-cancel"
+                onClick={cancel}
+              >
+                Cancel
+              </NoticeButton>
+              <NoticeButton
+                data-testid="browser-auth-request-sign-in"
+                variant="primary"
+                onClick={onSignIn}
+              >
+                Sign in…
+              </NoticeButton>
+            </>
+          }
+        >
+          <span className="block truncate" title={request.origin}>
+            {`${authRequestHost(request.origin)} needs you to sign in`}
+          </span>
+        </Notice>
+      </div>
+    </Surface>
   );
 }

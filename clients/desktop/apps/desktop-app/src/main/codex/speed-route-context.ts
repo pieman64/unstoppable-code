@@ -24,10 +24,10 @@
  * a guess. This is a hint for selectors; `admitCodexSpeed` in the session
  * remains the authoritative check before any request.
  */
-import type { CodexSpeedRouteFacts } from '@canopy/desktop-shared/lib/codex-speed-availability';
-import type { ReadCodexSpeedRouteRequest } from '@canopy/desktop-shared/types/codex-speed-capabilities';
-import { resolveGatewayModelEntry } from '@canopy/desktop-shared/lib/gateway-model-availability';
-import { resolveCodexMockAppServerOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
+import type { CodexSpeedRouteFacts } from '@canopy/execution-engine/lib/codex-speed-availability';
+import type { ReadCodexSpeedRouteRequest } from '@canopy/execution-engine/types/codex-speed-capabilities';
+import { resolveGatewayModelEntry } from '@canopy/execution-engine/lib/gateway-model-availability';
+import { resolveCodexMockAppServerOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   getExecutionHarnessForModel,
   getModelSource,
@@ -65,7 +65,7 @@ import {
 export type {
   CodexSpeedRouteContext,
   ReadCodexSpeedRouteRequest,
-} from '@canopy/desktop-shared/types/codex-speed-capabilities';
+} from '@canopy/execution-engine/types/codex-speed-capabilities';
 
 /** Host-resolved inputs of one prediction (never renderer-supplied). */
 export interface CodexSpeedRouteInputs {

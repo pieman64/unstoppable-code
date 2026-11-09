@@ -36,7 +36,7 @@ import {
   ModelHarnessOverrideStore,
   type ModelHarnessOverrideMutationResult,
 } from '@canopy/desktop-shared/node/model-harnesses';
-import type { AgentModelRegistryEntry } from '@canopy/desktop-shared/types/agent-models';
+import type { AgentModelRegistryEntry } from '@canopy/execution-engine/types/agent-models';
 import { getOllamaService } from '../ollama';
 import { isOpenCodeGatewayRouteSupported } from '@canopy/desktop-shared/lib/opencode-gateway-models';
 import { peekOpenCodeRuntimeAvailability } from '../opencode/runtime-availability';

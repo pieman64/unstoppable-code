@@ -7,6 +7,8 @@ import {
   type SaveWorkspaceRepoScriptsRequest,
   type SaveWorkspaceScriptsRequest,
   type ScriptRunRequest,
+  type ScriptRunLogRequest,
+  type ScriptRunLogResponse,
   type ScriptRunResponse,
   type ScriptRunSnapshot,
   type ScriptSourceInfoRequest,
@@ -16,6 +18,7 @@ import {
 import {
   cancelWorktreeSetup,
   loadWorktreeScriptRuns,
+  readScriptRunTail,
   runScript,
   stopScript,
 } from '../services/scripts-service';
@@ -83,11 +86,28 @@ export function registerScriptHandlers(
           selectDaemonScripts(routeContext(event)),
           () =>
             runScript(request, {
+              onRendererStarted: (started) => {
+                if (event.sender.isDestroyed()) return;
+                sendToWebContents(
+                  event.sender,
+                  IPC_CHANNELS.scriptStarted,
+                  started,
+                );
+              },
               onRendererOutput: (output) => {
+                if (event.sender.isDestroyed()) return;
                 sendToWebContents(
                   event.sender,
                   IPC_CHANNELS.scriptOutput,
                   output,
+                );
+              },
+              onRendererComplete: (complete) => {
+                if (event.sender.isDestroyed()) return;
+                sendToWebContents(
+                  event.sender,
+                  IPC_CHANNELS.scriptComplete,
+                  complete,
                 );
               },
             }),
@@ -135,6 +155,27 @@ export function registerScriptHandlers(
       _event,
       request: LoadWorktreeScriptRunsRequest,
     ): Promise<ScriptRunSnapshot[]> => loadWorktreeScriptRuns(request),
+  );
+
+  // One script's latest run as its log tail, the read Portal's script log
+  // request runs, without its event-stream push (browser Remote Control,
+  // CAN-5985).
+  registerIpcHandler(
+    IPC_CHANNELS.scriptReadRunLog,
+    async (
+      _event,
+      request: ScriptRunLogRequest,
+    ): Promise<ScriptRunLogResponse> => {
+      if (typeof request.scriptKey !== 'string' || !request.scriptKey) {
+        throw new Error('scriptKey is required.');
+      }
+      const { lines } = await readScriptRunTail({
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        scriptKey: request.scriptKey,
+      });
+      return { lines };
+    },
   );
 
   registerIpcHandler(

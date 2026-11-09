@@ -33,7 +33,7 @@ import type {
   BrowserInputSnapshotResponse,
   BrowserInspectRequest,
   BrowserLocatorCandidate,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import {
   mapToAncestors,
   releaseActionTarget,

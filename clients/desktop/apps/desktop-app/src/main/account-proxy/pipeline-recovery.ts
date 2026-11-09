@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ResumeQueueEntry } from '@canopy/desktop-shared/types';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import type { AccountProxyStatus } from '@canopy/desktop-shared/types/account-proxy';
 import {
   loadExecutionState,

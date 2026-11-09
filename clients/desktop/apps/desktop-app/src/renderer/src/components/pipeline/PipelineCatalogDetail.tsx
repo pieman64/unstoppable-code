@@ -27,7 +27,7 @@ import {
 import type {
   PipelineCapabilityRefsEntry,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 interface PipelineCatalogDetailProps {
   pipeline: PipelineInfo;
@@ -195,14 +195,16 @@ function MetadataBadges({
   empty: string;
 }): JSX.Element {
   return (
-    <section>
+    <section
+      className={`flex flex-col ${values.length === 0 ? 'gap-1' : 'gap-1.5'}`}
+    >
       <Heading level={3} variant="label">
         {label}
       </Heading>
       {values.length === 0 ? (
-        <p className="mt-1 text-xs fg-secondary">{empty}</p>
+        <p className="text-xs fg-secondary">{empty}</p>
       ) : (
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5">
           {values.map((value) => (
             <span key={value} className={PIPELINE_EXECUTION_SCOPE_BADGE_CLASS}>
               {value}

@@ -9,7 +9,9 @@ import type {
   ResolvedCanopySecureDataDir,
 } from '@canopy/protocol/brand';
 
-import { testDataDirectoryOverride } from './build-identity';
+import { observeStoragePathSync } from './storage-path-observation';
+
+import { dataDirectoryOverride } from './build-identity';
 
 export type BrandSecureDirectoryNames = Readonly<
   Record<CanopySecureStorageMode, string>
@@ -37,7 +39,7 @@ export interface BuildStoragePaths {
   readonly secureDataRoot: string;
 }
 
-/** Final layout projection only. Startup keeps resolveSecureDataDir until CAN-5786. */
+/** Trusted build identity is independent of launch-time environment hints. */
 export function resolveBuildStoragePaths(options: {
   readonly home: string;
   readonly brand: Pick<BrandCore, 'id' | 'storage'>;
@@ -53,7 +55,8 @@ export function resolveBuildStoragePaths(options: {
     rc: brand.storage.dataDirNames.rc[0],
     dev: brand.storage.dataDirNames.dev[0],
   };
-  const dataRoot = join(home, names[identity.build]);
+  const canonicalHome = observeStoragePathSync(home).canonicalPath;
+  const dataRoot = join(canonicalHome, names[identity.build]);
   return { dataRoot, secureDataRoot: join(dataRoot, 'secure-storage') };
 }
 
@@ -66,56 +69,46 @@ export function historicalSecureDataDir(
   return brandSecureDataDir(home, names, build === 'stable' ? 'prod' : build);
 }
 
-/** Retained ordinary routing; nesting activates with the migration in CAN-5786. */
+/** Canonical secure storage follows the selected data root, never a sibling. */
 export function resolveSecureDataDir(options: {
-  readonly home: string;
-  readonly names: BrandSecureDirectoryNames;
-  readonly mode: CanopySecureStorageMode;
+  readonly dataRoot: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
 }): ResolvedCanopySecureDataDir {
-  const secureOverride = testDataDirectoryOverride(
+  const secureOverride = dataDirectoryOverride(
     options.environment,
     'CANOPY_SECURE_DATA_DIR',
   );
-  const dataOverride = testDataDirectoryOverride(
+  const dataOverride = dataDirectoryOverride(
     options.environment,
     'CANOPY_DATA_DIR',
   );
   if (secureOverride)
     return { path: resolve(secureOverride), source: 'override' };
-  if (dataOverride)
-    return { path: `${resolve(dataOverride)}-secure`, source: 'override' };
-  const primary = brandSecureDataDir(options.home, options.names, options.mode);
-  return { path: primary, source: existsSync(primary) ? 'primary' : 'fresh' };
+  const primary = join(
+    resolve(dataOverride ?? options.dataRoot),
+    'secure-storage',
+  );
+  return {
+    path: primary,
+    source: dataOverride
+      ? 'override'
+      : existsSync(primary)
+        ? 'primary'
+        : 'fresh',
+  };
 }
 
-/** Legacy PAT lookup order shared by the daemon fence and host migration readers. */
+/** Build-owned ciphertext sources only; foreign siblings remain explicit recovery material. */
 export function resolveLegacyPatPaths(options: {
-  readonly home: string;
-  readonly names: BrandSecureDirectoryNames;
-  readonly dataDirNames: Readonly<Record<CanopyRuntimeMode, readonly string[]>>;
-  readonly mode: CanopySecureStorageMode;
-  readonly runtimeMode: CanopyRuntimeMode;
+  readonly dataRoot: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
 }): readonly string[] {
   const current = resolveSecureDataDir(options).path;
-  const override = testDataDirectoryOverride(
-    options.environment,
-    'CANOPY_DATA_DIR',
+  const dataRoot = resolve(
+    dataDirectoryOverride(options.environment, 'CANOPY_DATA_DIR') ??
+      options.dataRoot,
   );
-  const primary = options.dataDirNames[options.runtimeMode][0];
-  if (!primary) throw new Error('Legacy data directory unavailable.');
-  const legacy = join(
-    override ? resolve(override) : join(options.home, primary),
-    'secure',
-  );
-  const shared =
-    options.mode === 'internal' &&
-    !testDataDirectoryOverride(options.environment, 'CANOPY_SECURE_DATA_DIR') &&
-    !override
-      ? brandSecureDataDir(options.home, options.names, 'prod')
-      : null;
-  return [current, ...(shared ? [shared] : []), legacy].map((directory) =>
+  return [current, join(dataRoot, 'secure')].map((directory) =>
     join(directory, 'github-pat.enc'),
   );
 }

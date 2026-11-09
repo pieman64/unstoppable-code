@@ -6,7 +6,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import type { CoreHelperRunResult } from '@canopy/core-runtime/node/agent/helpers';
-import type { HelperUsage } from '@canopy/desktop-shared/lib/helper-usage';
+import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import { getActiveDesktopRuntimeIfAccepting } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { logMainProcessWarn } from '../lib/main-process-logging';

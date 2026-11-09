@@ -1,4 +1,4 @@
-import type { ShellType } from '../../types/pipeline';
+import type { ShellType } from '@canopy/execution-engine/types/pipeline';
 
 export function getDefaultShellTypeForPlatform(
   platform: NodeJS.Platform,

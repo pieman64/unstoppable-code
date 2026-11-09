@@ -1,8 +1,14 @@
-import type { ApprovalSecretInputRequest } from '@canopy/desktop-shared/types';
+import type { PendingApprovalView } from '@canopy/core-runtime/node/agent/approvals';
 import type {
   ApprovalPromptDecision,
   ApprovalRequestEvent,
+  ApprovalSecretInputRequest,
 } from '@canopy/desktop-shared/types';
+import { getDesktopApprovalBroker } from './approval-broker';
+
+// Pending tool approvals are owned by the core approval broker (CAN-4129).
+// These adapters keep the names the IPC handlers, the approval session and
+// the busy-session checks already use.
 
 interface ApprovalIdentity {
   projectId: string;
@@ -10,230 +16,165 @@ interface ApprovalIdentity {
   chatId: string;
 }
 
-type ApprovalOwnerWebContents = object & {
-  once?: (event: 'destroyed', listener: () => void) => unknown;
-  removeListener?: (event: 'destroyed', listener: () => void) => unknown;
-};
-
-// Registry of in-flight tool-approval prompts, keyed by requestId. Mirrors
-// `../mcp/pending-requests.ts`, but approval prompts never time out — an
-// unanswered prompt blocks the turn indefinitely until the user (or session
-// teardown) resolves it.
-interface PendingApproval {
-  resolve: (decision: ApprovalPromptDecision) => void;
-  reject: (reason: Error) => void;
-  sessionKey: string;
-  ownerWebContents: ApprovalOwnerWebContents;
-  identity: ApprovalIdentity;
-  event: ApprovalRequestEvent;
-  /**
-   * Called when the entry leaves the registry without the renderer having
-   * answered it, so the owner can tell the renderer to take the card down.
-   *
-   * Fires from `rejectAllApprovalsForSession` — session teardown and turn
-   * cancellation. A main-driven resolution (`resolveApprovalFromMain`)
-   * deliberately does *not* call it: that path emits its own, more specific
-   * `approval:auto-resolved` event carrying the mode and the receipt, and a
-   * generic take-the-card-down callback would race it. The rename off
-   * `onSessionDestroyed` reflects that the callback is about detachment in
-   * general, not that every detaching path uses it.
-   */
-  onSecret?: (secret: string) => void;
-  onDetached?: () => void;
-  onOwnerDestroyed?: () => void;
+export interface ApprovalResponder {
+  /** Stable id of the answering sender, for replay detection. */
+  readonly id: string;
+  /** The sender and the window it acts for (`approvalOwnersFor`). */
+  readonly owners: readonly object[];
 }
 
-const pending = new Map<string, PendingApproval>();
+// One-use secret consumers stay out of the replayable card presentation.
+const secretConsumers = new Map<string, (secret: string) => void>();
 
-function removeOwnerDestroyedListener(entry: PendingApproval): void {
-  if (
-    entry.onOwnerDestroyed &&
-    typeof entry.ownerWebContents.removeListener === 'function'
-  ) {
-    entry.ownerWebContents.removeListener('destroyed', entry.onOwnerDestroyed);
-  }
+function pendingView(
+  requestId: string,
+): PendingApprovalView<ApprovalRequestEvent> | undefined {
+  return getDesktopApprovalBroker()
+    .pending()
+    .find((view) => view.requestId === requestId);
 }
 
-export function pendingApprovalRequests(
-  ownerWebContents: ApprovalOwnerWebContents,
-): ApprovalRequestEvent[] {
-  return Array.from(pending.values())
-    .filter((entry) => entry.ownerWebContents === ownerWebContents)
-    .map((entry) => entry.event);
+function scopeOf(identity: ApprovalIdentity): {
+  workspaceId: string;
+  worktreeId: string;
+  chatId: string;
+} {
+  return {
+    workspaceId: identity.projectId,
+    worktreeId: identity.worktreeId,
+    chatId: identity.chatId,
+  };
 }
 
-/** True while a tool-approval prompt for this session waits on the user. */
-export function hasPendingApprovalForSession(sessionKey: string): boolean {
-  return Array.from(pending.values()).some(
-    (entry) => entry.sessionKey === sessionKey,
+function isSecretInputAllow(
+  requestId: string,
+  decision: ApprovalPromptDecision,
+): boolean {
+  return (
+    decision.behavior === 'allow' &&
+    pendingView(requestId)?.presentation.secretInput !== undefined
   );
 }
 
-export function createPendingApproval(
-  requestId: string,
-  sessionKey: string,
-  ownerWebContents: ApprovalOwnerWebContents,
-  identity: ApprovalIdentity,
-  event: ApprovalRequestEvent,
-  onDetached?: () => void,
-): Promise<ApprovalPromptDecision> {
-  return new Promise<ApprovalPromptDecision>((resolve, reject) => {
-    const onOwnerDestroyed =
-      typeof ownerWebContents.once === 'function'
-        ? (): void => {
-            rejectApproval(requestId, 'renderer_destroyed');
-          }
-        : undefined;
-    const entry: PendingApproval = {
-      resolve,
-      reject,
-      sessionKey,
-      ownerWebContents,
-      identity,
-      event,
-      ...(onDetached ? { onDetached } : {}),
-      ...(onOwnerDestroyed ? { onOwnerDestroyed } : {}),
-    };
-    pending.set(requestId, entry);
-    if (onOwnerDestroyed) {
-      ownerWebContents.once?.('destroyed', onOwnerDestroyed);
-    }
-  });
+/** Open requests these owners may answer, each with its current policy revision. */
+export function pendingApprovalRequests(
+  owners: readonly object[],
+): ApprovalRequestEvent[] {
+  return getDesktopApprovalBroker()
+    .pending()
+    .filter((view) => {
+      try {
+        return view.port.accepts(owners);
+      } catch {
+        return false;
+      }
+    })
+    .map((view) => ({
+      ...view.presentation,
+      requestId: view.requestId,
+      policyRevision: view.policyRevision,
+    }));
 }
 
+/** True while an approval of this session is open on the chat wait lifecycle. */
+export function hasPendingApprovalForSession(sessionKey: string): boolean {
+  return getDesktopApprovalBroker().hasPendingForOwner(sessionKey);
+}
+
+export function hasPendingApprovalsForSession(sessionKey: string): boolean {
+  return getDesktopApprovalBroker().hasPendingForOwner(sessionKey);
+}
+
+/** A client's answer: true when it settled the request or repeats the answer that did. */
 export function resolveApproval(
   requestId: string,
   decision: ApprovalPromptDecision,
-  ownerWebContents: ApprovalOwnerWebContents,
+  responder: ApprovalResponder,
   identity: ApprovalIdentity,
+  policyRevision: number | undefined,
 ): boolean {
-  const entry = pending.get(requestId);
-  if (
-    !entry ||
-    entry.ownerWebContents !== ownerWebContents ||
-    entry.identity.projectId !== identity.projectId ||
-    entry.identity.worktreeId !== identity.worktreeId ||
-    entry.identity.chatId !== identity.chatId
-  ) {
-    return false;
-  }
-  if (entry.event.secretInput && decision.behavior === 'allow') return false;
-  pending.delete(requestId);
-  removeOwnerDestroyedListener(entry);
-  entry.resolve(decision);
-  return true;
+  // A secret-input card is allowed only with its secret.
+  if (isSecretInputAllow(requestId, decision)) return false;
+  return (
+    getDesktopApprovalBroker().respond({
+      requestId,
+      scope: scopeOf(identity),
+      responderId: responder.id,
+      responder: responder.owners,
+      policyRevision: policyRevision ?? null,
+      decision,
+    }).status !== 'refused'
+  );
 }
 
-/**
- * Resolves a pending approval from the main process rather than from a user
- * click. Used when a mode widening releases a card that is already on screen
- * (CAN-3083).
- *
- * `resolveApproval` guards on `ownerWebContents` identity because it is
- * *renderer*-initiated and the sender must be proven to own the prompt. This
- * caller is main, and `sessionKey` is the same ownership token
- * `rejectAllApprovalsForSession` already trusts — so the session key is the
- * authorization here, and a mismatch returns `false` rather than settling
- * someone else's prompt.
- *
- * Returns `false` when the entry is already gone, which is the normal outcome
- * of a race with the user's own click: their explicit decision wins.
- *
- * Synchronous `get` → `delete` → settle with no `await` in between, matching
- * every other settler so the map entry stays a compare-and-delete token.
- */
+/** Host release (CAN-3083): the session key is the authorization. */
 export function resolveApprovalFromMain(
   requestId: string,
   sessionKey: string,
   decision: ApprovalPromptDecision,
 ): boolean {
-  const entry = pending.get(requestId);
-  if (!entry || entry.sessionKey !== sessionKey) {
-    return false;
-  }
-  if (entry.event.secretInput && decision.behavior === 'allow') return false;
-  pending.delete(requestId);
-  removeOwnerDestroyedListener(entry);
-  entry.resolve(decision);
-  return true;
+  if (isSecretInputAllow(requestId, decision)) return false;
+  return getDesktopApprovalBroker().resolveFromHost(
+    requestId,
+    sessionKey,
+    decision,
+  );
 }
 
-export function hasPendingApprovalsForSession(sessionKey: string): boolean {
-  for (const entry of Array.from(pending.values())) {
-    if (entry.sessionKey === sessionKey) return true;
-  }
-  return false;
-}
-
-export function rejectApproval(requestId: string, reason: string): void {
-  const entry = pending.get(requestId);
-  if (!entry) return;
-  pending.delete(requestId);
-  removeOwnerDestroyedListener(entry);
-  entry.reject(new Error(reason));
-}
-
-/** Cancels one approval request and detaches its renderer card. */
 export function cancelApproval(requestId: string, reason: string): boolean {
-  const entry = pending.get(requestId);
-  if (!entry) return false;
-  pending.delete(requestId);
-  removeOwnerDestroyedListener(entry);
-  try {
-    entry.onDetached?.();
-  } catch {
-    // A renderer notification failure must not leave the request unsettled.
-  }
-  entry.reject(new Error(reason));
-  return true;
+  secretConsumers.delete(requestId);
+  return getDesktopApprovalBroker().cancel(requestId, reason);
 }
 
 export function rejectAllApprovalsForSession(
   sessionKey: string,
   reason = 'session_destroyed',
 ): void {
-  const ids = Array.from(pending.keys());
-  for (const id of ids) {
-    const entry = pending.get(id);
-    if (entry && entry.sessionKey === sessionKey) {
-      pending.delete(id);
-      removeOwnerDestroyedListener(entry);
-      entry.onDetached?.();
-      entry.reject(new Error(reason));
-    }
-  }
+  getDesktopApprovalBroker().cancelForOwner(sessionKey, reason);
 }
 
-/** One-use callback stays only in the pending map, separate from replayable prompt data. */
+/** One-use callback for a pending secret-input card, kept out of its presentation. */
 export function registerApprovalSecretConsumer(
   requestId: string,
   consumer: (secret: string) => void,
 ): boolean {
-  const entry = pending.get(requestId);
-  if (!entry?.event.secretInput || entry.onSecret) return false;
-  entry.onSecret = consumer;
+  if (
+    pendingView(requestId)?.presentation.secretInput === undefined ||
+    secretConsumers.has(requestId)
+  ) {
+    return false;
+  }
+  secretConsumers.set(requestId, consumer);
   return true;
 }
+
+/**
+ * A secret submission is the card's allow: it goes through the broker like
+ * any client allow (current revision, eligible sender, first valid answer),
+ * and the secret reaches its consumer only once the broker accepted it.
+ */
 export function resolveApprovalSecretInput(
   request: ApprovalSecretInputRequest,
-  sender: object,
+  responder: ApprovalResponder,
 ): boolean {
-  const entry = pending.get(request.requestId);
+  const consume = secretConsumers.get(request.requestId);
   if (
-    !entry?.onSecret ||
-    !entry.event.secretInput ||
-    entry.ownerWebContents !== sender ||
-    entry.event.secretInput.bindingId !== request.bindingId ||
-    entry.identity.projectId !== request.projectId ||
-    entry.identity.worktreeId !== request.worktreeId ||
-    entry.identity.chatId !== request.chatId
-  )
+    !consume ||
+    pendingView(request.requestId)?.presentation.secretInput?.bindingId !==
+      request.bindingId
+  ) {
     return false;
-  pending.delete(request.requestId);
-  removeOwnerDestroyedListener(entry);
-  const consume = entry.onSecret;
-  entry.onSecret = undefined;
-  entry.resolve({ behavior: 'allow', scope: 'once' });
+  }
+  const result = getDesktopApprovalBroker().respond({
+    requestId: request.requestId,
+    scope: scopeOf(request),
+    responderId: responder.id,
+    responder: responder.owners,
+    policyRevision: request.policyRevision ?? null,
+    decision: { behavior: 'allow', scope: 'once' },
+  });
+  if (result.status !== 'accepted') return false;
+  secretConsumers.delete(request.requestId);
   consume(request.secret);
   return true;
 }

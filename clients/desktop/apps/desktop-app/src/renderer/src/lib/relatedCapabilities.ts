@@ -17,7 +17,7 @@ import type {
   PipelineCapabilitySelection,
   PipelineCapabilitySummary,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import type { MarketplaceInfo } from '@canopy/desktop-shared/types/plugins';
 import { TRIGGER_META } from '@/components/pipeline/pipeline-trigger-meta';

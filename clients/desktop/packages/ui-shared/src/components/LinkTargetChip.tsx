@@ -1,3 +1,4 @@
+import { Button } from './Button';
 import type { JSX } from 'react';
 
 import { BranchIcon, CloseMediumIcon, WarningIcon } from '../icons/AppIcons';
@@ -34,9 +35,6 @@ export interface LinkTargetChipProps {
   'data-testid'?: string;
 }
 
-const ACTION_CLASS =
-  'focus-ring inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-medium fg-primary ring-1 ring-inset ring-line-base transition-colors hover:bg-subtle';
-
 /**
  * Displays the worktree destination proposed for a link in a draft. Pure
  * display: resolution, project policy, and context changes stay in the host.
@@ -57,7 +55,7 @@ export function LinkTargetChip({
       data-status={status}
       role="group"
       aria-label="Link destination"
-      className={`flex min-w-0 max-w-full flex-wrap items-center gap-1.5 rounded-2xl px-2.5 py-1 text-xs ring-1 ring-inset ${
+      className={`flex min-w-0 max-w-full flex-wrap items-center gap-1.5 rounded-2xl px-2.5 py-1 text-xs ring-1 ring-inset pointer-coarse:gap-y-4 ${
         status === 'blocked'
           ? 'fg-primary ring-line-base bg-subtle'
           : 'fg-secondary ring-line-base'
@@ -91,27 +89,29 @@ export function LinkTargetChip({
         )}
       </span>
       {actions.map((action) => (
-        <button
+        <Button
+          variant="secondary"
+          size="compact"
           key={action.id}
-          type="button"
           data-testid={`${testId}-action-${action.id}`}
           onClick={action.onSelect}
-          className={ACTION_CLASS}
         >
           {action.label}
-        </button>
+        </Button>
       ))}
       {onDismiss && (
         <Tooltip label={dismissLabel}>
-          <button
-            type="button"
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
+            touchArea="contained"
             data-testid={`${testId}-dismiss`}
             aria-label={dismissLabel}
             onClick={onDismiss}
-            className="focus-ring inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full fg-secondary hover:bg-subtle hover:fg-primary"
           >
             <CloseMediumIcon size="sm" aria-hidden />
-          </button>
+          </Button>
         </Tooltip>
       )}
     </div>

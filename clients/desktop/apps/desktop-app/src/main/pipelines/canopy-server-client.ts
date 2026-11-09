@@ -1,4 +1,9 @@
 import {
+  LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
+  rawPipelineDeclaresLocalOnlyTrigger,
+} from '@canopy/pipeline-interop/portability';
+import { ShareOperationError } from '../sharing/share-operation-result';
+import {
   assertPipelineContext,
   assertPipelineContextSnapshot,
   listPipelineLanes,
@@ -19,7 +24,7 @@ import type {
   SharedPipelineDetail,
   SharedPipelinePublicShareInfo,
   SharedPipelineSummary,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   PIPELINE_PACKAGE_CLIENT_VERSION,
   PIPELINE_PACKAGE_VERSION_HEADER,
@@ -281,6 +286,20 @@ export async function getSharedPipelineForExecutionContext(
   return detail;
 }
 
+/**
+ * Refuses YAML that declares `workflow` before it leaves this machine: web
+ * can't store the trigger yet (CAN-5782). A definite refusal, so the share
+ * dialog shows why instead of a generic failure.
+ */
+export function refuseLocalOnlyTrigger(rawPipeline: string): void {
+  if (rawPipelineDeclaresLocalOnlyTrigger(rawPipeline))
+    throw new ShareOperationError(
+      'unavailable',
+      LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
+      'access',
+    );
+}
+
 export async function authorizeSharedPipelineCreate(
   request: CreateSharedPipelineRequest,
   loadSource?: (id: string) => Promise<string>,
@@ -361,6 +380,7 @@ export async function createSharedPipeline(
     ? await pipelineContextSnapshot()
     : undefined;
   const rawPipeline = await authorizeSharedPipelineCreate(request, loadSource);
+  refuseLocalOnlyTrigger(rawPipeline);
   // Build the wire-format envelope. Only forward scope-targeting fields
   // when they are meaningful for the chosen share scope.
   const body: {
@@ -706,6 +726,7 @@ export async function updateSharedPipeline(
     preservePackage?: boolean;
   } = {},
 ): Promise<SharedPipelineDetail> {
+  refuseLocalOnlyTrigger(rawPipeline);
   if (pipelineResourceContextEnabled()) {
     const snapshot = await pipelineContextSnapshot();
     const current = await getSharedPipeline(remoteId);

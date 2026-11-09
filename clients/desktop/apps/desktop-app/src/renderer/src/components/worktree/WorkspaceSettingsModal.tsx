@@ -1,4 +1,5 @@
 import {
+  Stack,
   Button,
   DelayedLoadingPlaceholder,
   Disclosure,
@@ -2244,7 +2245,7 @@ export function WorkspaceSettingsModal({
         className={`flex min-h-0 flex-1 flex-col ${activeTab === 'plugins' ? '' : 'overflow-y-auto'} p-6`}
       >
         {activeTab === 'details' && (
-          <div className="space-y-4">
+          <Stack gap="group">
             <WorkspaceHealthIssuesBlock
               healthData={healthData}
               driftWorktree={driftWorktree}
@@ -2264,12 +2265,12 @@ export function WorkspaceSettingsModal({
 
             {healthData?.referenceRepoStatus &&
               healthData.referenceRepoStatus.warnings.length > 0 && (
-                <div className="rounded-lg border border-line-attention bg-warning/5 p-4">
+                <div className="flex flex-col gap-1 rounded-lg border border-line-attention bg-warning/5 p-4">
                   <Heading level={3} variant="title" tone="warning">
                     Reference repo status
                   </Heading>
                   {healthData.referenceRepoStatus.warnings.map((w) => (
-                    <p key={w.code} className="mt-1 text-xs fg-warning/80">
+                    <p key={w.code} className="text-xs fg-warning/80">
                       {w.message}
                     </p>
                   ))}
@@ -2278,11 +2279,11 @@ export function WorkspaceSettingsModal({
 
             {!isTemporaryWorkspace &&
               (!workspace.sourceRepoPath ? (
-                <Surface variant="outline" padding="default">
+                <Surface variant="outline" gap="tight" padding="default">
                   <Heading level={3} variant="title">
                     Source repo missing
                   </Heading>
-                  <p className="mt-1 text-xs fg-secondary">
+                  <p className="text-xs fg-secondary">
                     Multi-repo projects now require a project root git repo.
                     This project is missing its tracked source repo path and
                     needs to be repaired through migration or local data repair.
@@ -2292,7 +2293,7 @@ export function WorkspaceSettingsModal({
                 <>
                   <SettingsDirectoryCard path={workspace.sourceRepoPath} />
 
-                  <Surface variant="outline" padding="default">
+                  <Surface variant="outline" gap="tight" padding="default">
                     <div className="flex items-center justify-between gap-2">
                       <Heading level={3} variant="title">
                         Origin remote
@@ -2306,15 +2307,15 @@ export function WorkspaceSettingsModal({
                       )}
                     </div>
                     {sourceRemoteUrl ? (
-                      <p className="mt-1 break-all font-mono text-xs fg-secondary">
+                      <p className="break-all font-mono text-xs fg-secondary">
                         {sourceRemoteUrl}
                       </p>
                     ) : (
-                      <>
-                        <p className="mt-1 text-xs fg-secondary">
+                      <Stack gap="item">
+                        <p className="text-xs fg-secondary">
                           This source repo does not have an origin remote yet.
                         </p>
-                        <div className="mt-3">
+                        <div>
                           <FormField label="Remote URL">
                             {(control) => (
                               <TextInput
@@ -2359,11 +2360,11 @@ export function WorkspaceSettingsModal({
                           disabled={
                             sourceActionPending || !attachRemoteUrl.trim()
                           }
-                          className="mt-3"
+                          className="self-start"
                         >
                           {sourceActionPending ? 'Attaching…' : 'Attach origin'}
                         </Button>
-                      </>
+                      </Stack>
                     )}
                   </Surface>
                 </>
@@ -2389,14 +2390,16 @@ export function WorkspaceSettingsModal({
               padding="default"
               data-testid="workspace-settings-retention"
             >
-              <div data-testid="workspace-settings-retention-card">
-                <Heading level={3} variant="title">
-                  Deletion retention
-                </Heading>
-                <p className="mt-1 text-xs fg-secondary">
-                  {`Deleted worktrees are kept for ${pendingRetention.days} ${pendingRetention.days === 1 ? 'day' : 'days'} before they're removed. Archived worktrees are kept until you delete them.`}
-                </p>
-                <div className="mt-3 flex items-center gap-3">
+              <Stack data-testid="workspace-settings-retention-card" gap="item">
+                <Stack gap="tight">
+                  <Heading level={3} variant="title">
+                    Deletion retention
+                  </Heading>
+                  <p className="text-xs fg-secondary">
+                    {`Deleted worktrees are kept for ${pendingRetention.days} ${pendingRetention.days === 1 ? 'day' : 'days'} before they're removed. Archived worktrees are kept until you delete them.`}
+                  </p>
+                </Stack>
+                <div className="flex items-center gap-3">
                   <span
                     id="workspace-settings-retention-days-label"
                     className="text-s fg-primary"
@@ -2448,7 +2451,7 @@ export function WorkspaceSettingsModal({
                     label="Delete local branches with the worktrees"
                   />
                 </AutoArchiveSettingsControl>
-              </div>
+              </Stack>
             </Surface>
 
             {workspace.temporary === true && (
@@ -2460,217 +2463,82 @@ export function WorkspaceSettingsModal({
                 }}
               />
             )}
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'repositories' && (
-          <div>
-            <div className="flex items-center justify-between">
-              <Heading level={3} variant="title">
-                Repositories
-              </Heading>
-              {addStep === 'list' && (
-                <Button
-                  variant="ghost"
-                  size="compact"
-                  onClick={() => {
-                    setAddMode(
-                      existingRepos.length > 0 ? 'existing' : 'browse',
-                    );
-                    setAddStep('add-repo');
-                  }}
-                >
-                  + Add repo
-                </Button>
-              )}
-            </div>
-
-            {addStep === 'add-repo' && (
-              <Surface variant="outline" padding="compact" className="mt-3">
-                <div className="mb-2">
-                  <SegmentedControl<AddRepoMode>
-                    label="Repository source"
-                    value={addMode}
-                    width="content"
-                    shape="capsule"
-                    options={[
-                      ...(existingRepos.length > 0
-                        ? [{ value: 'existing' as const, label: 'Existing' }]
-                        : []),
-                      { value: 'browse', label: 'Local folder' },
-                      { value: 'remote', label: 'Remote' },
-                    ]}
-                    onChange={setAddMode}
-                  />
-                </div>
-
-                {addMode === 'existing' && (
-                  <div className="max-h-40 space-y-1 overflow-y-auto">
-                    {existingRepos.map((repo) => (
-                      <ExistingRepoOption
-                        key={repo.repoPath}
-                        name={repo.name}
-                        repoPath={repo.repoPath}
-                        eligibility={existingRepoEligibility}
-                        onAdd={(repoPath, name) =>
-                          void handleAddExistingRepo(repoPath, name)
-                        }
-                      />
-                    ))}
-                    <Button
-                      size="compact"
-                      onClick={() => setAddStep('list')}
-                      className="mt-1"
-                    >
-                      Cancel
-                    </Button>
-                  </div>
+          <Stack gap="inline">
+            <Stack gap="item">
+              <div className="flex items-center justify-between">
+                <Heading level={3} variant="title">
+                  Repositories
+                </Heading>
+                {addStep === 'list' && (
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    onClick={() => {
+                      setAddMode(
+                        existingRepos.length > 0 ? 'existing' : 'browse',
+                      );
+                      setAddStep('add-repo');
+                    }}
+                  >
+                    + Add repo
+                  </Button>
                 )}
+              </div>
 
-                {addMode === 'browse' && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
+              {addStep === 'add-repo' && (
+                <Surface variant="outline" padding="compact">
+                  <div>
+                    <SegmentedControl<AddRepoMode>
+                      label="Repository source"
+                      value={addMode}
+                      width="content"
+                      shape="capsule"
+                      options={[
+                        ...(existingRepos.length > 0
+                          ? [{ value: 'existing' as const, label: 'Existing' }]
+                          : []),
+                        { value: 'browse', label: 'Local folder' },
+                        { value: 'remote', label: 'Remote' },
+                      ]}
+                      onChange={setAddMode}
+                    />
+                  </div>
+
+                  {addMode === 'existing' && (
+                    <div className="flex flex-col max-h-40 overflow-y-auto gap-1 [&>*]:shrink-0">
+                      {existingRepos.map((repo) => (
+                        <ExistingRepoOption
+                          key={repo.repoPath}
+                          name={repo.name}
+                          repoPath={repo.repoPath}
+                          eligibility={existingRepoEligibility}
+                          onAdd={(repoPath, name) =>
+                            void handleAddExistingRepo(repoPath, name)
+                          }
+                        />
+                      ))}
                       <Button
                         size="compact"
-                        onClick={() => void handleBrowseAndAddRepo()}
+                        onClick={() => setAddStep('list')}
+                        className="self-start"
                       >
-                        Browse for repo
-                      </Button>
-                      <Button size="compact" onClick={() => setAddStep('list')}>
                         Cancel
                       </Button>
                     </div>
-                    <ErrorBanner
-                      error={addRepoRefusal}
-                      className=""
-                      testId="workspace-settings-add-repo-refusal"
-                    />
-                  </div>
-                )}
+                  )}
 
-                {addMode === 'remote' && (
-                  <div className="space-y-3">
-                    {canListGithubRepos && (
-                      <div>
-                        <span className="mb-1 block text-xs fg-secondary">
-                          Source
-                        </span>
-                        <SegmentedControl<RemoteSource>
-                          label="Remote source"
-                          value={remoteSource}
-                          width="content"
-                          shape="capsule"
-                          options={REMOTE_SOURCE_OPTIONS}
-                          onChange={handleRemoteSourceSelect}
-                        />
-                      </div>
-                    )}
-
-                    {remoteSource === 'github' && canListGithubRepos ? (
-                      <GitHubRepoPicker
-                        repos={filteredGithubRepos}
-                        totalCount={githubRepos?.length ?? 0}
-                        loading={githubRepoFetchState === 'loading'}
-                        error={githubReposError}
-                        search={githubRepoSearch}
-                        onSearchChange={setGithubRepoSearch}
-                        selectedFullName={selectedGithubRepoFullName}
-                        onSelect={setSelectedGithubRepoFullName}
-                        onRetry={() => setGithubRepoFetchState('idle')}
-                        testId="workspace-settings-github-repo-list"
-                      />
-                    ) : (
-                      <FormField label="Remote URL">
-                        {(control) => (
-                          <TextInput
-                            {...control}
-                            density="settings"
-                            type="url"
-                            value={remoteUrl}
-                            onChange={(event) =>
-                              setRemoteUrl(event.target.value)
-                            }
-                            placeholder="https://github.com/org/repo.git"
-                          />
-                        )}
-                      </FormField>
-                    )}
-
-                    <ErrorBanner
-                      error={addRepoRefusal}
-                      className=""
-                      testId="workspace-settings-add-repo-refusal"
-                    />
-
-                    <FormField label="Destination directory">
-                      {(control) => (
-                        <div className="flex gap-2">
-                          <TextInput
-                            {...control}
-                            density="settings"
-                            className="min-w-0 flex-1"
-                            type="text"
-                            value={destinationDir}
-                            readOnly
-                          />
-                          <Button
-                            size="compact"
-                            onClick={() => void handleBrowseCloneDir()}
-                          >
-                            Browse
-                          </Button>
-                        </div>
-                      )}
-                    </FormField>
-
-                    {reuseClonePrompt ? (
-                      <div className="rounded-md border border-line-attention bg-warning/5 p-2.5 text-xs">
-                        <p className="font-medium fg-warning">
-                          Repo already exists at this destination
-                        </p>
-                        <p className="mt-1 break-all font-mono text-2xs fg-warning/80">
-                          {reuseClonePrompt.reusablePath}
-                        </p>
-                        <p className="mt-1 fg-warning/80">
-                          Its origin remote matches this URL. Reuse it, or clone
-                          a separate copy alongside it?
-                        </p>
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <Button
-                            size="compact"
-                            onClick={() => void handleReuseExistingClone()}
-                            disabled={isSubmitting}
-                          >
-                            {isSubmitting ? 'Working…' : 'Reuse existing'}
-                          </Button>
-                          <Button
-                            size="compact"
-                            onClick={() => void handleCloneNewCopy()}
-                            disabled={isSubmitting}
-                          >
-                            {isSubmitting ? 'Cloning…' : 'Clone new copy'}
-                          </Button>
-                          <Button
-                            size="compact"
-                            onClick={() => setReuseClonePrompt(null)}
-                            disabled={isSubmitting}
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
+                  {addMode === 'browse' && (
+                    <Stack gap="inline">
                       <div className="flex items-center gap-2">
                         <Button
                           size="compact"
-                          onClick={() => void handleCloneAndAddRepo()}
-                          disabled={
-                            isSubmitting ||
-                            (remoteSource === 'github' &&
-                              !selectedGithubRepoFullName)
-                          }
+                          onClick={() => void handleBrowseAndAddRepo()}
                         >
-                          {isSubmitting ? 'Cloning…' : 'Clone and add'}
+                          Browse for repo
                         </Button>
                         <Button
                           size="compact"
@@ -2679,16 +2547,157 @@ export function WorkspaceSettingsModal({
                           Cancel
                         </Button>
                       </div>
-                    )}
-                  </div>
-                )}
-              </Surface>
-            )}
+                      <ErrorBanner
+                        className=""
+                        error={addRepoRefusal}
+                        testId="workspace-settings-add-repo-refusal"
+                      />
+                    </Stack>
+                  )}
 
+                  {addMode === 'remote' && (
+                    <Stack gap="item">
+                      {canListGithubRepos && (
+                        <Stack gap="tight">
+                          <span className="block text-xs fg-secondary">
+                            Source
+                          </span>
+                          <SegmentedControl<RemoteSource>
+                            label="Remote source"
+                            value={remoteSource}
+                            width="content"
+                            shape="capsule"
+                            options={REMOTE_SOURCE_OPTIONS}
+                            onChange={handleRemoteSourceSelect}
+                          />
+                        </Stack>
+                      )}
+
+                      {remoteSource === 'github' && canListGithubRepos ? (
+                        <GitHubRepoPicker
+                          repos={filteredGithubRepos}
+                          totalCount={githubRepos?.length ?? 0}
+                          loading={githubRepoFetchState === 'loading'}
+                          error={githubReposError}
+                          search={githubRepoSearch}
+                          onSearchChange={setGithubRepoSearch}
+                          selectedFullName={selectedGithubRepoFullName}
+                          onSelect={setSelectedGithubRepoFullName}
+                          onRetry={() => setGithubRepoFetchState('idle')}
+                          testId="workspace-settings-github-repo-list"
+                        />
+                      ) : (
+                        <FormField label="Remote URL">
+                          {(control) => (
+                            <TextInput
+                              {...control}
+                              density="settings"
+                              type="url"
+                              value={remoteUrl}
+                              onChange={(event) =>
+                                setRemoteUrl(event.target.value)
+                              }
+                              placeholder="https://github.com/org/repo.git"
+                            />
+                          )}
+                        </FormField>
+                      )}
+
+                      <ErrorBanner
+                        className=""
+                        error={addRepoRefusal}
+                        testId="workspace-settings-add-repo-refusal"
+                      />
+
+                      <FormField label="Destination directory">
+                        {(control) => (
+                          <div className="flex gap-2">
+                            <TextInput
+                              {...control}
+                              density="settings"
+                              className="min-w-0 flex-1"
+                              type="text"
+                              value={destinationDir}
+                              readOnly
+                            />
+                            <Button
+                              size="compact"
+                              onClick={() => void handleBrowseCloneDir()}
+                            >
+                              Browse
+                            </Button>
+                          </div>
+                        )}
+                      </FormField>
+
+                      {reuseClonePrompt ? (
+                        <div className="flex flex-col gap-2 rounded-md border border-line-attention bg-warning/5 p-2.5 text-xs">
+                          <Stack gap="tight">
+                            <p className="font-medium fg-warning">
+                              Repo already exists at this destination
+                            </p>
+                            <p className="break-all font-mono text-2xs fg-warning/80">
+                              {reuseClonePrompt.reusablePath}
+                            </p>
+                            <p className="fg-warning/80">
+                              Its origin remote matches this URL. Reuse it, or
+                              clone a separate copy alongside it?
+                            </p>
+                          </Stack>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              size="compact"
+                              onClick={() => void handleReuseExistingClone()}
+                              disabled={isSubmitting}
+                            >
+                              {isSubmitting ? 'Working…' : 'Reuse existing'}
+                            </Button>
+                            <Button
+                              size="compact"
+                              onClick={() => void handleCloneNewCopy()}
+                              disabled={isSubmitting}
+                            >
+                              {isSubmitting ? 'Cloning…' : 'Clone new copy'}
+                            </Button>
+                            <Button
+                              size="compact"
+                              onClick={() => setReuseClonePrompt(null)}
+                              disabled={isSubmitting}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="compact"
+                            onClick={() => void handleCloneAndAddRepo()}
+                            disabled={
+                              isSubmitting ||
+                              (remoteSource === 'github' &&
+                                !selectedGithubRepoFullName)
+                            }
+                          >
+                            {isSubmitting ? 'Cloning…' : 'Clone and add'}
+                          </Button>
+                          <Button
+                            size="compact"
+                            onClick={() => setAddStep('list')}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      )}
+                    </Stack>
+                  )}
+                </Surface>
+              )}
+            </Stack>
             {workspace.repos.length === 0 && pendingAdds.length === 0 ? (
               <EmptyStateRow title="No repos added yet. Add repos to start creating worktrees." />
             ) : (
-              <div className="mt-2 space-y-1">
+              <Stack gap="tight">
                 {workspace.repos.map((repo) => {
                   const markedForRemoval = pendingRemoveIds.includes(repo.id);
                   const existingSourceControlState =
@@ -2827,13 +2836,13 @@ export function WorkspaceSettingsModal({
                     </span>
                   </div>
                 ))}
-              </div>
+              </Stack>
             )}
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'scripts' && (
-          <div className="space-y-4">
+          <Stack gap="group">
             {workspace.sourceRepoPath && !isTemporaryWorkspace && (
               <SourceLocalToggle
                 mode={scriptEditMode}
@@ -2851,14 +2860,14 @@ export function WorkspaceSettingsModal({
               scriptEditMode === 'source' &&
               workspaceSettingsLoadError ? (
               <Surface variant="group" padding="default">
-                <div className="text-s">
-                  <p className="font-medium fg-primary">
-                    Source-controlled scripts are unavailable.
-                  </p>
-                  <p className="mt-1 fg-secondary">
-                    {workspaceSettingsLoadError}
-                  </p>
-                  <div className="mt-3">
+                <div className="flex flex-col gap-3 text-s">
+                  <Stack gap="tight">
+                    <p className="font-medium fg-primary">
+                      Source-controlled scripts are unavailable.
+                    </p>
+                    <p className="fg-secondary">{workspaceSettingsLoadError}</p>
+                  </Stack>
+                  <div>
                     <Button
                       size="compact"
                       onClick={() => setScriptEditMode('local')}
@@ -2871,7 +2880,7 @@ export function WorkspaceSettingsModal({
             ) : (
               <>
                 <Surface variant="outline" padding="compact">
-                  <div className="space-y-3">
+                  <div className="flex flex-col gap-3">
                     <Heading level={4} variant="title">
                       Project root
                     </Heading>
@@ -3319,24 +3328,25 @@ export function WorkspaceSettingsModal({
                     />
 
                     <Surface variant="outline" padding="compact">
-                      <div className="space-y-3">
-                        <div>
+                      <div className="flex flex-col gap-3">
+                        <Stack gap="tight">
                           <p className="text-xs font-medium fg-primary">
                             Custom project scripts
                           </p>
-                          <p className="mt-1 text-2xs fg-secondary">
+                          <p className="text-2xs fg-secondary">
                             Ad hoc scripts that run in the project root.
                           </p>
-                        </div>
+                        </Stack>
                         {getEditableCustomScripts(
                           activeWorkspaceScriptsForTab,
                         ).map((script) => (
                           <Surface
                             key={script.name}
                             variant="outline"
+                            gap="inline"
                             padding="compact"
                           >
-                            <div className="mb-2 flex items-center justify-between gap-3">
+                            <div className=" flex items-center justify-between gap-3">
                               <span className="text-xs font-medium fg-primary">
                                 {script.name}
                               </span>
@@ -3419,7 +3429,7 @@ export function WorkspaceSettingsModal({
                             />
                           </Surface>
                         ))}
-                        <Surface variant="dashed" padding="compact">
+                        <Surface variant="dashed" gap="item" padding="compact">
                           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
                             <FormField label="Script name">
                               {(control) => (
@@ -3507,7 +3517,7 @@ export function WorkspaceSettingsModal({
                               </Button>
                             </div>
                           </div>
-                          <div className="mt-3">
+                          <div>
                             <ScriptConfigEditor
                               label="Command"
                               scriptName={
@@ -3603,7 +3613,7 @@ export function WorkspaceSettingsModal({
                       }
                       dataTestId={`workspace-settings-repo-scripts-${repo.id}`}
                     >
-                      <div className="flex flex-col gap-3">
+                      <Stack gap="item">
                         <ScriptConfigEditor
                           label="Setup script"
                           scriptName="setup"
@@ -3820,22 +3830,23 @@ export function WorkspaceSettingsModal({
                           )}
                         />
                         <Surface variant="outline" padding="compact">
-                          <div className="space-y-3">
-                            <div>
+                          <div className="flex flex-col gap-3">
+                            <Stack gap="tight">
                               <p className="text-xs font-medium fg-primary">
                                 Custom scripts
                               </p>
-                              <p className="mt-1 text-2xs fg-secondary">
+                              <p className="text-2xs fg-secondary">
                                 Repo-specific ad hoc scripts.
                               </p>
-                            </div>
+                            </Stack>
                             {customScripts.map((script) => (
                               <Surface
                                 key={script.name}
                                 variant="outline"
+                                gap="inline"
                                 padding="compact"
                               >
-                                <div className="mb-2 flex items-center justify-between gap-3">
+                                <div className=" flex items-center justify-between gap-3">
                                   <span className="text-xs font-medium fg-primary">
                                     {script.name}
                                   </span>
@@ -3926,7 +3937,11 @@ export function WorkspaceSettingsModal({
                                 />
                               </Surface>
                             ))}
-                            <Surface variant="dashed" padding="compact">
+                            <Surface
+                              variant="dashed"
+                              gap="item"
+                              padding="compact"
+                            >
                               <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
                                 <FormField label="Script name">
                                   {(control) => (
@@ -4019,7 +4034,7 @@ export function WorkspaceSettingsModal({
                                   </Button>
                                 </div>
                               </div>
-                              <div className="mt-3">
+                              <div>
                                 <ScriptConfigEditor
                                   label="Command"
                                   scriptName={
@@ -4087,7 +4102,7 @@ export function WorkspaceSettingsModal({
                             </Surface>
                           </div>
                         </Surface>
-                      </div>
+                      </Stack>
                     </Disclosure>
                   );
                 })}
@@ -4097,11 +4112,11 @@ export function WorkspaceSettingsModal({
               projectId={workspace.id}
               fallbackWorktreeId={sourceInspectWorktreeId}
             />
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'hooks' && (
-          <div className="space-y-4">
+          <Stack gap="group">
             {workspace.sourceRepoPath && !isTemporaryWorkspace && (
               <SourceLocalToggle
                 mode={hookEditMode}
@@ -4120,14 +4135,14 @@ export function WorkspaceSettingsModal({
               hookEditMode === 'source' &&
               workspaceSettingsLoadError ? (
               <Surface variant="group" padding="default">
-                <div className="text-s">
-                  <p className="font-medium fg-primary">
-                    Source-controlled hooks are unavailable.
-                  </p>
-                  <p className="mt-1 fg-secondary">
-                    {workspaceSettingsLoadError}
-                  </p>
-                  <div className="mt-3">
+                <div className="flex flex-col gap-3 text-s">
+                  <Stack gap="tight">
+                    <p className="font-medium fg-primary">
+                      Source-controlled hooks are unavailable.
+                    </p>
+                    <p className="fg-secondary">{workspaceSettingsLoadError}</p>
+                  </Stack>
+                  <div>
                     <Button
                       size="compact"
                       onClick={() => setHookEditMode('local')}
@@ -4141,7 +4156,7 @@ export function WorkspaceSettingsModal({
               <>
                 {/* Workspace-level hooks */}
                 <Surface variant="outline" padding="compact">
-                  <div className="space-y-3">
+                  <div className="flex flex-col gap-3">
                     <Heading level={4} variant="title">
                       Project root
                     </Heading>
@@ -4175,7 +4190,7 @@ export function WorkspaceSettingsModal({
                   const hooks = activeRepoHooksForTab[repo.id] ?? {};
                   return (
                     <Surface variant="outline" padding="compact" key={repo.id}>
-                      <div className="space-y-3">
+                      <div className="flex flex-col gap-3">
                         <Heading level={4} variant="title">
                           {repo.name}
                         </Heading>
@@ -4210,42 +4225,44 @@ export function WorkspaceSettingsModal({
                 })}
               </>
             )}
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'plan-detection' && (
-          <div className="space-y-4">
+          <Stack gap="group">
             <WorkspacePlanDetectionSection workspaceId={workspace.id} />
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'claude-md' && (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex items-center justify-between">
-              <Heading level={3} variant="title">
-                Instructions
-              </Heading>
-              {!claudeMd.trim() && !claudeMdUnavailable && (
-                <Button
-                  size="compact"
-                  onClick={() => {
-                    setClaudeMd(getDefaultWorkspaceClaudeMd(workspace.name));
-                  }}
-                >
-                  Initialize
-                </Button>
-              )}
-            </div>
-            <p className="mt-1 text-xs fg-secondary">
-              {workspace.sourceRepoPath && !isTemporaryWorkspace
-                ? 'Stored in the attached project source repo.'
-                : 'Shared instructions for all worktrees in this project.'}
-            </p>
+          <Stack gap="inline" className="min-h-0 flex-1">
+            <Stack gap="tight">
+              <div className="flex items-center justify-between">
+                <Heading level={3} variant="title">
+                  Instructions
+                </Heading>
+                {!claudeMd.trim() && !claudeMdUnavailable && (
+                  <Button
+                    size="compact"
+                    onClick={() => {
+                      setClaudeMd(getDefaultWorkspaceClaudeMd(workspace.name));
+                    }}
+                  >
+                    Initialize
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs fg-secondary">
+                {workspace.sourceRepoPath && !isTemporaryWorkspace
+                  ? 'Stored in the attached project source repo.'
+                  : 'Shared instructions for all worktrees in this project.'}
+              </p>
+            </Stack>
             {claudeMdLoadFailed && (
               <Notice
+                className=""
                 intent="destructive"
                 title="Couldn't load instructions"
-                className="mt-2"
                 data-testid="workspace-instructions-load-error"
                 actions={
                   <NoticeButton
@@ -4268,7 +4285,7 @@ export function WorkspaceSettingsModal({
               onChange={(event) => setClaudeMd(event.target.value)}
               readOnly={claudeMdUnavailable}
               aria-readonly={claudeMdUnavailable}
-              className="mt-2 min-h-0 flex-1"
+              className="min-h-0 flex-1"
               data-testid="workspace-instructions-textarea"
               placeholder={
                 claudeMdUnavailable
@@ -4276,11 +4293,11 @@ export function WorkspaceSettingsModal({
                   : 'Add instructions for agents working in this project'
               }
             />
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'plugins' && (
-          <div className="flex flex-1 flex-col min-h-0">
+          <Stack gap="group" className="flex-1 min-h-0">
             {workspace.sourceRepoPath && !isTemporaryWorkspace && (
               <SourceLocalToggle
                 mode={pluginEditMode}
@@ -4301,14 +4318,16 @@ export function WorkspaceSettingsModal({
                 />
               ) : workspaceSettingsLoadError ? (
                 <Surface variant="group" padding="default">
-                  <div className="text-s">
-                    <p className="font-medium fg-primary">
-                      Source-controlled plugins are unavailable.
-                    </p>
-                    <p className="mt-1 fg-secondary">
-                      {workspaceSettingsLoadError}
-                    </p>
-                    <div className="mt-3">
+                  <div className="flex flex-col gap-3 text-s">
+                    <Stack gap="tight">
+                      <p className="font-medium fg-primary">
+                        Source-controlled plugins are unavailable.
+                      </p>
+                      <p className="fg-secondary">
+                        {workspaceSettingsLoadError}
+                      </p>
+                    </Stack>
+                    <div>
                       <Button
                         size="compact"
                         onClick={() => setPluginEditMode('local')}
@@ -4326,7 +4345,7 @@ export function WorkspaceSettingsModal({
                 />
               )
             ) : (
-              <div className="flex flex-1 flex-col min-h-0 gap-3">
+              <Stack gap="item" className="flex-1 min-h-0">
                 {(!workspace.sourceRepoPath || isTemporaryWorkspace) && (
                   <PluginSelectionScopeHelp />
                 )}
@@ -4343,9 +4362,9 @@ export function WorkspaceSettingsModal({
                     inset={false}
                   />
                 </div>
-              </div>
+              </Stack>
             )}
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'environment' && (
@@ -4392,7 +4411,7 @@ export function WorkspaceSettingsModal({
         )}
 
         {activeTab === 'danger' && (
-          <div className="space-y-4">
+          <Stack gap="group">
             {!isTemporaryWorkspace && (
               <SettingsDangerConfirmBlock
                 variant="warning"
@@ -4404,27 +4423,25 @@ export function WorkspaceSettingsModal({
                     from local project tracking.
                   </>
                 }
-                warning={
-                  <>
-                    {workspace.worktrees.length > 0 && (
-                      <p className="mt-1 text-xs fg-warning">
-                        Remove all worktrees before converting this project.
-                      </p>
-                    )}
-                    {workspace.repos.length > 0 && (
-                      <p className="mt-1 text-xs fg-warning">
-                        Configured child repos will be removed from project
-                        tracking.
-                      </p>
-                    )}
-                    {!workspace.sourceRepoPath && (
-                      <p className="mt-1 text-xs fg-warning">
-                        This project is missing its required source repo path
-                        and cannot be converted until that is repaired.
-                      </p>
-                    )}
-                  </>
-                }
+                warnings={[
+                  workspace.worktrees.length > 0 && (
+                    <p key="worktrees" className="text-xs fg-warning">
+                      Remove all worktrees before converting this project.
+                    </p>
+                  ),
+                  workspace.repos.length > 0 && (
+                    <p key="repos" className="text-xs fg-warning">
+                      Configured child repos will be removed from project
+                      tracking.
+                    </p>
+                  ),
+                  !workspace.sourceRepoPath && (
+                    <p key="source" className="text-xs fg-warning">
+                      This project is missing its required source repo path and
+                      cannot be converted until that is repaired.
+                    </p>
+                  ),
+                ]}
                 triggerDisabled={
                   workspace.worktrees.length > 0 || !workspace.sourceRepoPath
                 }
@@ -4442,17 +4459,17 @@ export function WorkspaceSettingsModal({
             <SettingsDangerConfirmBlock
               title="Delete project"
               description="This will remove the project and all its worktrees. Repository source code is not affected."
-              warning={
+              warnings={[
                 removalDisabledReason ? (
-                  <p className="mt-1 text-xs fg-destructive/80">
+                  <p className="text-xs fg-destructive/80">
                     {removalDisabledReason}
                   </p>
                 ) : hasActiveWorktrees ? (
-                  <p className="mt-1 text-xs fg-destructive/80">
+                  <p className="text-xs fg-destructive/80">
                     Cannot delete while worktrees have active sessions.
                   </p>
-                ) : undefined
-              }
+                ) : undefined,
+              ]}
               triggerDisabled={
                 hasActiveWorktrees || removalDisabledReason !== undefined
               }
@@ -4465,7 +4482,7 @@ export function WorkspaceSettingsModal({
               confirmLabel="Confirm delete"
               confirmInProgressLabel="Deleting…"
             />
-          </div>
+          </Stack>
         )}
       </div>
 
@@ -4523,9 +4540,9 @@ export function WorkspaceSettingsModal({
       {error && (
         <div className="border-t px-6 py-3">
           <ErrorBanner
+            className=""
             error={error}
             details={detailsFor(error, errorFailure)}
-            className=""
           />
         </div>
       )}
@@ -4600,17 +4617,20 @@ function TemporaryWorkspacePromotionCard({
   return (
     <Surface
       variant="outline"
+      gap="item"
       padding="default"
       data-testid="temporary-workspace-promotion"
     >
-      <Heading level={3} variant="title">
-        Temporary project
-      </Heading>
-      <p className="mt-1 text-xs fg-secondary">
-        This project was created for an adhoc multi-repo worktree. Make it
-        permanent to keep it after its worktrees are deleted.
-      </p>
-      <div className="mt-3">
+      <Stack gap="tight">
+        <Heading level={3} variant="title">
+          Temporary project
+        </Heading>
+        <p className="text-xs fg-secondary">
+          This project was created for an adhoc multi-repo worktree. Make it
+          permanent to keep it after its worktrees are deleted.
+        </p>
+      </Stack>
+      <div>
         <FormField label="Project name">
           {(control) => (
             <TextInput
@@ -4625,22 +4645,24 @@ function TemporaryWorkspacePromotionCard({
           )}
         </FormField>
       </div>
-      <div className="mt-3 flex items-center gap-2">
-        <Button
-          size="compact"
-          onClick={() => void handlePromote()}
-          disabled={disabled}
-          data-testid="temporary-workspace-promotion-submit"
-        >
-          {isSaving ? 'Saving…' : 'Make permanent'}
-        </Button>
-      </div>
-      <ErrorBanner
-        error={errorMessage}
-        details={detailsFor(errorMessage, errorFailure)}
-        className="mt-2"
-        testId="temporary-workspace-promotion-error"
-      />
+      <Stack gap="inline">
+        <div className="flex items-center gap-2">
+          <Button
+            size="compact"
+            onClick={() => void handlePromote()}
+            disabled={disabled}
+            data-testid="temporary-workspace-promotion-submit"
+          >
+            {isSaving ? 'Saving…' : 'Make permanent'}
+          </Button>
+        </div>
+        <ErrorBanner
+          className=""
+          error={errorMessage}
+          details={detailsFor(errorMessage, errorFailure)}
+          testId="temporary-workspace-promotion-error"
+        />
+      </Stack>
     </Surface>
   );
 }

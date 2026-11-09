@@ -20,6 +20,7 @@ export interface RelocationRepairContext {
   /** Private sibling of the final root; all injected owners write here with final-path content. */
   readonly workingRoot: string;
   readonly gitPlan: RelocationGitPlan;
+  readonly replaceBacklink?: Parameters<typeof repairRelocationGit>[3];
   /** Complete frozen worker inventory of owned paths, including links and their targets. */
   readonly ownedPaths: readonly string[];
   /** Verifies the frozen ownership inventory and external-effect recovery plan. */
@@ -50,7 +51,12 @@ export function createRelocationRepairStep(): (
       context.workingRoot,
     );
     await context.recordAuthority(transition);
-    await repairRelocationGit(transition, context.gitPlan, context.workingRoot);
+    await repairRelocationGit(
+      transition,
+      context.gitPlan,
+      context.workingRoot,
+      context.replaceBacklink,
+    );
     await context.repairMetadata();
     await discardRelocatedRuntime(transition, context.workingRoot);
   };

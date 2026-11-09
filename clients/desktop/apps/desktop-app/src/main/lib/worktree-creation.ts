@@ -40,7 +40,9 @@ export type WorktreeCreationLifecycle = Omit<
 /** The trusted host callers that record keyed worktree creation receipts. */
 export type WorktreeCreationCallerSource =
   | 'worktree-selection'
-  | 'pipeline-host';
+  | 'pipeline-host'
+  | 'agent-chat'
+  | 'app-advisor';
 
 export interface WorktreeCreationRequest<
   Kind extends WorktreeCreationWorkspaceKind = WorktreeCreationWorkspaceKind,

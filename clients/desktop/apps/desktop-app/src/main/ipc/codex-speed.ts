@@ -10,7 +10,7 @@ import {
   type CodexSpeedSetActiveRequest,
   type ReadCodexSpeedRouteRequest,
 } from '@canopy/desktop-shared/types';
-import type { CodexSpeedRouteFacts } from '@canopy/desktop-shared/lib/codex-speed-availability';
+import type { CodexSpeedRouteFacts } from '@canopy/execution-engine/lib/codex-speed-availability';
 import { isCodexSpeedReadRouteRequest } from '@canopy/desktop-shared/lib/codex-speed-route';
 import { readCodexSpeedRouteFacts } from '../codex/speed-route-context';
 import { registerAccountProxyCodexSpeedCatalog } from '../account-proxy/codex-speed-catalog';

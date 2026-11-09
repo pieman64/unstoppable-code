@@ -1,5 +1,7 @@
+import { Stack } from './Stack';
 import type { JSX, ReactNode } from 'react';
 import { Heading } from './Heading';
+import { DetailEntityType } from './MarketplaceTypeLabel';
 
 export interface DetailHeaderProps {
   title: ReactNode;
@@ -43,39 +45,46 @@ export function DetailHeader({
   );
   return (
     <header className="flex shrink-0 flex-col gap-4" data-testid={dataTestId}>
-      <div className="min-w-0">
-        {/* The title shares its line with the actions; the description and
+      <div className="min-w-0 flex flex-col gap-2">
+        <Stack gap="tight">
+          {/* The title shares its line with the actions; the description and
             meta run the full width under both. */}
-        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-          <Heading
-            level={1}
-            variant="page"
-            id={titleId}
-            className="min-w-0"
-            data-testid={`${dataTestId}-title`}
-          >
-            {title}
-          </Heading>
-          {actions ? (
-            <div
-              className="flex shrink-0 flex-wrap items-center justify-end gap-2"
-              data-testid={`${dataTestId}-actions`}
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+            <Heading
+              level={1}
+              variant="page"
+              id={titleId}
+              className="min-w-0"
+              data-testid={`${dataTestId}-title`}
             >
-              {actions}
-            </div>
+              <span className="inline-flex flex-wrap items-baseline gap-x-2">
+                {title}
+                <DetailEntityType />
+              </span>
+            </Heading>
+            {actions ? (
+              <div
+                className="flex shrink-0 flex-wrap items-center justify-end gap-2"
+                data-testid={`${dataTestId}-actions`}
+              >
+                {actions}
+              </div>
+            ) : null}
+          </div>
+
+          {description ? (
+            <p
+              className="text-s fg-secondary"
+              data-testid={`${dataTestId}-description`}
+            >
+              {description}
+            </p>
           ) : null}
-        </div>
-        {description ? (
-          <p
-            className="mt-1 text-s fg-secondary"
-            data-testid={`${dataTestId}-description`}
-          >
-            {description}
-          </p>
-        ) : null}
+        </Stack>
+
         {facts.length > 0 ? (
           <p
-            className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs fg-tertiary"
+            className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs fg-tertiary"
             data-testid={`${dataTestId}-meta`}
           >
             {facts.map((fact, index) => (

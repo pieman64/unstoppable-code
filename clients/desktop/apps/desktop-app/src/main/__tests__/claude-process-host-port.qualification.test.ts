@@ -514,9 +514,9 @@ describe('Claude process host in-process: a post-spawn error', () => {
             ) => child.kill(signal),
           ),
         }));
-        jest.doMock('@canopy/desktop-shared/node/lib/process-kill', () => ({
+        jest.doMock('@canopy/execution-engine/node/lib/process-kill', () => ({
           ...jest.requireActual<object>(
-            '@canopy/desktop-shared/node/lib/process-kill',
+            '@canopy/execution-engine/node/lib/process-kill',
           ),
           killProcessGroupByPid: jest.fn(() => Promise.resolve()),
         }));

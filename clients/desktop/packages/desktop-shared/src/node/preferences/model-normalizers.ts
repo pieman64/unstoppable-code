@@ -1,5 +1,5 @@
-import { isSyntacticallyValidModelId } from '../../lib/model-id';
-import { isGatewayRoutableModel } from '../../lib/gateway-model-availability';
+import { isSyntacticallyValidModelId } from '@canopy/execution-engine/lib/model-id';
+import { isGatewayRoutableModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isBillingLane, type BillingLane } from '../../lib/default-model-lane';
 import {
   getExecutionHarnessForModel,

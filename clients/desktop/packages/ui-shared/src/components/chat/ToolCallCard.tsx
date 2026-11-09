@@ -1,3 +1,4 @@
+import { Stack } from '../Stack';
 import { TURN_OUTCOME_UNKNOWN_IMPACT } from './turn-outcome-label';
 import { useState, type JSX, type ReactNode } from 'react';
 import { z } from 'zod';
@@ -310,6 +311,8 @@ export interface ToolCallCardProps {
   awaitingApproval?: boolean;
   /** Custom expanded-panel slot. When supplied, replaces input/result chrome. */
   expandedSlot?: ReactNode;
+  /** One action replacing the raw input/result, inset by the expanded body. */
+  expandedAction?: ReactNode;
   /**
    * Test ID hook for automation. Independent of this hook, the card root
    * always exposes nonvisual `data-tool-name` (raw canonical tool name) and
@@ -346,6 +349,7 @@ export function ToolCallCard({
   pendingSpinner,
   awaitingApproval,
   expandedSlot,
+  expandedAction,
   dataTestId,
   toolUseId,
 }: ToolCallCardProps): JSX.Element {
@@ -441,18 +445,21 @@ export function ToolCallCard({
           />
         </StepTenseProvider>
         {isOpen && (
-          <div className={STEP_ROW_BODY_CLASS} data-chat-reveal-body="">
-            {expandedSlot ?? (
-              <div className="space-y-1">
+          <div
+            className={`${STEP_ROW_BODY_CLASS}${expandedAction != null ? ' p-2 empty:p-0' : ''}`}
+            data-chat-reveal-body=""
+          >
+            {expandedAction ?? expandedSlot ?? (
+              <Stack gap="tight">
                 {shownInput != null && shownInput.length > 0 && (
                   <pre className={CLEAN_OUTPUT_CLASS}>{shownInput}</pre>
                 )}
                 {result && result.content.length > 0 && (
                   <pre className={CLEAN_OUTPUT_CLASS}>{result.content}</pre>
                 )}
-              </div>
+              </Stack>
             )}
-            {isError && expandedSlot == null && (
+            {isError && expandedAction == null && expandedSlot == null && (
               <p
                 className="text-xs fg-secondary"
                 data-testid="tool-call-error-impact"
@@ -545,8 +552,10 @@ export function ToolCallCard({
         )}
       </button>
       {isOpen && (
-        <div className="ml-5.5 mt-1 overflow-hidden rounded border bg-fg-primary/[0.02]">
-          {expandedSlot ?? (
+        <div
+          className={`ml-5.5 mt-1 overflow-hidden rounded border bg-fg-primary/[0.02]${expandedAction != null ? ' p-2 empty:p-0' : ''}`}
+        >
+          {expandedAction ?? expandedSlot ?? (
             <>
               {input != null && input.length > 0 && (
                 <pre className="max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary">

@@ -40,10 +40,15 @@ const CODE_GRAPH_READS_CALLER: CanopyCallerDescriptor = {
   grants: [WORKER_CODE_GRAPH_GRANTS.read, WORKER_CODE_GRAPH_GRANTS.write],
 };
 
-type CodeGraphReadDispatcher = Pick<
+export type CodeGraphReadDispatcher = Pick<
   DesktopCanopyDispatcher,
   'query' | 'instruction'
 >;
+
+/** Wraps the read dispatcher for one call; agent tools pass their granted table (CAN-5825). */
+export type CodeGraphDispatchVia = (
+  dispatcher: CodeGraphReadDispatcher,
+) => CodeGraphReadDispatcher;
 
 let dispatcherForTests: CodeGraphReadDispatcher | null = null;
 
@@ -54,11 +59,11 @@ export function setCodeGraphReadDispatcherForTests(
   dispatcherForTests = dispatcher;
 }
 
-function dispatcher(): CodeGraphReadDispatcher {
+function dispatcher(via?: CodeGraphDispatchVia): CodeGraphReadDispatcher {
   const active = dispatcherForTests ?? getActiveDesktopRuntimeIfAccepting();
   // No runtime means the app is starting or quitting: the read is canceled.
   if (active === null) throw new CodeGraphReadFailureError('canceled');
-  return active;
+  return via === undefined ? active : via(active);
 }
 
 /**
@@ -134,12 +139,12 @@ export async function readWorktreeCodeGraph(
   scope: CodeGraphReadScope,
   queryKind: CodeGraphQueryKind,
   read: CodeGraphServiceRead,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; via?: CodeGraphDispatchVia } = {},
 ): Promise<CodeGraphReadAnswer> {
   if (!isQueryKind(queryKind))
     throw new Error(`Code-graph query kind ${queryKind} is internal.`);
   try {
-    const answer = await dispatcher().query(
+    const answer = await dispatcher(options.via).query(
       'worker.codeGraph.query',
       {
         scope: { workspaceId: scope.projectId, worktreeId: scope.worktreeId },
@@ -214,9 +219,10 @@ export async function readWorkspaceBaseCodeGraphSummaries(
 /** Whether the worktree has a graph, and whether a source build is pending. */
 export async function readWorktreeCodeGraphStatus(
   scope: CodeGraphReadScope,
+  options: { via?: CodeGraphDispatchVia } = {},
 ): Promise<CodeGraphGraphState> {
   try {
-    return await dispatcher().query(
+    return await dispatcher(options.via).query(
       'worker.codeGraph.status.get',
       {
         scope: { workspaceId: scope.projectId, worktreeId: scope.worktreeId },

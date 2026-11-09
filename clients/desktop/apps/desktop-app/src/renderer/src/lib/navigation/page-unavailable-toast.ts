@@ -35,12 +35,15 @@ export function notifyPageSwitchedOff(
   );
   if (owner?.listed !== true) return;
   const message = formatPageUnavailableMessage(availability);
-  void import('@/stores/githubStore')
-    .then(({ useGitHubStore }) => {
-      const toasts = useGitHubStore.getState();
+  void Promise.all([
+    import('@/stores/githubStore'),
+    import('@/stores/toastStore'),
+  ])
+    .then(([{ useGitHubStore }, { toastStack }]) => {
       // Repeated shortcut presses keep one toast instead of stacking.
-      if (toasts.toasts.some((toast) => toast.message === message)) return;
-      toasts.addToast(message, 'info', undefined, {
+      if (toastStack.getSnapshot().some((toast) => toast.message === message))
+        return;
+      useGitHubStore.getState().addToast(message, 'info', undefined, {
         forceInApp: true,
         suppressOsNotification: true,
         action: { label: 'Open Labs', onClick: openExperiments },

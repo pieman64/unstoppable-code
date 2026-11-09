@@ -24,6 +24,7 @@ import {
   isOllamaServerVersionCompatible,
 } from '@canopy/desktop-shared/types';
 import {
+  Stack,
   Button,
   Disclosure,
   Notice,
@@ -32,6 +33,7 @@ import {
   NoticeListItem,
   StatusBadge,
   type StatusBadgeVariant,
+  FieldError,
   Surface,
   TextLinkButton,
 } from '@canopy/ui-shared/components';
@@ -40,6 +42,10 @@ import { brandText } from '@/lib/brand';
 import { OllamaIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { ProgressBar } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import {
   SettingsGroup,
   SettingsPage,
@@ -54,6 +60,8 @@ import {
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download';
 /** Official manual installation instructions for Linux. */
 const OLLAMA_LINUX_DOWNLOAD_URL = 'https://ollama.com/download/linux';
+/** The install failure's own sentence; the reason stays behind Copy details. */
+const INSTALL_FAILED_MESSAGE = "Couldn't install Ollama.";
 /** Official Ollama model list, opened through the safe external browser. */
 const OLLAMA_MODEL_LIST_URL = 'https://ollama.com/search';
 /** Loopback host used for every localhost-only Ollama connection. */
@@ -153,8 +161,8 @@ function ModelMetadataBlock({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <div>
-      <div className="mb-1 font-medium fg-primary">{title}</div>
+    <div className="flex flex-col gap-1">
+      <div className="font-medium fg-primary">{title}</div>
       {children}
     </div>
   );
@@ -219,7 +227,7 @@ export function OllamaModelCard({
         label="Details"
         dataTestId={`ollama-model-details-${model.rawModelId}`}
       >
-        <div className="space-y-3 text-xs">
+        <div className="flex flex-col text-xs gap-3">
           <div className="grid gap-x-4 gap-y-1 wrap-anywhere fg-secondary md:grid-cols-2">
             {capabilities.length > 0 && (
               <div className="md:col-span-2">
@@ -294,7 +302,7 @@ export function OllamaModelCard({
           )}
           {model.show?.messages && model.show.messages.length > 0 && (
             <ModelMetadataBlock title="Seed messages">
-              <div className="space-y-2">
+              <Stack gap="inline">
                 {model.show.messages.map((message, index) => (
                   <Surface
                     variant="group"
@@ -302,23 +310,25 @@ export function OllamaModelCard({
                     padding="tight"
                     key={`${message.role}-${String(index)}`}
                   >
-                    <div className="fg-secondary">
-                      <div className="mb-1 font-medium fg-primary">
-                        {message.role}
-                        {message.toolName ? ` (${message.toolName})` : ''}
-                      </div>
-                      <div className="whitespace-pre-wrap">
-                        {message.content}
-                      </div>
+                    <div className="flex flex-col fg-secondary gap-2">
+                      <Stack gap="tight">
+                        <div className="font-medium fg-primary">
+                          {message.role}
+                          {message.toolName ? ` (${message.toolName})` : ''}
+                        </div>
+                        <div className="whitespace-pre-wrap">
+                          {message.content}
+                        </div>
+                      </Stack>
                       {message.thinking && (
-                        <div className="mt-2 whitespace-pre-wrap fg-tertiary">
+                        <div className="whitespace-pre-wrap fg-tertiary">
                           Thinking: {message.thinking}
                         </div>
                       )}
                     </div>
                   </Surface>
                 ))}
-              </div>
+              </Stack>
             </ModelMetadataBlock>
           )}
           {model.show?.rawJson && (
@@ -341,7 +351,7 @@ export function OllamaTab(): JSX.Element {
   const [portInput, setPortInput] = useState('');
   const [pullInput, setPullInput] = useState('');
   const [pullStates, setPullStates] = useState<Record<string, PullState>>({});
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<InlineFailure | null>(null);
   const [portError, setPortError] = useState<string | null>(null);
   const [deleteWarning, setDeleteWarning] = useState<{
     model: string;
@@ -353,6 +363,9 @@ export function OllamaTab(): JSX.Element {
   const [installProgress, setInstallProgress] =
     useState<OllamaInstallProgress | null>(null);
   const [installing, setInstalling] = useState(false);
+  // A failure of the install call itself (the main process reports its own
+  // install failures through progress).
+  const [installError, setInstallError] = useState<InlineFailure | null>(null);
   // Which one-shot setup action is currently running (for per-button spinners).
   const [busyAction, setBusyAction] = useState<
     'mode' | 'save' | 'browse' | 'redetect' | null
@@ -394,9 +407,9 @@ export function OllamaTab(): JSX.Element {
         setPortInput(String(state.port));
       })
       .catch((err: unknown) => {
-        const message =
-          err instanceof Error ? err.message : 'Failed to load Ollama state.';
-        setError(message);
+        const appError = toAppError(resolveClientAppError(err));
+        if (appError)
+          setError(inlineFailure(appError, "Couldn't load Ollama settings."));
         setOllamaState({
           port: DEFAULT_OLLAMA_SERVER_PORT,
           status: 'error',
@@ -411,7 +424,6 @@ export function OllamaTab(): JSX.Element {
             checkedAt: new Date().toISOString(),
             automaticInstallSupported: false,
           },
-          error: message,
         });
         setPortInput(String(DEFAULT_OLLAMA_SERVER_PORT));
       });
@@ -445,11 +457,11 @@ export function OllamaTab(): JSX.Element {
               setOllamaState(state);
             })
             .catch((err: unknown) => {
-              setError(
-                err instanceof Error
-                  ? err.message
-                  : 'Failed to refresh models.',
-              );
+              const appError = toAppError(resolveClientAppError(err));
+              if (appError)
+                setError(
+                  inlineFailure(appError, "Couldn't refresh Ollama models."),
+                );
             });
         }
       },
@@ -490,9 +502,9 @@ export function OllamaTab(): JSX.Element {
         });
         setOllamaState(state);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : 'Failed to update Ollama mode.',
-        );
+        const appError = toAppError(resolveClientAppError(err));
+        if (appError)
+          setError(inlineFailure(appError, "Couldn't change the Ollama mode."));
       } finally {
         setBusyAction((current) => (current === 'mode' ? null : current));
       }
@@ -519,9 +531,9 @@ export function OllamaTab(): JSX.Element {
       });
       setOllamaState(state);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Failed to save Ollama settings.',
-      );
+      const appError = toAppError(resolveClientAppError(err));
+      if (appError)
+        setError(inlineFailure(appError, "Couldn't save Ollama settings."));
     } finally {
       setBusyAction((current) => (current === 'save' ? null : current));
     }
@@ -542,11 +554,11 @@ export function OllamaTab(): JSX.Element {
       const result = await window.api.testOllamaConnection(port);
       setTestResult(result);
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Failed to test the Ollama connection.',
-      );
+      const appError = toAppError(resolveClientAppError(err));
+      if (appError)
+        setError(
+          inlineFailure(appError, "Couldn't test the Ollama connection."),
+        );
     } finally {
       setTesting(false);
     }
@@ -558,6 +570,7 @@ export function OllamaTab(): JSX.Element {
       return;
     }
     setError(null);
+    setInstallError(null);
     setInstalling(true);
     setInstallProgress({
       phase: 'starting',
@@ -570,10 +583,14 @@ export function OllamaTab(): JSX.Element {
         setInstallProgress(null);
       }
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to install Ollama.';
-      setInstallProgress({ phase: 'failure', message, error: message });
-      setError(message);
+      const appError = toAppError(resolveClientAppError(err));
+      if (!appError) {
+        setInstallProgress(null);
+        return;
+      }
+      // The install failure banner below shows it.
+      setInstallError(inlineFailure(appError, INSTALL_FAILED_MESSAGE));
+      setInstallProgress({ phase: 'failure', message: INSTALL_FAILED_MESSAGE });
     } finally {
       setInstalling(false);
     }
@@ -589,11 +606,11 @@ export function OllamaTab(): JSX.Element {
         setInstallProgress(null);
       }
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Failed to select an Ollama executable.',
-      );
+      const appError = toAppError(resolveClientAppError(err));
+      if (appError)
+        setError(
+          inlineFailure(appError, "Couldn't use the selected Ollama app."),
+        );
     } finally {
       setBusyAction((current) => (current === 'browse' ? null : current));
     }
@@ -609,7 +626,9 @@ export function OllamaTab(): JSX.Element {
         setInstallProgress(null);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to detect Ollama.');
+      const appError = toAppError(resolveClientAppError(err));
+      if (appError)
+        setError(inlineFailure(appError, "Couldn't detect Ollama."));
     } finally {
       setBusyAction((current) => (current === 'redetect' ? null : current));
     }
@@ -632,9 +651,9 @@ export function OllamaTab(): JSX.Element {
       const state = await window.api.refreshOllamaModels();
       setOllamaState(state);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Failed to refresh models.',
-      );
+      const appError = toAppError(resolveClientAppError(err));
+      if (appError)
+        setError(inlineFailure(appError, "Couldn't refresh Ollama models."));
     } finally {
       setRefreshing(false);
     }
@@ -657,18 +676,20 @@ export function OllamaTab(): JSX.Element {
     try {
       await window.api.pullOllamaModel({ model: modelName });
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : `Failed to pull ${modelName}.`,
-      );
+      const appError = toAppError(resolveClientAppError(err));
+      // The model's own row shows the failure; a cancelled pull just ends.
+      const reason = appError
+        ? (inlineFailure(appError, `Couldn't pull ${modelName}.`).details ??
+          appError.copy.title)
+        : undefined;
       setPullStates((prev) => ({
         ...prev,
         [modelName]: {
           ...prev[modelName],
           model: modelName,
-          status: 'error',
+          status: appError ? 'error' : 'cancelled',
           done: true,
-          error:
-            err instanceof Error ? err.message : `Failed to pull ${modelName}.`,
+          ...(reason === undefined ? {} : { error: reason }),
         },
       }));
     }
@@ -692,9 +713,9 @@ export function OllamaTab(): JSX.Element {
 
       setOllamaState(result.state);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : `Failed to delete ${modelName}.`,
-      );
+      const appError = toAppError(resolveClientAppError(err));
+      if (appError)
+        setError(inlineFailure(appError, `Couldn't delete ${modelName}.`));
     } finally {
       setDeletingModel((current) => (current === modelName ? null : current));
     }
@@ -800,7 +821,13 @@ export function OllamaTab(): JSX.Element {
       : `${String(installedModelCount)} ${installedModelCount === 1 ? 'model' : 'models'}`;
 
   const setupControlsDisabled = installing;
-  const pageError = error ?? ollamaState.error;
+  const pageError: InlineFailure | null =
+    error ?? (ollamaState.error ? { error: ollamaState.error } : null);
+  const installFailureReason = installProgress?.error ?? installation.error;
+  const installFailure: InlineFailure = installError ?? {
+    error: INSTALL_FAILED_MESSAGE,
+    ...(installFailureReason ? { details: installFailureReason } : {}),
+  };
 
   const installationActions = (
     <>
@@ -832,7 +859,16 @@ export function OllamaTab(): JSX.Element {
   return (
     <SettingsPage title="Ollama" dataTestId="settings-tab-ollama">
       <SettingsSection title="Setup" headingId="ollama-setup-heading">
-        {pageError && <Notice intent="destructive">{pageError}</Notice>}
+        <DesktopErrorBanner
+          className=""
+          error={pageError?.error}
+          {...(pageError?.details === undefined
+            ? {}
+            : { details: pageError.details })}
+          // The server's own status text can quote paths and output.
+          blockMessageFromReplay={error === null}
+          testId="ollama-page-error"
+        />
 
         {mode === 'managed' && managedView === 'incompatible' && (
           <Notice
@@ -867,12 +903,21 @@ export function OllamaTab(): JSX.Element {
         )}
 
         {mode === 'managed' && managedView === 'failure' && (
-          <Notice
-            intent="destructive"
-            title="Install failed"
-            data-testid="ollama-install-failure"
-            actionsPlacement="below"
-            actions={
+          <DesktopErrorBanner
+            className=""
+            error={installFailure.error}
+            {...(installFailure.details === undefined
+              ? {}
+              : { details: installFailure.details })}
+            {...(isLinux
+              ? {}
+              : {
+                  onRetry: (): void => {
+                    void handleInstall();
+                  },
+                })}
+            testId="ollama-install-failure"
+            secondaryAction={
               <>
                 <NoticeButton
                   variant="secondary"
@@ -902,24 +947,10 @@ export function OllamaTab(): JSX.Element {
                   >
                     Linux installation instructions
                   </NoticeButton>
-                ) : (
-                  <NoticeButton
-                    variant="primary"
-                    onClick={() => {
-                      void handleInstall();
-                    }}
-                    data-testid="ollama-install"
-                  >
-                    Install Ollama
-                  </NoticeButton>
-                )}
+                ) : null}
               </>
             }
-          >
-            {installProgress?.message ??
-              installation.error ??
-              'The Ollama install failed.'}
-          </Notice>
+          />
         )}
 
         {mode === 'manual' && incompatibleServerVersion && (
@@ -976,8 +1007,8 @@ export function OllamaTab(): JSX.Element {
               label="Installing Ollama"
               dataTestId="ollama-managed-setup"
             >
-              <div
-                className="flex flex-col gap-2"
+              <Stack
+                gap="inline"
                 data-testid="ollama-install-progress"
                 aria-live="polite"
               >
@@ -986,7 +1017,7 @@ export function OllamaTab(): JSX.Element {
                   indeterminate={!installProgressDeterminate}
                   label={installProgress?.message ?? 'Installing Ollama…'}
                 />
-              </div>
+              </Stack>
             </SettingsRow>
           )}
 
@@ -1167,14 +1198,13 @@ export function OllamaTab(): JSX.Element {
             }
           >
             {portError && (
-              <p
+              <FieldError
                 id="ollama-port-error"
+                announce
                 data-testid="ollama-port-error"
-                role="alert"
-                className="text-xs fg-destructive"
               >
                 {portError}
-              </p>
+              </FieldError>
             )}
             <div aria-live="polite" className="contents">
               {testResult &&
@@ -1189,15 +1219,14 @@ export function OllamaTab(): JSX.Element {
                     {testResult.port}.
                   </p>
                 ) : (
-                  <p
+                  <FieldError
+                    id="ollama-connection-result"
                     data-testid="ollama-connection-result"
-                    role="status"
-                    className="text-xs fg-destructive"
                   >
                     Couldn&apos;t connect to Ollama on port {testResult.port}.
                     Make sure the Ollama app or <code>ollama serve</code> is
                     running on that port.
-                  </p>
+                  </FieldError>
                 ))}
             </div>
           </SettingsRow>
@@ -1313,7 +1342,7 @@ export function OllamaTab(): JSX.Element {
           >
             {/* Pull progress */}
             {activePulls.map((pull) => (
-              <div key={pull.model} className="flex flex-col gap-2">
+              <Stack key={pull.model} gap="inline">
                 <div className="flex items-center justify-between gap-3 text-xs">
                   <span className="truncate font-medium fg-primary">
                     {pull.model}
@@ -1327,14 +1356,17 @@ export function OllamaTab(): JSX.Element {
                     hideLabel
                   />
                 )}
-              </div>
+              </Stack>
             ))}
 
             {/* Completed pulls with errors */}
             {failedPulls.map((pull) => (
-              <Notice key={pull.model} intent="destructive">
-                Failed to pull {pull.model}: {pull.error}
-              </Notice>
+              <DesktopErrorBanner
+                key={pull.model}
+                className=""
+                error={`Couldn't pull ${pull.model}.`}
+                {...(pull.error ? { details: pull.error } : {})}
+              />
             ))}
           </SettingsRow>
         </SettingsGroup>

@@ -2,12 +2,12 @@ import type { BrowserWindow } from 'electron';
 import {
   PIPELINE_TRANSIENT_RETRY_DELAYS_MS,
   PIPELINE_TRANSIENT_RETRY_MAX_ATTEMPTS,
-} from '@canopy/desktop-shared/agent-failures';
+} from '@canopy/execution-engine/agent-failures';
 import type {
   ExecutionEvent,
   ExecutionState,
   PipelineTransientRetryState,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   ResumePipelineExecutionFromMainRequest,
   ResumePipelineExecutionFromMainResult,

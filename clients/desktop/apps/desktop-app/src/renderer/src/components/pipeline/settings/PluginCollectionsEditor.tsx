@@ -7,7 +7,7 @@ import {
 import type {
   PipelinePluginCollection,
   PipelinePluginDefault,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { HookChatPluginSelectorModal } from '@/components/worktree/HookChatPluginSelectorModal';
 import { FormField } from '../shared/FormField';
 import { TextField } from '../shared/TextField';
@@ -15,6 +15,7 @@ import { TextAreaField } from '../shared/TextAreaField';
 import { ToggleField } from '../shared/ToggleField';
 import { Tooltip } from '@canopy/ui-shared';
 import {
+  Stack,
   Button,
   FORM_FIELD_LABEL_CLASS,
   Surface,
@@ -216,13 +217,15 @@ function CollectionItem({
           onClick={() => setExpanded((v) => !v)}
           className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5 text-left hover:bg-fg-primary/[0.04]"
         >
-          <AppCatalogChevronRightMediumIcon
-            size="sm"
-            className={`mt-1 shrink-0 fg-secondary transition-transform ${
-              expanded ? 'rotate-90' : ''
-            }`}
-            aria-hidden="true"
-          />
+          <span className="flex h-5 shrink-0 items-center">
+            <AppCatalogChevronRightMediumIcon
+              size="sm"
+              className={`shrink-0 fg-secondary transition-transform ${
+                expanded ? 'rotate-90' : ''
+              }`}
+              aria-hidden="true"
+            />
+          </span>
           <div className="min-w-0 flex-1">
             <div className="truncate text-s font-medium fg-primary">
               {collection.name || collection.id}
@@ -252,7 +255,7 @@ function CollectionItem({
       </div>
 
       {expanded && (
-        <div className="border-t p-3 space-y-3">
+        <div className="flex flex-col border-t p-3 gap-3">
           <FormField
             label="ID"
             error={idError}
@@ -296,7 +299,7 @@ function CollectionItem({
             />
           </FormField>
 
-          <div className="space-y-2">
+          <Stack gap="inline">
             <div className="flex items-center justify-between">
               <span className={FORM_FIELD_LABEL_CLASS}>Defaults</span>
               {!readonly && (
@@ -311,7 +314,7 @@ function CollectionItem({
                 or marketplace plugins.
               </p>
             ) : (
-              <ul className="space-y-1.5">
+              <ul className="flex flex-col gap-1.5">
                 {defaultEntries.map((entry) => {
                   const display = buildShareablePluginDisplay(entry.ref);
                   const required = Boolean(entry.def.required);
@@ -364,7 +367,7 @@ function CollectionItem({
                 })}
               </ul>
             )}
-          </div>
+          </Stack>
         </div>
       )}
 
@@ -419,7 +422,7 @@ export function PluginCollectionsEditor({
   }
 
   return (
-    <div className="space-y-2">
+    <Stack gap="inline">
       {collections.length === 0 ? (
         <p className="text-xs fg-secondary italic">
           No collections defined. Add one so steps can reuse a shared set of
@@ -439,10 +442,10 @@ export function PluginCollectionsEditor({
       )}
 
       {!readonly && (
-        <Button size="compact" onClick={addCollection}>
+        <Button className="self-start" size="compact" onClick={addCollection}>
           Add collection
         </Button>
       )}
-    </div>
+    </Stack>
   );
 }

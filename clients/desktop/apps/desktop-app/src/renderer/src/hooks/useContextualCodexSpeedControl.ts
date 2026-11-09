@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { CodexSpeedRouteContext } from '@canopy/desktop-shared/types/codex-speed-capabilities';
+import type { CodexSpeedRouteContext } from '@canopy/execution-engine/types/codex-speed-capabilities';
 import { useCodexSpeedRoute } from './useCodexSpeedRoute';
 import {
   codexSpeedBlockedReason,

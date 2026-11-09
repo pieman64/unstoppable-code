@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import type { JSX, ReactNode } from 'react';
 import {
   getSourceLayerStatusColor,
@@ -32,6 +33,8 @@ interface SourceInfoLayersProps<L extends SourceInfoLayer> {
   /** Optional priority caption. Defaults to "Resolution priority (highest
    * first):" matching both call sites. */
   priorityLabel?: string;
+  /** Scripts may separate their body; existing hook layouts stay unchanged by default. */
+  separateBody?: boolean;
 }
 
 /**
@@ -48,42 +51,45 @@ export function SourceInfoLayers<L extends SourceInfoLayer>({
   renderBody,
   emptyText,
   priorityLabel = 'Resolution priority (highest first):',
+  separateBody = false,
 }: SourceInfoLayersProps<L>): JSX.Element {
   return (
-    <div className="space-y-2">
-      <p className="mb-3 text-xs fg-secondary">{priorityLabel}</p>
-      {layers.map((layer, index) => (
-        <div
-          key={layer.sourceKey}
-          className={`rounded-lg border p-3 text-xs ${
-            layer.status === activeStatus
-              ? 'border-line-positive bg-success/[0.06]'
-              : 'bg-fg-primary/[0.02]'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span
-              className={`font-medium ${
-                layer.status === activeStatus
-                  ? 'fg-success-strong'
-                  : 'fg-primary/80'
-              }`}
-            >
-              <span className="mr-1.5 fg-secondary/60">{index + 1}.</span>
-              {layer.sourceLabel}
-            </span>
-            <span
-              className={`text-3xs font-medium ${getSourceLayerStatusColor(layer.status)}`}
-            >
-              {getSourceLayerStatusLabel(layer.status)}
-            </span>
+    <Stack gap="item">
+      <p className="text-xs fg-secondary">{priorityLabel}</p>
+      <Stack gap="inline">
+        {layers.map((layer, index) => (
+          <div
+            key={layer.sourceKey}
+            className={`${separateBody ? 'flex flex-col gap-1.5 ' : ''}rounded-lg border p-3 text-xs ${
+              layer.status === activeStatus
+                ? 'border-line-positive bg-success/[0.06]'
+                : 'bg-fg-primary/[0.02]'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <span
+                className={`inline-flex items-baseline gap-1.5 font-medium ${
+                  layer.status === activeStatus
+                    ? 'fg-success-strong'
+                    : 'fg-primary/80'
+                }`}
+              >
+                <span className="fg-secondary/60">{index + 1}.</span>
+                {layer.sourceLabel}
+              </span>
+              <span
+                className={`text-3xs font-medium ${getSourceLayerStatusColor(layer.status)}`}
+              >
+                {getSourceLayerStatusLabel(layer.status)}
+              </span>
+            </div>
+            {renderBody(layer)}
           </div>
-          {renderBody(layer)}
-        </div>
-      ))}
-      {layers.length === 0 && (
-        <p className="py-2 text-xs fg-secondary">{emptyText}</p>
-      )}
-    </div>
+        ))}
+        {layers.length === 0 && (
+          <p className="py-2 text-xs fg-secondary">{emptyText}</p>
+        )}
+      </Stack>
+    </Stack>
   );
 }

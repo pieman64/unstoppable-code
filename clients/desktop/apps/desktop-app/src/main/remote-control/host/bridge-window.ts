@@ -1,4 +1,5 @@
 import { BrowserWindow, ipcMain, type IpcMainEvent } from 'electron';
+import { CoworkFolderMissingSchema } from '@canopy/protocol/canopy-core';
 import {
   REMOTE_BRIDGE_CHANNELS,
   type RemoteBridgeInvokeMessage,
@@ -156,12 +157,16 @@ export async function createBridgeWindow(options: {
       if (message.ok === true) {
         entry.resolve(message.value);
       } else {
+        const missing = CoworkFolderMissingSchema.safeParse(
+          message.coworkFolderMissing,
+        );
+        const error = new Error(
+          typeof message.message === 'string'
+            ? message.message
+            : 'Remote call failed.',
+        );
         entry.reject(
-          new Error(
-            typeof message.message === 'string'
-              ? message.message
-              : 'Remote call failed.',
-          ),
+          missing.success ? Object.assign(error, missing.data) : error,
         );
       }
     },

@@ -10,6 +10,22 @@ const pipe = JSON.parse(
 
 export const phase3Suites = [
   {
+    file: 'apps/core-daemon/src/__tests__/windows-files-mutations.test.ts',
+    layer: 'daemon-composition',
+    requiredTitles: [
+      'denies production interface and worker grants and closed admission before all five effects',
+      'creates and saves Unicode and empty files under a write hold and refuses stale versions without effects',
+      'preserves colliding files directories and dangling names and publishes copies without clobber',
+      'moves files and directories on one volume and performs case-only rename without changing identity',
+      'qualifies documented link-copy outcomes and moves and deletes link entries without changing targets',
+      'uses EISDIR hard-link fallbacks without clobbering entries or copying file-link targets',
+      'refuses dangling and outside-target link moves with public errors and unchanged entries',
+      'refuses excluded-root aliases and unsafe paths on every mutation without changing protected bytes',
+      'takes native cross-device transfer paths through a required UNC root and rejects cross-root symlinks',
+      'deletes through Leg C native Trash with Recycle Bin identity and leaves link targets intact',
+    ],
+  },
+  {
     file: 'apps/core-daemon/src/__tests__/watch-native-windows.test.ts',
     layer: 'daemon-composition',
     requiredTitles: [
@@ -73,6 +89,13 @@ export const phase3Suites = [
     file: 'packages/core-platform/src/__tests__/git-read-windows.test.ts',
     layer: 'direct-platform-contract',
     requiredTitles: [
+      'reports native where.exe winget availability on both successful and failed Git detection',
+      'discovers per-user winget aliases outside the sanitized daemon PATH without changing Git discovery',
+      'uses saved then mixed-case override then discovery with native paths containing spaces',
+      'discovers native standard installs through mixed-case environment names',
+      'matches native Git selection before and after the Windows launch allowlist',
+      'rechecks native removed and replaced executables and distinguishes unusable from missing',
+      'shares one native selected executable between daemon ignored reads and the write selector',
       'lists the request cwd before the supplied PATH',
       'finds real Git through the supplied PATH alone',
       'exits 1 when neither the cwd nor the supplied PATH has git',
@@ -100,6 +123,24 @@ export const phase3Suites = [
       'records the stdin failure (EOF on Windows) versus exit 128 for 4 MiB outside a repository',
       'lists ignored paths with the discharge, and the listing starts no fsmonitor daemon',
       'builtin fsmonitor daemon: the discharged runner never starts one; raw check-ignore outlives the request where Git supports it',
+    ],
+  },
+  {
+    file: 'packages/core-platform/src/__tests__/git-read-host-repository.test.ts',
+    layer: 'direct-platform-contract',
+    requiredTitles: [
+      'reports Windows precedence, winget and existing unusable candidates without changing preferences',
+      'reports Windows stat failures as missing during detection, not selected-unusable',
+      'reports a Windows candidate removed after successful stat as unusable',
+      'revalidates Windows facts without a rejection TTL and does not join a forced recheck',
+      'keeps the newer forced Windows detection after the older finishes last',
+    ],
+  },
+  {
+    file: 'packages/core-platform/src/__tests__/git-read-host.test.ts',
+    layer: 'direct-platform-contract',
+    requiredTitles: [
+      'preserves an inaccessible saved Windows selection instead of spawning a fallback',
     ],
   },
   {
@@ -137,6 +178,8 @@ export const phase3Suites = [
     file: 'apps/core-daemon/src/__tests__/windows-phase3.test.ts',
     layer: 'daemon-composition',
     required: [
+      'Phase 3 test-only worker reachability projects native Windows winget and failure detail through the bundled executable query',
+      'Phase 3 test-only worker reachability discovers Program Files Git and applies the override through the production launch environment',
       'Phase 3 test-only worker reachability denies production grants and reaches the Git host through the bundled binding',
       'Phase 3 test-only worker reachability refuses an ungranted interface and a foreign selection before Git runs',
     ],

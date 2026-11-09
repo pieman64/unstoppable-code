@@ -27,10 +27,12 @@ import {
   addWorkspaceFromRemote,
   createAndPersistNewMultiRepoWorkspace,
   registerBoundMultiRepoWorkspace,
+  registerCloudProjectMultiRepoWorkspace,
   createNewSingleRepoWorkspace,
   importMultiRepoWorkspaceManifestFromRepo,
   importWorkspaceFromRepoPath,
   registerSingleRepoWorkspaceWithoutManifest,
+  WorkspaceIdentityInUseError,
   type AddWorkspaceFromRemoteProgress,
 } from './workspace-service';
 
@@ -44,6 +46,8 @@ export type WorkspaceCreationSource =
   | 'portal'
   | 'org-shared-multi-repo-setup'
   | 'org-member-multi-repo-create'
+  /** A Personal cloud project set up on this device (CAN-5192). */
+  | 'cloud-project-setup'
   | 'shared_container_fork'
   | 'external_projects_import'
   /** A registered `core.workspace.create` wire call (W7b-3). */
@@ -61,6 +65,10 @@ export type WorkspaceCreationVariant =
   /** Host-only, validated complete clone with its organization binding. */
   | ({ kind: 'bound-multi-repo' } & Parameters<
       typeof registerBoundMultiRepoWorkspace
+    >[0])
+  /** Host-only, validated clones of a Personal cloud project (CAN-5192). */
+  | ({ kind: 'cloud-project-multi-repo' } & Parameters<
+      typeof registerCloudProjectMultiRepoWorkspace
     >[0])
   /**
    * An existing folder: a repository, a multi-repo manifest repository, or a
@@ -163,6 +171,7 @@ async function admitCreation(
       }
       return;
     case 'bound-multi-repo':
+    case 'cloud-project-multi-repo':
       await admitImportFolder(variant.path, inspectFolder);
       return;
     case 'local-folder':
@@ -213,6 +222,11 @@ async function runCreation(
         clonedRepoIds: variant.repositories.map((entry) =>
           entry.relativePath.slice('repos/'.length),
         ),
+      };
+    case 'cloud-project-multi-repo':
+      return {
+        workspace: await registerCloudProjectMultiRepoWorkspace(variant),
+        clonedRepoIds: variant.repositories.map((repo) => repo.id),
       };
     case 'local-folder':
       return {
@@ -312,7 +326,8 @@ export function createWorkspace(
       );
       if (
         outcome.workspace.type !== 'cowork' &&
-        request.variant.kind !== 'bound-multi-repo'
+        request.variant.kind !== 'bound-multi-repo' &&
+        request.variant.kind !== 'cloud-project-multi-repo'
       ) {
         const repoIds =
           outcome.workspace.type === 'single-repo'
@@ -364,7 +379,9 @@ export function createWorkspace(
           error instanceof WorkspaceCreationRefusedError ||
           error instanceof ImportFolderNotFoundError ||
           error instanceof CoworkWorkspaceRecordRefusedError ||
-          error instanceof IdentifierValidationError,
+          error instanceof IdentifierValidationError ||
+          // Thrown before anything is written: the key may be sent again.
+          error instanceof WorkspaceIdentityInUseError,
       },
       (outcome) => receiptOutcomeSchema.parse(outcome),
       async (binding, attempt) => {

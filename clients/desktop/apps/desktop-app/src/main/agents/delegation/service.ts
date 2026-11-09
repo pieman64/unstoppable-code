@@ -140,6 +140,13 @@ import type {
 } from '@canopy/desktop-shared/node/delegation/projections';
 import path from 'node:path';
 import { stopDelegationForUser } from './user-stop';
+import {
+  isLiveDelegation,
+  joinStopAll,
+  stopAllUnderFence,
+  type StopAllOutcome,
+  type StopAllRootStop,
+} from './user-stop-all';
 import type { BrowserWindow } from 'electron';
 import { BRAND } from '@canopy/brand/current';
 import { buildInjectedToolNamesForBrand } from '@canopy/protocol/brand';
@@ -793,10 +800,6 @@ let disposeCommittedPlanModes: () => void = () => undefined;
 let committedPlanModeTracking: Promise<void> | undefined;
 /** Whether committed chat plan modes reach the roots; see `trackCommittedPlanModes`. */
 let committedPlanModesTracked = false;
-/** Bounds a user stop-all's rounds of listing, stopping and settling. */
-const STOP_ALL_MAX_ROUNDS = 20;
-/** How long a stop-all waits between rounds for in-flight admissions. */
-const STOP_ALL_SETTLE_MS = 50;
 let latestManagedDelegationMaxConcurrent: number | undefined;
 
 let latestManagedDelegationMaxDepth: number | undefined;
@@ -854,7 +857,13 @@ function accountAuthority(entry: CanopyCloudAccountEntry | null): string {
         JSON.stringify(left).localeCompare(JSON.stringify(right)),
       ),
     policies: (entry.enforcedSettings ?? [])
-      .map(({ organizationId, policies }) => ({ organizationId, policies }))
+      // Member usage-data prohibitions only narrow telemetry; changing one
+      // must not revoke running delegations.
+      .map(({ organizationId, policies }) => ({
+        organizationId,
+        policies: policies.filter(({ kind }) => kind !== 'usage-data'),
+      }))
+      .filter(({ policies }) => policies.length > 0)
       .sort((left, right) =>
         left.organizationId.localeCompare(right.organizationId),
       ),
@@ -1044,6 +1053,15 @@ export async function repairStartupStreamScope(
   }
 }
 
+/** Notices keep results, but never retain legacy transcript bodies. */
+function delegationNoticeRecord(record: StoredDelegation): StoredDelegation {
+  if (record.version === 3) return record;
+  const notice = { ...record, state: { ...record.state } };
+  delete notice.history;
+  delete notice.state.transcript;
+  return notice;
+}
+
 /** Reads result metadata only; notices must never hydrate child output. */
 async function noticeResults(
   record: StoredDelegation,
@@ -1165,14 +1183,20 @@ async function actorFor(
         const records = await fileStorage.load();
         noticeRecords.clear();
         for (const record of records)
-          noticeRecords.set(record.state.delegationId, record);
+          noticeRecords.set(
+            record.state.delegationId,
+            delegationNoticeRecord(record),
+          );
         return records;
       },
       loadOne: (id): Promise<StoredDelegation | undefined> =>
         fileStorage.loadOne(id),
       commit: async (record): Promise<void> => {
         await fileStorage.commit(record);
-        noticeRecords.set(record.state.delegationId, record);
+        noticeRecords.set(
+          record.state.delegationId,
+          delegationNoticeRecord(record),
+        );
       },
     };
     const noticeStore = new DelegationNoticeAckStore(directory, {
@@ -3476,6 +3500,22 @@ export async function stopManagedDelegationForUser(
 }
 
 /**
+ * A delegation of the chat as its broker reports it, for a user or App
+ * Advisor stop to resolve: `null` when the chat has no such delegation.
+ */
+export async function inspectManagedDelegationForUser(
+  target: ManagedDelegationChatTarget,
+  delegationId: string,
+): Promise<AgentDelegationResult<AgentDelegationSnapshot | null>> {
+  const resolved = await userStopContext(target);
+  if (!resolved) return parentUnavailable();
+  return {
+    ok: true,
+    value: resolved.broker.inspect(resolved.parent, delegationId) ?? null,
+  };
+}
+
+/**
  * Reads an isolated delegate's changes from its retained worktree in this
  * worktree's delegation data, for display. Read-only: it needs no delegation
  * actor, so it works for a delegate shown from history. Diffs only from the
@@ -4536,109 +4576,34 @@ export async function readManagedDelegationWorktreeSummaryForUser(
   });
 }
 
-function isLiveDelegation(snapshot: AgentDelegationSnapshot): boolean {
-  return snapshot.status === 'pending' || snapshot.status === 'running';
-}
-
-/** The top live delegation of each live subtree, with the live ids it covers. */
-function liveSubtrees(
-  snapshots: readonly AgentDelegationSnapshot[],
-): Map<string, string[]> {
-  const byId = new Map(
-    snapshots.map((snapshot) => [snapshot.delegationId, snapshot]),
-  );
-  const live = new Set(
-    snapshots.filter(isLiveDelegation).map((snapshot) => snapshot.delegationId),
-  );
-  // A live delegation under a live ancestor is stopped by that ancestor's
-  // cascade, so stop only the top live delegation of each subtree.
-  const subtreeOf = (id: string): string => {
-    let top = id;
-    let ancestor = byId.get(id)?.parentDelegationId;
-    for (let depth = 0; depth < 10 && ancestor; depth += 1) {
-      if (live.has(ancestor)) top = ancestor;
-      ancestor = byId.get(ancestor)?.parentDelegationId;
-    }
-    return top;
-  };
-  const members = new Map<string, string[]>();
-  for (const id of Array.from(live)) {
-    const top = subtreeOf(id);
-    members.set(top, [...(members.get(top) ?? []), id]);
-  }
-  return members;
-}
-
 /**
- * Stops every live delegation in the chat, each subtree once. The chat's
- * stop-all fence refuses new spawns until nothing is live or in flight, and
- * the chat is listed again after every round of stops, so a spawn admitted
- * after a listing is stopped as well. The count covers every delegation
- * stopped in any round.
+ * Stops every live delegation in the chat under its stop-all fence; see
+ * stopAllUnderFence. A stop-all requested while one runs for the same chat
+ * joins it (CAN-6000).
  */
-export async function stopAllManagedDelegationsForUser(
+export function stopAllManagedDelegationsForUser(
   target: ManagedDelegationChatTarget,
-): Promise<AgentDelegationResult<{ readonly stopped: number }>> {
-  const resolved = await userStopContext(target);
-  if (!resolved) return parentUnavailable();
-  const { broker, parent, root } = resolved;
-  const release = root.holdStopAllFence();
-  try {
-    await root.actor.notices.fenceChat(target);
-    // No stopped delegate may be woken by a watch on another one.
-    await retireDelegateWatchers(target);
-    const result = await stopEveryLiveSubtree(broker, parent, root);
-    if (result.ok) await retireDelegateWatchers(target);
-    return result;
-  } finally {
-    release();
-  }
-}
-
-/** Stop-all rounds under the chat's fence; see stopAllManagedDelegationsForUser. */
-async function stopEveryLiveSubtree(
-  broker: AgentDelegationBroker,
-  parent: DelegationParentContext,
-  root: ManagedDelegationChatRoot,
-): Promise<AgentDelegationResult<{ readonly stopped: number }>> {
-  const stopped = new Set<string>();
-  for (let round = 0; round < STOP_ALL_MAX_ROUNDS; round += 1) {
-    const subtrees = liveSubtrees(broker.list(parent));
-    if (subtrees.size === 0) {
-      // A spawn admitted before the fence may not be listed yet: the broker
-      // still counts it while it is admitted and durably recorded.
-      if (broker.activeCount(parent) + broker.queuedCount(parent) === 0)
-        return { ok: true, value: { stopped: stopped.size } };
-      await root.nextActivity(STOP_ALL_SETTLE_MS);
-      continue;
-    }
-    const outcomes = await Promise.all(
-      Array.from(subtrees.keys(), (id) =>
-        broker.stop(parent, id, 'user_cancelled'),
-      ),
-    );
-    const failure = outcomes.find((outcome) => !outcome.ok);
-    if (failure && !failure.ok) return failure;
-    for (const members of Array.from(subtrees.values()))
-      for (const id of members) stopped.add(id);
-  }
-  // Out of rounds: succeed only if nothing is left live or still being
-  // admitted. A spawn still in preflight may not be listed yet, so the
-  // broker's active/queued counts must also be zero before reporting
-  // success, matching the settle-path check above.
-  if (
-    broker.list(parent).some(isLiveDelegation) ||
-    broker.activeCount(parent) + broker.queuedCount(parent) > 0
-  )
-    return {
-      ok: false,
-      error: {
-        code: 'runtime_error',
-        message: 'Some delegates are still running. Try again.',
-        retryable: true,
-      },
-    };
-  return { ok: true, value: { stopped: stopped.size } };
+  options: { readonly stopRoot?: StopAllRootStop } = {},
+): Promise<AgentDelegationResult<StopAllOutcome>> {
+  return joinStopAll(
+    `${delegationDirectory(target)}\u0000${chatKey(target)}`,
+    async () => {
+      const resolved = await userStopContext(target);
+      if (!resolved) return parentUnavailable();
+      const { broker, parent, root } = resolved;
+      return stopAllUnderFence({
+        broker,
+        parent,
+        chat: {
+          holdStopAllFence: () => root.holdStopAllFence(),
+          fenceNotices: () => root.actor.notices.fenceChat(target),
+          nextActivity: (ms) => root.nextActivity(ms),
+          retireWatchers: () => retireDelegateWatchers(target),
+        },
+        ...(options.stopRoot ? { stopRoot: options.stopRoot } : {}),
+      });
+    },
+  );
 }
 
 /**

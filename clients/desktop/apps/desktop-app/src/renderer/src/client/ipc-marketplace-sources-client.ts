@@ -14,7 +14,7 @@ import type {
   PluginsAPI,
   PluginsCache,
 } from '@canopy/desktop-shared/types/plugins';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
+import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import {
   getCurrentMarketplaceCache,
   marketplaceSourceOperations,

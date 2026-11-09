@@ -1178,20 +1178,26 @@ export async function updateWorkspaceCloudBinding(
       personalCatalogId: detail.config.personalCatalogId,
       temporary: detail.config.temporary === true,
       cloudBinding: detail.config.cloudBinding,
+      suppressedRepoIds: detail.config.suppressedRepoIds ?? [],
     });
     if (next === null) {
       outcome.value = 'declined';
       return;
     }
+    const suppressed = next.suppressedRepoIds;
     const document = Object.fromEntries(
       Object.entries(manifest.document).filter(
-        ([key]) => key !== 'cloudBinding',
+        ([key]) =>
+          key !== 'cloudBinding' &&
+          (suppressed === undefined || key !== 'suppressedRepoIds'),
       ),
     );
     if (next.cloudBinding !== undefined)
       document.cloudBinding = CloudProjectBindingSchema.parse(
         next.cloudBinding,
       );
+    if (suppressed !== undefined && suppressed.length > 0)
+      document.suppressedRepoIds = [...suppressed];
     await workspaceManifestRepository.replaceDocument(
       workspaceId,
       document,

@@ -3,6 +3,7 @@ import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import type { PipelineOwnerSettlement } from '@canopy/core-runtime/node/pipeline';
 import {
+  WorkerPipelineOwnerResultSchema,
   canopyJsonValueSchemaWithin,
   isWorkerPipelineOwnerAction,
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
@@ -30,6 +31,10 @@ import type {
   PipelineLedgerAttemptOutcome,
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import { getCodexGatewayProxyService } from '../agents/codex-gateway-proxy-service';
+import {
+  resolveClaudeModAdmissionContext,
+  resolveClaudeModConfigDirectory,
+} from '../agents/claude-mod-admission-launch';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
   createDesktopPipelineLedgerPort,
@@ -53,11 +58,20 @@ import {
  * values; nothing here logs a value.
  */
 
+/** The scope and folder Electron main started a daemon run with (CAN-5095 D14). */
+export interface PipelineOwnerRunScope {
+  readonly projectId?: string;
+  readonly worktreeId?: string;
+  readonly executionContext?: ExecutionState['execution_context'];
+  /** The run's checkout root, or its working directory. */
+  readonly folder: string;
+}
+
 /** A daemon run Electron main admitted and follows (CAN-5095 D14). */
 export interface PipelineOwnerRun {
   readonly executionId: string;
-  /** The run's last stored state; read on every request. */
-  state(): ExecutionState;
+  /** The run's own scope, read on every request; never the request's. */
+  scope(): PipelineOwnerRunScope;
   /** The run's redeemed secret values, for Ledger masking. Memory only. */
   readonly secretValues: readonly string[];
 }
@@ -148,17 +162,61 @@ function isJsonRecord(
  */
 async function insideRunFolder(
   cwd: string,
-  state: ExecutionState,
+  run: PipelineOwnerRunScope,
 ): Promise<boolean> {
   try {
     const [folder, root] = await Promise.all([
       realpath(cwd),
-      realpath(state.execution_checkout_root ?? state.cwd),
+      realpath(run.folder),
     ]);
     const relative = path.relative(root, folder);
     return !relative.startsWith('..') && !path.isAbsolute(relative);
   } catch {
     return false;
+  }
+}
+
+/**
+ * Whether a step may have its Mods read from `dir`: a folder in the run, or
+ * the user's own Claude config folder, which an in-process step reads too.
+ */
+async function isRunClaudeConfigDir(
+  dir: string,
+  run: PipelineOwnerRunScope,
+): Promise<boolean> {
+  // Main's own default, from its own environment and home; never the request's.
+  // Without user variables, as a workflow step's child env is built.
+  const own = resolveClaudeModConfigDirectory({
+    cwd: run.folder,
+    environment: false,
+  });
+  // Canonical, so a folder not created yet still counts as in the run.
+  const [requested, root, canonicalOwn] = await Promise.all([
+    canonicalPath(dir),
+    canonicalPath(run.folder),
+    canonicalPath(own),
+  ]);
+  const relative = path.relative(root, requested);
+  return (
+    (!relative.startsWith('..') && !path.isAbsolute(relative)) ||
+    requested === canonicalOwn
+  );
+}
+
+/**
+ * `target` with every symlink resolved; a missing tail keeps its names under
+ * its nearest existing ancestor, so a link or `..` cannot stand in for it.
+ */
+async function canonicalPath(target: string): Promise<string> {
+  const absolute = path.resolve(target);
+  try {
+    return (await realpath(absolute)).normalize('NFC');
+  } catch {
+    const parent = path.dirname(absolute);
+    if (parent === absolute) return absolute.normalize('NFC');
+    return path
+      .join(await canonicalPath(parent), path.basename(absolute))
+      .normalize('NFC');
   }
 }
 
@@ -223,10 +281,8 @@ export class PipelineOwnerRunContext {
     request: WorkerPipelineHostRequest,
     signal: AbortSignal,
   ): Promise<PipelineOwnerSettlement> {
-    const state = this.run.state();
-    const projectId = state.project_id;
-    const worktreeId = state.worktree_id;
-    const executionContext = state.execution_context;
+    const state = this.run.scope();
+    const { projectId, worktreeId, executionContext } = state;
     const scope = {
       ...(projectId !== undefined ? { projectId } : {}),
       ...(worktreeId !== undefined ? { worktreeId } : {}),
@@ -263,10 +319,8 @@ export class PipelineOwnerRunContext {
             ...routingScope,
           },
         );
-        if (
-          (invocation.harness !== 'claude' && invocation.harness !== 'codex') ||
-          invocation.source === 'ollama'
-        )
+        // Ollama answers with its local server's route (CAN-5831).
+        if (invocation.harness !== 'claude' && invocation.harness !== 'codex')
           return failed('This model does not run in the background service.');
         return settled(
           {
@@ -523,6 +577,31 @@ export class PipelineOwnerRunContext {
           open.tools.dispose();
         }
         return settled({ kind: 'ledger.codexToolsDispose' });
+      }
+      case 'owner.claude.modAdmission': {
+        // The run's own folder bounds what is read, as for Ledger requests.
+        if (
+          !(await insideRunFolder(action.cwd, state)) ||
+          (action.claudeConfigDir !== undefined &&
+            !(await isRunClaudeConfigDir(action.claudeConfigDir, state)))
+        )
+          return failed('This step folder is outside the workflow run.');
+        const context = await resolveClaudeModAdmissionContext({
+          cwd: action.cwd,
+          settingSources: action.settingSources,
+          ...(action.claudeConfigDir !== undefined && {
+            claudeConfigDir: action.claudeConfigDir,
+          }),
+        });
+        const answer = WorkerPipelineOwnerResultSchema.safeParse(
+          JSON.parse(
+            JSON.stringify({
+              kind: 'claude.modAdmission',
+              context: context ?? null,
+            }),
+          ),
+        );
+        return answer.success ? settled(answer.data) : failed(UNANSWERED);
       }
       default:
         return failed(NOT_THIS_RUN);

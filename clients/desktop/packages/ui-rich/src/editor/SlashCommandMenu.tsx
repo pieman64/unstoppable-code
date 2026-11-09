@@ -1,3 +1,4 @@
+import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import {
   Button,
@@ -34,27 +35,6 @@ export interface SlashCommandMenuProps<
   totalCount?: number;
   /** Expands the capped list without inserting a command. */
   onShowAll?: () => void;
-}
-
-function DefaultRefreshIcon(): JSX.Element {
-  return (
-    <svg
-      aria-hidden="true"
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
-      <path d="M21 3v5h-5" />
-      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
-      <path d="M3 21v-5h5" />
-    </svg>
-  );
 }
 
 export function SlashCommandMenu<
@@ -103,7 +83,7 @@ export function SlashCommandMenu<
   }, [selectedIndex]);
 
   const spinner = loadingIcon ?? <SlashCommandLoadingIcon />;
-  const refresh = refreshIcon ?? <DefaultRefreshIcon />;
+  const refresh = refreshIcon ?? <RefreshIcon size="xs" />;
   const showAllVisible = hiddenCount > 0 && onShowAll !== undefined;
 
   return (

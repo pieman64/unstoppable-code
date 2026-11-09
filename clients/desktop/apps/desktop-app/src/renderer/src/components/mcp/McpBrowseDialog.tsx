@@ -66,7 +66,8 @@ export interface CuratedDetailProps<
   routes?: CuratedMcpDetailRoutes;
   toolsRevision?: number;
   statusContent?: ReactNode;
-  renderManagement?: (tools: ReactNode) => ReactNode;
+  renderManagement?: () => ReactNode;
+  flush?: boolean;
 }
 
 /**
@@ -86,6 +87,7 @@ export function CuratedDetail<T extends McpDetailEntry>({
   toolsRevision,
   statusContent,
   renderManagement,
+  flush,
 }: CuratedDetailProps<T>): JSX.Element {
   // Discovered tools are INSTALLED-ONLY: the catalog carries none, and
   // discovery needs a live endpoint + the user's credentials that do not exist
@@ -140,6 +142,7 @@ export function CuratedDetail<T extends McpDetailEntry>({
       routes={routes}
       statusContent={statusContent}
       renderManagement={renderManagement}
+      flush={flush}
       renderLogo={(catalogEntry) => (
         <CuratedLogo
           curatedKey={catalogEntry.key}

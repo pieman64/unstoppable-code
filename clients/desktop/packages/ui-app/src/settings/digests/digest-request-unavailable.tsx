@@ -21,13 +21,13 @@ export function DigestRequestUnavailable({
     // Same recessed, outlined control surface as `DigestRequestForm`: it stands
     // in the same slot, so it must not suddenly look like an archive row.
     <section
-      className="rounded-xl border bg-depth p-5"
+      className="flex flex-col rounded-xl border bg-depth p-5 gap-1"
       data-testid={`${testIdPrefix}-digest-request-unavailable`}
     >
       <Heading level={3} variant="title">
         Request a digest
       </Heading>
-      <p className="mt-1 text-xs fg-secondary">
+      <p className="text-xs fg-secondary">
         Digest requests are temporarily unavailable. Refresh in a moment to try
         again — your existing digests are unaffected.
       </p>

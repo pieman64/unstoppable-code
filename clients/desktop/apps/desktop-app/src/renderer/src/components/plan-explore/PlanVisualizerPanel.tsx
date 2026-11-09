@@ -17,7 +17,11 @@ import { PlanDataModelDiffDiagram } from './diagram/PlanDataModelDiffDiagram';
 import { usePlanDiagramViews } from './diagram/usePlanDiagramViews';
 import type { DiagramSearchHandle } from '@canopy/ui-app/find';
 import type { AddNodeCommentInput } from './usePlanComments';
-import { Button, SegmentedControl } from '@canopy/ui-shared/components';
+import {
+  Surface,
+  Button,
+  SegmentedControl,
+} from '@canopy/ui-shared/components';
 
 type VisualizerTab = 'sequence' | 'logicDiff' | 'dataModelDiff';
 
@@ -257,39 +261,41 @@ export const PlanVisualizerPanel = forwardRef<
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     >
       {/* Wraps in a narrow plan panel so Refresh stays reachable. */}
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b px-2 py-1.5">
-        <SegmentedControl
-          label="Diagram type"
-          semantics="tabs"
-          shape="capsule"
-          width="content"
-          value={resolvedTab}
-          onChange={setActiveTab}
-          options={[
-            { value: 'sequence', label: 'Sequence' },
-            { value: 'logicDiff', label: 'Current/Planned/Diff' },
-            ...(showDataModelTab
-              ? [
-                  {
-                    value: 'dataModelDiff' as const,
-                    label: 'Data model',
-                    dataTestId: 'plan-visualizer-data-model-tab',
-                  },
-                ]
-              : []),
-          ]}
-        />
-        <Button
-          size="compact"
-          className="ml-auto"
-          data-testid="plan-visualizer-generate"
-          onClick={handleGenerate}
-          disabled={requested}
-        >
-          <RefreshSpinner spinning={isGenerating} size="sm" />
-          {generateLabel}
-        </Button>
-      </div>
+      <Surface variant="section" boundary="bottom" className="shrink-0">
+        <div className="flex shrink-0 flex-wrap items-center gap-1 px-2 py-1.5">
+          <SegmentedControl
+            label="Diagram type"
+            semantics="tabs"
+            shape="capsule"
+            width="content"
+            value={resolvedTab}
+            onChange={setActiveTab}
+            options={[
+              { value: 'sequence', label: 'Sequence' },
+              { value: 'logicDiff', label: 'Current/Planned/Diff' },
+              ...(showDataModelTab
+                ? [
+                    {
+                      value: 'dataModelDiff' as const,
+                      label: 'Data model',
+                      dataTestId: 'plan-visualizer-data-model-tab',
+                    },
+                  ]
+                : []),
+            ]}
+          />
+          <Button
+            size="compact"
+            className="ml-auto"
+            data-testid="plan-visualizer-generate"
+            onClick={handleGenerate}
+            disabled={requested}
+          >
+            <RefreshSpinner spinning={isGenerating} size="sm" />
+            {generateLabel}
+          </Button>
+        </div>
+      </Surface>
 
       {/* The plan diagrams: blocked from session replay. The diagram tabs
           and the generate action stay recorded. */}

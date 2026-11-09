@@ -10,8 +10,8 @@ import type {
   ActionRuns,
   HostActionNodeFallback,
   Step,
-} from '@canopy/desktop-shared/types/pipeline';
-import { parseLogFormatHint } from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
+import { parseLogFormatHint } from '@canopy/execution-engine/types/pipeline';
 import { normalizeActionScopes } from '@canopy/desktop-shared/pipelines/scope';
 import * as configPathsModule from './config-paths';
 

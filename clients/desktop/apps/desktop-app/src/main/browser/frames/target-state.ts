@@ -1,7 +1,7 @@
 import type {
   BrowserActionTargetState,
   BrowserRectangle,
-} from '@canopy/desktop-shared/types/browser';
+} from '@canopy/execution-engine/types/browser';
 import {
   hostWorldContext,
   type ActionTargetDeps,

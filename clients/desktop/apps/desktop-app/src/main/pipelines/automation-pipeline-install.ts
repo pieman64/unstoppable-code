@@ -19,7 +19,7 @@ import type {
 import type {
   Pipeline,
   PipelineInfo,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import type { PipelineDefinitionInstall } from '@canopy/core-runtime/node/pipeline';
 import {

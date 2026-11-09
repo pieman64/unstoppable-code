@@ -577,6 +577,21 @@ const results = memoized(() => {
       )
       .optional(),
     subagents: z.array(SubagentUsageSchema).optional(),
+    interfaceToolCalls: z
+      .array(
+        z.object({
+          callId: z.string(),
+          toolName: z.string(),
+          leaseId: z.string(),
+          surface: z.string(),
+          interfaceKind: z.string(),
+          audience: z.string().optional(),
+          outcome: z.string(),
+          deliveredAt: z.string(),
+          settledAt: z.string(),
+        }),
+      )
+      .optional(),
     delegation: z
       .object({
         delegationId: z.string(),

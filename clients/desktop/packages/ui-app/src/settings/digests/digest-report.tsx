@@ -3,7 +3,7 @@
 import type { ComponentPropsWithoutRef, JSX } from 'react';
 import type { DigestReportData } from '@canopy/protocol/settings';
 import { Markdown, markdownOptions } from '@canopy/ui-shared';
-import { Fact, FactList, Heading } from '@canopy/ui-shared/components';
+import { Stack, Fact, FactList, Heading } from '@canopy/ui-shared/components';
 import type { MarkdownOverrides } from '@canopy/ui-shared';
 import {
   formatCountExact,
@@ -129,22 +129,17 @@ export function DigestReport({
 
   return (
     <article className="flex flex-col gap-6" data-testid="digest-report">
-      <header>
+      <Stack as="header" gap="tight">
         <p className="text-xs fg-secondary">
           {cadenceLabel(digest.cadence)} ·{' '}
           {formatDigestPeriod(digest.periodStart, digest.periodEnd)}
         </p>
-        <Heading
-          level={1}
-          variant="page"
-          className="mt-1"
-          data-testid="digest-report-headline"
-        >
+        <Heading level={1} variant="page" data-testid="digest-report-headline">
           <span className={blockClassName === '' ? undefined : blockClassName}>
             {digest.headline ?? 'Work digest'}
           </span>
         </Heading>
-      </header>
+      </Stack>
 
       <FactList
         layout="stacked"
@@ -228,6 +223,7 @@ export function DigestReport({
       {digest.subjectType === 'ORGANIZATION' &&
         (contributors.rows.length > 0 || contributors.remainderCount > 0) && (
           <Surface
+            gap="item"
             as="section"
             variant="raised"
             aria-labelledby="digest-contributors-heading"
@@ -248,7 +244,7 @@ export function DigestReport({
             this section only ever renders for viewers who already passed the
             usage-stats gate.
           */}
-              <ol className="mt-3 divide-y">
+              <ol className="divide-y">
                 {contributors.rows.map((contributor) => (
                   <li
                     key={contributor.key}
@@ -291,7 +287,7 @@ export function DigestReport({
               </ol>
               {contributors.remainderCount > 0 && (
                 <p
-                  className="mt-3 text-xs fg-secondary"
+                  className="text-xs fg-secondary"
                   data-testid="digest-contributors-remainder"
                 >
                   and {formatCountExact(contributors.remainderCount)} more

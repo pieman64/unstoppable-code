@@ -1,5 +1,5 @@
 import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 
 export const DEFAULT_AGENT_SESSION_START_TIMEOUT_MS = 10 * 60_000;
 

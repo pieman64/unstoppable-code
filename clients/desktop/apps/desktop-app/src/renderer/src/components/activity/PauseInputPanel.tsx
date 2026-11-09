@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -13,15 +14,17 @@ import type {
   PipelinePauseCheckpoint,
   PipelinePauseResponse,
   PipelineScalar,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import {
   validatePauseInputAnswerErrors,
   type PauseInputAnswerError,
 } from '@canopy/desktop-shared/pipelines/pause-input-validation';
 import {
   ChoiceField,
+  ErrorBanner,
   FormField,
   Select,
+  Surface,
   TextArea,
   TextInput,
 } from '@canopy/ui-shared/components';
@@ -267,122 +270,140 @@ export function PauseInputPanel({
     : '';
 
   return (
-    <div
-      data-testid="pause-input-panel"
-      className="mb-4 rounded-lg border border-line-attention/30 bg-warning-subtle p-4"
-    >
-      <div className="flex items-center gap-2 fg-warning">
-        <InputIcon size="sm" className="shrink-0" aria-hidden="true" />
-        <span className="text-s font-semibold">
-          {pipelinePauseInputHeading(checkpoints.length)}
-        </span>
-      </div>
-      {checkpoints.length > 1 ? (
-        <p className="mt-1 text-s fg-secondary">
-          {checkpoints.length} jobs are waiting for input. Submit one response
-          or complete all requests and resume them together.
-        </p>
-      ) : null}
-      {checkpoints.length > 1 ? (
-        <div className="mt-3 flex flex-col gap-1 text-xs fg-secondary">
-          <span id={`${instanceId}-waiting-job`}>Waiting job</span>
-          <Select
-            data-testid="pause-input-selector"
-            aria-labelledby={`${instanceId}-waiting-job`}
-            disabled={submitting}
-            value={selected.id}
-            onValueChange={setSelectedId}
-            options={checkpoints.map((checkpoint, index) => {
-              const job = state.job_definitions[checkpoint.job_id];
-              const matrix = job?.matrix
-                ? ` (${Object.entries(job.matrix.values)
-                    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-                    .join(', ')})`
-                : '';
-              return {
-                value: checkpoint.id,
-                label: `${job?.name ?? checkpoint.logical_job_id}${matrix} — Request ${index + 1} of ${checkpoints.length}`,
-              };
-            })}
-          />
-        </div>
-      ) : null}
-      <div className="mt-2 text-xs fg-secondary">
-        {definition?.name ?? selected.logical_job_id}
-        {matrixLabel}
-      </div>
-      {request?.title ? (
-        <div className="mt-2 text-s font-medium fg-primary">
-          {request.title}
-        </div>
-      ) : null}
-      <p className="mt-1 whitespace-pre-wrap text-s fg-secondary">
-        {request?.message ??
-          (request
-            ? 'This run is paused and waiting for input.'
-            : 'This job is paused and ready to continue.')}
-      </p>
-
-      {request ? (
-        // The answers are blocked from session replay; the request itself,
-        // the job, and the actions stay recorded.
-        <div
-          className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-4 flex flex-col gap-3`}
-        >
-          {request.fields.map((field) => (
-            <PauseField
-              key={field.key}
-              field={field}
-              value={answers[field.key]}
-              errors={
-                shownErrors.has(`${selected.id}:${field.key}`)
-                  ? errorsForField(errors, field.key)
-                  : []
-              }
-              onChange={(value) => setAnswer(field.key, value)}
-              disabled={submitting}
-              inputId={`${fieldIdPrefix}-${field.key}`}
-            />
-          ))}
-        </div>
-      ) : null}
-
-      {serverError ? (
-        <p className="mt-3 text-xs fg-destructive">{serverError}</p>
-      ) : null}
-
-      <div className="mt-4 flex items-center gap-2">
-        <Button
-          variant="primary"
-          data-testid="pause-input-resume"
-          disabled={submitting}
-          onClick={() => {
-            if (revealErrors([selected])) return;
-            void submit([responseFor(selected)]);
-          }}
-        >
-          {submitting
-            ? 'Resuming…'
-            : request
-              ? 'Submit response'
-              : 'Resume job'}
-        </Button>
-        {checkpoints.length > 1 ? (
+    <Surface variant="group" padding="default" data-testid="pause-input-panel">
+      <Stack gap="group">
+        <Stack gap="item">
+          <Stack gap="group">
+            <Stack gap="inline">
+              <Stack gap="item">
+                <Stack gap="tight">
+                  <div className="flex items-center gap-2 fg-warning">
+                    <InputIcon
+                      size="sm"
+                      className="shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span className="text-s font-semibold">
+                      {pipelinePauseInputHeading(checkpoints.length)}
+                    </span>
+                  </div>
+                  {checkpoints.length > 1 ? (
+                    <p className="text-s fg-secondary">
+                      {checkpoints.length} jobs are waiting for input. Submit
+                      one response or complete all requests and resume them
+                      together.
+                    </p>
+                  ) : null}
+                </Stack>
+                {checkpoints.length > 1 ? (
+                  <div className="flex flex-col gap-1 text-xs fg-secondary">
+                    <span id={`${instanceId}-waiting-job`}>Waiting job</span>
+                    <Select
+                      data-testid="pause-input-selector"
+                      aria-labelledby={`${instanceId}-waiting-job`}
+                      disabled={submitting}
+                      value={selected.id}
+                      onValueChange={setSelectedId}
+                      options={checkpoints.map((checkpoint, index) => {
+                        const job = state.job_definitions[checkpoint.job_id];
+                        const matrix = job?.matrix
+                          ? ` (${Object.entries(job.matrix.values)
+                              .map(
+                                ([key, value]) =>
+                                  `${key}=${JSON.stringify(value)}`,
+                              )
+                              .join(', ')})`
+                          : '';
+                        return {
+                          value: checkpoint.id,
+                          label: `${job?.name ?? checkpoint.logical_job_id}${matrix} — Request ${index + 1} of ${checkpoints.length}`,
+                        };
+                      })}
+                    />
+                  </div>
+                ) : null}
+              </Stack>
+              <Stack gap={request?.title ? 'inline' : 'tight'}>
+                <div className="text-xs fg-secondary">
+                  {definition?.name ?? selected.logical_job_id}
+                  {matrixLabel}
+                </div>
+                <Stack gap="tight">
+                  {request?.title ? (
+                    <div className="text-s font-medium fg-primary">
+                      {request.title}
+                    </div>
+                  ) : null}
+                  <p className="whitespace-pre-wrap text-s fg-secondary">
+                    {request?.message ??
+                      (request
+                        ? 'This run is paused and waiting for input.'
+                        : 'This job is paused and ready to continue.')}
+                  </p>
+                </Stack>
+              </Stack>
+            </Stack>
+            {request ? (
+              // The answers are blocked from session replay; the request itself,
+              // the job, and the actions stay recorded.
+              <div
+                className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex flex-col gap-3`}
+              >
+                {request.fields.map((field) => (
+                  <PauseField
+                    key={field.key}
+                    field={field}
+                    value={answers[field.key]}
+                    errors={
+                      shownErrors.has(`${selected.id}:${field.key}`)
+                        ? errorsForField(errors, field.key)
+                        : []
+                    }
+                    onChange={(value) => setAnswer(field.key, value)}
+                    disabled={submitting}
+                    inputId={`${fieldIdPrefix}-${field.key}`}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </Stack>
+          {serverError ? (
+            <ErrorBanner error={serverError} className="" />
+          ) : null}
+        </Stack>
+        <div className="flex items-center gap-2">
           <Button
-            data-testid="pause-input-submit-all"
+            variant="primary"
+            data-testid="pause-input-resume"
             disabled={submitting}
             onClick={() => {
-              if (revealErrors(checkpoints)) return;
-              void submit(
-                checkpoints.map((checkpoint) => responseFor(checkpoint)),
-              );
+              if (revealErrors([selected])) return;
+              void submit([responseFor(selected)]);
             }}
           >
-            {submitting ? 'Resuming…' : 'Submit all responses'}
+            {submitting
+              ? 'Resuming…'
+              : request
+                ? 'Submit response'
+                : 'Resume job'}
           </Button>
-        ) : null}
-      </div>
-    </div>
+          {checkpoints.length > 1 ? (
+            <Button
+              data-testid="pause-input-submit-all"
+              disabled={submitting}
+              onClick={() => {
+                if (revealErrors(checkpoints)) return;
+                void submit(
+                  checkpoints.map((checkpoint) => responseFor(checkpoint)),
+                );
+              }}
+            >
+              {submitting ? 'Resuming…' : 'Submit all responses'}
+            </Button>
+          ) : null}
+        </div>
+      </Stack>
+    </Surface>
   );
 }
 
@@ -430,15 +451,11 @@ function PauseField({
   return (
     <FormField
       id={inputId}
-      label={
-        <>
-          {field.label}
-          {field.required ? (
-            <span className="ml-2 text-3xs font-medium fg-warning">
-              Required
-            </span>
-          ) : null}
-        </>
+      label={field.label}
+      labelMeta={
+        field.required ? (
+          <span className="text-3xs font-medium fg-warning">Required</span>
+        ) : null
       }
       description={field.description}
       error={errors.length > 0 ? errors.join(' ') : undefined}

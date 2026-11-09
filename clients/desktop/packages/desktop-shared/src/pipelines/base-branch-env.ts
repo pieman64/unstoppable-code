@@ -5,7 +5,10 @@
  * Both the main-process env builder and the builtin action runner must use
  * these identical constants so the contracts stay in sync.
  */
-import { brandEnvCandidates, brandEnvName } from '../brand/env';
+import {
+  brandEnvCandidates,
+  brandEnvName,
+} from '@canopy/execution-engine/brand/env';
 
 // ---------------------------------------------------------------------------
 // Env var names

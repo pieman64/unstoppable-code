@@ -1,4 +1,5 @@
 import { shareInstallActionLabel } from '@canopy/ui-app/sharing/share-install-copy';
+import type { ReactNode } from 'react';
 import {
   INSERT_CHAT_TEXT_EVENT,
   type InsertChatTextDetail,
@@ -6,8 +7,16 @@ import {
 import { useChatStore } from '@/stores/chatStore';
 import { isEditableChatTab } from '@/stores/chat/tab-utils';
 import { worktreeKey } from '@/stores/chat/utils';
-import { useGitHubStore, type ToastAction } from '@/stores/githubStore';
-import { useNavigationStore } from '@/stores/navigationStore';
+import { useGitHubStore } from '@/stores/githubStore';
+import {
+  toastStack,
+  useToastStore,
+  type ToastAction,
+} from '@/stores/toastStore';
+import {
+  useNavigationStore,
+  type NavigationPage,
+} from '@/stores/navigationStore';
 
 /**
  * The chat a share landing opened over (CAN-5219). Installing a shared skill
@@ -27,11 +36,19 @@ export interface ShareChatTarget {
   readonly tabId: string;
 }
 
-/** Current page/worktree/tab identity, without a DOM read on store updates. */
-function activeShareChatTarget(): ShareChatTarget | null {
+const SHARE_CHAT_PAGES: ReadonlySet<NavigationPage> = new Set(['main']);
+
+/**
+ * The selected worktree's active editable chat tab while one of `pages` is
+ * showing and neither Settings nor the portal covers it. Identity only, so
+ * it is cheap to call on every store update.
+ */
+export function activeChatTarget(
+  pages: ReadonlySet<NavigationPage>,
+): ShareChatTarget | null {
   const navigation = useNavigationStore.getState();
   if (
-    navigation.activePage !== 'main' ||
+    !pages.has(navigation.activePage) ||
     navigation.settingsOpen ||
     navigation.canopyPortalOpen
   ) {
@@ -52,7 +69,7 @@ function activeShareChatTarget(): ShareChatTarget | null {
 
 /** The chat whose composer is on screen right now, or null. */
 export function captureShareChatTarget(): ShareChatTarget | null {
-  const target = activeShareChatTarget();
+  const target = activeChatTarget(SHARE_CHAT_PAGES);
   if (target === null) return null;
   // Targeted editor-selection events intentionally reach hidden composers.
   // This offer has a stricter contract: the captured tab must own a mounted,
@@ -70,39 +87,39 @@ export function captureShareChatTarget(): ShareChatTarget | null {
   return target;
 }
 
-function hasCurrentIdentity(target: ShareChatTarget): boolean {
-  const current = activeShareChatTarget();
+/** Both identify the same tab of the same worktree. */
+export function isSameChatTarget(
+  current: ShareChatTarget | null,
+  target: ShareChatTarget,
+): boolean {
   return (
     current !== null &&
     current.projectId === target.projectId &&
     current.worktreeId === target.worktreeId &&
     current.tabId === target.tabId
   );
+}
+
+function hasCurrentIdentity(target: ShareChatTarget): boolean {
+  return isSameChatTarget(activeChatTarget(SHARE_CHAT_PAGES), target);
 }
 
 /** The captured chat is still the one on screen. */
 export function isShareChatTargetCurrent(target: ShareChatTarget): boolean {
-  const current = captureShareChatTarget();
-  return (
-    current !== null &&
-    current.projectId === target.projectId &&
-    current.worktreeId === target.worktreeId &&
-    current.tabId === target.tabId
-  );
+  return isSameChatTarget(captureShareChatTarget(), target);
 }
 
 /**
- * Calls `onInvalid` once, the first time the captured chat stops being the
- * one on screen (a page, worktree, or tab change, or the tab closing).
- * Returns the unsubscribe.
+ * Calls `onInvalid` once, the first time `isCurrent` turns false after a chat
+ * or navigation store update. Returns the unsubscribe.
  */
-export function watchShareChatTarget(
-  target: ShareChatTarget,
+export function watchChatTarget(
+  isCurrent: () => boolean,
   onInvalid: () => void,
 ): () => void {
   let active = true;
   const check = (): void => {
-    if (!active || hasCurrentIdentity(target)) return;
+    if (!active || isCurrent()) return;
     stop();
     onInvalid();
   };
@@ -114,6 +131,18 @@ export function watchShareChatTarget(
     unsubscribeNavigation();
   }
   return stop;
+}
+
+/**
+ * Calls `onInvalid` once, the first time the captured chat stops being the
+ * one on screen (a page, worktree, or tab change, or the tab closing).
+ * Returns the unsubscribe.
+ */
+export function watchShareChatTarget(
+  target: ShareChatTarget,
+  onInvalid: () => void,
+): () => void {
+  return watchChatTarget(() => hasCurrentIdentity(target), onInvalid);
 }
 
 /**
@@ -187,19 +216,51 @@ export interface UseInChatOffer {
   stage: () => ShareChatInsertOutcome | Promise<ShareChatInsertOutcome>;
 }
 
+export interface ChatActionOffer<
+  Outcome extends string,
+  Succeeded extends Outcome,
+> {
+  /** The installation notice the action rides on. */
+  message: string;
+  label: ReactNode;
+  /** The label while the staged work runs. */
+  busyLabel?: string;
+  target: ShareChatTarget;
+  /** Calls `onInvalid` once the target stops qualifying; returns the unsubscribe. */
+  watch: (target: ShareChatTarget, onInvalid: () => void) => () => void;
+  stage: () => Outcome | Promise<Outcome>;
+  succeeded: Succeeded;
+  onFailure: (outcome: Exclude<Outcome, Succeeded>) => void;
+}
+
+function isFailure<Outcome extends string, Succeeded extends Outcome>(
+  outcome: Outcome,
+  succeeded: Succeeded,
+): outcome is Exclude<Outcome, Succeeded> {
+  return outcome !== succeeded;
+}
+
 /**
- * Shows the installation notice with **Use in this chat** as its one
- * action. The notice stays up until it is dismissed so keyboard and
- * screen reader users can reach it, shows even with in-app notifications off
- * (the landing it replaces has closed), and leaves when it is used,
- * dismissed, or the captured chat stops being the one on screen. The action
- * stages the skill at most once.
+ * Shows an installation notice with one chat action. The notice stays up
+ * until it is dismissed so keyboard and screen reader users can reach it,
+ * shows even with in-app notifications off (the landing it replaces has
+ * closed), and leaves when it is used, dismissed, the target stops
+ * qualifying, or another share request arrives. The action stages at most
+ * once.
  */
-export function offerUseInChat({
+export function offerChatAction<
+  Outcome extends string,
+  Succeeded extends Outcome,
+>({
   message,
+  label,
+  busyLabel,
   target,
+  watch,
   stage,
-}: UseInChatOffer): void {
+  succeeded,
+  onFailure,
+}: ChatActionOffer<Outcome, Succeeded>): void {
   let settled = false;
   let stopWatching = (): void => undefined;
   let stopReview = (): void => undefined;
@@ -209,12 +270,13 @@ export function offerUseInChat({
     stopReview();
   };
   const action: ToastAction = {
-    label: shareInstallActionLabel('skill', 'use-in-chat'),
+    label,
+    ...(busyLabel === undefined ? {} : { busyLabel }),
     onClick: async (): Promise<void> => {
       if (settled) return;
       settle();
       const outcome = await stage();
-      if (outcome !== 'inserted') notifyUseInChatFailure(outcome);
+      if (isFailure(outcome, succeeded)) onFailure(outcome);
     },
   };
   const github = useGitHubStore.getState();
@@ -230,17 +292,37 @@ export function offerUseInChat({
     },
     settle,
   );
-  const { toasts, notifications } = useGitHubStore.getState();
-  const toastId = [...toasts, ...notifications].find(
+  const { notifications } = useToastStore.getState();
+  const toastId = [...toastStack.getSnapshot(), ...notifications].find(
     (toast) => toast.meta?.action === action,
   )?.id;
   const invalidate = (): void => {
     if (settled) return;
     settle();
-    if (toastId !== undefined) useGitHubStore.getState().dismissToast(toastId);
+    if (toastId !== undefined) useToastStore.getState().dismissToast(toastId);
   };
-  stopWatching = watchShareChatTarget(target, invalidate);
+  stopWatching = watch(target, invalidate);
   stopReview = useNavigationStore.subscribe((state): void => {
     if (state.pendingShareInstall !== undefined) invalidate();
+  });
+}
+
+/**
+ * Shows the installation notice with **Use in this chat** as its one
+ * action; see {@link offerChatAction}.
+ */
+export function offerUseInChat({
+  message,
+  target,
+  stage,
+}: UseInChatOffer): void {
+  offerChatAction({
+    message,
+    label: shareInstallActionLabel('skill', 'use-in-chat'),
+    target,
+    watch: watchShareChatTarget,
+    stage,
+    succeeded: 'inserted',
+    onFailure: notifyUseInChatFailure,
   });
 }

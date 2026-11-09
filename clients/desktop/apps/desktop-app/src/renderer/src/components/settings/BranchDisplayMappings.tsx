@@ -22,7 +22,7 @@ import {
   isValidRegex,
 } from '@canopy/desktop-shared/lib/branch-display-mapping';
 import { useBranchDisplayStore } from '@/stores/branchDisplayStore';
-import { Button, ToggleSwitch } from '@canopy/ui-shared/components';
+import { Button, ToggleSwitch, FieldError } from '@canopy/ui-shared/components';
 import {
   ChevronRightIcon,
   CloseIcon,
@@ -135,6 +135,7 @@ function MappingRow({
 
   const regexValid = mapping.matcher === '' || isValidRegex(mapping.matcher);
   const matcherId = `branch-mapping-${mapping.id}-matcher`;
+  const matcherErrorId = `${matcherId}-error`;
   const resultId = `branch-mapping-${mapping.id}-result`;
   const replaceHyphensId = `branch-mapping-${mapping.id}-replace-hyphens`;
   const capitalizeId = `branch-mapping-${mapping.id}-capitalize`;
@@ -244,12 +245,13 @@ function MappingRow({
                 }
                 disabled={mapping.builtin}
                 aria-invalid={!regexValid}
+                aria-describedby={regexValid ? undefined : matcherErrorId}
                 placeholder="^(?:[^\/]+\/)+(.+)$"
               />
             }
           >
             {!regexValid && (
-              <p className="text-xs fg-destructive">Invalid regex pattern</p>
+              <FieldError id={matcherErrorId}>Invalid regex pattern</FieldError>
             )}
           </SettingsSubRow>
 

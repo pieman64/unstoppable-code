@@ -9,11 +9,11 @@ import { app, nativeImage, type NativeImage } from 'electron';
 import { homedir, tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { promisify } from 'node:util';
-import { findExecutableOnPath } from '@canopy/desktop-shared/node/lib/path-lookup';
+import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import {
   quoteCmdArgument,
   wrapWindowsCommandShim,
-} from '@canopy/desktop-shared/node/lib/windows-process';
+} from '@canopy/execution-engine/node/lib/windows-process';
 import type {
   AppCandidate,
   AppLaunchSpec,

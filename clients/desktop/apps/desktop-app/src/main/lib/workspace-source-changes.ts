@@ -1,3 +1,4 @@
+import type { SourceChangeGit } from '../canopy-runtime/worker-git-worktree-adapter';
 import type { BrowserWindow } from 'electron';
 import { z } from 'zod';
 import { runW5BoundaryOperation } from './w5-boundary-operation';
@@ -38,6 +39,7 @@ export {
 /** Host hooks of a source change: the window for setup progress. */
 interface SourceChangesHost<Event> {
   getWindow: () => BrowserWindow | null;
+  git: SourceChangeGit;
   /** Called once `canopy.json` (and the instructions file) is written. */
   onApplied?: (event: Event) => void;
 }
@@ -192,11 +194,13 @@ async function applySourceChangesAdmitted(
       return applyWorkspaceSourceChangesToWorktree(
         change,
         request.getWindow,
+        request.git,
         request.onApplied,
       );
     return applyWorkspaceSourceChangesToWorktree(
       change,
       request.getWindow,
+      request.git,
       request.onApplied,
       {
         ...transition,
@@ -214,11 +218,13 @@ async function applySourceChangesAdmitted(
     return applyProjectSourceChangesToWorktree(
       change,
       request.getWindow,
+      request.git,
       request.onApplied,
     );
   return applyProjectSourceChangesToWorktree(
     change,
     request.getWindow,
+    request.git,
     request.onApplied,
     transition,
   );

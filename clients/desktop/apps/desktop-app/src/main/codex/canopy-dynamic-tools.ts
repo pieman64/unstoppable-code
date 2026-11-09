@@ -11,8 +11,8 @@ import {
 import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   getCanonicalCanopyToolKey,
-  isLedgerInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+  isInvocationKeyedInjectedToolKey,
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { VISUAL_PREVIEW_BUDGETS } from '../browser/visual-preview-types';
 import { BRAND } from '@canopy/brand/current';
 import {
@@ -169,7 +169,7 @@ export function buildCanopyDynamicToolSpecs(options: {
   /**
    * Tool-surface mode, mirroring the Claude allowlist split
    * (`native-sdk` vs `native-sdk-standalone` in
-   * `@canopy/desktop-shared/lib/canopy-injected-tools`):
+   * `@canopy/execution-engine/lib/canopy-injected-tools`):
    * - `'worktree'` — full worktree set (equivalent to
    *   `includeWorktreeActions: true`).
    * - `'cowork'` — the Cowork directory-scoped set: ask-user,
@@ -642,8 +642,9 @@ export async function handleCanopyDynamicToolCall(
         : {}),
       ...(context?.signal ? { signal: context.signal } : {}),
       // Codex resends the same thread, turn and call IDs for one call, so a
-      // Ledger key derived from them dedupes its retries and replays.
-      ...(isLedgerInjectedToolKey(canonicalKey)
+      // Ledger or SaveMemory key derived from them dedupes its retries and
+      // replays.
+      ...(isInvocationKeyedInjectedToolKey(canonicalKey)
         ? {
             invocationId: `codex:${params.threadId}:${params.turnId}:${params.callId}`,
           }

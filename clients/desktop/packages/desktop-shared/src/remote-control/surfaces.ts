@@ -16,9 +16,14 @@ export function isAppAdvisorBrowserAction(
  * its own bridge on the controlled computer, so replies, per-page
  * subscriptions and addressed pushes reach exactly that window.
  */
-export const REMOTE_SURFACES = ['main', 'app-advisor'] as const;
-
-export type RemoteSurface = (typeof REMOTE_SURFACES)[number];
+import {
+  REMOTE_SURFACES,
+  type RemoteSurface,
+} from '@canopy/protocol/remote-control';
+export {
+  REMOTE_SURFACES,
+  type RemoteSurface,
+} from '@canopy/protocol/remote-control';
 
 export function isRemoteSurface(value: unknown): value is RemoteSurface {
   return REMOTE_SURFACES.some((surface) => surface === value);

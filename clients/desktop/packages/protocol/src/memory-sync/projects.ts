@@ -18,6 +18,8 @@ const PROJECTS_API_PREFIX = '/api/v1/projects';
 
 export const CLOUD_PROJECT_ROUTES = {
   createPersonal: (): string => `${PROJECTS_API_PREFIX}/personal`,
+  /** `GET`, with `deviceId` and `installationGeneration` (CAN-5192). */
+  listPersonal: (): string => `${PROJECTS_API_PREFIX}/personal`,
   matchPersonal: (): string => `${PROJECTS_API_PREFIX}/personal/match`,
   manifest: (projectId: string): string =>
     `${PROJECTS_API_PREFIX}/${projectId}/manifest`,
@@ -859,3 +861,39 @@ export const CloudProjectLifecycleEventsPageSchema = z
 export type CloudProjectLifecycleEventsPage = z.output<
   typeof CloudProjectLifecycleEventsPageSchema
 >;
+
+export const CLOUD_PROJECT_LIST_MAX = 200;
+
+/**
+ * One of the caller's Personal cloud projects, as a new device lists them to
+ * set one up (CAN-5192). `instance` is this device installation's setup of
+ * it, when there is one that is not detached.
+ */
+export const CloudProjectListEntrySchema = z.strictObject({
+  projectId: MemoryProjectIdSchema,
+  name: z.string().min(1).max(256),
+  kind: z.enum(['code', 'cowork']),
+  topology: CloudProjectTopologySchema,
+  repositoryCount: z.int().min(0).max(100),
+  updatedAt: MemoryTimestampSchema,
+  instance: z
+    .strictObject({
+      instanceId: MemoryUuidSchema,
+      state: z.enum(['CLAIMED', 'READY']),
+      selectedRepositoryIds: z.array(MemoryUuidSchema).max(100),
+      dismissedRepositoryIds: z.array(MemoryUuidSchema).max(100),
+    })
+    .nullable(),
+});
+export type CloudProjectListEntry = z.output<
+  typeof CloudProjectListEntrySchema
+>;
+
+/**
+ * `GET /api/v1/projects/personal?deviceId=&installationGeneration=`: the
+ * caller's live Personal cloud projects, most recently updated first.
+ */
+export const CloudProjectListSchema = z.strictObject({
+  projects: z.array(CloudProjectListEntrySchema).max(CLOUD_PROJECT_LIST_MAX),
+});
+export type CloudProjectList = z.output<typeof CloudProjectListSchema>;

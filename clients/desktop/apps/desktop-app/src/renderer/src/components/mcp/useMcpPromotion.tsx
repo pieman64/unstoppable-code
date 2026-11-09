@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import type { McpServerIndexEntry } from '@canopy/desktop-shared/types/mcp-servers';
-import type { SecretValueInput } from '@canopy/desktop-shared/types/stored-secrets';
+import type { McpServerIndexEntry } from '@canopy/execution-engine/types/mcp-servers';
+import type { SecretValueInput } from '@canopy/execution-engine/types/stored-secrets';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import type { AccountMcpActions } from '@/hooks/useAccountMcpActions';
 import { extractIpcErrorMessage } from '@/lib/errors';

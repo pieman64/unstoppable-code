@@ -1,5 +1,6 @@
 import {
   query as claudeQuery,
+  type SdkPluginConfig,
   type SettingSource,
   type SpawnOptions,
   type SpawnedProcess,
@@ -21,8 +22,8 @@ import {
   getBundledRgBinaryPath,
   getEnhancedEnv,
 } from '../pipelines/config-paths';
-import type { CodexConfig } from './codex-model-config';
-import { claudeNativeMemoryOptions } from '../node/lib/native-memory';
+import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
+import { claudeNativeMemoryOptions } from '@canopy/execution-engine/node/lib/native-memory';
 import {
   emptyHelperAgentPluginRuntime,
   type HelperAgentPluginRuntime,
@@ -32,17 +33,56 @@ import {
   parseStructuredJsonResult,
 } from './claude-structured-output';
 import type { HelperTranscriptObserver } from './helper-transcript';
-import { readHelperUsage, type HelperUsage } from './helper-usage';
+import {
+  readHelperUsage,
+  type HelperUsage,
+} from '@canopy/execution-engine/lib/helper-usage';
 import {
   isTransientAgentRetryExhaustedError,
   runWithTransientAgentRetry,
   type TransientAgentRetryNotice,
   type TransientAgentRetryOptions,
-} from '../agent-failures/transient-retry';
+} from '@canopy/execution-engine/agent-failures/transient-retry';
 import {
   AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT,
   readClaudeRetrySessionId,
-} from '../agent-failures/resume';
+} from '@canopy/execution-engine/agent-failures/resume';
+import {
+  effectiveClaudeConfigDir,
+  filterToClaudeModLaunchPlugins,
+  isClaudeLaunchCwdInside,
+  isSameClaudePath,
+  mergeClaudeModAdmissionSettings,
+  parseClaudeModAdmissionEnvelope,
+  readClaudeModAdmissionEnvelope,
+  type ClaudeModAdmissionLaunch,
+} from '../node/plugins/claude-mod-admission';
+import { getBrandEnv } from '@canopy/execution-engine/brand/env';
+
+export interface ClaudeModAdmissionLaunchRequest {
+  cwd: string;
+  settingSources: readonly SettingSource[];
+  /** Each with its plugin id when known, so consent is found for it. */
+  plugins: readonly (SdkPluginConfig & {
+    pluginId?: string;
+    sourcePath?: string;
+  })[];
+  /** The request the helper builds its child env with (its CLAUDE_CONFIG_DIR). */
+  environment?: ResolveEnvironmentRequest;
+}
+
+export type ClaudeModAdmissionLaunchProvider = (
+  request: ClaudeModAdmissionLaunchRequest,
+) => Promise<ClaudeModAdmissionLaunch | undefined>;
+
+let claudeModAdmissionLaunchProvider: ClaudeModAdmissionLaunchProvider | null =
+  null;
+
+export function setClaudeModAdmissionLaunchProvider(
+  provider: ClaudeModAdmissionLaunchProvider | null,
+): void {
+  claudeModAdmissionLaunchProvider = provider;
+}
 
 interface StructuredHelperQueryOptions<T> {
   waitForQuotaRecovery?: TransientAgentRetryOptions<T>['waitForQuotaRecovery'];
@@ -80,6 +120,8 @@ export interface ClaudeStructuredHelperQueryOptions<
   allowedTools?: string[];
   disallowedTools?: string[];
   settingSources?: SettingSource[];
+  /** Host-resolved launch restrictions. When absent, the installed host provider is used. */
+  claudeModAdmission?: ClaudeModAdmissionLaunch;
   /**
    * Restrict the launch to the MCP servers passed in `pluginRuntime`, ignoring
    * every other source, including the signed-in account's connectors, which
@@ -282,6 +324,89 @@ async function runClaudeStructuredHelperQueryAttempt<T>(
     : undefined;
   const pluginRuntime =
     options.pluginRuntime ?? emptyHelperAgentPluginRuntime();
+  const requestedSettingSources: SettingSource[] = options.settingSources ?? [
+    'user',
+    'project',
+    'local',
+  ];
+  const hostAdmission =
+    options.claudeModAdmission ??
+    (claudeModAdmissionLaunchProvider
+      ? await claudeModAdmissionLaunchProvider({
+          cwd: options.repoPath,
+          settingSources: requestedSettingSources,
+          plugins: pluginRuntime.claudePlugins,
+          environment: resolveAgentEnvironment(options.workspaceId),
+        })
+      : undefined);
+  // A helper inside a pipeline step (commit, PR text) has no host provider;
+  // it uses the step's envelope, which may only narrow its own plugins.
+  const stepEnvelope =
+    hostAdmission || claudeModAdmissionLaunchProvider
+      ? undefined
+      : parseClaudeModAdmissionEnvelope(
+          getBrandEnv(process.env, 'CLAUDE_MOD_ADMISSION'),
+        );
+  // A child repository under the step cwd (multi-repo commit and PR steps)
+  // has project and local settings the step's decision never read, so it
+  // loads only user settings, which that decision did cover.
+  const childRepoOfStep =
+    stepEnvelope !== undefined &&
+    isClaudeLaunchCwdInside(stepEnvelope.cwd, options.repoPath);
+  const settingSources: SettingSource[] = childRepoOfStep
+    ? stepEnvelope.settingSources.includes('user')
+      ? ['user']
+      : []
+    : requestedSettingSources;
+  const stepAdmission =
+    stepEnvelope === undefined
+      ? undefined
+      : childRepoOfStep
+        ? stepEnvelope
+        : readClaudeModAdmissionEnvelope(
+            getBrandEnv(process.env, 'CLAUDE_MOD_ADMISSION'),
+            { cwd: options.repoPath, settingSources },
+          );
+  // A step decision read one Claude config folder; refuse a helper whose own
+  // child would load another (a relative CLAUDE_CONFIG_DIR follows its cwd).
+  if (stepAdmission?.claudeConfigDir) {
+    const helperEnv = getEnhancedEnv({
+      environment: resolveAgentEnvironment(options.workspaceId),
+    });
+    if (
+      !isSameClaudePath(
+        effectiveClaudeConfigDir(
+          helperEnv.CLAUDE_CONFIG_DIR,
+          options.repoPath,
+          helperEnv.HOME,
+        ),
+        stepAdmission.claudeConfigDir,
+      )
+    ) {
+      throw new Error(
+        'Claude Mod admission checked a different Claude config folder than this helper uses.',
+      );
+    }
+  }
+  const claudeModAdmission = hostAdmission ?? stepAdmission;
+  const queryPlugins = hostAdmission
+    ? [...hostAdmission.plugins]
+    : stepAdmission
+      ? filterToClaudeModLaunchPlugins(
+          pluginRuntime.claudePlugins,
+          stepAdmission,
+        )
+      : pluginRuntime.claudePlugins;
+  const nativeMemoryOptions = claudeNativeMemoryOptions(
+    options.localMemoryEnabled,
+    thinkingOptions?.settings,
+  );
+  const admissionSettings = claudeModAdmission?.settings
+    ? mergeClaudeModAdmissionSettings(
+        nativeMemoryOptions.settings ?? {},
+        claudeModAdmission.settings,
+      )
+    : undefined;
   const environment = resolveAgentEnvironment(options.workspaceId);
   const queryResult = claudeQuery({
     prompt: resumeSessionId
@@ -308,7 +433,7 @@ async function runClaudeStructuredHelperQueryAttempt<T>(
         },
       },
       permissionMode: 'plan',
-      settingSources: options.settingSources ?? ['user', 'project', 'local'],
+      settingSources,
       ...(options.tools ? { tools: options.tools } : {}),
       ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
       ...(options.disallowedTools
@@ -317,17 +442,21 @@ async function runClaudeStructuredHelperQueryAttempt<T>(
       systemPrompt: options.systemPrompt,
       mcpServers: pluginRuntime.claudeMcpServers,
       ...(options.strictMcpConfig ? { strictMcpConfig: true } : {}),
-      ...(pluginRuntime.claudePlugins.length > 0
-        ? { plugins: pluginRuntime.claudePlugins }
+      // Claude takes plain entries; a plugin id is only for admission.
+      ...(queryPlugins.length > 0
+        ? {
+            plugins: queryPlugins.map((plugin) => ({
+              type: plugin.type,
+              path: plugin.path,
+            })),
+          }
         : {}),
       ...(thinkingOptions ?? {}),
       // Merge with the thinking settings (Ultra sets `ultracode`) so the
       // spread cannot drop the native-memory suppression applied while local
       // memory is enabled (CAN-1969).
-      ...claudeNativeMemoryOptions(
-        options.localMemoryEnabled,
-        thinkingOptions?.settings,
-      ),
+      ...nativeMemoryOptions,
+      ...(admissionSettings ? { settings: admissionSettings } : {}),
       outputFormat: {
         type: 'json_schema',
         schema: options.schema,

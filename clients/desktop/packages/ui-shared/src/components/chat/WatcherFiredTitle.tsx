@@ -70,7 +70,7 @@ export const WatcherFiredTitle = memo(function WatcherFiredTitle({
           aria-label="Combined watcher details"
           data-rich-tooltip-autofocus
           tabIndex={0}
-          className="max-h-48 space-y-2 overflow-y-auto overscroll-contain rounded-sm pr-1 focus-ring"
+          className="max-h-48 grid grid-cols-1 content-start gap-2 overflow-y-auto overscroll-contain rounded-sm pr-1 focus-ring"
         >
           {combinedWatchers.map((watcher, index) => (
             <div

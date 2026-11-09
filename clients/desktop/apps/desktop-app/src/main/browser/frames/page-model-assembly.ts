@@ -2,7 +2,7 @@ import {
   classifySecretField,
   isSecretAutocomplete,
 } from '@canopy/desktop-shared/browser/secret-fields';
-import type { BrowserRectangle } from '@canopy/desktop-shared/types/browser';
+import type { BrowserRectangle } from '@canopy/execution-engine/types/browser';
 import type { DomTreeNode, SnapshotNodeInfo } from './cdp-decode';
 import {
   attributeReader,

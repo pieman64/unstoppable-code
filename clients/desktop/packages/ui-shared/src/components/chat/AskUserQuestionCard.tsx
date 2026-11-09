@@ -4,10 +4,12 @@
 // This module is display-only: NO stores, IPC, fetching, Electron, or Next
 // imports — hosts thread in the projected protocol state plus submit/dismiss
 // callbacks.
+import { Dot } from '../Badge';
 import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -24,7 +26,7 @@ import { MessagesSquare, ChevronDownMediumIcon } from '../../icons/AppIcons';
 import { Button } from '../Button';
 import { ChoiceField, ChoiceMark } from '../Choice';
 import { Kbd } from '../Kbd';
-import { Select, TextArea, TextInput } from '../Field';
+import { Select, TextArea, TextInput, FieldError } from '../Field';
 import { Notice } from '../Notice';
 import { useCleanChatLook } from '../chat-look';
 import { QuestionOptionText } from './QuestionOptionText';
@@ -368,7 +370,7 @@ function ChoiceShortcut({ index }: { index: number }): JSX.Element | null {
     <span
       aria-hidden="true"
       data-testid="ask-user-question-choice-shortcut"
-      className="ml-auto mt-px flex opacity-0 group-hover/option:opacity-100 group-focus-visible/option:opacity-100 group-has-[:focus-visible]/option:opacity-100"
+      className="ml-auto mt-px flex opacity-0 group-hover/option:opacity-100 group-focus-visible/option:opacity-100 option-focus-visible-inside:opacity-100"
     >
       <Kbd shortcut={[String.fromCharCode(65 + index)]} />
     </span>
@@ -449,6 +451,7 @@ function AskUserQuestionCardImpl({
     previousStep.current = step;
   }, [step]);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const validationErrorId = useId();
 
   // Reset local form state whenever the request changes so a recycled card
   // never carries a previous prompt's selection: restore the new request's
@@ -630,10 +633,7 @@ function AskUserQuestionCardImpl({
           data-testid="ask-user-question-minimized"
           onClick={() => setMinimized(false)}
         >
-          <span
-            aria-hidden="true"
-            className="h-1.5 w-1.5 rounded-full bg-fg-attention"
-          />
+          <Dot tone="attention" />
           <span className="tabular-nums">{pendingLabel}</span>
         </Button>
       </div>
@@ -737,9 +737,9 @@ function AskUserQuestionCardImpl({
           aria-label={q.header ? `${q.header}: ${q.question}` : q.question}
           ref={stepHeading}
           tabIndex={-1}
-          className="outline-none"
+          className="flex flex-col outline-none gap-2"
         >
-          <div className="mb-2 flex items-start gap-3">
+          <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
               {q.header && (
                 <div className="mb-1 text-xs fg-secondary">
@@ -787,7 +787,7 @@ function AskUserQuestionCardImpl({
             </div>
           </div>
 
-          <div className="-mx-2 space-y-0.5">
+          <div className="-mx-2 flex flex-col gap-0.5">
             {isDirectField(q) ? (
               <div className="px-2">
                 {q.control === 'textarea' && !q.secret ? (
@@ -949,8 +949,10 @@ function AskUserQuestionCardImpl({
       )}
 
       {validationError && (
-        <div role="alert" className="mt-3 text-xs fg-destructive">
-          {validationError}
+        <div className="mt-3">
+          <FieldError id={validationErrorId} announce>
+            {validationError}
+          </FieldError>
         </div>
       )}
 

@@ -29,14 +29,20 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { isValidFileLabelPattern } from '@canopy/desktop-shared/file-labels';
 import {
-  ChevronDownIcon,
   ChevronRightIcon,
   DragHandleIcon,
   PlusIcon,
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { Tooltip } from '@canopy/ui-shared';
-import { Button, Notice, ToggleSwitch } from '@canopy/ui-shared/components';
+import {
+  Stack,
+  Button,
+  ToggleSwitch,
+  FieldError,
+  DisclosureButton,
+} from '@canopy/ui-shared/components';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import {
   SettingsGroup,
@@ -80,40 +86,6 @@ function useSectionDisclosure(expandRequest: number): {
   }, [expandRequest]);
   const toggle = useCallback((): void => setExpanded((v) => !v), []);
   return { expanded, toggle };
-}
-
-interface SectionDisclosureButtonProps {
-  expanded: boolean;
-  onToggle: () => void;
-  /** The list's summary while it is hidden, such as `3 globs enabled`. */
-  collapsedLabel: string;
-  expandedLabel: string;
-  dataTestId: string;
-}
-
-/** Shows or hides a list; sits in the control slot of the list's header row. */
-export function SectionDisclosureButton({
-  expanded,
-  onToggle,
-  collapsedLabel,
-  expandedLabel,
-  dataTestId,
-}: SectionDisclosureButtonProps): JSX.Element {
-  return (
-    <Button
-      size="compact"
-      variant="secondary"
-      onClick={onToggle}
-      aria-expanded={expanded}
-      data-testid={dataTestId}
-    >
-      {expanded ? expandedLabel : collapsedLabel}
-      <ChevronDownIcon
-        size="sm"
-        className={`shrink-0 transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`}
-      />
-    </Button>
-  );
 }
 
 function generateId(prefix: string): string {
@@ -241,9 +213,11 @@ function MatcherRow({
         )}
       </div>
       {!patternValid && (
-        <p className="pl-16 text-xs fg-destructive">
-          Enter a valid glob pattern.
-        </p>
+        <div className="pl-16">
+          <FieldError id={`file-label-matcher-error-${matcher.id}`}>
+            Enter a valid glob pattern.
+          </FieldError>
+        </div>
       )}
     </div>
   );
@@ -277,7 +251,7 @@ function AddMatcherInput({
   }, [value, onAdd]);
 
   return (
-    <div className="space-y-1">
+    <Stack gap="tight">
       <div className="flex items-center gap-2">
         <SettingsTextField
           mono
@@ -309,14 +283,14 @@ function AddMatcherInput({
         </Button>
       </div>
       {error !== null && (
-        <p
-          className="text-xs fg-destructive"
+        <FieldError
+          id={`file-label-add-matcher-error-${bucketId}`}
           data-testid={`file-label-add-matcher-error-${bucketId}`}
         >
           {error}
-        </p>
+        </FieldError>
       )}
-    </div>
+    </Stack>
   );
 }
 
@@ -443,7 +417,7 @@ function BucketRow({
       className="flex flex-col gap-3"
       data-testid={`file-label-bucket-${bucket.id}`}
     >
-      <div className="flex flex-col gap-1">
+      <Stack gap="tight">
         <div className="flex min-h-10 items-center gap-2">
           <span
             className="shrink-0 cursor-grab fg-secondary hover:fg-primary active:cursor-grabbing"
@@ -518,9 +492,13 @@ function BucketRow({
           )}
         </div>
         {!nameValid && (
-          <p className="pl-16 text-xs fg-destructive">Enter a label name.</p>
+          <div className="pl-16">
+            <FieldError id={`file-label-name-error-${bucket.id}`}>
+              Enter a label name.
+            </FieldError>
+          </div>
         )}
-      </div>
+      </Stack>
 
       {expanded && (
         <div className="flex flex-col gap-2 pl-16">
@@ -698,11 +676,15 @@ export function FileLabelsSection({
       title="Changed files"
       dataTestId="settings-files-labels-section"
     >
-      {expanded && saveStatus === 'error' && (
-        <Notice intent="destructive" data-testid="settings-files-labels-error">
-          Unable to save Labels settings.
-        </Notice>
-      )}
+      <DesktopErrorBanner
+        className=""
+        error={
+          expanded && saveStatus === 'error'
+            ? 'Couldn’t save label settings.'
+            : null
+        }
+        testId="settings-files-labels-error"
+      />
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -726,11 +708,11 @@ export function FileLabelsSection({
                       Add label
                     </Button>
                   )}
-                  <SectionDisclosureButton
-                    expanded={expanded}
+                  <DisclosureButton
+                    open={expanded}
                     onToggle={toggle}
-                    collapsedLabel={`${enabledLabels}/${labels.length} labels enabled`}
-                    expandedLabel="Hide labels"
+                    closedLabel={`${enabledLabels}/${labels.length} labels enabled`}
+                    openLabel="Hide labels"
                     dataTestId="settings-files-labels-section-toggle"
                   />
                 </>

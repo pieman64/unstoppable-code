@@ -105,7 +105,15 @@ export function sweepInterruptedPipelinesAtStartup(): Promise<void> | null {
   interruptedPipelineIds = [];
   if (pipelineIds.length === 0) return null;
   return sweepOrphanedPipelinesThroughLocalWorker(pipelineIds).then(
-    (errors) => {
+    async (errors) => {
+      // What the sweep left running belongs to a live owner such as the
+      // daemon: it stays active work (CAN-5086).
+      const { followSurvivingDaemonRuns } =
+        await import('../pipelines/daemon-pipeline-route');
+      await followSurvivingDaemonRuns(
+        pipelineIds,
+        createElectronExecutionRuntime().executionsDir,
+      );
       if (errors.length) throw new Error(errors.join('\n'));
     },
   );

@@ -1,3 +1,4 @@
+import { Stack } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
 import { Notice } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -68,7 +69,7 @@ export function SplitFailureModal({
       maxWidth="lg"
       dataTestId="split-failure-modal"
     >
-      <div className="space-y-3 px-6 py-4">
+      <div className="flex flex-col px-6 py-4 gap-3">
         <Notice
           intent="attention"
           role="none"
@@ -76,7 +77,7 @@ export function SplitFailureModal({
           detail={
             failure.childIndex !== undefined ||
             failure.verifyTail !== undefined ? (
-              <>
+              <Stack gap="inline">
                 {failure.childIndex !== undefined && (
                   <span data-testid="split-failure-child-index">
                     Failed on child #{failure.childIndex}.
@@ -85,12 +86,12 @@ export function SplitFailureModal({
                 {failure.verifyTail !== undefined && (
                   <pre
                     data-testid="split-failure-verify-tail"
-                    className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-base/40 p-2 text-2xs`}
+                    className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-base/40 p-2 text-2xs`}
                   >
                     {failure.verifyTail}
                   </pre>
                 )}
-              </>
+              </Stack>
             ) : undefined
           }
         >

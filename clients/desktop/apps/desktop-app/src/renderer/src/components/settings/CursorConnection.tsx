@@ -13,35 +13,23 @@ import { emitPreferencesUpdated } from '@/lib/preferences-events';
 import {
   Button,
   ProviderStatusDot,
-  ErrorBanner,
   Tooltip,
 } from '@canopy/ui-shared/components';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import {
+  inlineFailure,
+  inlineFailureWithMainSentence,
+  type InlineFailure,
+} from '@/lib/inline-app-error';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { GrokUnifyHint } from './GrokUnifyHint';
 import { ProviderCarryoverNote } from './ProviderCarryoverNote';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
-
-/**
- * Only app-authored messages reach the banner. Anything carrying a filesystem
- * path or an OS error code (ENOENT, EACCES, ...) falls back to our sentence,
- * and the raw text goes to Copy details instead (docs/ux-writing.md).
- */
-function describeConnectionFailure(
-  cause: unknown,
-  fallback = 'Could not connect Cursor. Try again.',
-): { message: string; details: string } {
-  const raw =
-    cause instanceof Error
-      ? cause.message.replace(
-          /^Error invoking remote method '[^']+': (Error: )?/,
-          '',
-        )
-      : '';
-  if (raw && !/[\\/]|\bE[A-Z]{3,}\b/.test(raw)) {
-    return { message: raw, details: '' };
-  }
-  return { message: fallback, details: raw };
-}
 
 interface CursorConnectionProps {
   /**
@@ -83,8 +71,7 @@ export function CursorConnection({
   // Nothing else changes when the cause of a failed read clears, so the retry
   // affordance re-arms the probe effect itself.
   const [accountAttempt, setAccountAttempt] = useState(0);
-  const [error, setError] = useState('');
-  const [errorDetails, setErrorDetails] = useState('');
+  const [error, setError] = useState<InlineFailure | null>(null);
   const connected = Boolean(status?.enabled && status.installed);
   const inProgress = connecting || changingAccount;
   const active = useRef(false);
@@ -99,14 +86,19 @@ export function CursorConnection({
       .then((next) => {
         if (mounted.current) setStatus(next);
       })
-      .catch(() => {});
+      .catch((cause: unknown) => {
+        reportClientAppError(cause);
+      });
     const off = api.onProgress((next) => {
       if (mounted.current && active.current) setStatus(next);
     });
     return (): void => {
       mounted.current = false;
       off();
-      if (active.current) void api.cancel().catch(() => {});
+      if (active.current)
+        void api.cancel().catch((cause: unknown) => {
+          reportClientAppError(cause);
+        });
     };
   }, []);
   // The cheap status read never runs the runtime, so the signed-in account is
@@ -126,7 +118,9 @@ export function CursorConnection({
         setAccountUnavailable(false);
         setAccount(next);
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
+        // The row shows the failed read with Check again.
+        reportClientAppError(cause);
         if (current && mounted.current) setAccountUnavailable(true);
       });
     return (): void => {
@@ -144,7 +138,10 @@ export function CursorConnection({
   }, [connected, status?.account]);
   const supported = status?.supported ?? false;
   useEffect(() => {
-    if (supported) void initializeUsage().catch(() => {});
+    if (supported)
+      void initializeUsage().catch((cause: unknown) => {
+        reportClientAppError(cause);
+      });
   }, [supported, initializeUsage]);
   const refreshPreferences = async (): Promise<void> => {
     emitPreferencesUpdated(await window.api.loadPreferences());
@@ -152,7 +149,9 @@ export function CursorConnection({
   // A new sign-in changes the account and its plan; the usage read is the
   // only thing that knows the plan, and nothing else re-runs it.
   const refreshPlan = (): void => {
-    void refreshUsage('cursor').catch(() => {});
+    void refreshUsage('cursor').catch((cause: unknown) => {
+      reportClientAppError(cause);
+    });
   };
   const connect = async (): Promise<void> => {
     const api = window.api.cursorConnection;
@@ -161,8 +160,7 @@ export function CursorConnection({
     cancelRequested.current = false;
     setBusy(true);
     setConnecting(true);
-    setError('');
-    setErrorDetails('');
+    setError(null);
     try {
       const next = await api.connect();
       if (mounted.current) setStatus(next);
@@ -171,12 +169,15 @@ export function CursorConnection({
     } catch (cause) {
       if (mounted.current) {
         // An intentional Cancel rejects the connect call; that is not a failure.
-        if (!cancelRequested.current) {
-          const failure = describeConnectionFailure(cause);
-          setError(failure.message);
-          setErrorDetails(failure.details);
-        }
-        const next = await api.status().catch(() => null);
+        const appError = toAppError(resolveClientAppError(cause));
+        if (appError && !cancelRequested.current)
+          setError(
+            inlineFailureWithMainSentence(appError, "Couldn't connect Cursor."),
+          );
+        const next = await api.status().catch((statusCause: unknown) => {
+          reportClientAppError(statusCause);
+          return null;
+        });
         if (mounted.current && next) setStatus(next);
       }
     } finally {
@@ -194,8 +195,7 @@ export function CursorConnection({
     cancelRequested.current = false;
     setBusy(true);
     setChangingAccount(true);
-    setError('');
-    setErrorDetails('');
+    setError(null);
     try {
       const next = await api.changeAccount(intent);
       if (mounted.current) setStatus(next);
@@ -204,19 +204,22 @@ export function CursorConnection({
       if (mounted.current) {
         // Cancel is not a failure, but sign-out already happened: re-read the
         // account so the panel offers sign-in instead of claiming one.
-        if (!cancelRequested.current) {
-          const failure = describeConnectionFailure(
-            cause,
-            'Could not change the Cursor account. Try again.',
+        const appError = toAppError(resolveClientAppError(cause));
+        if (appError && !cancelRequested.current)
+          setError(
+            inlineFailureWithMainSentence(
+              appError,
+              "Couldn't change the Cursor account.",
+            ),
           );
-          setError(failure.message);
-          setErrorDetails(failure.details);
-        }
         // A sign-out may already have happened, so stop naming the old
         // account immediately; clearing both re-arms the probe effect, which
         // owns the re-read. A second explicit read here would only race it.
         setAccount(undefined);
-        const next = await api.status().catch(() => null);
+        const next = await api.status().catch((statusCause: unknown) => {
+          reportClientAppError(statusCause);
+          return null;
+        });
         if (mounted.current)
           setStatus((prev) =>
             next
@@ -243,15 +246,16 @@ export function CursorConnection({
     if (!api || active.current) return;
     active.current = true;
     setBusy(true);
-    setError('');
-    setErrorDetails('');
+    setError(null);
     try {
       await api.disconnect();
       const next = await api.status();
       if (mounted.current) setStatus(next);
       await refreshPreferences();
-    } catch {
-      if (mounted.current) setError('Could not disconnect Cursor. Try again.');
+    } catch (cause) {
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && mounted.current)
+        setError(inlineFailure(appError, "Couldn't disconnect Cursor."));
     } finally {
       active.current = false;
       if (mounted.current) setBusy(false);
@@ -282,9 +286,11 @@ export function CursorConnection({
   const signedIn = connected && !accountUnavailable && account !== null;
   const cancel = (): void => {
     cancelRequested.current = true;
-    void window.api.cursorConnection
-      ?.cancel()
-      .catch(() => setError('Could not stop setup. Try again.'));
+    void window.api.cursorConnection?.cancel().catch((cause: unknown) => {
+      const appError = toAppError(resolveClientAppError(cause));
+      if (appError && mounted.current)
+        setError(inlineFailure(appError, "Couldn't stop Cursor setup."));
+    });
   };
   useCurrentUiStateReporter('settings.cursor', {
     loaded: status !== null,
@@ -297,7 +303,7 @@ export function CursorConnection({
     ...(connected && account !== undefined
       ? { signedIn: account !== null, account: account?.email ?? '' }
       : {}),
-    errorVisible: Boolean(error),
+    errorVisible: error !== null,
   });
   const actionHandler = useRef<(operation: string) => boolean>(() => false);
   actionHandler.current = (operation): boolean => {
@@ -516,7 +522,7 @@ export function CursorConnection({
           runtime is connected, and stays through setup so the download it
           names is the one in progress. */}
       {settingUp && (
-        <div className="space-y-1 text-xs text-pretty fg-secondary">
+        <div className="flex flex-col text-xs text-pretty fg-secondary gap-1">
           <p>
             Connect a separate, tested copy of Cursor for this app. Your
             existing Cursor installation keeps its own updates.
@@ -524,10 +530,12 @@ export function CursorConnection({
           <p>{downloadSize}Your Cursor plan and usage limits apply</p>
         </div>
       )}
-      <ErrorBanner
-        error={error}
+      <DesktopErrorBanner
         className=""
-        {...(errorDetails ? { details: errorDetails } : {})}
+        error={error?.error}
+        {...(error?.details === undefined ? {} : { details: error.details })}
+        onDismiss={(): void => setError(null)}
+        testId="cursor-connection-error"
       />
       {/* Grok's plans reach this app through a Cursor sign-in, so its hint
           shows wherever, and only where, Cursor can be connected. */}

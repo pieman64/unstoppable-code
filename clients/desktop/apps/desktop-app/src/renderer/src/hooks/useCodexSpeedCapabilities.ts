@@ -10,17 +10,17 @@
 
 import { useEffect, useId, useMemo } from 'react';
 import { useShallow } from 'zustand/shallow';
-import type { CodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
+import type { CodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
 import {
   deriveCodexSpeedOptions,
   type CodexSpeedAvailability,
   type CodexSpeedRouteFacts,
   type CodexSpeedRouteProfile,
-} from '@canopy/desktop-shared/lib/codex-speed-availability';
+} from '@canopy/execution-engine/lib/codex-speed-availability';
 import type {
   CodexSpeedCatalog,
   CodexSpeedCatalogRoute,
-} from '@canopy/desktop-shared/types/codex-speed-capabilities';
+} from '@canopy/execution-engine/types/codex-speed-capabilities';
 import {
   isCodexSpeedCatalogStale,
   retainCodexSpeedSubscription,

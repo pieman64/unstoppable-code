@@ -14,6 +14,10 @@
  * A builder that cannot make its object portable returns no resource and a
  * reason instead of guessing at a substitute.
  */
+import {
+  LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
+  pipelineDeclaresLocalOnlyTrigger,
+} from '@canopy/pipeline-interop/portability';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import {
@@ -55,15 +59,15 @@ import {
   buildSharedAutomationDocument,
   type BuildSharedAutomationDocumentOptions,
 } from '@canopy/desktop-shared/lib/automation-sharing';
-import { readCodexSpeedRecord } from '@canopy/desktop-shared/lib/codex-speed';
+import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 import type {
   ChatTabPluginSelections,
   HookAction,
   ScheduledActivity,
 } from '@canopy/desktop-shared/types';
-import type { AgentModelDefinition } from '@canopy/desktop-shared/types/agent-models';
-import type { Pipeline } from '@canopy/desktop-shared/types/pipeline';
-import type { McpServerRef } from '@canopy/desktop-shared/types/mcp-servers';
+import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
+import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
+import type { McpServerRef } from '@canopy/execution-engine/types/mcp-servers';
 import {
   buildPortablePipelineResources,
   capabilityInventoryEntryIdsByKey,
@@ -95,6 +99,11 @@ export type SharedContainerDefinitionOmissionReason =
   | 'unsupported_source'
   /** The local definition does not parse. */
   | 'invalid_definition'
+  /**
+   * The pipeline declares `workflow`, which can't leave this machine yet
+   * (CAN-5782).
+   */
+  | 'local_only_trigger'
   /** The portable document failed the existing sanitizer or validator. */
   | 'not_portable'
   /** The automation is bound to one execution on this machine. */
@@ -483,6 +492,13 @@ export async function buildPipelineDefinitionResource(
       detail: error instanceof Error ? error.message : undefined,
     };
   }
+  if (pipelineDeclaresLocalOnlyTrigger(pipeline)) {
+    return {
+      resource: undefined,
+      reason: 'local_only_trigger',
+      detail: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
+    };
+  }
   const agentIds = pipelineAgentIds(pipeline);
   const provenance = provenanceFor(source.origin);
   const description = source.pipeline.description?.trim();
@@ -513,6 +529,19 @@ export async function buildPipelineDefinitionResource(
     pipelineFileDir: source.pipelineFileDir,
     repoPath: source.repoPath,
   });
+  // A child pipeline that declares `workflow` would travel as a
+  // `child_pipeline` resource, which web never parses.
+  if (
+    portable.blockers.some(
+      (blocker) => blocker.code === 'LOCAL_ONLY_PIPELINE_TRIGGER',
+    )
+  ) {
+    return {
+      resource: undefined,
+      reason: 'local_only_trigger',
+      detail: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
+    };
+  }
   const rootInventoryIds = await deps.capabilityInventoryEntryIdsByKey(
     pipeline,
     inventory,

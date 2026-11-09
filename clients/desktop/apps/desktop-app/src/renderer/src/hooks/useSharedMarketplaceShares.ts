@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type { CanopyCloudAccountPublicState } from '@canopy/desktop-shared/types';
-import type { SharedAgentSummary } from '@canopy/desktop-shared/types/agent-models';
+import type { SharedAgentSummary } from '@canopy/execution-engine/types/agent-models';
 import type { SharedPluginSummary } from '@canopy/protocol/plugins';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol/workspace-templates';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';

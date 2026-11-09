@@ -1,3 +1,4 @@
+import { access } from 'node:fs/promises';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -28,15 +29,13 @@ const shipped = (args: string[]): Promise<{ stdout: string; stderr: string }> =>
 describe('shipped Windows identity helper', () => {
   beforeAll(async () => {
     if (process.platform !== 'win32') return;
-    // Rebuilds only when source/recipe/PE binding is stale, then runs the
-    // Win32-shim failure/close harness compiled with the same flags.
-    for (const extra of [[], ['--test']])
-      await run(
-        process.execPath,
-        [join(ROOT, 'scripts/build-windows-process-identity.mjs'), ...extra],
-        { cwd: ROOT, windowsHide: true, timeout: 240_000, maxBuffer: 1 << 20 },
+    await access(HELPER).catch((cause: unknown) => {
+      throw new Error(
+        'Windows process helper missing or inaccessible; run pnpm run build:windows-process-identity before this suite.',
+        { cause },
       );
-  }, 600_000);
+    });
+  });
 
   if (process.platform !== 'win32') {
     it('refuses principal observation off Windows without launching', async () => {

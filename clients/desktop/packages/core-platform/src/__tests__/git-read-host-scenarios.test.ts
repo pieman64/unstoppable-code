@@ -246,6 +246,7 @@ describe('shared Git selection scenarios through createGitReadHost', () => {
           'linux-login-shell-path',
           'getent-passwd',
           'where-git',
+          'where-winget',
         ].includes(command.kind),
       ),
     ).toBe(true);

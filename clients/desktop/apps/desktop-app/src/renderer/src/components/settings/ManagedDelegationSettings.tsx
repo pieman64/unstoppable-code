@@ -11,20 +11,21 @@ import {
   type ManagedDelegationMode,
 } from '@canopy/protocol/delegation/discovery';
 import {
-  ErrorBanner,
-  Notice,
-  NoticeButton,
   SettingsSelect,
   type SettingsSelectOption,
 } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import {
   emitManagedDelegationPreferenceUpdated,
   subscribeManagedDelegationPreferenceUpdated,
 } from '@/lib/managedDelegationPreferenceEvents';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 
-const SAVE_ERROR_MESSAGE = 'Could not save consultation settings. Try again.';
+const SAVE_ERROR_MESSAGE = "Couldn't save managed delegation settings.";
 
 const MODE_OPTIONS: readonly SettingsSelectOption<ManagedDelegationMode>[] = [
   { value: 'off', label: 'Off' },
@@ -69,7 +70,7 @@ export function ManagedDelegationSettings({
   const [maxDepth, setMaxDepth] = useState(
     normalizeManagedDelegationMaxDepth(initialMaxDepth),
   );
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<InlineFailure | null>(null);
   const [lifetimeLimit, setLifetimeLimit] = useState(
     normalizeManagedDelegationLifetimeLimit(initialLifetimeLimit),
   );
@@ -151,7 +152,7 @@ export function ManagedDelegationSettings({
     >,
   ): Promise<void> {
     setSaving(true);
-    setError(false);
+    setError(null);
     try {
       const saved = await window.api.savePreferences(patch);
       const nextLifetimeLimit = normalizeManagedDelegationLifetimeLimit(
@@ -178,8 +179,9 @@ export function ManagedDelegationSettings({
         revocationIncomplete:
           saved.__managedDelegationRevocationIncomplete === true,
       });
-    } catch {
-      setError(true);
+    } catch (caught) {
+      const appError = toAppError(resolveClientAppError(caught));
+      if (appError) setError(inlineFailure(appError, SAVE_ERROR_MESSAGE));
     } finally {
       setSaving(false);
     }
@@ -207,23 +209,26 @@ export function ManagedDelegationSettings({
       }
       dataTestId="managed-delegation-settings"
     >
-      <ErrorBanner className="" error={error ? SAVE_ERROR_MESSAGE : null} />
-      {!error && revocationIncomplete && (
-        <Notice
-          intent="attention"
-          role="alert"
-          actions={
-            <NoticeButton
-              onClick={() => void save({ managedDelegationMode: 'off' })}
-              disabled={saving}
-            >
-              Try again
-            </NoticeButton>
-          }
-        >
-          Consultation is off, but some child sessions could not be stopped.
-        </Notice>
-      )}
+      <DesktopErrorBanner
+        className=""
+        error={error?.error}
+        {...(error?.details === undefined ? {} : { details: error.details })}
+        onDismiss={(): void => setError(null)}
+        testId="settings-managed-delegation-save-error"
+      />
+      <DesktopErrorBanner
+        className=""
+        error={
+          error === null && revocationIncomplete
+            ? "Managed delegation is off, but some child sessions couldn't be stopped."
+            : null
+        }
+        onRetry={(): void => {
+          void save({ managedDelegationMode: 'off' });
+        }}
+        retrying={saving}
+        testId="settings-managed-delegation-revocation-incomplete"
+      />
       <SettingsGroup>
         <SettingsRow
           label="Delegate tasks"

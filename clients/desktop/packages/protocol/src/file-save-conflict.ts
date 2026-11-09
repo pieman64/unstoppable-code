@@ -1,3 +1,5 @@
+import { classifyError } from './app-errors/classification';
+
 /**
  * A conditional file save refused because the confirmed version is stale.
  * Transport adapters must preserve this identity rather than match messages.
@@ -9,6 +11,7 @@ export class FileSaveConflictError extends Error {
 
   constructor(message = 'File changed on disk since it was loaded.') {
     super(message);
+    classifyError(this, 'external.state_changed');
   }
 }
 

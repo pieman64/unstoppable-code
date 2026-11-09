@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, type JSX, type KeyboardEvent } from 'react';
 import { countLedgerCodePoints } from '../../lib/ledger-display';
 import { Button } from '../Button';
-import { TextArea } from '../Field';
+import { TextArea, FieldError } from '../Field';
 import { LedgerActorAvatar } from './LedgerActorAvatar';
 import { LEDGER_FORM_LIMITS } from './LedgerEntryForm';
 import type { LedgerDensity } from './ledger-entry-slots';
@@ -39,6 +39,7 @@ export function LedgerCorrectionBox({
   disabledReason,
 }: LedgerCorrectionBoxProps): JSX.Element {
   const reasonId = useId();
+  const problemId = useId();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Only a correction just started is empty. A box that mounts again with
   // text, such as a long list's row scrolled back into view, leaves focus
@@ -76,7 +77,11 @@ export function LedgerCorrectionBox({
           onKeyDown={onKeyDown}
           placeholder="Add a correction"
           aria-label="Add a correction"
-          aria-describedby={blocked ? reasonId : undefined}
+          aria-describedby={
+            [blocked ? reasonId : null, problem ? problemId : null]
+              .filter(Boolean)
+              .join(' ') || undefined
+          }
           ref={inputRef}
           disabled={saving || blocked}
           title={reason}
@@ -138,13 +143,13 @@ export function LedgerCorrectionBox({
           A correction is a new entry linked to this one, which stays as it is.
         </p>
         {problem !== null && (
-          <p
-            role="alert"
-            className="text-2xs fg-destructive"
+          <FieldError
+            id={problemId}
+            announce
             data-testid="ledger-correction-problem"
           >
             {problem}
-          </p>
+          </FieldError>
         )}
       </div>
     </div>

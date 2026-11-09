@@ -232,12 +232,7 @@ describe('App Advisor turns with no window (CAN-4133)', () => {
   it('a legacy action with no window answers that the window is not open and records nothing', async () => {
     const runtime = createAppAdvisorToolRuntime(surfaces(), destination);
     const action = dispatchActionSchema.parse({
-      action: {
-        type: 'agents.create',
-        name: 'Reviewer',
-        baseModel: 'claude-opus-5-5',
-        instructions: 'Review changes.',
-      },
+      action: { type: 'workspace.create_multi_repo', name: 'Combined' },
     }).action;
     expect(appAdvisorActionDisposition(action.type)?.kind).toBe('legacy');
 
@@ -264,12 +259,7 @@ describe('App Advisor turns with no window (CAN-4133)', () => {
     const runtime = createAppAdvisorToolRuntime(advisorSurfaces, destination);
     windowRequest.mockResolvedValue({ requestId: 'toolu_2', ok: true });
     const action = dispatchActionSchema.parse({
-      action: {
-        type: 'agents.create',
-        name: 'Reviewer',
-        baseModel: 'claude-opus-5-5',
-        instructions: 'Review changes.',
-      },
+      action: { type: 'workspace.create_multi_repo', name: 'Combined' },
     }).action;
 
     await routeAppAdvisorAction(

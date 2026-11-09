@@ -26,7 +26,7 @@ import {
   resolveBrowserTaskOwner,
   type BrowserTaskOwner,
 } from '@canopy/desktop-shared/node/browser-profiles/owners';
-import type { BrowserSessionSnapshot } from '@canopy/desktop-shared/types/browser';
+import type { BrowserSessionSnapshot } from '@canopy/execution-engine/types/browser';
 import { getDataDir, getWorkspaceWorktreeDir } from '../lib/paths';
 
 export interface BrowserProfileOpenContext {

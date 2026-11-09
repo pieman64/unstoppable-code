@@ -39,7 +39,8 @@ import { sendToWebContents } from '../lib/web-contents-send';
  * core's sample events, whoever sampled, and `resource-monitor:get-snapshot`
  * reads through the dispatcher. While Electron main holds a daemon session,
  * the daemon's own status is folded in (CAN-5690), so pressure includes
- * the terminal and graph hosts the daemon runs.
+ * the terminal and graph hosts the daemon runs, and memory admission counts
+ * them too, whoever launched the daemon (CAN-5695).
  */
 
 const DEFAULT_SAMPLE_INTERVAL_MS = 2_000;
@@ -454,7 +455,11 @@ export class ResourceMonitorService {
     const projected = this.projectionChain
       .catch(() => {})
       .then(async (): Promise<ResourceMonitorSnapshot> => {
-        const snapshot = this.project(this.lastAccounted, this.lastOverlay);
+        const snapshot = this.project(
+          this.lastAccounted,
+          this.lastOverlay,
+          true,
+        );
         this.snapshot = snapshot;
         this.broadcast(snapshot);
         await this.handlePressureTransition(snapshot);
@@ -464,11 +469,16 @@ export class ResourceMonitorService {
     return projected;
   }
 
+  /**
+   * `live` reads the guards now rather than at the sample: admission counts
+   * the daemon's status (CAN-5695), which can change between samples.
+   */
   private project(
     accounted: ExecutionAccountingSnapshot<ResourceMetadata>,
     desktop: DesktopOverlay,
+    live = false,
   ): ResourceMonitorSnapshot {
-    const local = this.projectLocal(accounted, desktop);
+    const local = this.projectLocal(accounted, desktop, live);
     return this.daemonStatus
       ? mergeDaemonExecutionStatus(local, this.daemonStatus, {
           productName: BRAND.displayName,
@@ -480,9 +490,15 @@ export class ResourceMonitorService {
   private projectLocal(
     accounted: ExecutionAccountingSnapshot<ResourceMetadata>,
     desktop: DesktopOverlay,
+    live: boolean,
   ): ResourceMonitorSnapshot {
     const maxConcurrentTurns = readMaxConcurrentChatTurns();
-    const pipelines = accounted.families.pipeline;
+    const pipelines = live
+      ? this.accounting.familyStatus().pipeline
+      : accounted.families.pipeline;
+    const memoryGuardBlocked = live
+      ? this.accounting.isMemoryGuardBlocked()
+      : accounted.memoryGuardBlocked;
     return {
       version: 1,
       sampledAt: accounted.sampledAt,
@@ -503,7 +519,7 @@ export class ResourceMonitorService {
                 desktop.chatTurns.pendingMessages +
                 this.accounting.chatTurnPending() >=
                 maxConcurrentTurns) ||
-            accounted.memoryGuardBlocked,
+            memoryGuardBlocked,
         },
         pipelines: {
           activeExecutions: pipelines.active,

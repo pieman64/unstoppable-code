@@ -2,12 +2,12 @@ import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/d
 import { openOpenCodeExecutionForWorkerRun } from '../agent-runs/opencode-worker-runtime';
 import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
 import { resolveSessionAiCreditsAttribution } from './ai-credits-routing';
-import { resolveGatewayModelEntry } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { resolveGatewayModelEntry } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   buildCodexPlanModeDeveloperInstructions,
   DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   extractProposedPlan,
-} from '@canopy/desktop-shared/codex-plan-mode';
+} from '@canopy/execution-engine/codex-plan-mode';
 import { publishOpenCodePlanProposal } from '../services/chat-state-plan-exit';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import { openCodeDeferredResultReceipts } from '../opencode/deferred-result';
@@ -43,13 +43,12 @@ import type { BrowserWindow } from 'electron';
 import {
   getRawOpenCodeModelId,
   isOpenCodeModel,
-} from '@canopy/desktop-shared/lib/opencode-models';
+} from '@canopy/execution-engine/lib/opencode-models';
 import {
   hasAnySelections,
-  SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
   type ApprovalMode,
 } from '@canopy/desktop-shared/types';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { cursorCanopyMcpServerNames } from '@canopy/desktop-shared/lib/cursor-mcp-tool-call';
 import {
   emptyCursorCapabilityProjection,
@@ -628,8 +627,7 @@ export class OpenCodeProvider implements AgentProvider {
                 observedDuringTurnId: lifecycleTurnId,
               });
           },
-          onSetAutoArchive: (enabled) =>
-            turnEmit({ type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE, enabled }),
+          autoArchiveAvailable: true,
           authorizeToolCall: (toolKey, args, call) => {
             const tool =
               serverMode === 'app-advisor'

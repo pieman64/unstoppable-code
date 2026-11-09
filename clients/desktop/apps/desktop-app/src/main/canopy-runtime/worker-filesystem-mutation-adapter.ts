@@ -351,6 +351,16 @@ export function toLegacyFileTreeMutationError(error: unknown): unknown {
     : new Error(message);
 }
 
+/** The delete/transfer projections need root identities, not host paths. */
+export interface LegacyEntryMutationHost extends Pick<
+  FilesystemEntryMutationHost,
+  'os' | 'assertMutable'
+> {
+  roots(
+    scope: CanopyWorkspaceScope,
+  ): Promise<readonly { fileRootId: string }[]>;
+}
+
 export interface EntryDeleteDispatch {
   (
     params: WorkerFilesystemEntryDeleteParams,
@@ -365,7 +375,7 @@ export interface EntryDeleteDispatch {
  */
 export async function deleteFileTreeEntryForLegacyIpc(
   dispatch: EntryDeleteDispatch,
-  host: FilesystemEntryMutationHost,
+  host: LegacyEntryMutationHost,
   request: DeleteFileTreeRequest,
   options: { caller: CanopyCallerDescriptor },
 ): Promise<FileTreeMutationResponse> {
@@ -447,7 +457,7 @@ export interface EntryMoveDispatch {
  * omitted `repoId` names the scope's only root, after the host's refusals.
  */
 async function resolveTransferRootIds(
-  host: FilesystemEntryMutationHost,
+  host: LegacyEntryMutationHost,
   scope: CanopyWorkspaceScope,
   hints: readonly [string | undefined, string | undefined],
 ): Promise<[string, string]> {
@@ -490,7 +500,7 @@ function missingTransferEndpoint(
  * checks up to its path refusal here instead, in the engine's order.
  */
 async function refuseEmptyCopyPath(
-  host: FilesystemEntryMutationHost,
+  host: LegacyEntryMutationHost,
   endpoints: {
     scope: CanopyWorkspaceScope;
     sourceFileRootId: string;
@@ -530,7 +540,7 @@ async function refuseEmptyCopyPath(
  */
 export async function transferFileTreeEntryForLegacyIpc(
   dispatch: { copy: EntryCopyDispatch; move: EntryMoveDispatch },
-  host: FilesystemEntryMutationHost,
+  host: LegacyEntryMutationHost,
   request: TransferFileTreeRequest,
   options: { caller: CanopyCallerDescriptor },
 ): Promise<FileTreeMutationResponse> {

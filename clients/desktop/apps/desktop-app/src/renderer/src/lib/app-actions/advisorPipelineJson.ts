@@ -2,7 +2,7 @@ import type { AppAdvisorJson } from '@canopy/desktop-shared/types';
 import type {
   JobResult,
   StepResult,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 
 /** Advisor-facing JSON projections for physical pipeline job results. */
 

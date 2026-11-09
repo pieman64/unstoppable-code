@@ -1,4 +1,5 @@
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import type {
   AgentProviderType,
@@ -13,7 +14,7 @@ import {
   hasHydratedModelRegistry,
   isOllamaModel,
 } from '@canopy/desktop-shared/types';
-import { isUnavailableModelSelection } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isUnavailableModelSelection } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isModelBlockedTriState } from '@canopy/desktop-shared/lib/model-policy';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import {
@@ -248,7 +249,9 @@ async function readIsGuest(): Promise<boolean | undefined> {
     return account.read && account.read !== 'ok'
       ? undefined
       : isGuestAccount(account);
-  } catch {
+  } catch (error) {
+    // Unknown disables only the checks that need it; record the failed read.
+    reportClientAppError(error);
     return undefined;
   }
 }
@@ -271,7 +274,9 @@ async function readLibraryAccess(
     return read.accountKey === useModelLibraryAccessStore.getState().accountKey
       ? read.access
       : undefined;
-  } catch {
+  } catch (error) {
+    // Unknown disables only the checks that need it; record the failed read.
+    reportClientAppError(error);
     return undefined;
   }
 }

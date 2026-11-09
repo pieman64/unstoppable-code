@@ -26,6 +26,7 @@ import type {
   PortalCodeViewerSelection,
 } from '@canopy/protocol/portal';
 import {
+  Stack,
   OverlayScrollArea,
   FileChangeMetadata,
   FileRevertButton,
@@ -102,7 +103,7 @@ function ChangedFilesNotices({
   // The shared inline Notice (DESIGN.md): neutral, the glyph carries the
   // meaning; announced politely when a refresh changes the answer.
   return (
-    <div className="space-y-2 px-3">
+    <div className="flex flex-col gap-2 px-3">
       {notices.map((notice, index) => (
         <Notice
           key={`${notice.kind}:${notice.repoId ?? ''}:${String(index)}`}
@@ -317,7 +318,7 @@ function ChangedFilesBody({
     return (
       <div
         ref={bodyRef}
-        className="space-y-2"
+        className="flex flex-col gap-2"
         data-testid="activity-changed-files"
         {...(virtualized ? { 'data-virtualized': 'true' } : {})}
         onBlurCapture={onBlurCapture}
@@ -334,7 +335,7 @@ function ChangedFilesBody({
   return (
     <OverlayScrollArea
       className="-mb-3 -mt-3 max-h-70"
-      contentClassName="space-y-2 py-3"
+      contentClassName="flex flex-col gap-2 py-3"
       railClassName="-right-1"
       viewportProps={viewportProps}
       viewportRef={viewportRef}
@@ -1563,9 +1564,9 @@ export function ChangedFilesSection({
     // A notice explains an incomplete answer; "no changed files" would claim
     // a complete one.
     return notices.length > 0 ? (
-      <div className="space-y-2" data-testid="activity-changed-files">
+      <Stack gap="inline" data-testid="activity-changed-files">
         {noticeList}
-      </div>
+      </Stack>
     ) : (
       <>{emptyState}</>
     );

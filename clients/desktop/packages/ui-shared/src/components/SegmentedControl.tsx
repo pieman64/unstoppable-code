@@ -91,7 +91,7 @@ const TRACK_CORNER_CLASS_NAME: Record<SegmentedControlShape, string> = {
 const TRACK_WIDTH_CLASS_NAME = {
   control: 'min-w-52',
   fill: 'w-full',
-  content: '',
+  content: 'w-fit max-w-full',
 } as const;
 
 /**

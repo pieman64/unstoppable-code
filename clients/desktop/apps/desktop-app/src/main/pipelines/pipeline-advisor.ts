@@ -1,11 +1,11 @@
 import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
-import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
+import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import {
   readHelperUsage,
   type HelperUsage,
-} from '@canopy/desktop-shared/lib/helper-usage';
+} from '@canopy/execution-engine/lib/helper-usage';
 import {
   DEFAULT_PIPELINE_ADVISOR_MODEL,
   getExecutionHarnessForModel,
@@ -28,7 +28,7 @@ import type {
   PipelineAdvisorSeverity,
   PipelineAdvisorSnapshot,
   PipelineAdvisorTurnKind,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { randomUUID } from 'node:crypto';
 import {
   runHelperThroughWorker,

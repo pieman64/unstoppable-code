@@ -50,8 +50,8 @@ import type {
   McpServerAuthStatus,
   McpServerFile,
   McpServerRef,
-} from '@canopy/desktop-shared/types/mcp-servers';
-import { normalizeMcpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
+import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import type {
   MarketplaceInfo,
   PluginInfo,

@@ -15,10 +15,16 @@
       "path": "./packages/agent-actions"
     },
     {
+      "path": "./packages/remote-session"
+    },
+    {
       "path": "./packages/agent-transcript"
     },
     {
       "path": "./packages/app-core"
+    },
+    {
+      "path": "./packages/ipc-canopy-client"
     },
     {
       "path": "./packages/app-state"
@@ -40,6 +46,9 @@
     },
     {
       "path": "./packages/code-graph"
+    },
+    {
+      "path": "./packages/execution-engine"
     },
     {
       "path": "./packages/desktop-shared"

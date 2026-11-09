@@ -476,14 +476,18 @@ function hasDisplayText(message: PortalChatMessage): boolean {
 
 /**
  * A host notice that stays beside the final answer when a turn collapses: a
- * system text message, or the line where the account proxy moved the chat to
- * another account. Mirrors desktop's `splitFinalMessages`.
+ * system text message, the line where the account proxy moved the chat to
+ * another account, or the line where a launch skipped Claude Mods. Mirrors
+ * desktop's `splitFinalMessages`.
  */
 function isSystemTextMessage(message: PortalChatMessage): boolean {
   return (
     message.role === 'system' &&
     (hasDisplayText(message) ||
-      (message.parts ?? []).some((part) => part.kind === 'account_switch'))
+      (message.parts ?? []).some(
+        (part) =>
+          part.kind === 'account_switch' || part.kind === 'mods_skipped',
+      ))
   );
 }
 

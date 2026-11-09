@@ -46,6 +46,7 @@ let connections:
   | ElectronDaemonConnectionService<ElectronDaemonClient>
   | undefined;
 let host: Promise<ElectronDaemonHost> | undefined;
+let resolvedHost: ElectronDaemonHost | undefined;
 let lifetime: ElectronDaemonCallerLifetime | undefined;
 let stopped = false;
 let w5HandoffPending = false;
@@ -107,16 +108,31 @@ function getHost(): Promise<ElectronDaemonHost> {
   if (host) return host;
   const pending = createElectronDaemonHost(w5LaunchInputs());
   host = pending;
-  void pending.catch(() => {
-    if (host === pending) host = undefined;
-    // Without a prepared data root no daemon can start. Reads resolve the host
-    // before they ask the connection service, so it never sees this failure.
-    getElectronDaemonHealth().observe({
-      kind: 'unreachable',
-      reason: 'host_unavailable',
-    });
-  });
+  void pending.then(
+    (resolved) => {
+      if (host === pending) resolvedHost = resolved;
+    },
+    () => {
+      if (host === pending) host = undefined;
+      // Without a prepared data root no daemon can start. Reads resolve the host
+      // before they ask the connection service, so it never sees this failure.
+      getElectronDaemonHealth().observe({
+        kind: 'unreachable',
+        reason: 'host_unavailable',
+      });
+    },
+  );
   return pending;
+}
+
+/** The trusted daemon host, set up on first use (CAN-5771's owner session). */
+export function getElectronDaemonHost(): Promise<ElectronDaemonHost> {
+  return getHost();
+}
+
+/** The resolved trusted host, or `undefined`; never starts one. */
+export function peekElectronDaemonHost(): ElectronDaemonHost | undefined {
+  return resolvedHost;
 }
 
 /** Explicit migrated-consumer opt-in; construction does not open or start a daemon. */
@@ -133,6 +149,7 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
       if (flip && w5AttachOnly) {
         // A failed handoff cannot safely repeat admission or its backup.
         const found = await probeCanopyDaemon({
+          secureStorageLayout: 'nested-v1',
           dataRootHash: trusted.launch.dataRootHash,
           ports: trusted.launch.ports,
           signal,
@@ -338,6 +355,7 @@ export async function probeElectronDaemonW5(
     const found = await deadline.run(
       (probeSignal) =>
         probeCanopyDaemon({
+          secureStorageLayout: 'nested-v1',
           dataRootHash: trusted.launch.dataRootHash,
           ports: trusted.launch.ports,
           connect: (endpoint, setup) =>

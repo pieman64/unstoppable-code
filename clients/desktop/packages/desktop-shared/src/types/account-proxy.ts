@@ -1,8 +1,8 @@
-import type { SecureStorageFailure } from './secure-storage';
+import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import type {
   ProviderRateLimitSnapshot,
   ProviderUsageErrorInfo,
-} from './observability';
+} from '@canopy/execution-engine/types/observability';
 // Account proxy (CLIProxyAPI) contracts shared by main, preload, and the
 // renderer. See docs/planning/2026-10-12-account-proxy/README.md.
 

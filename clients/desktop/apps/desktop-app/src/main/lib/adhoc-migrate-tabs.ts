@@ -15,7 +15,7 @@ import {
   isCodexSpeed,
   readCodexSpeedRecord,
   withCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import { readChatTabsFile } from './chat-tabs-reader';
 import { getChatStateService } from '../services/chat-state-service';
 import { resolveWorktreeCwd } from './resolve-worktree';

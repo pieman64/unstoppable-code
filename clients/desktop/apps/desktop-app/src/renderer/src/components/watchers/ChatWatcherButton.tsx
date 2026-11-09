@@ -66,19 +66,19 @@ export function ChatWatcherButton({
     return (
       <Tooltip label="Watch this chat">
         {hasWatchers ? (
-          <button
-            type="button"
+          <Button
+            variant="ghost-accent"
+            size="sm"
             onClick={(): void => openModal({ projectId, worktreeId, chatId })}
             aria-label="Watch this chat"
             data-testid={`chat-watcher-button-${chatId}`}
             data-attention=""
-            className="focus-ring canopy-small-icon-stroke inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-full px-2 text-xs fg-info transition-colors hover:bg-info-subtle"
           >
             <WatcherEyeIcon size="sm" aria-hidden="true" />
             <span data-testid={`chat-watcher-button-${chatId}-count`}>
               {watchers.length}
             </span>
-          </button>
+          </Button>
         ) : (
           <Button
             variant={CLEAN_ICON_BUTTON_VARIANT}
@@ -94,15 +94,6 @@ export function ChatWatcherButton({
       </Tooltip>
     );
   }
-  const buttonClasses = [
-    hasWatchers
-      ? 'focus-ring inline-flex h-6 items-center justify-center gap-1 rounded-md border border-fg-info/30 bg-info-subtle px-1.5 fg-info transition-colors hover:bg-info-subtle/80'
-      : 'focus-ring flex h-6 w-6 items-center justify-center rounded-md border bg-fg-primary/[0.04] fg-primary/80 transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary',
-    className ?? '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-
   return (
     <ActionTooltip
       title="Watch this chat"
@@ -112,26 +103,24 @@ export function ChatWatcherButton({
           : 'Notify a chat when this one finishes its turn.'
       }
     >
-      <button
-        type="button"
-        onClick={(): void => openModal({ projectId, worktreeId, chatId })}
-        aria-label="Watch this chat"
-        data-testid={`chat-watcher-button-${chatId}`}
-        // Footer rows keep the active-watchers info styling instead of the
-        // muted icon look.
-        data-attention={hasWatchers ? '' : undefined}
-        className={buttonClasses}
-      >
-        <WatcherEyeIcon size="sm" aria-hidden="true" />
-        {hasWatchers && (
-          <span
-            data-testid={`chat-watcher-button-${chatId}-count`}
-            className="text-3xs font-semibold leading-none fg-info"
-          >
-            {watchers.length}
-          </span>
-        )}
-      </button>
+      <span className={className}>
+        <Button
+          variant={hasWatchers ? 'ghost-accent' : 'ghost-quiet'}
+          size="sm"
+          iconOnly={!hasWatchers}
+          onClick={(): void => openModal({ projectId, worktreeId, chatId })}
+          aria-label="Watch this chat"
+          data-testid={`chat-watcher-button-${chatId}`}
+          data-attention={hasWatchers ? '' : undefined}
+        >
+          <WatcherEyeIcon size="sm" aria-hidden="true" />
+          {hasWatchers && (
+            <span data-testid={`chat-watcher-button-${chatId}-count`}>
+              {watchers.length}
+            </span>
+          )}
+        </Button>
+      </span>
     </ActionTooltip>
   );
 }

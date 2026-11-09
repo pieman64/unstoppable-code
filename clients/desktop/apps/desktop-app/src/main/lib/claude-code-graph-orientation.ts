@@ -19,7 +19,7 @@ import path from 'node:path';
 import {
   getCanonicalCanopyToolKey,
   type CanopyInjectedToolKey,
-} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { getWorktreeCodeGraphDbPath } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
 import { readWorktreeCodeGraph } from '../code-graph/graph-reads';
 import { resolveWorktreeCwd } from './resolve-worktree';

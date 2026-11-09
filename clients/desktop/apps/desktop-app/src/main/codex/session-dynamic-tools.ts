@@ -29,7 +29,9 @@ export function buildCodexSessionDynamicToolSpecs(options: {
     });
   }
   if (options.assistantMode === 'pipeline-editor') {
-    return buildPipelineEditorDynamicToolSpecs();
+    return buildPipelineEditorDynamicToolSpecs({
+      interfaceTools: options.interfaceTools,
+    });
   }
   return buildCanopyDynamicToolSpecs({
     mode: options.workspaceMode,

@@ -6,7 +6,7 @@ import {
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
-import { brandEnvName } from '@canopy/desktop-shared/brand/env';
+import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import {
   buildHelperInjectedPrompts,
   type HelperTranscriptObserver,
@@ -14,7 +14,7 @@ import {
 import {
   readHelperUsage,
   type HelperUsage,
-} from '@canopy/desktop-shared/lib/helper-usage';
+} from '@canopy/execution-engine/lib/helper-usage';
 import { isRecord } from '../lib/type-guards';
 import {
   finalizeObservedHelperTask,

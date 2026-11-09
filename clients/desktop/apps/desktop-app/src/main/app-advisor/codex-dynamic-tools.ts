@@ -203,7 +203,11 @@ export async function handleAppAdvisorDynamicToolCall(
               ? { ledgerRuntime: context.ledgerRuntime }
               : {}),
           }
-        : {}),
+        : canonicalKey === 'set_auto_archive'
+          ? {
+              invocationId: `codex:${params.threadId}:${params.turnId}:${params.callId}`,
+            }
+          : {}),
     },
   );
 

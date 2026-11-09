@@ -1,4 +1,5 @@
 import {
+  LoadingRegion,
   Button,
   DiffComparisonToggle,
   DiffTurnUnavailableState,
@@ -65,10 +66,7 @@ import {
 } from '@canopy/ui-shared/components';
 import type { FileImageSaveSupport } from '@canopy/protocol/file-image-save';
 import { desktopDiagramSaveDestination } from '@/lib/diagramSaveDestination';
-import {
-  CenteredLoadingSpinner,
-  DelayedLoadingPlaceholder,
-} from '@canopy/ui-shared/components';
+import {} from '@canopy/ui-shared/components';
 import { useChatStore, useChatTabRenderState } from '@/stores/chatStore';
 import {
   isTurnDiffUnavailable,
@@ -900,13 +898,7 @@ function DesktopSharedFileViewerImpl({
       onRenderFailure,
       renderKind: slotKind,
     }: FileRichDocumentSlot): JSX.Element => (
-      <Suspense
-        fallback={
-          <DelayedLoadingPlaceholder>
-            <CenteredLoadingSpinner className="my-12" />
-          </DelayedLoadingPlaceholder>
-        }
-      >
+      <Suspense fallback={<LoadingRegion layout="fill" />}>
         {slotKind === 'docx' ? (
           <LazyDocxPreview
             bytes={bytes}
@@ -1226,9 +1218,7 @@ function DesktopSharedFileViewerImpl({
         <Suspense
           fallback={
             <div className="flex min-h-0 flex-1 items-center justify-center">
-              <DelayedLoadingPlaceholder>
-                <CenteredLoadingSpinner className="my-12" />
-              </DelayedLoadingPlaceholder>
+              <LoadingRegion layout="fill" />
             </div>
           }
         >
@@ -1546,9 +1536,7 @@ function DesktopSharedFileViewerImpl({
   if (!request) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
-        <DelayedLoadingPlaceholder>
-          <CenteredLoadingSpinner className="my-12" />
-        </DelayedLoadingPlaceholder>
+        <LoadingRegion layout="fill" />
       </div>
     );
   }
@@ -1687,20 +1675,22 @@ function DesktopSharedFileViewerImpl({
                 )}
 
                 {diffError ? (
-                  <Notice
-                    intent="destructive"
-                    className="m-4"
-                    actions={
-                      <NoticeButton
-                        variant="primary"
-                        onClick={() => setDiffRevision((value) => value + 1)}
-                      >
-                        Try again
-                      </NoticeButton>
-                    }
-                  >
-                    {diffError}
-                  </Notice>
+                  <div className="shrink-0 p-4">
+                    <Notice
+                      intent="destructive"
+                      className=""
+                      actions={
+                        <NoticeButton
+                          variant="primary"
+                          onClick={() => setDiffRevision((value) => value + 1)}
+                        >
+                          Try again
+                        </NoticeButton>
+                      }
+                    >
+                      {diffError}
+                    </Notice>
+                  </div>
                 ) : !diffContext ? (
                   <p className="p-4 text-xs fg-secondary">
                     No comparison is available for this file.
@@ -1725,17 +1715,9 @@ function DesktopSharedFileViewerImpl({
                     }
                   />
                 ) : !snapshot ? (
-                  <DelayedLoadingPlaceholder>
-                    <CenteredLoadingSpinner className="my-12" />
-                  </DelayedLoadingPlaceholder>
+                  <LoadingRegion layout="fill" />
                 ) : (
-                  <Suspense
-                    fallback={
-                      <DelayedLoadingPlaceholder>
-                        <CenteredLoadingSpinner className="my-12" />
-                      </DelayedLoadingPlaceholder>
-                    }
-                  >
+                  <Suspense fallback={<LoadingRegion layout="fill" />}>
                     {snapshot.data.binary || snapshot.data.imagePreview ? (
                       <DiffMediaView
                         {...snapshot.data}
@@ -1791,11 +1773,11 @@ function DesktopSharedFileViewerImpl({
             setupRetryJustFinished ||
             setupRecheckPending
           }
+          unsupportedFileActionGap="item"
           unsupportedFileAction={
             localFileRequest === undefined || !canRevealFile ? undefined : (
               <Button
                 size="compact"
-                className="mt-1"
                 onClick={openOriginalFile}
                 data-testid="file-viewer-open-unsupported"
               >

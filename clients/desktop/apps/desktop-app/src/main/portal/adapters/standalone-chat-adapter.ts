@@ -12,7 +12,7 @@ import {
   codexSpeedFromFastMode,
   isCodexSpeed,
   type CodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import type { PortalAdapterContext } from './types';
 import {

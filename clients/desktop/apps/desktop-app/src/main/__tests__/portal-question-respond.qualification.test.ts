@@ -106,7 +106,7 @@ async function ask(
 
 beforeEach(async () => {
   composerCommand.mockReset();
-  resetDesktopChatWaitsForTest();
+  resetDesktopChatWaitsForTest({ noClientMode: 'wait' });
   fixture = createChatStateServiceFixture();
   await fixture.createChat(SCOPE);
 });
@@ -132,8 +132,19 @@ it('a Portal answer settles a live question once and completes with the command 
   expect(context.completed).toEqual([
     expect.objectContaining({ outcome: 'applied' }),
   ]);
-  await expect(answers).resolves.toEqual(ANSWERS);
+  await expect(answers).resolves.toEqual(
+    ANSWERS.map((answer) => ({ ...answer, answeredBy: 'person' })),
+  );
   expect(composerCommand).not.toHaveBeenCalled();
+});
+
+it('a Portal answer from an external agent reaches the waiting tool as an agent answer (CAN-6024)', async () => {
+  const { answers } = await ask('q-agent');
+  const context = contextDouble({ origin: SENDER });
+  await handlePortalChatAnswerQuestion(answerCommand('q-agent'), context);
+  await expect(answers).resolves.toEqual(
+    ANSWERS.map((answer) => ({ ...answer, answeredBy: 'agent' })),
+  );
 });
 
 it('a Portal retry with the same command id completes from the receipt', async () => {

@@ -197,7 +197,15 @@ export const CatalogSkillCustomSaveResultSchema = z.strictObject({
 export const CatalogSkillUpdatesCheckParamsSchema = z.strictObject({
   _meta: Keyed,
 });
+/** The most installed skills one update check counts (CAN-5898). */
+export const CATALOG_SKILL_UPDATES_MAX_COUNT = 100_000;
+
 export const CatalogSkillUpdatesCheckResultSchema = z.strictObject({
+  /**
+   * Skills with an update available, in check order, as many as the recorded
+   * outcome holds (CAN-5898). Outcomes recorded before CAN-5898 list every
+   * checked skill.
+   */
   updates: z
     .array(
       z.strictObject({
@@ -208,6 +216,20 @@ export const CatalogSkillUpdatesCheckResultSchema = z.strictObject({
       }),
     )
     .max(10000),
+  /** Every installed skill checked; absent from outcomes recorded before CAN-5898. */
+  checkedCount: z
+    .number()
+    .int()
+    .min(0)
+    .max(CATALOG_SKILL_UPDATES_MAX_COUNT)
+    .optional(),
+  /** Every checked skill with an update available; absent before CAN-5898. */
+  updateCount: z
+    .number()
+    .int()
+    .min(0)
+    .max(CATALOG_SKILL_UPDATES_MAX_COUNT)
+    .optional(),
 });
 
 const READ = [

@@ -1,7 +1,7 @@
-import { spawn } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
+import type { Readable, Writable } from 'node:stream';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import type { CopilotClient, GetStatusResponse } from '@github/copilot-sdk';
 import type * as CopilotSdkModule from '@github/copilot-sdk';
@@ -11,11 +11,50 @@ import {
   snapshotCopilotDescendants,
   terminateCopilotDescendants,
   withCopilotCleanupDeadline,
-  killCopilotProcess,
 } from './process-ownership';
 import { CopilotProcessReceipt } from './process-receipts';
 import type { CopilotReceiptStorage } from './receipt-storage';
 import { loadRequiredNodeModule } from './node-module-loader';
+
+/**
+ * The structural shape of a provider process host child (CAN-4118's
+ * ProviderProcess). Declared here because this package imports nothing from
+ * desktop-shared; Electron main passes the host's spawnProviderProcess.
+ */
+export interface CopilotProcess {
+  /** Undefined until the child has started. */
+  readonly pid: number | undefined;
+  /** Null when the request ignored stdin. */
+  readonly stdin: Writable | null;
+  readonly stdout: Readable;
+  readonly stderr: Readable;
+  /** The CLI itself exited; 'close' can follow much later. */
+  once(
+    event: 'exit',
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): this;
+  once(
+    event: 'close',
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): this;
+  once(event: 'error', listener: (error: Error) => void): this;
+  /** TERM to the group, then KILL after the grace; idempotent; resolves after close. */
+  stop(options?: { readonly graceMs?: number }): Promise<void>;
+}
+
+export interface CopilotProcessOwner {
+  readonly kind: 'turn' | 'subagent' | 'helper' | 'pipeline' | 'discovery';
+  readonly id: string;
+}
+
+export type CopilotProcessSpawner = (request: {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly owner: CopilotProcessOwner;
+  readonly stdin?: 'pipe' | 'ignore';
+}) => CopilotProcess;
 
 export interface CopilotRuntimeOptions {
   executable: string;
@@ -26,6 +65,10 @@ export interface CopilotRuntimeOptions {
   receiptStorage?: CopilotReceiptStorage;
   env: NodeJS.ProcessEnv;
   signal: AbortSignal;
+  /** Starts the CLI; Electron main passes the provider process host's spawner (CAN-4118). */
+  spawnProcess: CopilotProcessSpawner;
+  /** Attribution for the provider process host; ids go through copilotProcessOwnerId. */
+  owner: CopilotProcessOwner;
 }
 
 export interface CopilotRecipientIdentity {
@@ -45,6 +88,14 @@ export interface OwnedCopilotRuntime {
 }
 
 export const MAX_CONSECUTIVE_OBSERVATION_FAILURES = 5;
+
+/** The provider process host refuses an empty owner id or one over 200 characters (CAN-4118). */
+export function copilotProcessOwnerId(id: string): string {
+  if (id.length === 0) return 'copilot-unidentified';
+  if (id.length > 200)
+    return `sha256:${createHash('sha256').update(id).digest('hex')}`;
+  return id;
+}
 
 /**
  * The host owns the detached process group; the official SDK owns JSON-RPC.
@@ -70,9 +121,9 @@ export async function startCopilotRuntime(
   await mkdir(options.stateDirectory, { recursive: true, mode: 0o700 });
   options.signal.throwIfAborted();
   const token = randomBytes(32).toString('hex');
-  const child = spawn(
-    options.executable,
-    [
+  const child: CopilotProcess = options.spawnProcess({
+    command: options.executable,
+    args: [
       '--headless',
       '--no-auto-update',
       '--log-level',
@@ -84,18 +135,15 @@ export async function startCopilotRuntime(
       // adopt a gh login or stored CLI credentials on its own.
       '--no-auto-login',
     ],
-    {
-      cwd: options.workingDirectory,
-      env: copilotRuntimeEnvironment(
-        options.env,
-        options.stateDirectory,
-        token,
-      ),
-      detached: hostOperatingSystem() !== 'win32',
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: options.workingDirectory,
+    env: copilotRuntimeEnvironment(options.env, options.stateDirectory, token),
+    owner: {
+      kind: options.owner.kind,
+      id: copilotProcessOwnerId(options.owner.id),
     },
-  );
+    // The CLI reads no input; keep its stdin on the null device.
+    stdin: 'ignore',
+  });
   const started = performance.now();
   const runtimeId = randomUUID();
   let reap!: () => void;
@@ -103,16 +151,24 @@ export async function startCopilotRuntime(
     reap = resolve;
   });
   let childExited = false;
+  let childClosed = false;
+  let childErrored = false;
+  let startupFailure: ((error: Error) => void) | undefined;
+  // A descendant can hold the CLI's pipes open long after the CLI exits.
   child.once('exit', () => {
     childExited = true;
   });
   child.once('close', () => {
-    childExited = true;
+    childClosed = true;
     reap();
   });
-  // Spawn and later transport errors must always have an owner, including
-  // after the temporary startup listener has been removed.
-  child.on('error', () => undefined);
+  // ProviderProcess emits error at most once, then close (CAN-4118).
+  child.once('error', () => {
+    childErrored = true;
+    startupFailure?.(
+      new Error('Copilot could not start. Reconnect it in Settings.'),
+    );
+  });
   // Setup output can contain credentials. Drain it; never forward it to logs.
   child.stderr.resume();
   let client: CopilotClient | undefined;
@@ -134,10 +190,10 @@ export async function startCopilotRuntime(
   let ownershipLimitReached = false;
   let receiptConfirmed = false;
   let failedObservations = 0;
-  const childIsRunning = (): boolean =>
-    !childExited && child.exitCode === null && child.signalCode === null;
-  const kill = (signal: NodeJS.Signals): Promise<void> =>
-    childIsRunning() ? killCopilotProcess(child, signal) : Promise.resolve();
+  const childIsRunning = (): boolean => !childExited && !childClosed;
+  // Once the CLI has exited its pid may be reused; survivors are reaped by identity.
+  const stopChild = (): Promise<void> =>
+    childIsRunning() ? child.stop() : Promise.resolve();
   const observeDescendants = (): Promise<void> => {
     if (observation) return observation;
     if (!child.pid || !childIsRunning()) return Promise.resolve();
@@ -189,6 +245,7 @@ export async function startCopilotRuntime(
     failedObservations >= MAX_CONSECUTIVE_OBSERVATION_FAILURES;
   const close = (): Promise<void> => {
     closing ??= (async (): Promise<void> => {
+      let stopping: Promise<void> | undefined;
       options.signal.removeEventListener('abort', abort);
       if (observationTimer) clearInterval(observationTimer);
       let cleanupError = observationError;
@@ -225,7 +282,7 @@ export async function startCopilotRuntime(
       if (hostOperatingSystem() === 'win32') {
         // taskkill needs the live parent to discover its tree. RPC shutdown
         // first would orphan tool processes before Windows can enumerate them.
-        await cleanup(() => kill('SIGKILL'));
+        await cleanup(stopChild);
       } else {
         // URI clients do not own their server. Flush owned sessions before
         // escalating, but an unresponsive RPC is not a reason to skip the kill.
@@ -237,12 +294,12 @@ export async function startCopilotRuntime(
                 .then(() => client?.stop()),
             ).catch(() => undefined);
         } finally {
-          await cleanup(() => kill('SIGTERM'));
+          stopping = stopChild();
           await withCopilotCleanupDeadline(exited).catch(() => undefined);
         }
       }
       await cleanup(() => terminateCopilotDescendants(descendants));
-      await cleanup(() => kill('SIGKILL'));
+      await cleanup(() => stopping ?? stopChild());
       if (client) await cleanup(() => client?.forceStop() ?? Promise.resolve());
       await cleanup(() => exited);
       // A late observation may still be writing after the wrapper's deadline.
@@ -260,15 +317,20 @@ export async function startCopilotRuntime(
   options.signal.addEventListener('abort', abort, { once: true });
   try {
     const portReady = new Promise<number>((resolve, reject) => {
+      let settled = false;
       let output = '';
       const timeout = setTimeout(
         () => finish(new Error('Copilot did not start in time.')),
         30_000,
       );
       const onExit = (): void =>
-        finish(new Error('Copilot stopped during startup.'));
-      const onError = (): void =>
-        finish(new Error('Copilot could not start. Reconnect it in Settings.'));
+        finish(
+          new Error(
+            childErrored
+              ? 'Copilot could not start. Reconnect it in Settings.'
+              : 'Copilot stopped during startup.',
+          ),
+        );
       const onAbort = (): void =>
         finish(new Error('Copilot startup cancelled.'));
       const onData = (data: Buffer): void => {
@@ -281,20 +343,22 @@ export async function startCopilotRuntime(
         }
       };
       function finish(error?: Error, value?: number): void {
+        if (settled) return;
+        settled = true;
+        startupFailure = undefined;
         clearTimeout(timeout);
         child.stdout.removeListener('data', onData);
-        child.removeListener('error', onError);
-        child.removeListener('close', onExit);
         options.signal.removeEventListener('abort', onAbort);
         child.stdout.resume();
         if (error) reject(error);
         else if (value !== undefined) resolve(value);
       }
       child.stdout.on('data', onData);
-      child.once('error', onError);
+      startupFailure = (error): void => finish(error);
       child.once('close', onExit);
       options.signal.addEventListener('abort', onAbort, { once: true });
       if (options.signal.aborted) onAbort();
+      if (childErrored || childClosed) onExit();
     });
     const [port] = await Promise.all([
       portReady,

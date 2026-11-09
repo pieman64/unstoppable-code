@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import type { JSX } from 'react';
 import { describeAgentBaseModel } from '@canopy/protocol/agents';
 import { Fact, FactList } from './FactList';
@@ -32,7 +33,7 @@ export function AgentDefinitionSummary({
   pluginsEmptyLabel = 'No plugins required.',
 }: AgentDefinitionSummaryProps): JSX.Element {
   return (
-    <div className="space-y-6" data-testid="agent-definition-summary">
+    <Stack gap="section" data-testid="agent-definition-summary">
       {baseModel !== undefined && (
         <div className="rounded-xl border bg-card p-4 text-s sm:p-5">
           <FactList layout="stacked" size="inherit">
@@ -49,23 +50,23 @@ export function AgentDefinitionSummary({
         </div>
       )}
 
-      <section>
+      <Stack as="section" gap="inline">
         <Heading level={2} variant="title">
           Instructions
         </Heading>
-        <pre className="mt-2 whitespace-pre-wrap break-words rounded-xl border bg-card p-4 font-sans text-s">
+        <pre className="whitespace-pre-wrap break-words rounded-xl border bg-card p-4 font-sans text-s">
           {instructions || 'No additional instructions.'}
         </pre>
-      </section>
+      </Stack>
 
-      <section>
+      <Stack as="section" gap="inline">
         <Heading level={2} variant="title">
           {pluginsLabel}
         </Heading>
         {plugins.length === 0 ? (
-          <p className="mt-2 text-s fg-secondary">{pluginsEmptyLabel}</p>
+          <p className="text-s fg-secondary">{pluginsEmptyLabel}</p>
         ) : (
-          <ul className="mt-2 space-y-2">
+          <Stack as="ul" gap="inline">
             {plugins.map((plugin) => (
               <li
                 key={plugin.key}
@@ -74,9 +75,9 @@ export function AgentDefinitionSummary({
                 {plugin.label}
               </li>
             ))}
-          </ul>
+          </Stack>
         )}
-      </section>
-    </div>
+      </Stack>
+    </Stack>
   );
 }

@@ -1,3 +1,4 @@
+import { Stack } from './Stack';
 import { useId, type JSX, type ReactNode } from 'react';
 import { PluginDetailSectionHeading } from './PluginDetailSectionHeading';
 
@@ -29,12 +30,12 @@ export function PluginConnectionRouteSection({
       data-testid={dataTestId}
       className="flex min-w-0 flex-col gap-4 border-t pt-4"
     >
-      <div className="min-w-0 max-w-2xl space-y-1">
+      <Stack gap="tight" className="min-w-0 max-w-2xl">
         <PluginDetailSectionHeading id={headingId}>
           {title}
         </PluginDetailSectionHeading>
         <p className="text-pretty text-xs fg-secondary">{description}</p>
-      </div>
+      </Stack>
       {/* Every route shares one measure, so the controls of consecutive
           routes end on the same edge while the dividers span the page. */}
       <div className="flex min-w-0 max-w-2xl flex-col gap-4">{children}</div>

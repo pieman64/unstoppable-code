@@ -3,7 +3,7 @@ import type {
   ExecutionEvent,
   ExecutionState,
   PipelineChatSendRecord,
-} from '@canopy/desktop-shared/types/pipeline';
+} from '@canopy/execution-engine/types/pipeline';
 import { listExecutionChatSends } from '@canopy/desktop-shared/node/pipelines/executor/chat-sends';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { logMainProcessError } from '../lib/main-process-logging';

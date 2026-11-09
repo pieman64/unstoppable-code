@@ -5,21 +5,27 @@ import {
 import { codexSpeedConnectionStates } from '@/hooks/useCodexSpeedControl';
 import { useCodexSpeedRoute } from '@/hooks/useCodexSpeedRoute';
 import { useChatStore } from '@/stores/chatStore';
-import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import {
   type CodexSpeed,
   DEFAULT_CODEX_SPEED,
   codexSpeedFastMode,
   readCodexSpeedRecord,
   withCodexSpeed,
-} from '@canopy/desktop-shared/lib/codex-speed';
+} from '@canopy/execution-engine/lib/codex-speed';
 import {
   CODEX_LONG_CONTEXT_THRESHOLD,
   type CodexContextWindowSetting,
-} from '@canopy/desktop-shared/lib/codex-context-window';
+} from '@canopy/execution-engine/lib/codex-context-window';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
 import { DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES } from '@canopy/desktop-shared/types';
-import type { ReadCodexSpeedRouteRequest } from '@canopy/desktop-shared/types/codex-speed-capabilities';
+import type { ReadCodexSpeedRouteRequest } from '@canopy/execution-engine/types/codex-speed-capabilities';
 import {
   type JSX,
   useCallback,
@@ -44,6 +50,7 @@ import {
   NoticeButton,
   TextLinkButton,
   ToggleSwitch,
+  FieldError,
 } from '@canopy/ui-shared/components';
 import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -371,10 +378,10 @@ function CodexSubagentLimit({
       }
     >
       {invalid && (
-        <p role="alert" className="text-xs fg-destructive">
+        <FieldError id="settings-codex-subagent-limit-error" announce>
           Enter a whole number of 1 or more, or leave blank for the Codex
           default.
-        </p>
+        </FieldError>
       )}
     </SettingsRow>
   );
@@ -430,7 +437,7 @@ export function CodexMultiAgentSettings({
 export function CodexTab(): JSX.Element {
   const [prefs, setPrefs] = useState<PreferencesData | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<InlineFailure | null>(null);
 
   const loadPreferences = useCallback((): void => {
     setLoadError(null);
@@ -441,7 +448,8 @@ export function CodexTab(): JSX.Element {
         setPrefs(p);
         setLoadError(null);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        reportClientAppError(error);
         setPrefs(null);
         setLoadError("Couldn't load Codex settings.");
       });
@@ -465,9 +473,13 @@ export function CodexTab(): JSX.Element {
       .then((normalized: PreferencesData) => {
         setPrefs(normalized);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         setPrefs(previous);
-        setSaveError('Could not save Codex settings.');
+        const appError = toAppError(resolveClientAppError(error));
+        if (appError)
+          setSaveError(
+            inlineFailure(appError, "Couldn't save Codex settings."),
+          );
       });
   }
 
@@ -482,13 +494,17 @@ export function CodexTab(): JSX.Element {
         .then((normalized: PreferencesData) => {
           setPrefs(normalized);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           // Roll the optimistic change back on failure.
           setPrefs((current) => {
             if (!current) return current;
             return { ...current, [field]: !next };
           });
-          setSaveError('Could not save Codex settings.');
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(appError, "Couldn't save Codex settings."),
+            );
         });
     },
     [],
@@ -505,9 +521,13 @@ export function CodexTab(): JSX.Element {
         .then((normalized: PreferencesData) => {
           setPrefs(normalized);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           setPrefs(previous);
-          setSaveError('Could not save Codex settings.');
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(appError, "Couldn't save Codex settings."),
+            );
         });
     },
     [prefs],
@@ -533,12 +553,15 @@ export function CodexTab(): JSX.Element {
             .applyModelConfigDefaults(normalized.providerModelConfigDefaults);
         })
         .catch((error: unknown) => {
-          reportClientAppError(error, { surface: 'inline' });
           setPrefs(previous);
           useChatStore
             .getState()
             .applyModelConfigDefaults(previous.providerModelConfigDefaults);
-          setSaveError('Could not save Codex settings.');
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(appError, "Couldn't save Codex settings."),
+            );
         });
     },
     [prefs],
@@ -568,12 +591,16 @@ export function CodexTab(): JSX.Element {
             .getState()
             .applyModelConfigDefaults(normalized.providerModelConfigDefaults);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           setPrefs(previous);
           useChatStore
             .getState()
             .applyModelConfigDefaults(previous.providerModelConfigDefaults);
-          setSaveError('Could not save Codex settings.');
+          const appError = toAppError(resolveClientAppError(error));
+          if (appError)
+            setSaveError(
+              inlineFailure(appError, "Couldn't save Codex settings."),
+            );
         });
     },
     [prefs],
@@ -601,11 +628,15 @@ export function CodexTab(): JSX.Element {
 
   return (
     <SettingsPage title="Codex" dataTestId="settings-tab-codex">
-      {saveError && (
-        <Notice intent="destructive" data-testid="settings-codex-save-error">
-          {saveError}
-        </Notice>
-      )}
+      <DesktopErrorBanner
+        className=""
+        error={saveError?.error}
+        {...(saveError?.details === undefined
+          ? {}
+          : { details: saveError.details })}
+        onDismiss={(): void => setSaveError(null)}
+        testId="settings-codex-save-error"
+      />
 
       <CodexDefaultSpeed
         speed={readDefaultSpeed(prefs)}

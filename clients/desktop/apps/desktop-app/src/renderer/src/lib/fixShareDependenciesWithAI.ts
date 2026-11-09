@@ -1,5 +1,5 @@
 import type { CapabilityRepairSubject } from '@canopy/protocol/capability-package-repair';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import type {
   CapabilityPackageRepairBinding,
   CapabilityPackageRepairLaunch,

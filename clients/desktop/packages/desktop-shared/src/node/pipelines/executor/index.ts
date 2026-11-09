@@ -18,6 +18,7 @@ export {
   executionHasNonTerminalWork,
   findResumePoint,
   isExecutionCancellationRequested,
+  isPathInsideExecutionsDir,
   listExecutionSummaries,
   listExecutionSummariesWithStates,
   loadExecutionState,

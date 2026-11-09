@@ -9,7 +9,7 @@ import type {
   DetectedMcpServerInfo,
   ListDetectedMcpServersResponse,
   McpServerAuthStatus,
-} from '@canopy/desktop-shared/types/mcp-servers';
+} from '@canopy/execution-engine/types/mcp-servers';
 import { setMcpHttpAuthPreference } from '@canopy/desktop-shared/lib/mcp-http-auth';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import {

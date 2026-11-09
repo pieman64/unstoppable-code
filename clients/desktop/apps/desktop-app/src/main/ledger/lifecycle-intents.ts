@@ -8,7 +8,7 @@ import { canonicalizeLedgerInstant } from '@canopy/desktop-shared/node/ledger/ti
 import {
   damagedCopiesOf,
   pruneDamagedCopies,
-} from '@canopy/desktop-shared/node/lib/damaged-copies';
+} from '@canopy/execution-engine/node/lib/damaged-copies';
 import { renameWithRetry } from '../lib/atomic-file';
 import { fsyncDirectory } from '../lib/fsync-directory';
 import { isRecord } from '../lib/type-guards';

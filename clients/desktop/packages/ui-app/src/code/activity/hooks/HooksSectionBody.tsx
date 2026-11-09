@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import {
+  Stack,
   HeaderActionButton,
   AnsiOutput,
   Button,
@@ -405,7 +406,7 @@ export function HooksSectionBody({
               </>
             }
             details={
-              <div className="space-y-1">
+              <div className="flex flex-col gap-1">
                 {entry.hook.actions.map((action, index) => (
                   // Command and chat labels quote the command or prompt;
                   // pipeline labels name the pipeline and stay recorded.
@@ -482,8 +483,10 @@ export function HooksSectionBody({
   };
 
   return (
-    <div className="space-y-3" data-testid="activity-hooks-body">
-      <div className={compact ? 'space-y-0' : 'space-y-1.5'}>
+    <div className="flex flex-col gap-3" data-testid="activity-hooks-body">
+      <div
+        className={compact ? 'flex flex-col gap-0' : 'flex flex-col gap-1.5'}
+      >
         {rows.map((row) => {
           if (row.kind === 'entry') {
             return renderEntry(row.entry);
@@ -493,7 +496,7 @@ export function HooksSectionBody({
           );
           const expanded = expandedRepos.has(row.group.repoId) || running;
           return (
-            <div key={`repo-group-${row.group.repoId}`}>
+            <Stack gap="tight" key={`repo-group-${row.group.repoId}`}>
               <button
                 type="button"
                 onClick={(): void =>
@@ -515,13 +518,13 @@ export function HooksSectionBody({
                 </span>
               </button>
               {expanded && (
-                <div className="mt-1 space-y-1 pl-4">
+                <div className="pl-4 flex flex-col gap-1">
                   {row.group.entries.map((entry) =>
                     renderEntry(entry, entry.groupedLabel),
                   )}
                 </div>
               )}
-            </div>
+            </Stack>
           );
         })}
         {unconfiguredWatchers.map((watcher) => (
@@ -545,7 +548,7 @@ export function HooksSectionBody({
         ))}
       </div>
       {error !== null && (
-        <div className="mt-2.5">
+        <div>
           <Notice intent="destructive" role="none">
             {error}
           </Notice>
