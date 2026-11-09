@@ -32,6 +32,8 @@
   ],
   "distribution": false,
   "excludedTestScopes": [
+    "Windows native process identity qualification requiring the private helper build script",
+    "internal migration native cold qualification requiring the private Windows process-helper build script",
     "Windows Phase 3 manual qualification requiring apps/core-daemon and private build helpers",
     "W5 recovery golden and crash child requiring apps/core-daemon",
     "Copilot grant authority production-selection golden requiring apps/core-daemon",

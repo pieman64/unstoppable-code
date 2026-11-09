@@ -139,7 +139,7 @@ here: we build every fix ourselves, so a clear issue is the best way to help.
 
 - **Questions and how-to:** search the [help centre](https://unstoppable.ai/support)
   or [contact support](https://unstoppable.ai/support/troubleshooting/contact-support).
-- **Bugs and ideas:** [open an issue](https://github.com/unstoppable-si/unstoppable-code/issues/new/choose).
+- **Bugs and ideas:** [open an issue](https://github.com/unstoppableweb/unstoppable-code/issues/new/choose).
   See [CONTRIBUTING.md](CONTRIBUTING.md) for what helps us most.
 - **Security issues:** don't open a public issue. See [SECURITY.md](SECURITY.md).
 

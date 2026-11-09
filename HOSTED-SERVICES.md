@@ -35,8 +35,10 @@ It covers the desktop and mobile apps. Browsing our website is covered by our
 - **Remote access between your own devices is end-to-end encrypted.** The
   relay that connects them can't read what they send. Remote Control through
   the web is different: it's encrypted in transit, and our servers can read it.
-- **Released apps send telemetry that you can't turn off in the app.** This
-  applies to both desktop and mobile. See
+- **Released apps send telemetry, and you can turn it off in the app.** Every
+  flow the product works without has a switch: **Settings → Privacy → Usage
+  data** on desktop, and **Settings → App** on mobile. All of them start on.
+  Organization admins can turn some of them off for members on desktop. See
   [Telemetry and diagnostics](#telemetry-and-diagnostics).
 - **Our privacy policy describes what we keep, how long we keep it, and how we
   use it.**
@@ -96,7 +98,7 @@ flowchart TB
 | Message ratings               | Web app and API     | The rating, reasons, and model, plus your comment on a thumbs-down | When you rate                |
 | Push notifications (mobile)   | Web app and API     | Your device's push token                                           | After you sign in            |
 | Update checks (desktop)       | Update feed         | A request for your platform's update file                          | Yes, in released builds      |
-| Skill safety check (desktop)  | Vercel skills audit | The GitHub repository name and the skill names                     | When you browse skills       |
+| Skill safety check (desktop)  | Vercel skills audit | The GitHub repository name and the skill names                     | Yes, when you browse skills  |
 
 How to stop each one:
 
@@ -111,23 +113,45 @@ How to stop each one:
   **Remote access** on the desktop.
 - **Feedback reports:** untick diagnostics before you send a report.
 - **Push notifications:** sign out of the mobile app.
-- **Update checks:** these can't be turned off in released desktop builds.
-  Builds from source don't check for updates.
-- **Skill safety check:** there's no setting for it. It runs when you browse or
-  add skills from GitHub.
+- **Update checks:** turn off **Check for updates automatically** in
+  **Settings → General → Updates**. The desktop app then checks only when you
+  click **Check for updates**. Builds from source don't check for updates.
+  If the app can't read your settings, it keeps checking, so security fixes
+  still arrive.
+- **Skill safety check:** turn off **Skill safety check** in **Settings →
+  Privacy → Usage data**. Skills then show no risk rating. If the app can't
+  read your settings, the check stays on, because it protects you.
+- **Telemetry:** turn off each flow in **Settings → Privacy → Usage data** on
+  desktop, or **Settings → App** on mobile. See
+  [Telemetry and diagnostics](#telemetry-and-diagnostics).
 
 ## Telemetry and diagnostics
 
-Released apps send this telemetry. Neither app has a setting to turn it off.
+Released apps send this telemetry. Every switch starts on.
 
-| Service      | App     | What it gets                                                                                                 |
-| ------------ | ------- | ------------------------------------------------------------------------------------------------------------ |
-| PostHog      | Desktop | Product events, error reports, and session replays from a random install ID, plus your email domain          |
-| LaunchDarkly | Desktop | Details used to pick feature flags: your account and connected-provider emails, system, and organization IDs |
-| Our API      | Desktop | One signal per chat turn, with no content                                                                    |
-| Crashlytics  | Mobile  | Crash reports                                                                                                |
-| PostHog      | Mobile  | Events from the app rating prompt only, from an anonymous ID                                                 |
-| Our API      | Mobile  | One anonymous notice the first time the app opens                                                            |
+| Service      | App     | What it gets                                                                                                 | Switch                                                  |
+| ------------ | ------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| PostHog      | Desktop | Product events, error reports, and session replays from a random install ID, plus your email domain          | Usage analytics, Session recordings, and Error reports  |
+| LaunchDarkly | Desktop | Details used to pick feature flags: your account and connected-provider emails, system, and organization IDs | Personalized feature rollouts (anonymous mode, not off) |
+| Our API      | Desktop | One signal per chat turn, with no content                                                                    | Active use count                                        |
+| Crashlytics  | Mobile  | Crash reports                                                                                                | Crash reports                                           |
+| PostHog      | Mobile  | Events from the app rating prompt only, from an anonymous ID                                                 | Usage analytics                                         |
+| Our API      | Mobile  | One anonymous notice the first time the app opens                                                            | None. It's sent once, before you can open Settings      |
+
+The desktop switches are in **Settings → Privacy → Usage data**, and the mobile
+switches in **Settings → App**. With both Usage analytics and Error reports off,
+the desktop app doesn't start PostHog and creates no PostHog install ID.
+Session recordings also stop while Usage analytics is off.
+
+Organization owners and admins can turn off Usage analytics, Session
+recordings, Error reports, Active use count, and Personalized feature rollouts
+for members in **Organization settings → Policies → Member usage data**. This
+applies to the desktop app while you work in that organization, and never to
+your Personal work or the mobile app. It only turns flows off: anything the
+organization leaves on follows your own choice, and leaving the organization or
+switching to Personal restores it. If the desktop app can't read your account's
+organization policies, it keeps those five flows off until it can. Desktop
+versions released before this setting ignore it until they're updated.
 
 The details:
 
@@ -139,20 +163,27 @@ The details:
   text on screen, such as branch names, can still appear. Error reports carry
   the error type, a message cut to 2,000 characters, and up to 50 stack frames.
   PostHog can work out an approximate location from your IP address.
-- **LaunchDarkly (desktop)** decides which features you see. It gets your
-  account email, the emails and usernames of the GitHub, Claude, and Codex
-  accounts you've connected, your operating system, CPU architecture, and app
-  version, and your organization and team IDs.
+- **LaunchDarkly (desktop)** decides which features you see. By default it
+  gets your account email, the emails and usernames of the GitHub, Claude, and
+  Codex accounts you've connected, your operating system, CPU architecture, and
+  app version, and your organization and team IDs. With **Personalized feature
+  rollouts** off, it gets an anonymous context instead: a random install key,
+  your operating system, CPU architecture, and app version, and your
+  organization and team IDs, so features your organization turns on still
+  reach you. Feature flags keep working, so this switch can't turn
+  LaunchDarkly off.
 - **The turn signal (desktop)** goes to our API once per chat turn. It carries a
   one-way hash of an internal turn ID, the organization ID for organization
   work, and the app version, and it's sent with your account sign-in. It never
-  includes your prompt, the model, the project, or any path or file name. It's
-  sent whatever you choose in activity sharing.
+  includes your prompt, the model, the project, or any path or file name. It
+  doesn't depend on activity sharing; turn off **Active use count** to stop
+  it.
 - **Crashlytics (mobile)** gets crash reports from Firebase. The app doesn't
   attach your account to them.
 - **PostHog (mobile)** gets only the app rating prompt events. It uses an
   anonymous ID, creates no person profile, and doesn't use your IP address for
-  location.
+  location. Events queued just before you turn **Usage analytics** off may
+  still be sent.
 - **The first-launch notice (mobile)** goes to our API once per install. It
   carries only the platform, iOS or Android.
 
@@ -416,4 +447,4 @@ Our [privacy policy](https://unstoppable.ai/privacy) describes what we keep,
 how long we keep it, and how we use it. To report a security problem, see
 [SECURITY.md](SECURITY.md).
 
-Last reviewed: 2026-11-04
+Last reviewed: 2026-11-07

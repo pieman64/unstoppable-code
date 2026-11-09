@@ -4,7 +4,7 @@
 
 Please don't open a public issue for a security problem. Use **Report a
 vulnerability** on this repository's **Security** tab, or go straight to
-[the private report form](https://github.com/unstoppable-si/unstoppable-code/security/advisories/new).
+[the private report form](https://github.com/unstoppableweb/unstoppable-code/security/advisories/new).
 Only you and our team can see the report.
 
 Include as much of this as you can:

@@ -7,7 +7,7 @@ pull requests. Any pull request opened here is closed automatically.
 
 ## Issues are welcome
 
-[Open an issue](https://github.com/unstoppable-si/unstoppable-code/issues/new/choose)
+[Open an issue](https://github.com/unstoppableweb/unstoppable-code/issues/new/choose)
 and pick the form that fits:
 
 - **Bugs:** use the bug report form. Tell us what happened, what you expected,
