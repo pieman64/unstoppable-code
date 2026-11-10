@@ -11,9 +11,12 @@ import {
   MoonshotIcon,
   OllamaIcon,
   ZaiIcon,
-} from '../icons/AppIcons';
-import { ClaudeLogo, CodexLogo, CursorLogo, OllamaLogo } from '../icons';
-import { ICON_SIZE_PX, isIconSize, type IconSize } from '../icons/icon-size';
+} from './AppIcons';
+import { ClaudeLogo } from './ClaudeLogo';
+import { CodexLogo } from './CodexLogo';
+import { CursorLogo } from './CursorLogo';
+import { OllamaLogo } from './OllamaLogo';
+import { ICON_SIZE_PX, isIconSize, type IconSize } from './icon-size';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 
 export interface ModelProviderIconProps extends SVGProps<SVGSVGElement> {

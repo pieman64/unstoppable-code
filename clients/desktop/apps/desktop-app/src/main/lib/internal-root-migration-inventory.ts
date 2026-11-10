@@ -1,0 +1,95 @@
+import { join } from 'node:path';
+import { readdir, realpath } from 'node:fs/promises';
+import { inertArchiveGroup } from '@canopy/desktop-shared/node/internal-root-migration/lifecycle-policy';
+import { inspectDestructiveJournals } from '@canopy/desktop-shared/node/w5-destructive-journal';
+import { statIfPresent } from '@canopy/desktop-shared/node/internal-root-migration/filesystem';
+import { isToleratedInternalRootW5Issue } from './internal-root-migration-w5-adoption';
+import { diagnoseW5State } from './w5-maintenance-diagnosis';
+
+/** Inventory only: SQLite diagnosis uses a disposable copy, never the live writer. */
+export async function diagnoseInternalRootW5(
+  source: string,
+): Promise<readonly string[]> {
+  const diagnosis = await diagnoseW5State(source, 'w5-owned', true);
+  const blockers: string[] = [];
+  if (diagnosis.schemaUpgrade && !diagnosis.logIssue)
+    process.stderr.write(
+      `Internal-root migration inventory: W5 log schema v${diagnosis.schemaUpgrade.from} will be upgraded to v${diagnosis.schemaUpgrade.to} during settlement.\n`,
+    );
+  const hasLog = await statIfPresent(join(source, 'w5/commit-log.sqlite'));
+  if (hasLog && diagnosis.logIssue)
+    blockers.push(`W5 log: ${diagnosis.logIssue}`);
+  for (const suffix of ['', '-wal', '-shm', '-journal']) {
+    const path = `w5/commit-log.sqlite${suffix}`;
+    const stat = await statIfPresent(join(source, path));
+    if (
+      stat &&
+      (!stat.isFile() ||
+        stat.nlink !== 1 ||
+        (await realpath(join(source, path))) !== join(source, path))
+    )
+      blockers.push(`Unsafe W5 log/sidecar: ${path}`);
+  }
+  for (const row of diagnosis.commits)
+    blockers.push(
+      `W5 pending commit ${row.commitId}: ${row.operation} state=${row.state}`,
+    );
+  for (const row of diagnosis.reservations)
+    blockers.push(
+      `W5 reservation ${row.reservationId}: ${row.operation} state=${row.state}`,
+    );
+  for (const issue of diagnosis.files) {
+    if (isToleratedInternalRootW5Issue(issue)) continue;
+    if (
+      !hasLog &&
+      ((issue.path === 'index.json' && issue.reason === 'missing-file') ||
+        (issue.path === '.' &&
+          !(await statIfPresent(join(source, 'workspaces')))))
+    )
+      continue;
+    // Eligible disk images are adopted only by --apply, under cold exclusion.
+    if (
+      issue.reason === 'log-mismatch' &&
+      /^[A-Za-z0-9_-]+\/(workspace|worktrees)\.json$/.test(issue.path) &&
+      (await statIfPresent(join(source, 'workspaces', issue.path)))?.isFile()
+    )
+      continue;
+    blockers.push(`${issue.reason}: ${issue.path}`);
+  }
+  if (!hasLog && (await statIfPresent(join(source, 'w5')))) {
+    const history = (await readdir(join(source, 'w5'))).filter(
+      (name) =>
+        name !== 'destructive-lifecycles' &&
+        !diagnosis.files.some(
+          (issue) =>
+            issue.path === `w5/${name}` &&
+            issue.artifactKind === 'unrecognized-w5-file',
+        ),
+    );
+    if (history.length)
+      blockers.push(`W5 history exists without its log: ${history.join(', ')}`);
+  }
+  const journals = await inspectDestructiveJournals(source);
+  for (const issue of journals.issues)
+    blockers.push(`${issue.reason}: ${issue.path}`);
+  for (const { record } of journals.records) {
+    if (record.state === 'completed') continue;
+    const group = await inertArchiveGroup(source, record);
+    if (group) {
+      process.stderr.write(
+        `Internal-root migration inventory: carrying inert archive ${JSON.stringify({ workspace: record.workspaceId, worktree: record.worktreeId, group, lastDone: record.steps.filter((step) => step.state === 'done').slice(-1)[0]?.phase ?? '(none)' })}.\n`,
+      );
+    } else
+      blockers.push(
+        `${record.operation} workspace=${record.workspaceId} worktree=${record.worktreeId ?? '(workspace)'} state=${record.state}`,
+      );
+  }
+  return blockers
+    .slice(0, 40)
+    .map((value) => value.slice(0, 1000))
+    .concat(
+      blockers.length > 40
+        ? [`… ${blockers.length - 40} more W5 blockers`]
+        : [],
+    );
+}

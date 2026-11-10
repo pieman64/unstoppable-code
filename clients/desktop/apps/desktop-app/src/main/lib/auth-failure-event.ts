@@ -11,7 +11,7 @@ import {
 import {
   buildManagedMcpServerIdentityDigest,
   readManagedMcpServerNameDigest,
-} from '@canopy/desktop-shared/node/plugins/mcp-server-name';
+} from '@canopy/execution-engine/node/plugins/mcp-server-name';
 import { claimPendingAuthFailures } from '../mcp/pending-auth-failures';
 import { isRecord } from './type-guards';
 import {

@@ -12,7 +12,7 @@ import type {
   ChatAttachmentPromptContext,
   FileReference,
 } from '@canopy/desktop-shared/types';
-import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
+import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import { validateConfiguredPromptReferences } from '@canopy/protocol/configured-prompt-references';
 import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
 

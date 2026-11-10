@@ -3,7 +3,7 @@ import {
   buildShareablePluginDisplay,
   getShareablePluginRefKey,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import {
   useUnifiedTableData,
   type SourceOption,

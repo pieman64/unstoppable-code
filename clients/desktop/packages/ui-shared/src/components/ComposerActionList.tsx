@@ -191,7 +191,7 @@ export function ComposerActionList({
       <OverlayScrollArea
         className="min-h-0 flex-1"
         viewport="menu"
-        contentClassName="min-w-0 py-1"
+        contentClassName="flex min-w-0 flex-col gap-1.5 py-1"
         railClassName="-right-1"
         thumbEndInset={20}
         edgeFadeSize={8}
@@ -209,7 +209,6 @@ export function ComposerActionList({
               role={radioGroup ? 'radiogroup' : 'group'}
               aria-label={group}
               data-testid={`${dataTestIdPrefix}-plus-${group === 'Current settings' ? 'settings' : group.toLowerCase().replace(/ /g, '-')}${occurrence > 0 ? `-${occurrence}` : ''}`}
-              className="mb-1.5 last:mb-0"
             >
               {!flat && <SlashCommandGroupHeading label={group} compact />}
               {/* Rows sit in their own wrapper so replay can block them while

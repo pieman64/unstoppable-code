@@ -17,7 +17,11 @@ import {
   observeStoragePathSync,
   type StoragePathObservation,
 } from './storage-path-observation';
-import { validateInternalRootJournal } from '@canopy/core-runtime/node/internal-root-journal';
+import {
+  validateInternalRootJournal,
+  isInternalRootCleanupReport,
+  isInternalRootCleanupStagingName,
+} from '@canopy/core-runtime/node/internal-root-journal';
 import {
   assertBuildStorageStartup,
   BuildStorageStartupRefused,
@@ -178,15 +182,46 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
           ? 'complete'
           : 'incomplete';
       }
+      const names = readdirSync(coordination);
       if (
-        readdirSync(coordination).some(
+        names.some(
           (name) =>
-            !['coordination.sqlite', 'coordination.sqlite-journal'].includes(
-              name,
-            ),
+            ![
+              'coordination.sqlite',
+              'coordination.sqlite-journal',
+              'cleanup-candidates.json',
+            ].includes(name) && !isInternalRootCleanupStagingName(name),
         )
       )
         return 'unsupported';
+      for (const name of names.filter(isInternalRootCleanupStagingName)) {
+        const staging = join(coordination, name);
+        const stat = lstatSync(staging, { bigint: true });
+        if (
+          !stat.isFile() ||
+          stat.isSymbolicLink() ||
+          stat.nlink !== 1n ||
+          stat.size > 16n * 1024n * 1024n ||
+          !privateStartupNode(staging, stat, 'file', observation)
+        )
+          return 'unsupported';
+      }
+      const report = join(coordination, 'cleanup-candidates.json');
+      if (storagePathPresent(report)) {
+        const stat = lstatSync(report, { bigint: true });
+        if (
+          !stat.isFile() ||
+          stat.isSymbolicLink() ||
+          stat.nlink !== 1n ||
+          stat.size > 16n * 1024n * 1024n ||
+          !privateStartupNode(report, stat, 'file', observation) ||
+          !isInternalRootCleanupReport(
+            JSON.parse(readFileSync(report, 'utf8')),
+            report,
+          )
+        )
+          return 'unsupported';
+      }
     } catch {
       return 'unsupported';
     }

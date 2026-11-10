@@ -1,7 +1,8 @@
 import type { ComponentType, JSX, SVGProps } from 'react';
+import type { AgentExecutionHarness } from '@canopy/protocol/models';
 import { Button } from './Button';
 import { ComponentSection } from './ComponentSection';
-import { CheckIcon, RefreshIcon } from '../icons/AppIcons';
+import { CheckIcon, GitHubIcon, RefreshIcon } from '../icons/AppIcons';
 import { ClaudeLogo } from '../icons/ClaudeLogo';
 import { CodexLogo } from '../icons/CodexLogo';
 import { CursorLogo } from '../icons/CursorLogo';
@@ -9,21 +10,29 @@ import { OpenCodeLogo } from '../icons/OpenCodeLogo';
 import { DataTable } from './DataTable';
 import { Tooltip } from './Tooltip';
 
-const HARNESS_LOGOS: Readonly<
-  Record<string, ComponentType<SVGProps<SVGSVGElement>> | undefined>
+/**
+ * Every harness's name and mark, in display order. Keyed by the full harness
+ * union, so a new harness fails typecheck until it has both.
+ */
+const HARNESSES: Readonly<
+  Record<
+    AgentExecutionHarness,
+    { name: string; Logo: ComponentType<SVGProps<SVGSVGElement>> }
+  >
 > = {
-  claude: ClaudeLogo,
-  codex: CodexLogo,
-  cursor: CursorLogo,
-  opencode: OpenCodeLogo,
+  claude: { name: 'Claude', Logo: ClaudeLogo },
+  codex: { name: 'Codex', Logo: CodexLogo },
+  cursor: { name: 'Cursor', Logo: CursorLogo },
+  // Copilot has no brand mark here; match ModelProviderIcon's GitHub mark.
+  copilot: { name: 'Copilot', Logo: GitHubIcon },
+  opencode: { name: 'OpenCode', Logo: OpenCodeLogo },
 };
 
-const HARNESS_NAMES: readonly (readonly [string, string])[] = [
-  ['claude', 'Claude'],
-  ['codex', 'Codex'],
-  ['cursor', 'Cursor'],
-  ['opencode', 'OpenCode'],
-];
+function harnessLogo(
+  id: string,
+): ComponentType<SVGProps<SVGSVGElement>> | undefined {
+  return Object.entries(HARNESSES).find(([key]) => key === id)?.[1].Logo;
+}
 
 /** Small firm logos, one per harness, each naming itself on hover. */
 export function HarnessLogoList({
@@ -36,25 +45,20 @@ export function HarnessLogoList({
       className="flex h-5 items-center gap-1.5"
       data-testid="plugin-detail-harness-logos"
     >
-      {HARNESS_NAMES.filter(([id]) => harnesses.includes(id)).map(
-        ([id, name]) => {
-          const Logo = HARNESS_LOGOS[id];
-          return (
-            Logo && (
-              <Tooltip key={id} label={name}>
-                <span aria-label={name} role="img" className="inline-flex">
-                  <Logo
-                    width={14}
-                    height={14}
-                    aria-hidden="true"
-                    className="shrink-0 fg-secondary"
-                  />
-                </span>
-              </Tooltip>
-            )
-          );
-        },
-      )}
+      {Object.entries(HARNESSES)
+        .filter(([id]) => harnesses.includes(id))
+        .map(([id, { name, Logo }]) => (
+          <Tooltip key={id} label={name}>
+            <span aria-label={name} role="img" className="inline-flex">
+              <Logo
+                width={14}
+                height={14}
+                aria-hidden="true"
+                className="shrink-0 fg-secondary"
+              />
+            </span>
+          </Tooltip>
+        ))}
     </span>
   );
 }
@@ -100,7 +104,7 @@ export function PluginHarnessConnections({
           rowHeader: true,
           overflow: 'wrap',
           render: (row) => {
-            const Logo = HARNESS_LOGOS[row.id];
+            const Logo = harnessLogo(row.id);
             return (
               <span className="inline-flex items-center gap-2">
                 {Logo && (

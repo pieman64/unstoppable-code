@@ -34,7 +34,10 @@ import {
   type LedgerToolsRuntime,
 } from '../canopy-tools/ledger-tools-runtime';
 import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
-import { hasInterfaceTool } from '../agents/interface-tool-binding';
+import {
+  hasInterfaceTool,
+  localMainWindowServes,
+} from '../agents/interface-tool-binding';
 import {
   appAdvisorGetScriptOutputSchema,
   appAdvisorReadPipelineYamlSchema,
@@ -608,6 +611,11 @@ export async function executeAppAdvisorTool(
       };
       // D10: without the main window's lease, list only actions that work
       // without a window; search wide first so filtering cannot starve a page.
+      // CAN-6008: credential and remote-access actions only for this
+      // computer's own main window.
+      const localWindow = localMainWindowServes(
+        runtime.watcherDestination.chatId,
+      );
       const windowBound = (
         context?.interfaceTools ?? (await runtime.boundInterfaceTools())
       ).includes('ui.app_advisor.present');
@@ -632,12 +640,15 @@ export async function executeAppAdvisorTool(
       );
       const actions = [...sharedActions.actions, ...existing.actions]
         .filter((action) => {
+          const disposition = appAdvisorActionDisposition(action.type);
+          if (disposition?.kind === 'core' && disposition.requiresInterface)
+            return windowBound && localWindow;
           if (windowBound) return true;
-          const kind = appAdvisorActionDisposition(action.type)?.kind;
+          if (disposition?.kind === 'core') return true;
           return (
-            kind !== 'presentation' &&
-            kind !== 'host_presentation' &&
-            kind !== 'legacy'
+            disposition?.kind !== 'presentation' &&
+            disposition?.kind !== 'host_presentation' &&
+            disposition?.kind !== 'legacy'
           );
         })
         .slice(0, parsed.data.limit ?? 12);

@@ -19,7 +19,7 @@ import type {
   MarketplaceProviderStatus,
   PluginInfo,
   PluginProvider,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { brandText } from '@/lib/brand';
 import { parseGitHubRepo } from '@/lib/format';
 

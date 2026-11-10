@@ -33,7 +33,7 @@ import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-
 import type {
   InvocableInventoryCache,
   InvocableInventoryEntry,
-} from '@canopy/desktop-shared/types/invocable-inventory';
+} from '@canopy/execution-engine/types/invocable-inventory';
 import type { McpServerRef } from '@canopy/execution-engine/types/mcp-servers';
 import type {
   RepoLocalInvocableEntry,

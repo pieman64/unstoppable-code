@@ -12,6 +12,7 @@ import {
 } from '@canopy/desktop-shared/platform-capabilities';
 import {
   SettingsSaveBarSlotContext,
+  Surface,
   WindowPage,
 } from '@canopy/ui-shared/components';
 import {
@@ -274,7 +275,7 @@ function SettingsPageContent({
     <SettingsReplayPrivacyContext.Provider
       value={SETTINGS_SECTION_REPLAY_PRIVACY[displayedSection]}
     >
-      <Suspense fallback={<div className="h-full bg-base" />}>
+      <Suspense fallback={<Surface variant="pane" extent="parent" />}>
         <SettingsSectionPage section={displayedSection} {...pageProps} />
       </Suspense>
     </SettingsReplayPrivacyContext.Provider>
@@ -519,10 +520,11 @@ export function SettingsOverlay({
 
   const [saveBarSlot, setSaveBarSlot] = useState<HTMLDivElement | null>(null);
   const content = (
-    <div
+    <Surface
+      variant="pane"
       // `min-h-0`: in its column it fills the height left by the top row, and
       // scrolls inside instead of growing with the page.
-      className={`relative flex min-h-0 flex-1 flex-col bg-base ${open ? '' : 'invisible'}`}
+      className={`relative flex min-h-0 flex-1 flex-col ${open ? '' : 'invisible'}`}
       data-settings-card=""
       data-testid="settings-content"
     >
@@ -540,7 +542,7 @@ export function SettingsOverlay({
             // Hosted pages bring their own widths (account reading width,
             // wider Feed, Statistics, Projects and Memory), so they render
             // straight into the scroller rather than a `SettingsPage` column.
-            <Suspense fallback={<div className="h-full bg-base" />}>
+            <Suspense fallback={<Surface variant="pane" extent="parent" />}>
               <HostedSettingsContent location={hostedLocation} />
             </Suspense>
           ) : (
@@ -564,7 +566,7 @@ export function SettingsOverlay({
       {/* The window drag strip floats over the page's top edge instead of
           taking a row above it, so scrolled content is never cut off. */}
       {null}
-    </div>
+    </Surface>
   );
 
   // The shared window page: modal over the app, focus in on open and back on

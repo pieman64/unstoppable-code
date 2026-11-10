@@ -39,13 +39,12 @@ type RecipientGroupKey = 'app-advisor' | 'worktree';
  * the picker reads consistently in the pipeline-run modal and the chat watcher
  * management modal.
  */
-function RecipientGroupIcon({
-  groupKey,
-  ...props
-}: { groupKey: RecipientGroupKey } & AppIconProps): JSX.Element {
-  const Icon = groupKey === 'app-advisor' ? AppAdvisorIcon : ChatIcon;
-  return <Icon {...props} />;
-}
+const RECIPIENT_GROUP_ICONS: Readonly<
+  Record<RecipientGroupKey, (props: AppIconProps) => JSX.Element>
+> = {
+  'app-advisor': AppAdvisorIcon,
+  worktree: ChatIcon,
+};
 
 export interface WatcherRecipientOption {
   /** Destination chat the fired watcher posts to. */
@@ -129,6 +128,9 @@ export function WatcherRecipientPicker({
     [onChange],
   );
 
+  const SelectedGroupIcon = selected
+    ? RECIPIENT_GROUP_ICONS[selected.groupKey]
+    : null;
   const isDisabled = disabled || totalOptions === 0;
   const triggerLabel =
     selected?.label ??
@@ -150,9 +152,8 @@ export function WatcherRecipientPicker({
         className="min-w-48 max-w-72"
       >
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          {selected && (
-            <RecipientGroupIcon
-              groupKey={selected.groupKey}
+          {SelectedGroupIcon && (
+            <SelectedGroupIcon
               size="sm"
               aria-hidden="true"
               className="shrink-0 fg-secondary"
@@ -189,12 +190,12 @@ export function WatcherRecipientPicker({
           {groups
             .filter((group) => group.options.length > 0)
             .map((group, groupIndex) => {
+              const GroupIcon = RECIPIENT_GROUP_ICONS[group.key];
               const rows = (
                 <>
                   <PickerMenuSectionLabel>
                     <span className="flex items-center gap-1.5">
-                      <RecipientGroupIcon
-                        groupKey={group.key}
+                      <GroupIcon
                         size="sm"
                         aria-hidden="true"
                         className="shrink-0"

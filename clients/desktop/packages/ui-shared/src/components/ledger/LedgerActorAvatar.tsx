@@ -9,7 +9,7 @@ import {
   type AppIcon,
 } from '../../icons/AppIcons';
 import { ICON_SIZE_PX } from '../../icons/icon-size';
-import { SubagentIcon } from '../chat/subagents/common/SubagentIcon';
+import { SubagentIcon } from '../../icons/SubagentIcon';
 import {
   DISPLAY_AVATAR_GLYPH_SIZE,
   DisplayAvatar,

@@ -28,7 +28,7 @@ import {
   type InternalRootFilesystemHost,
 } from './filesystem-host';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import { z } from 'zod';
 import {
   createPlatformEndpointServices,
@@ -42,6 +42,7 @@ import {
 } from '@canopy/core-runtime/node/secure-data-dir';
 import {
   InternalRootMigrationRefused,
+  internalRootDestinationExistsRecovery,
   type InternalRootIdentity,
   type InternalRootInventory,
   type InternalRootJournal,
@@ -49,7 +50,11 @@ import {
 } from '@canopy/core-runtime/node/internal-root-migration';
 
 import { internalRootSourceIsSeparate } from '@canopy/core-runtime/node/internal-root-source';
-import { validateInternalRootJournal } from '@canopy/core-runtime/node/internal-root-journal';
+import {
+  validateInternalRootJournal,
+  isInternalRootCleanupReport,
+  isInternalRootCleanupStagingName,
+} from '@canopy/core-runtime/node/internal-root-journal';
 
 const run = promisify(execFile);
 
@@ -119,14 +124,26 @@ export async function privateDirectory(
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
   const stat = await lstat(path);
+  const canonical = await realpath(path);
   if (
     !stat.isDirectory() ||
     stat.isSymbolicLink() ||
-    (await realpath(path)) !== path ||
+    canonical !== path ||
     (hostOperatingSystem() !== 'win32' && (stat.mode & 0o077) !== 0) ||
     !ownedMigrationNode(stat)
   )
-    refuseLayout(`Expected an owner-only canonical directory: ${path}`);
+    refuseLayout(
+      `Expected an owner-only canonical directory: ${path}.${
+        stat.isDirectory() &&
+        !stat.isSymbolicLink() &&
+        ownedMigrationNode(stat) &&
+        canonical === path &&
+        hostOperatingSystem() !== 'win32' &&
+        (stat.mode & 0o077) !== 0
+          ? ` After verifying ownership, run: chmod 700 '${path.split("'").join("'\"'\"'")}'`
+          : ''
+      }`,
+    );
   if (await observeMigrationNode(path, stat, host)) return;
   const os = hostOperatingSystem();
   if (
@@ -167,19 +184,25 @@ export async function durableJson(
   path: string,
   value: unknown,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+  options: { readonly removeTempOnFailure?: boolean } = {},
 ): Promise<void> {
   if (hostOperatingSystem() === 'win32')
     await privateDirectory(dirname(path), host);
   const temp = `${path}.${randomUUID()}.tmp`;
   const handle = await open(temp, 'wx', 0o600);
   try {
-    await handle.writeFile(`${JSON.stringify(value)}\n`);
-    await handle.sync();
-  } finally {
-    await handle.close();
+    try {
+      await handle.writeFile(`${JSON.stringify(value)}\n`);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await replaceMigrationFile(temp, path, host);
+    await flush(dirname(path));
+  } catch (error) {
+    if (options.removeTempOnFailure) await rm(temp, { force: true });
+    throw error;
   }
-  await replaceMigrationFile(temp, path, host);
-  await flush(dirname(path));
 }
 
 async function hashFile(path: string): Promise<string> {
@@ -244,8 +267,8 @@ async function manifest(
         await visit(join(relative, child));
       if (durable) await flush(path);
     } else if (stat.isFile()) {
-      if (stat.nlink !== 1)
-        refuseLayout(`Hard-linked file requires manual qualification: ${path}`);
+      // Source hard links are copied as independent files; inode/link counts
+      // intentionally do not participate in the source/copy fingerprint.
       // Only small W5 log/receipt records get byte hashes; never scan worktree
       // contents or opaque credential payloads. Other changes are metadata-only.
       const critical =
@@ -394,6 +417,93 @@ export async function inspectInternalRoot(
   };
 }
 
+export async function assertPrivateMigrationFile(
+  path: string,
+  host: InternalRootFilesystemHost,
+): Promise<Stats> {
+  const stat = await lstat(path);
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.nlink !== 1 ||
+    stat.size > 16 * 1024 * 1024 ||
+    !ownedMigrationNode(stat) ||
+    (hostOperatingSystem() !== 'win32' && stat.mode & 0o077)
+  )
+    throw new Error('Unsafe migration evidence');
+  await observeMigrationNode(path, stat, host);
+  return stat;
+}
+
+async function readPrivateMigrationJson(
+  path: string,
+  host: InternalRootFilesystemHost,
+): Promise<unknown> {
+  await assertPrivateMigrationFile(path, host);
+  return JSON.parse(
+    hostOperatingSystem() === 'win32'
+      ? windowsFilesystem(host).read(path).toString('utf8')
+      : await readFile(path, 'utf8'),
+  );
+}
+
+function repairPlanFingerprint(plan: unknown): string {
+  return createHash('sha256').update(JSON.stringify(plan)).digest('hex');
+}
+
+function lifecycleEvidencePath(
+  identity: InternalRootIdentity,
+  transactionId: string,
+  plan: unknown,
+): string {
+  return join(
+    identity.coordination,
+    `lifecycle-journals-${transactionId}-${repairPlanFingerprint(plan)}.json`,
+  );
+}
+
+/** Keep the on-disk v7 plan readable by installed internal-478 validators. */
+export async function saveInternalRootJournal(
+  journal: InternalRootJournal,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+): Promise<void> {
+  if (Buffer.byteLength(JSON.stringify(journal)) + 1 > 16 * 1024 * 1024)
+    throw new InternalRootMigrationRefused(
+      'unsupported-layout',
+      'Frozen repair evidence exceeds the journal limit. Preserve both roots and the existing journal for offline diagnosis.',
+    );
+  await privateDirectory(journal.identity.coordination, host);
+  const { lifecycleJournals, ...plan } = journal.repairPlan ?? {};
+  if (lifecycleJournals !== undefined) {
+    const path = lifecycleEvidencePath(
+      journal.identity,
+      journal.transactionId,
+      plan,
+    );
+    const evidence = {
+      version: 1,
+      transactionId: journal.transactionId,
+      planFingerprint: repairPlanFingerprint(plan),
+      lifecycleJournals,
+    };
+    // Never replace evidence still referenced by the last durable journal.
+    if (await statIfPresent(path)) {
+      if (
+        !isDeepStrictEqual(await readPrivateMigrationJson(path, host), evidence)
+      )
+        throw new InternalRootMigrationRefused(
+          'source-changed',
+          'Frozen lifecycle evidence changed for the same plan. Preserve the journal and both roots for offline diagnosis.',
+        );
+    } else await durableJson(path, evidence, host);
+  }
+  await durableJson(
+    join(journal.identity.coordination, 'journal.json'),
+    journal.repairPlan ? { ...journal, repairPlan: plan } : journal,
+    host,
+  );
+}
+
 export async function readInternalRootJournal(
   identity: InternalRootIdentity,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
@@ -407,36 +517,87 @@ export async function readInternalRootJournal(
     if (
       names.some(
         (name) =>
-          !['coordination.sqlite', 'coordination.sqlite-journal'].includes(
-            name,
-          ),
+          ![
+            'coordination.sqlite',
+            'coordination.sqlite-journal',
+            'cleanup-candidates.json',
+          ].includes(name) && !isInternalRootCleanupStagingName(name),
       )
     )
       throw new InternalRootMigrationRefused(
         'journal-unsupported',
         'Nonempty coordination directory without a recognized journal; retain it for recovery.',
       );
+    for (const name of names.filter(isInternalRootCleanupStagingName)) {
+      try {
+        await assertPrivateMigrationFile(
+          join(identity.coordination, name),
+          host,
+        );
+      } catch {
+        throw new InternalRootMigrationRefused(
+          'journal-unsupported',
+          'Unsafe cleanup report staging file; retain it for recovery.',
+        );
+      }
+    }
+    const report = join(identity.coordination, 'cleanup-candidates.json');
+    if (await statIfPresent(report)) {
+      try {
+        if (
+          !isInternalRootCleanupReport(
+            await readPrivateMigrationJson(report, host),
+            report,
+          )
+        )
+          throw new Error('Invalid report');
+      } catch {
+        throw new InternalRootMigrationRefused(
+          'journal-unsupported',
+          'Unrecognized or unsafe cleanup report; retain it for recovery.',
+        );
+      }
+    }
     return null;
   }
   try {
-    if (
-      !stat.isFile() ||
-      stat.isSymbolicLink() ||
-      stat.nlink !== 1 ||
-      stat.size > 16 * 1024 * 1024 ||
-      !ownedMigrationNode(stat) ||
-      (hostOperatingSystem() !== 'win32' && stat.mode & 0o077)
-    )
-      throw new Error('Unsafe journal');
-    await observeMigrationNode(path, stat, host);
-    const journal = validateInternalRootJournal(
-      JSON.parse(
-        hostOperatingSystem() === 'win32'
-          ? windowsFilesystem(host).read(path).toString('utf8')
-          : await readFile(path, 'utf8'),
-      ),
+    let journal = validateInternalRootJournal(
+      await readPrivateMigrationJson(path, host),
       identity,
     );
+    const planEvidencePath = lifecycleEvidencePath(
+      identity,
+      journal.transactionId,
+      journal.repairPlan ?? {},
+    );
+    const evidencePath = (await statIfPresent(planEvidencePath))
+      ? planEvidencePath
+      : join(identity.coordination, 'lifecycle-journals.json');
+    if (
+      journal.repairPlan &&
+      journal.repairPlan.lifecycleJournals === undefined &&
+      (await statIfPresent(evidencePath))
+    ) {
+      const evidence = z
+        .object({
+          version: z.literal(1),
+          transactionId: z.literal(journal.transactionId),
+          planFingerprint: z.literal(repairPlanFingerprint(journal.repairPlan)),
+          lifecycleJournals: z.array(z.unknown()),
+        })
+        .strict()
+        .parse(await readPrivateMigrationJson(evidencePath, host));
+      journal = validateInternalRootJournal(
+        {
+          ...journal,
+          repairPlan: {
+            ...journal.repairPlan,
+            lifecycleJournals: evidence.lifecycleJournals,
+          },
+        },
+        identity,
+      );
+    }
     await validateExternalRootFiles(identity, journal.externalFiles, host);
     return journal;
   } catch {
@@ -855,7 +1016,7 @@ export async function buildInternalRoot(
   if (await statIfPresent(identity.destination))
     throw new InternalRootMigrationRefused(
       'destination-exists',
-      'Never overwrite an independent destination.',
+      internalRootDestinationExistsRecovery(identity.destination),
     );
   await validateInternalRootStaging(identity, journal, host);
   const sibling = internalRootStaging(identity);
@@ -904,11 +1065,7 @@ export async function buildInternalRoot(
     constructionIdentity = stagingIdentity;
     if (!stagingIdentity) refuseLayout('Construction identity is unavailable.');
     await flush(identity.coordination);
-    await durableJson(
-      join(identity.coordination, 'journal.json'),
-      { ...journal, stagingIdentity },
-      host,
-    );
+    await saveInternalRootJournal({ ...journal, stagingIdentity }, host);
     await copyInternalRootTree(identity.source, staging, host, true);
   } else await (cloneTree ?? cloneInternalRoot)(identity.source, staging);
   if (

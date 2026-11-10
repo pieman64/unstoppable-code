@@ -627,7 +627,7 @@ function ManagedHarnessRow({
     <div
       data-testid={`harness-row-${assignment.modelId}`}
       data-harness-row-kind="managed"
-      className="flex h-8 items-center gap-2 rounded-md px-2 text-s fg-primary/80"
+      className="flex h-8 items-center gap-2 px-2 text-s fg-primary/80"
       title={managedBy}
     >
       <span className="min-w-0 flex-1 truncate">{label}</span>

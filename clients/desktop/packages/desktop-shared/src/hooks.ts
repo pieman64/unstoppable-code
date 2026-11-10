@@ -11,7 +11,7 @@ import { APPROVAL_MODES, type ApprovalMode } from './types/approvals';
 import {
   isChatTabPluginSelections,
   normalizePluginSelections,
-} from './lib/plugin-selections-normalization';
+} from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type { ChatModel } from '@canopy/execution-engine/types/chat-models';
 import { isThinkingLevel } from '@canopy/execution-engine/thinking';
 import type { ThinkingLevel } from '@canopy/execution-engine/types/thinking';
@@ -25,7 +25,7 @@ import {
   getShareablePluginRefKey,
   normalizeShareablePluginRef,
   type ShareablePluginRef,
-} from './plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import {
   compareIndexedNames,
   parseWorkspaceRepoScopedValue,

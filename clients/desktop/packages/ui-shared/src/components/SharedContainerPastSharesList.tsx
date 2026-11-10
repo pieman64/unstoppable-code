@@ -7,6 +7,7 @@ import { Button } from './Button';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { Skeleton } from './Skeleton';
 import { SearchField } from './SearchField';
+import { Stack } from './Stack';
 import { Notice, NoticeButton } from './Notice';
 import { TRY_AGAIN_LABEL } from './useRetry';
 import { formatDateOrEmpty } from '../lib/format-date';
@@ -211,90 +212,93 @@ export function SharedContainerPastSharesList({
       <div
         className={`${ARCHIVED_LIST_CONTAINER_CLASS_NAME} min-h-0 flex-1 overflow-y-auto px-3 py-2`}
       >
-        {removedFailed && (
-          <Notice
-            intent="destructive"
-            className="mb-2"
-            data-testid={`${TEST_ID}-removed-error`}
-            actions={
-              <NoticeButton
-                onClick={onRetryRemoved}
-                data-testid={`${TEST_ID}-removed-retry`}
-              >
-                {TRY_AGAIN_LABEL}
-              </NoticeButton>
-            }
-          >
-            Couldn&rsquo;t load removed shares.
-          </Notice>
-        )}
-        {removedLoading && (
-          // An auto-height box: the placeholder's full-height floor would
-          // otherwise push the Accepted group below the fold.
+        <Stack gap="inline">
+          {removedFailed && (
+            <Notice
+              intent="destructive"
+              data-testid={`${TEST_ID}-removed-error`}
+              actions={
+                <NoticeButton
+                  onClick={onRetryRemoved}
+                  data-testid={`${TEST_ID}-removed-retry`}
+                >
+                  {TRY_AGAIN_LABEL}
+                </NoticeButton>
+              }
+            >
+              Couldn&rsquo;t load removed shares.
+            </Notice>
+          )}
           <div>
-            <DelayedLoadingPlaceholder slowNote="Still loading removed shares…">
-              <Skeleton
-                loading
-                label="Loading removed shares"
-                testId={`${TEST_ID}-removed-loading`}
+            {removedLoading && (
+              // An auto-height box: the placeholder's full-height floor would
+              // otherwise push the Accepted group below the fold.
+              <div>
+                <DelayedLoadingPlaceholder slowNote="Still loading removed shares…">
+                  <Skeleton
+                    loading
+                    label="Loading removed shares"
+                    testId={`${TEST_ID}-removed-loading`}
+                  >
+                    <RemovedGroup
+                      items={SAMPLE_REMOVED}
+                      restoringIds={[]}
+                      onRestore={noop}
+                    />
+                  </Skeleton>
+                </DelayedLoadingPlaceholder>
+              </div>
+            )}
+            {totalCount === 0 && !removedFailed && !removedLoading ? (
+              <div
+                className="px-2 py-6 text-center text-xs fg-secondary"
+                data-testid={`${TEST_ID}-empty`}
               >
-                <RemovedGroup
-                  items={SAMPLE_REMOVED}
-                  restoringIds={[]}
-                  onRestore={noop}
-                />
-              </Skeleton>
-            </DelayedLoadingPlaceholder>
+                Shares you accept or remove appear here.
+              </div>
+            ) : totalCount > 0 && nothingVisible ? (
+              <div
+                className="px-2 py-6 text-center text-xs fg-secondary"
+                data-testid={`${TEST_ID}-no-matches`}
+              >
+                No shares match &ldquo;{query.trim()}&rdquo;
+              </div>
+            ) : null}
+            {visibleRemoved.length > 0 && (
+              <RemovedGroup
+                items={visibleRemoved}
+                restoringIds={restoringIds}
+                onRestore={onRestore}
+              />
+            )}
+            {visibleAccepted.length > 0 && (
+              <section data-testid={`${TEST_ID}-accepted`}>
+                <GroupHeading>Accepted</GroupHeading>
+                <div className="flex flex-col gap-0.5">
+                  {visibleAccepted.map((item) => (
+                    <OverviewListRow
+                      key={item.id}
+                      testId={`${TEST_ID}-accepted-row-${item.id}`}
+                      state="accepted"
+                      leading={null}
+                      title={item.title}
+                      trailing={<OwnerLine name={item.ownerName} />}
+                      date={formatDateOrEmpty(item.acceptedAt)}
+                      {...(item.acceptedAt
+                        ? {
+                            dateTooltip: `Accepted ${formatDateOrEmpty(item.acceptedAt)}`,
+                          }
+                        : {})}
+                      onOpen={(): void => onOpenAccepted(item.id)}
+                      openTestId={`${TEST_ID}-accepted-open-${item.id}`}
+                      actions={renderAcceptedActions?.(item.id) ?? null}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
-        )}
-        {totalCount === 0 && !removedFailed && !removedLoading ? (
-          <div
-            className="px-2 py-6 text-center text-xs fg-secondary"
-            data-testid={`${TEST_ID}-empty`}
-          >
-            Shares you accept or remove appear here.
-          </div>
-        ) : totalCount > 0 && nothingVisible ? (
-          <div
-            className="px-2 py-6 text-center text-xs fg-secondary"
-            data-testid={`${TEST_ID}-no-matches`}
-          >
-            No shares match &ldquo;{query.trim()}&rdquo;
-          </div>
-        ) : null}
-        {visibleRemoved.length > 0 && (
-          <RemovedGroup
-            items={visibleRemoved}
-            restoringIds={restoringIds}
-            onRestore={onRestore}
-          />
-        )}
-        {visibleAccepted.length > 0 && (
-          <section data-testid={`${TEST_ID}-accepted`}>
-            <GroupHeading>Accepted</GroupHeading>
-            <div className="flex flex-col gap-0.5">
-              {visibleAccepted.map((item) => (
-                <OverviewListRow
-                  key={item.id}
-                  testId={`${TEST_ID}-accepted-row-${item.id}`}
-                  state="accepted"
-                  leading={null}
-                  title={item.title}
-                  trailing={<OwnerLine name={item.ownerName} />}
-                  date={formatDateOrEmpty(item.acceptedAt)}
-                  {...(item.acceptedAt
-                    ? {
-                        dateTooltip: `Accepted ${formatDateOrEmpty(item.acceptedAt)}`,
-                      }
-                    : {})}
-                  onOpen={(): void => onOpenAccepted(item.id)}
-                  openTestId={`${TEST_ID}-accepted-open-${item.id}`}
-                  actions={renderAcceptedActions?.(item.id) ?? null}
-                />
-              ))}
-            </div>
-          </section>
-        )}
+        </Stack>
       </div>
     </div>
   );

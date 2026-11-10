@@ -6,7 +6,7 @@ import {
 } from './pipelines/executor/child-pipeline-resolver';
 import { getStoredPipelineBySource } from '../pipelines/store';
 import type { ChatTabPluginSelections } from '../types';
-import type { ShareablePluginRef } from '../plugin-refs';
+import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import type {
   PipelinePreferenceLocator,
   ResolvedPipelinePluginCollectionSnapshot,

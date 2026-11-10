@@ -384,7 +384,11 @@ export function ComposerVoiceOptionsLab({
   readonly width: number;
 }): JSX.Element {
   return (
-    <div className="flex min-h-0 flex-1 justify-center overflow-y-auto bg-secondary p-3">
+    <Surface
+      variant="well"
+      padding="compact"
+      className="flex min-h-0 flex-1 justify-center overflow-y-auto"
+    >
       <div className="flex w-full flex-col gap-3" style={{ maxWidth: width }}>
         {OPTIONS.map((option) => (
           <Surface
@@ -407,6 +411,6 @@ export function ComposerVoiceOptionsLab({
           </Surface>
         ))}
       </div>
-    </div>
+    </Surface>
   );
 }

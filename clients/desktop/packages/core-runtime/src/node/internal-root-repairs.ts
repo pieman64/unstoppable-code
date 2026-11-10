@@ -16,7 +16,16 @@ import { createWorktreeListRepository } from './w5/worktree-list-repository';
 import type { W5Resource } from './w5/commit-log/commit-log';
 import type { W5FileStore } from './w5/file-store';
 
+export interface InternalRootLifecycleJournalEvidence {
+  readonly name: string;
+  readonly raw: string;
+  readonly workspaceIdentity: string | null;
+  readonly ownedIdentities: readonly (string | null)[];
+}
+
 export interface InternalRootRepairPlan {
+  /** In-memory evidence; persistence keeps it in a transaction-bound sidecar. */
+  readonly lifecycleJournals?: readonly InternalRootLifecycleJournalEvidence[];
   readonly transition: RelocationTransition;
   readonly gitPlan: RelocationGitPlan;
   readonly ownedPaths: readonly string[];
@@ -85,6 +94,8 @@ export async function projectInternalRootMetadata(
 
 /** Worker/platform host supplies observation, durability and read-only qualification. */
 export interface InternalRootRepairWorker {
+  /** Reconstruct named owners when legacy plans also contain incidental link targets. */
+  ownedPathsForProof?(plan: InternalRootRepairPlan): readonly string[];
   readonly replaceBacklink?: RelocationRepairContext['replaceBacklink'];
   freeze(context: InternalRootRepairContext): Promise<InternalRootRepairPlan>;
   admit(
@@ -139,7 +150,8 @@ export function createInternalRootRepairs(
         workingRoot: context.workingRoot,
         gitPlan: plan.gitPlan,
         replaceBacklink: worker.replaceBacklink,
-        ownedPaths: plan.ownedPaths,
+        ownedPaths: worker.ownedPathsForProof?.(plan) ?? plan.ownedPaths,
+        carryPayloadLinks: true,
         admit: () => worker.admit(context, plan),
         recordAuthority: () => worker.recordAuthority(context, plan),
         repairMetadata: () => worker.repairMetadata(context, plan, images),

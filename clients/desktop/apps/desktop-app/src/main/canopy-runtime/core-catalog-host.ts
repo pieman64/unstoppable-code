@@ -41,7 +41,7 @@ import {
   pluginSelectionsEqual,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { parseGitHubRepo } from '@canopy/desktop-shared/lib/github-repo';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type {
   ChatTabPluginSelections,
   ChatTabsFile,
@@ -54,7 +54,7 @@ import type {
   MarketplaceInfo,
   MarketplaceProviderStatus,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { pluginDefaultsWorkspaceId } from '../plugins/plugin-defaults-revision';
 import { runningCatalogRefresh } from './core-catalog-mutation-host';

@@ -105,15 +105,17 @@ export function HeaderGalleryRow({
 export function HeaderStateGalleryPage(): JSX.Element {
   if (!isHeaderStatesPageEnabled()) {
     return (
-      <div
-        className="flex h-full items-center justify-center bg-base"
+      <Surface
+        variant="pane"
+        extent="parent"
+        className="flex items-center justify-center"
         data-testid="header-states-page-disabled"
       >
         <p className="text-xs fg-secondary">
           This page is a development-only reference and is not enabled in this
           build.
         </p>
-      </div>
+      </Surface>
     );
   }
   return <HeaderStateGalleryContent />;
@@ -127,11 +129,13 @@ function HeaderStateGalleryContent(): JSX.Element {
     // sits inside `<main>`, which already scrolls — a `h-full overflow-auto`
     // root nested a second scroller inside it and made the wheel fight
     // between them. Same structure the Worktree States page uses.
-    <div
-      className="flex h-full flex-col bg-base fg-primary"
+    <Surface
+      variant="pane"
+      extent="parent"
+      className="flex flex-col"
       data-testid="header-states-page"
     >
-      <header className="flex flex-col gap-1 px-8 pb-4 pt-8">
+      <header className="flex flex-col gap-1 px-8 pb-4 pt-8 fg-primary">
         <Heading level={1} variant="page">
           Worktree header — all states
         </Heading>
@@ -143,7 +147,7 @@ function HeaderStateGalleryContent(): JSX.Element {
         </p>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-12">
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-12 fg-primary">
         {!ready ? (
           <div className="fg-secondary">Seeding…</div>
         ) : (
@@ -248,6 +252,6 @@ function HeaderStateGalleryContent(): JSX.Element {
           </div>
         )}
       </div>
-    </div>
+    </Surface>
   );
 }

@@ -2063,6 +2063,10 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+/* A long list's search field sits above the rows: 4px clear of its rule. */
+.canopy-picker-menu-search + .canopy-panel-tab-list-rows {
   padding-top: 4px;
 }
 
@@ -2077,6 +2081,30 @@
     transparent
   );
   mask-image: linear-gradient(to right, #000 calc(100% - 8px), transparent);
+}
+
+/* The end slot only takes room from the title while it shows something: the
+   ✓, a mark, a running spinner, or × under the pointer or the keyboard. An
+   empty slot gives the title the row's own end inset, so a long title fades
+   at the row's edge. Touch keeps the room, since × has no hover to wait on. */
+@media (hover: hover) {
+  .canopy-panel-tab-list-row:not(:hover):not(
+      :has(
+        .canopy-panel-tab-list-check,
+        .canopy-panel-tab-list-trailing:not(:empty),
+        [data-panel-tab-busy]
+      )
+    )
+    > [role='option'] {
+    padding-right: calc(var(--spacing) * 2);
+  }
+
+  /* The keyboard's row shows × too, so it keeps the slot's room. */
+  .canopy-panel-tab-list[data-keyboard-moved]
+    .canopy-panel-tab-list-row[data-highlighted='true']
+    > [role='option'] {
+    padding-right: calc(var(--spacing) * 9);
+  }
 }
 
 /* One 24px slot at the row's end, 4px in from its edges (the row's reserved

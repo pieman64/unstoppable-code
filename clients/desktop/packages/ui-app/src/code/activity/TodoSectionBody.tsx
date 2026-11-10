@@ -81,7 +81,7 @@ function TodoItemRow({ item }: { item: TodoSectionBodyItem }): JSX.Element {
         className="flex items-center gap-2.5 px-3 py-2"
         data-testid="activity-todo-item"
       >
-        <TodoStatusIcon status={item.status} />
+        <StatusGlyph state={TODO_STATES[item.status]} />
         <span
           className={`text-xs ${
             isCompleted
@@ -105,11 +105,3 @@ const TODO_STATES: Readonly<
   in_progress: 'running',
   pending: 'queued',
 };
-
-function TodoStatusIcon({
-  status,
-}: {
-  status: TodoSectionBodyItem['status'];
-}): JSX.Element {
-  return <StatusGlyph state={TODO_STATES[status]} />;
-}

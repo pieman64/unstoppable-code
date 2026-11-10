@@ -237,6 +237,7 @@ describe('pipeline owner requests', () => {
       'owner.ledger.codexToolExecute': { toolsKey: 'k', threadId: 't', call },
       'owner.ledger.codexToolsDispose': { toolsKey: 'k' },
       'owner.claude.modAdmission': { cwd: '/tmp/run', settingSources: [] },
+      'owner.model.agentAlias': { agentId: 'agent_model_1' },
     };
     for (const action of WORKER_PIPELINE_OWNER_ACTIONS) {
       expect(
@@ -257,6 +258,13 @@ describe('pipeline owner requests', () => {
       WorkerPipelineHostActionRequestSchema.safeParse({
         action: 'owner.model.policy',
         check: 'blocked',
+      }).success,
+    ).toBe(false);
+    // CAN-5832: an Agent alias names an Agent model id, nothing else.
+    expect(
+      WorkerPipelineHostActionRequestSchema.safeParse({
+        action: 'owner.model.agentAlias',
+        agentId: 'sonnet',
       }).success,
     ).toBe(false);
     expect(

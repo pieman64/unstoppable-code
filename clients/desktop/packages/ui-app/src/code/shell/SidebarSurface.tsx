@@ -72,6 +72,7 @@ import {
   SIDEBAR_NAV_ICON_CLASSNAME,
   sidebarNavIconItemClassName,
   sidebarNavItemClassName,
+  SidebarNavRow,
   Tooltip,
   useDropdownMenuRowStyle,
   useIsMobile,
@@ -4548,8 +4549,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
                 disabled={props.createTaskTooltip === undefined}
                 className="w-full"
               >
-                <button
-                  type="button"
+                <SidebarNavRow
                   onClick={props.onCreateTask}
                   disabled={!props.onCreateTask}
                   data-testid="portal-create-task"
@@ -4557,13 +4557,12 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
                   data-selected={props.createTaskActive || undefined}
                   // Desktop's `SidebarNavRow`: the same row vocabulary as every
                   // nav row beneath it, selected while the Home page shows.
-                  className={`${sidebarNavItemClassName(props.createTaskActive === true, touch)} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
+                  selected={props.createTaskActive === true}
+                  touchTarget={touch ? 'always' : 'none'}
+                  icon={<EditBigIcon size={16} />}
                 >
-                  <span className={SIDEBAR_NAV_ICON_CLASSNAME}>
-                    <EditBigIcon size={16} />
-                  </span>
                   New task
-                </button>
+                </SidebarNavRow>
               </Tooltip>
             )}
             <div

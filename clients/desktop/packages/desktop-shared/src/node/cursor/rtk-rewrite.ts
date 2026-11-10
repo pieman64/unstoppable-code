@@ -1,4 +1,7 @@
-import { runRtkRewrite, type RtkRewriteOptions } from '../rtk/rewrite';
+import {
+  runRtkRewrite,
+  type RtkRewriteOptions,
+} from '@canopy/execution-engine/node/rtk/rewrite';
 
 export interface CursorRtkRewriteOptions extends RtkRewriteOptions {
   signal: AbortSignal;

@@ -32,7 +32,7 @@ import {
   WORKSPACE_ROOT_REPO_ID,
   WORKSPACE_ROOT_REPO_NAME,
 } from '@canopy/desktop-shared/types';
-import { emptyPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { emptyPluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { canonicalizeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import {
   CHAT_UNIT_LABEL,

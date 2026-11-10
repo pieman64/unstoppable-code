@@ -2,7 +2,7 @@ import { catalogSha256 } from '@canopy/core-runtime/node/catalog';
 import type {
   MarketplaceInfo,
   PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 
 const FACET_KEYS = ['claude', 'codex', 'codexCompatibility'] as const;
 

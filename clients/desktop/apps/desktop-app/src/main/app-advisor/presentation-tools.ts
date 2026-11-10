@@ -4,7 +4,10 @@ import {
   INTERFACE_TOOL_INPUT_MAX_BYTES,
   type InterfaceToolName,
 } from '@canopy/protocol/canopy-core';
-import { appAdvisorActionDisposition } from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
+import {
+  APP_ADVISOR_SURFACE_REQUEST_ACTION_TYPES,
+  appAdvisorActionDisposition,
+} from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
 import type {
   AppAdvisorAction,
   AppAdvisorActionResponse,
@@ -13,6 +16,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import {
   getSessionInterfaceToolRegistry,
+  interfaceToolAudience,
   interfaceToolAudienceOf,
 } from '../agents/interface-tool-binding';
 import {
@@ -70,11 +74,19 @@ export async function presentAppAdvisorAction(input: {
   boundTools?: readonly InterfaceToolName[];
   /** A core write whose guard failed (CAN-5999 D3), applied in the window instead. */
   guarded?: true;
+  /**
+   * A CAN-6008 surface request: a core write the main window hands to its
+   * mounted Settings surface. Only the local lease serves it, never a route.
+   */
+  surfaceRequest?: true;
   signal?: AbortSignal;
 }): Promise<AppAdvisorActionResponse> {
   const { action, destination, expectedUiRevision, signal } = input;
   const requestId = input.requestId ?? randomUUID();
-  if (!isPresentation(action, input.guarded === true))
+  const surfaceRequest =
+    input.surfaceRequest === true &&
+    APP_ADVISOR_SURFACE_REQUEST_ACTION_TYPES.has(action.type);
+  if (!surfaceRequest && !isPresentation(action, input.guarded === true))
     return {
       requestId,
       ok: false,
@@ -89,6 +101,10 @@ export async function presentAppAdvisorAction(input: {
     originChatTabId: destination.chatId,
     ...(expectedUiRevision !== undefined ? { expectedUiRevision } : {}),
   };
+  // CAN-6008: a surface request is served only by this computer's main
+  // window, never by a window lease of a computer driving this chat.
+  if (surfaceRequest && interfaceToolAudience(destination.chatId) !== undefined)
+    return { ...surfaceUnavailableResponse(request), requestId };
   const registry = getSessionInterfaceToolRegistry();
   const bound = (
     input.boundTools ?? (await boundAppAdvisorInterfaceTools(destination))

@@ -58,18 +58,18 @@ import {
   isCodexConfig,
   type CodexConfig,
 } from '@canopy/execution-engine/lib/codex-model-config';
-import { sanitizeEnvVars } from '@canopy/desktop-shared/lib/mcp-security';
+import { sanitizeEnvVars } from '@canopy/execution-engine/lib/mcp-security';
 import {
   getMcpHttpAuthDefault,
   getMcpHttpAuthHandler,
   mcpHttpAuthTargetKey,
-} from '@canopy/desktop-shared/lib/mcp-http-auth';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+} from '@canopy/execution-engine/lib/mcp-http-auth';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   buildAccountMcpServerName,
   buildManagedMcpServerName,
   normalizeManagedMcpServerLabel,
-} from '@canopy/desktop-shared/node/plugins/mcp-server-name';
+} from '@canopy/execution-engine/node/plugins/mcp-server-name';
 import {
   resolveCwdRelativePathArg,
   resolvePluginServerCwd,
@@ -135,7 +135,7 @@ import type {
   PluginProviderFacet,
   PluginInfo,
   PluginManifest,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { createGeneratedSkillName } from './codex-plugin-compat';
 import { scanPluginMods } from './plugin-scanner';
 import {
@@ -171,7 +171,7 @@ import {
   inspectClaudePluginHooks,
   type ClaudeModAdmissionDecision,
   type ClaudeModPluginInput,
-} from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+} from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 import {
   resolveClaudeModAdmissionContext,
   resolveClaudeModConfigDirectory,
@@ -180,7 +180,7 @@ import {
 import {
   isSkippedClaudeMod,
   type SkippedClaudeMod,
-} from '@canopy/desktop-shared/types/claude-mod-admission';
+} from '@canopy/execution-engine/types/claude-mod-admission';
 
 interface SdkPluginConfig {
   type: 'local';

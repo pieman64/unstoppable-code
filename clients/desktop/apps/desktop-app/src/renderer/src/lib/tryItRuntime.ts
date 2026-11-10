@@ -8,7 +8,7 @@ import type {
   ModelDefaultsByProvider,
   ProviderModelSelection,
 } from '@canopy/desktop-shared/types';
-import type { PluginInfo } from '@canopy/desktop-shared/types/plugins';
+import type { PluginInfo } from '@canopy/execution-engine/types/plugins';
 import {
   PLUGIN_HARNESSES,
   pluginHarnessRows,

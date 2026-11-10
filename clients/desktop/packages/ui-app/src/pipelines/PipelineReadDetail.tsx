@@ -1,6 +1,6 @@
 'use client';
 
-import { Badge, Count } from '@canopy/ui-shared/components/Badge';
+import { Count } from '@canopy/ui-shared/components/Badge';
 import { type JSX, useState } from 'react';
 import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
 import { PipelineIcon } from '@canopy/ui-shared';
@@ -8,6 +8,7 @@ import { Stack, Button, Heading } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { EmptyStateRow } from '@canopy/ui-shared/components';
 import { Surface } from '@canopy/ui-shared/components';
+import { PipelineStepRow } from './PipelineStepRow';
 
 export interface PipelineReadDetailProps {
   definition: PortalPipelineDefinitionViewModel;
@@ -42,8 +43,10 @@ export function PipelineReadDetail({
       }`}
       data-testid="pipeline-read-detail"
     >
-      <header
-        className="card-surface p-5"
+      <Surface
+        as="header"
+        variant="card"
+        padding="default"
         data-testid="pipeline-read-detail-meta"
       >
         <div className="flex items-start gap-3">
@@ -98,7 +101,7 @@ export function PipelineReadDetail({
             </Button>
           )}
         </div>
-      </header>
+      </Surface>
 
       <Stack
         as="section"
@@ -167,46 +170,21 @@ export function PipelineReadDetail({
                   ))}
                   <Count value={job.steps.length} />
                 </div>
-                <ol className="p-2 flex flex-col gap-1.5">
+                {/* 2px inside the job's 12px corners keeps the 10px rows concentric. */}
+                <ol className="flex flex-col p-0.5">
                   {job.steps.length === 0 && (
                     <li>
                       <EmptyStateRow title="No steps yet" />
                     </li>
                   )}
                   {job.steps.map((step) => (
-                    <li
-                      key={step.id}
-                      className="card-surface flex items-center gap-3 px-3 py-2.5"
-                      data-testid="pipeline-read-detail-step"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-s font-medium fg-primary">
-                            {step.name}
-                          </span>
-                          <Badge
-                            tone={
-                              step.kind === 'action'
-                                ? 'info'
-                                : step.kind === 'script'
-                                  ? 'warning'
-                                  : 'neutral'
-                            }
-                          >
-                            {step.kind === 'action'
-                              ? 'Action'
-                              : step.kind === 'script'
-                                ? 'Script'
-                                : 'Incomplete'}
-                          </Badge>
-                        </div>
-                        {/* Action refs are recorded; a script's first line is blocked. */}
-                        <p
-                          className={`${step.kind === 'action' ? '' : REPLAY_BLOCK_CLASS} mt-0.5 truncate text-xs fg-secondary`}
-                        >
-                          {step.usesSummary}
-                        </p>
-                      </div>
+                    <li key={step.id}>
+                      <PipelineStepRow
+                        name={step.name}
+                        kind={step.kind}
+                        summary={step.usesSummary}
+                        data-testid="pipeline-read-detail-step"
+                      />
                     </li>
                   ))}
                 </ol>

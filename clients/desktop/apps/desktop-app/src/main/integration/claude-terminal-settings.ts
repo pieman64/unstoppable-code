@@ -47,8 +47,8 @@ import { desktopTerminalEnvironmentFor } from '../terminal/worker-terminal';
 import {
   mergeClaudeModAdmissionSettings,
   type ClaudeModAdmissionSettings,
-} from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
-import type { SkippedClaudeMod } from '@canopy/desktop-shared/types/claude-mod-admission';
+} from '@canopy/execution-engine/node/plugins/claude-mod-admission';
+import type { SkippedClaudeMod } from '@canopy/execution-engine/types/claude-mod-admission';
 
 /**
  * `input.model` is pushed straight into the Claude Code CLI as `--model`, so

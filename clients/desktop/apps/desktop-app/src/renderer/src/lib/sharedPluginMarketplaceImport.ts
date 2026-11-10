@@ -1,12 +1,12 @@
 import type {
   MarketplaceInfo,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
-import { isBuiltInPluginMarketplaceId } from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
+import { isBuiltInPluginMarketplaceId } from '@canopy/execution-engine/types/plugins';
 import {
   normalizeGitHubRepoRef,
   type ShareablePluginSource,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import { parseGitHubRepo } from '@/lib/format';
 
 export interface ImportedSharedPluginRef {

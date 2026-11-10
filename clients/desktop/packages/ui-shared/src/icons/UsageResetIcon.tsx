@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import {
   ScheduleIcon as AppCatalogScheduleIcon,
   type IconSize,
-} from '../icons/AppIcons';
+} from './AppIcons';
 
 interface UsageResetIconProps {
   /** A step of the icon scale. Defaults to `sm`. */

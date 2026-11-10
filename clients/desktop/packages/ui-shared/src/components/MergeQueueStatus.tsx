@@ -28,6 +28,7 @@ import {
 import { Button } from './Button';
 import { FloatingMenu } from './FloatingMenu';
 import { RunSpinner } from './RunSpinner';
+import { Stack } from './Stack';
 
 /** One pull request in a queue list. */
 export interface MergeQueuePopoverEntry {
@@ -296,14 +297,11 @@ function PhaseStrip({
   const steps: readonly MergeQueueStep[] = ['queued', 'testing', 'merging'];
   const current = steps.indexOf(step);
   return (
-    <ol
-      className="mt-3 grid grid-cols-3 gap-1 text-xs"
-      aria-label="Queue phase"
-    >
+    <ol className="grid grid-cols-3 gap-1 text-xs" aria-label="Queue phase">
       {steps.map((item, index) => (
         <li
           key={item}
-          className="min-w-0"
+          className="flex min-w-0 flex-col gap-1.5"
           aria-current={index === current ? 'step' : undefined}
         >
           <span
@@ -317,7 +315,7 @@ function PhaseStrip({
             }`}
           />
           <span
-            className={`mt-1.5 block truncate ${
+            className={`block truncate ${
               index === current
                 ? 'fg-primary'
                 : index < current
@@ -564,19 +562,15 @@ function EstimateHeadline({
   readonly now: number;
 }): JSX.Element {
   if (step === 'merging') {
-    return (
-      <div className="mt-2 text-m font-medium fg-primary">Merging now</div>
-    );
+    return <div className="text-m font-medium fg-primary">Merging now</div>;
   }
   if (remainingSeconds === null) {
     return (
-      <div className="mt-2 text-m font-medium fg-secondary">
-        No estimate yet
-      </div>
+      <div className="text-m font-medium fg-secondary">No estimate yet</div>
     );
   }
   return (
-    <div className="mt-2 flex items-baseline gap-2">
+    <div className="flex items-baseline gap-2">
       <span
         className="text-m font-medium tabular-nums fg-primary"
         data-testid="merge-queue-popover-eta"
@@ -602,31 +596,39 @@ function SingleQueue({
   return (
     <>
       <div className="px-2 pt-2 pb-3">
-        <div className="flex items-center justify-between gap-3 text-2xs fg-secondary">
-          <span className="min-w-0 truncate">
-            Merge queue <Separator />{' '}
-            <span className="font-mono fg-primary">{section.baseBranch}</span>
-          </span>
-          {section.list.status === 'ready' && (
-            <span className="shrink-0 tabular-nums">
-              {pluralPullRequests(section.list.totalCount)}
-            </span>
-          )}
-        </div>
-        <EstimateHeadline
-          remainingSeconds={section.remainingSeconds}
-          step={step}
-          now={now}
-        />
-        {note !== null && (
-          <p
-            className="mt-0.5 text-xs fg-secondary"
-            data-testid="merge-queue-popover-testing-note"
-          >
-            {note}
-          </p>
-        )}
-        <PhaseStrip step={step} position={section.position} />
+        <Stack gap="item">
+          <Stack gap="inline">
+            <div className="flex items-center justify-between gap-3 text-2xs fg-secondary">
+              <span className="min-w-0 truncate">
+                Merge queue <Separator />{' '}
+                <span className="font-mono fg-primary">
+                  {section.baseBranch}
+                </span>
+              </span>
+              {section.list.status === 'ready' && (
+                <span className="shrink-0 tabular-nums">
+                  {pluralPullRequests(section.list.totalCount)}
+                </span>
+              )}
+            </div>
+            <div>
+              <EstimateHeadline
+                remainingSeconds={section.remainingSeconds}
+                step={step}
+                now={now}
+              />
+              {note !== null && (
+                <p
+                  className="mt-0.5 text-xs fg-secondary"
+                  data-testid="merge-queue-popover-testing-note"
+                >
+                  {note}
+                </p>
+              )}
+            </div>
+          </Stack>
+          <PhaseStrip step={step} position={section.position} />
+        </Stack>
       </div>
       <div className="-mx-1 border-t border-line-base" />
       <div className="max-h-80 overflow-y-auto py-1">
@@ -656,24 +658,26 @@ function SeveralQueues({
   return (
     <>
       <div className="px-2 pt-2 pb-3">
-        <div className="text-2xs fg-secondary">
-          {pluralPullRequests(sections.length)} in merge queues
-        </div>
-        {latest !== null && latest.remainingSeconds !== null && (
-          <>
-            <div
-              className="mt-2 text-m font-medium tabular-nums fg-primary"
-              data-testid="merge-queue-popover-eta"
-            >
-              All merged in about{' '}
-              {formatEstimateMinutes(latest.remainingSeconds)}
+        <Stack gap="inline">
+          <div className="text-2xs fg-secondary">
+            {pluralPullRequests(sections.length)} in merge queues
+          </div>
+          {latest !== null && latest.remainingSeconds !== null && (
+            <div>
+              <div
+                className="text-m font-medium tabular-nums fg-primary"
+                data-testid="merge-queue-popover-eta"
+              >
+                All merged in about{' '}
+                {formatEstimateMinutes(latest.remainingSeconds)}
+              </div>
+              <div className="mt-0.5 text-xs tabular-nums fg-secondary">
+                around {formatEstimateClock(latest.remainingSeconds, now)}, when
+                the {latest.repoName} pull request lands
+              </div>
             </div>
-            <div className="mt-0.5 text-xs tabular-nums fg-secondary">
-              around {formatEstimateClock(latest.remainingSeconds, now)}, when
-              the {latest.repoName} pull request lands
-            </div>
-          </>
-        )}
+          )}
+        </Stack>
       </div>
       <div className="max-h-105 overflow-y-auto">
         {sections.map((section) => {

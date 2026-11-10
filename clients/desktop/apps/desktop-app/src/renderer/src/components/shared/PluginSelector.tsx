@@ -1,7 +1,7 @@
 import type {
   PluginDetails,
   PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import {
   cursorLoadsPluginMemberKind,
   cursorPluginFacetProvider,
@@ -30,7 +30,7 @@ import { CollectionModal } from '../pages/CollectionsTab';
 import { UnifiedTableDetailOverlays } from '../pages/UnifiedTableDetailOverlays';
 import { useUnifiedTableDetailView } from '../pages/unifiedTableDetailView';
 import { UnifiedTable } from './UnifiedTable';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   getUnsupportedReason,
   type PluginSelectorProviderScope,

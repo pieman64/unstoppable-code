@@ -31,7 +31,9 @@ import { isDelegationReadAction } from './delegation-read-actions';
 import { isAdvisorDelegationControlAction } from './advisor-delegation-control';
 import { isAdvisorPipelineAction } from './advisor-pipeline-actions';
 import { isAdvisorCatalogAction } from './advisor-catalog-actions';
+import { isAdvisorSharingAction } from './advisor-sharing-actions';
 import { isAdvisorFileTreeAction } from './advisor-file-tree-actions';
+import { isAdvisorCredentialAction } from './advisor-credential-actions';
 import type { AppAdvisorCodeGraphAction } from '@canopy/desktop-shared/types/app-advisor-code-graph';
 import type { CanopyInjectedToolKey } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { AppAdvisorBrowserAction } from '@canopy/desktop-shared/types';
@@ -115,6 +117,7 @@ import {
   isAdvisorChatSettingAction,
 } from './advisor-chat-settings';
 import { withAppAdvisorListUiEnvelope } from './list-ui-envelope';
+import { getChatStateService } from '../services/chat-state-service';
 import { getPipelineFailureDebugContext } from '../services/pipelines-service';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
@@ -526,31 +529,66 @@ export function createAppAdvisorToolRuntime(
       const answers: McpQuestionAnswer[] = [];
       for (const question of questions) {
         const requestId = randomUUID();
-        getExecutionObservabilityIngest().pauseChatTurn(
-          destination.projectId,
-          destination.worktreeId,
-          destination.chatId,
-        );
+        // CAN-5827: the wait pauses the canonical turn, the one source of the
+        // turn's duration. A question whose pause cannot be committed is not
+        // asked, as a worktree question whose pending entry fails.
+        const pause = {
+          projectId: destination.projectId,
+          worktreeId: destination.worktreeId,
+          chatId: destination.chatId,
+          ownerKind: 'question',
+          ownerId: requestId,
+        } as const;
         let response: Awaited<ReturnType<typeof requestAppAdvisorRendererTool>>;
+        // The reducer sees the pause open even when its commit fails, so the
+        // close runs whenever the open was attempted.
         try {
-          response = await requestAppAdvisorRendererTool(
-            {
-              kind: 'ask_user_question',
-              requestId,
-              question,
-              // Chat attribution so the pending-request registry can surface
-              // this question on the owning chat's portal summary (CAN-2565).
-              chatId: destination.chatId,
-            },
-            surfaces,
-            options?.signal ? { signal: options.signal } : undefined,
-          );
-        } finally {
-          getExecutionObservabilityIngest().resumeChatTurn(
+          try {
+            await getChatStateService().commitTurnPause({
+              ...pause,
+              type: 'PauseOpened',
+            });
+          } catch {
+            throw new Error('ask_user_persistence_failed');
+          }
+          // As for worktree chats, the audit keeps its own tally for the
+          // shared fallback when the canonical record is late or unmatched.
+          const ingest = getExecutionObservabilityIngest();
+          ingest.pauseChatTurn(
             destination.projectId,
             destination.worktreeId,
             destination.chatId,
           );
+          try {
+            response = await requestAppAdvisorRendererTool(
+              {
+                kind: 'ask_user_question',
+                requestId,
+                question,
+                // Chat attribution so the pending-request registry can surface
+                // this question on the owning chat's portal summary (CAN-2565).
+                chatId: destination.chatId,
+              },
+              surfaces,
+              options?.signal ? { signal: options.signal } : undefined,
+            );
+          } finally {
+            ingest.resumeChatTurn(
+              destination.projectId,
+              destination.worktreeId,
+              destination.chatId,
+            );
+          }
+        } finally {
+          await getChatStateService()
+            .commitTurnPause({ ...pause, type: 'PauseClosed' })
+            .catch((error: unknown) => {
+              // The reducer ends an open pause with its turn.
+              logMainProcessWarn(
+                '[app-advisor] question pause could not be closed',
+                error,
+              );
+            });
         }
         const answeredBy = takeAppAdvisorAnswerProvenance(requestId);
         if (!response.ok || !response.answer) {
@@ -753,6 +791,76 @@ export function createAppAdvisorToolRuntime(
           ...(await dispatchAdvisorDelegationControl(
             action,
             mainAdvisorDelegationControlHost({ chatId: destination.chatId }),
+          )),
+          requestId,
+        };
+      }
+      if (isAdvisorSharingAction(action)) {
+        // CAN-6003: sharing on the window's hosted owners; a public agent
+        // link only after a person confirms.
+        const [
+          { dispatchAdvisorSharingAction },
+          { mainAdvisorSharingActionHost },
+          { mainAdvisorChatReadHost },
+        ] = await Promise.all([
+          import('./advisor-sharing-actions'),
+          import('./advisor-sharing-actions-host'),
+          import('./advisor-chat-read-host'),
+        ]);
+        const reads = mainAdvisorChatReadHost({
+          chatId: destination.chatId,
+          readUiState: async () => {
+            const envelope = await runtime.requestUiState();
+            return envelope.revision === 0 ? null : envelope.snapshot;
+          },
+        });
+        return {
+          ...(await dispatchAdvisorSharingAction(
+            action,
+            mainAdvisorSharingActionHost({
+              chatId: destination.chatId,
+              idempotencyKey: `app-advisor-action:${destination.chatId}:${requestId}:sharing`,
+              getWindow: surfaces.getMainWindow,
+              readTabs: (projectId, worktreeId) =>
+                reads.readTabs(projectId, worktreeId),
+              requestUserAnswers: (questions) =>
+                runtime.requestUserAnswers(
+                  questions,
+                  signal ? { signal } : undefined,
+                ),
+            }),
+          )),
+          requestId,
+        };
+      }
+      if (isAdvisorCredentialAction(action)) {
+        // CAN-6008: the router let these through only with the main window's
+        // lease bound; they run on the owners the Settings handlers call.
+        const [
+          { dispatchAdvisorCredentialAction },
+          { mainAdvisorCredentialActionHost },
+        ] = await Promise.all([
+          import('./advisor-credential-actions'),
+          import('./advisor-credential-actions-host'),
+        ]);
+        return {
+          ...(await dispatchAdvisorCredentialAction(
+            action,
+            mainAdvisorCredentialActionHost({
+              getMainWindow: surfaces.getMainWindow,
+              revealOllamaSettings: async () => {
+                await presentAppAdvisorAction({
+                  action: {
+                    type: 'navigation.open_settings',
+                    section: 'ollama',
+                  },
+                  requestId: `${requestId}:reveal`,
+                  destination,
+                  boundTools: await boundInterfaceTools(),
+                });
+              },
+            }),
+            signal,
           )),
           requestId,
         };

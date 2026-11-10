@@ -15,6 +15,7 @@ import { parseGitHubRemote } from './github-pr';
 const CACHE_TTL_MS = 60_000;
 const REPO_SLUG_CACHE_TTL_MS = 5 * 60_000;
 const PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 100;
 
 type ListPullRequestsApiResponse =
   RestEndpointMethodTypes['pulls']['list']['response'];
@@ -40,7 +41,7 @@ function mapPullRequest(
     headRepoFullName === null ||
     headRepoFullName.toLowerCase() !== expectedFullName.toLowerCase();
 
-  return {
+  const summary: PullRequestSummary = {
     number: pr.number,
     title: pr.title,
     headRefName: pr.head.ref,
@@ -50,6 +51,10 @@ function mapPullRequest(
     isDraft: pr.draft === true,
     isCrossRepo,
   };
+  if (typeof pr.updated_at === 'string') {
+    summary.updatedAt = pr.updated_at;
+  }
+  return summary;
 }
 
 /** Local origin resolution shared by listing, title search, and slug lookup. */
@@ -61,6 +66,9 @@ async function resolveGitHubOrigin(repoPath: string): Promise<RepoSlug | null> {
 async function fetchOpenPullRequests(
   repoPath: string,
   origin: RepoSlug | undefined,
+  page: number,
+  perPage: number,
+  includePage: boolean,
 ): Promise<PullRequestSummary[]> {
   const remote = origin ?? (await resolveGitHubOrigin(repoPath));
   if (!remote) {
@@ -76,7 +84,8 @@ async function fetchOpenPullRequests(
         owner: remote.owner,
         repo: remote.repo,
         state: 'open',
-        per_page: PAGE_SIZE,
+        per_page: perPage,
+        ...(includePage ? { page } : {}),
         sort: 'updated',
         direction: 'desc',
       }),
@@ -100,6 +109,11 @@ export function invalidatePullRequestListingCache(): void {
   pendingLookups.clear();
 }
 
+/** Read the credential-aware generation used to invalidate related caches. */
+export function getPullRequestListingCacheGeneration(): number {
+  return cacheGeneration;
+}
+
 /** Test-only alias retained for descriptive setup in the listing tests. */
 export const __resetPullRequestListingCacheForTests =
   invalidatePullRequestListingCache;
@@ -114,25 +128,47 @@ export const __resetPullRequestListingCacheForTests =
 export async function listOpenPullRequestsForRepo(
   repoPath: string,
   origin?: RepoSlug,
+  options?: { page?: number; perPage?: number },
 ): Promise<PullRequestSummary[]> {
-  const cached = cache.get(repoPath);
+  const page = options?.page ?? 1;
+  const perPage = options?.perPage ?? PAGE_SIZE;
+  if (!Number.isSafeInteger(page) || page < 1) {
+    throw new Error('Invalid page: must be a positive integer.');
+  }
+  if (
+    !Number.isSafeInteger(perPage) ||
+    perPage < 1 ||
+    perPage > MAX_PAGE_SIZE
+  ) {
+    throw new Error(
+      `Invalid perPage: must be an integer between 1 and ${String(MAX_PAGE_SIZE)}.`,
+    );
+  }
+  const lookupKey = JSON.stringify([repoPath, page, perPage]);
+  const cached = cache.get(lookupKey);
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
     return cached.data;
   }
 
-  const pending = pendingLookups.get(repoPath);
+  const pending = pendingLookups.get(lookupKey);
   if (pending) {
     return pending;
   }
 
   const lookupGeneration = cacheGeneration;
-  const fetchPromise = fetchOpenPullRequests(repoPath, origin);
+  const fetchPromise = fetchOpenPullRequests(
+    repoPath,
+    origin,
+    page,
+    perPage,
+    options !== undefined,
+  );
   void fetchPromise.catch(() => undefined);
 
   const trackedLookup = fetchPromise
     .then((pullRequests): PullRequestSummary[] => {
       if (cacheGeneration === lookupGeneration) {
-        cache.set(repoPath, {
+        cache.set(lookupKey, {
           data: pullRequests,
           cachedAt: Date.now(),
         });
@@ -141,11 +177,11 @@ export async function listOpenPullRequestsForRepo(
     })
     .finally(() => {
       if (cacheGeneration === lookupGeneration) {
-        pendingLookups.delete(repoPath);
+        pendingLookups.delete(lookupKey);
       }
     });
 
-  pendingLookups.set(repoPath, trackedLookup);
+  pendingLookups.set(lookupKey, trackedLookup);
 
   return trackedLookup;
 }
@@ -201,7 +237,7 @@ const PR_PICKER_SEARCH_QUERY = `
       nodes {
         __typename
         ... on PullRequest {
-          number title url headRefName baseRefName isDraft
+          number title url headRefName baseRefName isDraft updatedAt
           author { login }
           headRepository { nameWithOwner }
         }
@@ -241,7 +277,7 @@ function mapSearchPullRequest(
     typeof value.headRepository.nameWithOwner === 'string'
       ? value.headRepository.nameWithOwner
       : null;
-  return {
+  const summary: PullRequestSummary = {
     number: value.number,
     title: value.title,
     url: value.url,
@@ -257,6 +293,10 @@ function mapSearchPullRequest(
       headRepoName.toLowerCase() !==
         `${remote.owner}/${remote.repo}`.toLowerCase(),
   };
+  if (typeof value.updatedAt === 'string') {
+    summary.updatedAt = value.updatedAt;
+  }
+  return summary;
 }
 
 async function fetchSearchPullRequests(

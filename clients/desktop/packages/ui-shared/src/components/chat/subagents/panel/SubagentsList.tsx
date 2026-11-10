@@ -25,6 +25,7 @@ import {
   DataTableHeaderCell,
   DataTableRow,
 } from '../../../DataTable';
+import { Button } from '../../../Button';
 import { formatSubagentElapsed } from '../common/subagent-format';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
 import { SubagentHarnessMark } from '../common/SubagentHarnessMark';
@@ -345,18 +346,26 @@ export const SubagentsListRow = memo(function SubagentsListRow({
       </DataTableCell>
       <DataTableCell align="right">
         {isSubagentChatKind(node.kind) ? (
-          <button
-            type="button"
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
+            touchArea="contained"
+            // The 28px button overhangs the cell's 4px block inset so the
+            // row keeps its 36px height.
+            className="-my-1"
+            // The labelled-by pair names the row ("Open chat, <title>"); the
+            // plain label is the fallback the icon-only type asks for.
+            aria-label={SUBAGENTS_OPEN_ROW_LABEL}
             aria-labelledby={`${openLabelId} ${titleId}`}
             data-testid={`subagents-list-open-${node.id}`}
             onClick={openChat}
-            className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-tertiary hover:bg-secondary hover:fg-primary"
           >
             <ArrowUpRightIcon size={14} aria-hidden />
             <span id={openLabelId} className="sr-only">
               {SUBAGENTS_OPEN_ROW_LABEL}
             </span>
-          </button>
+          </Button>
         ) : null}
       </DataTableCell>
     </DataTableRow>
@@ -518,18 +527,26 @@ function SubagentWorkflowRunListRow({
       </DataTableCell>
       <DataTableCell align="right">
         {onOpenWorkflow ? (
-          <button
-            type="button"
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
+            touchArea="contained"
+            // The 28px button overhangs the cell's 4px block inset so the
+            // row keeps its 36px height.
+            className="-my-1"
+            // The labelled-by pair names the row ("Open chat, <title>"); the
+            // plain label is the fallback the icon-only type asks for.
+            aria-label={SUBAGENT_OPEN_WORKFLOW_LABEL}
             aria-labelledby={`${openLabelId} ${titleId}`}
             data-testid={`subagents-list-open-${node.id}`}
             onClick={openWorkflow}
-            className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-tertiary hover:bg-secondary hover:fg-primary"
           >
             <ArrowUpRightIcon size={14} aria-hidden />
             <span id={openLabelId} className="sr-only">
               {SUBAGENT_OPEN_WORKFLOW_LABEL}
             </span>
-          </button>
+          </Button>
         ) : null}
       </DataTableCell>
     </DataTableRow>

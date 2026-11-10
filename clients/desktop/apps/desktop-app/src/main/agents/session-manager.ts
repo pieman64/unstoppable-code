@@ -4,14 +4,14 @@ import { clearPresentationTurn } from '../canopy-tools/presentation-state';
 import type { BrowserWindow } from 'electron';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import type { ChildToolLiveness } from '@canopy/agent-transcript';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   isStricterApprovalMode,
   limitAllowRules,
   sendDenyRulesBeyond,
   sessionApprovalRulesWithin,
 } from '@canopy/desktop-shared/lib/send-approval-narrowing';
-import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import { mcpHttpAuthTargetKey } from '@canopy/execution-engine/lib/mcp-http-auth';
 import type { AgentProvider, AgentSession, AgentSessionOptions } from './types';
 import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
 import {

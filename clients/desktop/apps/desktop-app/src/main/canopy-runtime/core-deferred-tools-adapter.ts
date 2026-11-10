@@ -8,7 +8,7 @@ import type {
 import {
   isChatTabPluginSelections,
   normalizePluginSelections,
-} from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+} from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type {
   DeferredToolsExecutionResult,

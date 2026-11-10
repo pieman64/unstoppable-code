@@ -16,7 +16,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
-import type { PluginInfo } from '@canopy/desktop-shared/types/plugins';
+import type { PluginInfo } from '@canopy/execution-engine/types/plugins';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import type { SettingsSection } from '@/components/settings/SettingsNav';
 import { settingsRouteToPath } from '@canopy/protocol/settings';

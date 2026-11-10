@@ -4,7 +4,7 @@ import { captureHomeCapabilities } from './delegation/capture-home-capabilities'
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { managedDelegationEnabled } from './delegation/gate';
 import type { ManagedDelegationSession } from './delegation/service';
-import { runRtkRewrite } from '@canopy/desktop-shared/node/rtk/rewrite';
+import { runRtkRewrite } from '@canopy/execution-engine/node/rtk/rewrite';
 import {
   getBundledRtkBinaryPath,
   getRtkManagedEnv,
@@ -39,7 +39,7 @@ import {
   describeCopilotMcpServerError,
   type CopilotMcpServerReadiness,
 } from '@canopy/copilot-recipient/tool-snapshot';
-import { managedMcpServerFriendlyLabel } from '@canopy/desktop-shared/node/plugins/mcp-server-name';
+import { managedMcpServerFriendlyLabel } from '@canopy/execution-engine/node/plugins/mcp-server-name';
 import {
   createCopilotCapabilitySnapshot,
   isCopilotCapabilitySnapshot,

@@ -14,7 +14,7 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { ChatAutomationAction } from '@canopy/desktop-shared/lib/chat-automation-conversion';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
 import type { PipelineHostActionCaller } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import type {

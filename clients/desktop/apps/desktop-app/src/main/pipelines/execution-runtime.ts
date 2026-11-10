@@ -36,7 +36,6 @@ import type {
   CursorPromptRunnerRequest,
   CursorPromptRunnerResult,
   ExecutionRuntime,
-  PipelineAgentModelAliasResolution,
   ResolvePipelineTargetRequest,
   ResolvePipelineTargetResult,
   SpawnedProcessResult,
@@ -49,9 +48,6 @@ import { createTrackedPlan, updateTrackedPlan } from '../lib/plan-persistence';
 import { resolvePipelinePluginCollections } from './plugin-collection-resolver';
 import { resolveClaudeCompatibleInvocation } from '../ollama/claude-compatible';
 import { getCodexGatewayProxyService } from '../agents/codex-gateway-proxy-service';
-import { getAgentModel } from '../agents/agent-model-store';
-import { resolveAgentDestinationDefaultModel } from '../agents/agent-default-model';
-import { isAgentDefaultBaseModel } from '@canopy/protocol/agents';
 import { getClaudeWorkerSessionService } from '../integration/claude-worker-session-service';
 import { resolveClaudeModAdmissionContext } from '../agents/claude-mod-admission-launch';
 import { getWorktreeCliRecord } from '../lib/worktree-service';
@@ -71,6 +67,7 @@ import {
   isDesktopPipelineModelBlocked,
   isDesktopPipelineOrgPolicyActive,
   recordDesktopPipelineModelPolicyRefusal,
+  resolveDesktopPipelineAgentModelAlias,
   resolveDesktopPipelineAiCreditsRouting,
   resolveDesktopPipelineHarnessInvocation,
 } from './pipeline-model-invocation';
@@ -264,23 +261,7 @@ export function createElectronExecutionRuntime(
     releaseAiCreditsRouting: (routeSessionId) => {
       getCodexGatewayProxyService().unregisterRoutesForSession(routeSessionId);
     },
-    resolvePipelineAgentModelAlias: async (
-      agentId,
-      scope,
-    ): Promise<PipelineAgentModelAliasResolution | null> => {
-      const agent = await getAgentModel(agentId);
-      if (!agent) return null;
-      return {
-        agentId: agent.id,
-        name: agent.name,
-        // An inheriting Agent takes the default of the step's workspace.
-        base: isAgentDefaultBaseModel(agent.baseModel)
-          ? await resolveAgentDestinationDefaultModel(scope?.projectId)
-          : agent.baseModel,
-        instructions: agent.instructions,
-        pluginSelections: agent.pluginSelections,
-      };
-    },
+    resolvePipelineAgentModelAlias: resolveDesktopPipelineAgentModelAlias,
     isModelBlockedByOrgPolicy: isDesktopPipelineModelBlocked,
     isOrgModelPolicyActive: isDesktopPipelineOrgPolicyActive,
     recordModelPolicyRefusal: recordDesktopPipelineModelPolicyRefusal,

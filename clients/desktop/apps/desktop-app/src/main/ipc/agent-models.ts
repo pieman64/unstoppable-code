@@ -406,6 +406,77 @@ export async function deleteAgentForWindow(
   return changed;
 }
 
+/** The window's shared agent import, which App Advisor's agents.import_shared shares (CAN-6003). */
+export async function importSharedAgentForWindow(
+  request: ImportSharedAgentRequest,
+  getWindow: () => BrowserWindow | null,
+): Promise<Awaited<ReturnType<typeof importSharedAgentDetail>>> {
+  validateId(request.agentId, 'shared agent id');
+  await assertAgentsSupported();
+  if (request.reviewedAgent && request.reviewedAgent.id !== request.agentId) {
+    throw new Error('Reviewed Agent does not match the requested Agent');
+  }
+  const snapshot = agentResourceContextEnabled()
+    ? await agentContextSnapshot()
+    : undefined;
+  let detail = request.reviewedAgent;
+  if (!detail || snapshot !== undefined) {
+    // Under workspace context the reviewed snapshot is only a pin: the
+    // import still re-reads the share so its owner is authorized now.
+    const current = await getSharedAgent(request.agentId);
+    if (
+      detail &&
+      (detail.contentHash !== current.contentHash ||
+        detail.package?.digest !== current.package?.digest)
+    ) {
+      throw new Error(
+        'The shared Agent changed. Refresh and review it before importing.',
+      );
+    }
+    detail = current;
+  }
+  if (snapshot !== undefined) await assertAgentContextSnapshot(snapshot);
+  return importSharedAgentDetail(
+    getWindow,
+    detail,
+    request.installMissing === true,
+  );
+}
+
+/** The window's shared agent delete, which App Advisor's agents.delete_shared shares (CAN-6003). */
+export async function deleteSharedAgentForWindow(
+  request: DeleteSharedAgentRequest,
+  getWindow: () => BrowserWindow | null,
+): Promise<void> {
+  validateId(request.agentId, 'shared agent id');
+  await assertAgentsSupported();
+  await deleteSharedAgent(request);
+  const clearedCount = await clearAgentRemoteMetadataByRemoteId(
+    request.agentId,
+  );
+  if (clearedCount > 0) {
+    await refreshAfterAgentMutation(getWindow);
+  }
+}
+
+/** The window's public agent link publish (CAN-6003). */
+export async function publishAgentPublicShareForWindow(
+  agentId: string,
+): Promise<Awaited<ReturnType<typeof publishAgentPublicShare>>> {
+  validateId(agentId, 'shared agent id');
+  await assertAgentsSupported();
+  return publishAgentPublicShare(agentId);
+}
+
+/** The window's public agent link revoke (CAN-6003). */
+export async function revokeAgentPublicShareForWindow(
+  agentId: string,
+): Promise<void> {
+  validateId(agentId, 'shared agent id');
+  await assertAgentsSupported();
+  await revokeAgentPublicShare(agentId);
+}
+
 export function registerAgentModelHandlers(
   getWindow: () => BrowserWindow | null,
 ): void {
@@ -445,41 +516,8 @@ export function registerAgentModelHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.agentsImportShared,
-    async (_event, request: ImportSharedAgentRequest) => {
-      validateId(request.agentId, 'shared agent id');
-      await assertAgentsSupported();
-      if (
-        request.reviewedAgent &&
-        request.reviewedAgent.id !== request.agentId
-      ) {
-        throw new Error('Reviewed Agent does not match the requested Agent');
-      }
-      const snapshot = agentResourceContextEnabled()
-        ? await agentContextSnapshot()
-        : undefined;
-      let detail = request.reviewedAgent;
-      if (!detail || snapshot !== undefined) {
-        // Under workspace context the reviewed snapshot is only a pin: the
-        // import still re-reads the share so its owner is authorized now.
-        const current = await getSharedAgent(request.agentId);
-        if (
-          detail &&
-          (detail.contentHash !== current.contentHash ||
-            detail.package?.digest !== current.package?.digest)
-        ) {
-          throw new Error(
-            'The shared Agent changed. Refresh and review it before importing.',
-          );
-        }
-        detail = current;
-      }
-      if (snapshot !== undefined) await assertAgentContextSnapshot(snapshot);
-      return importSharedAgentDetail(
-        getWindow,
-        detail,
-        request.installMissing === true,
-      );
-    },
+    (_event, request: ImportSharedAgentRequest) =>
+      importSharedAgentForWindow(request, getWindow),
   );
 
   registerIpcHandler(
@@ -794,31 +832,17 @@ export function registerAgentModelHandlers(
   registerIpcHandler(
     IPC_CHANNELS.agentsSharedDelete,
     async (_event, request: DeleteSharedAgentRequest) => {
-      validateId(request.agentId, 'shared agent id');
-      await assertAgentsSupported();
-      await deleteSharedAgent(request);
-      const clearedCount = await clearAgentRemoteMetadataByRemoteId(
-        request.agentId,
-      );
-      if (clearedCount > 0) {
-        await refreshAfterAgentMutation(getWindow);
-      }
+      await deleteSharedAgentForWindow(request, getWindow);
     },
   );
   registerIpcHandler(
     IPC_CHANNELS.agentsPublicSharePublish,
-    async (_event, agentId: string) => {
-      validateId(agentId, 'shared agent id');
-      await assertAgentsSupported();
-      return publishAgentPublicShare(agentId);
-    },
+    (_event, agentId: string) => publishAgentPublicShareForWindow(agentId),
   );
   registerIpcHandler(
     IPC_CHANNELS.agentsPublicShareRevoke,
     async (_event, agentId: string) => {
-      validateId(agentId, 'shared agent id');
-      await assertAgentsSupported();
-      await revokeAgentPublicShare(agentId);
+      await revokeAgentPublicShareForWindow(agentId);
     },
   );
 }

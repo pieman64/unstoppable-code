@@ -90,12 +90,12 @@ import {
 import { VariableInsertDropdown } from './VariableInsertDropdown';
 import { RuntimeModePicker } from './RuntimeModePicker';
 import {
-  TriggerIcon,
   WorkflowIcon as AppCatalogWorkflowIcon,
   ChevronTopMediumIcon as AppCatalogChevronTopMediumIcon,
   ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { PipelineGlyph } from '@canopy/ui-shared/icons';
 
 interface HookActionEditorProps {
   hooks: EditableHooks;
@@ -170,13 +170,6 @@ function setPipelineInputValue(
   }
 
   return Object.keys(nextInputs).length > 0 ? nextInputs : undefined;
-}
-
-function PipelineRowIcon({ icon }: { icon?: string | null }): JSX.Element {
-  if (icon) {
-    return <span className="shrink-0 text-m">{icon}</span>;
-  }
-  return <TriggerIcon size="sm" className="shrink-0 fg-secondary" />;
 }
 
 function updateShellPlatform(
@@ -636,7 +629,7 @@ function PipelineActionFields({
                       }}
                       selected={isSelected}
                       aria-current={isSelected ? 'true' : undefined}
-                      icon={<PipelineRowIcon icon={option.data.info.icon} />}
+                      icon={<PipelineGlyph icon={option.data.info.icon} />}
                       description={option.data.info.description || undefined}
                       trailing={
                         <PipelineSourceLabel>

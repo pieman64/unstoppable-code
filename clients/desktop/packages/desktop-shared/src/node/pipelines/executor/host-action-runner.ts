@@ -43,7 +43,7 @@ import {
   emptyWaitForAgentReplyOutputs,
   parseWaitForAgentReplyInputs,
 } from '@canopy/desktop-shared/pipelines/host-wait-for-agent-reply';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type {
   ChatTabPluginSelections,
   UsageInitiationSource,

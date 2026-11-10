@@ -631,7 +631,7 @@ function ConfigEditor({
 
       {/* Expanded content */}
       {expanded && (
-        <div className="flex flex-col border-t px-3 py-3 gap-3">
+        <Surface variant="section" boundary="top" padding="compact" gap="item">
           {/* Name */}
           <DialogFormField label="Name" htmlFor={`${fieldId}-name`}>
             <TextInput
@@ -760,7 +760,7 @@ function ConfigEditor({
               </span>
             )}
           </div>
-        </div>
+        </Surface>
       )}
     </Surface>
   );

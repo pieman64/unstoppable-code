@@ -61,6 +61,9 @@ const NO_ITEMS: ActiveInstalledItemCounts = {
   collections: 0,
 };
 
+/** Web's synced fallback sets this; desktop never does (CAN-6037). */
+const SYNCED_AT = new Date(Date.now() - 5 * 60_000).toISOString();
+
 const MENU_ITEMS: readonly ActionMenuItem[] = [
   {
     key: 'rename',
@@ -228,6 +231,17 @@ function ActiveItemsSheet(): JSX.Element {
             state={{ kind: 'ready', counts: { ...NO_ITEMS, skills: 1 } }}
             onManage={(): void => undefined}
             testId="lab-active-items-one"
+          />
+        </SpecimenCell>
+        <SpecimenCell label="Synced copy (web)">
+          <ActiveItemsSummary
+            state={{
+              kind: 'ready',
+              counts: { ...NO_ITEMS, plugins: 2 },
+              syncedAt: SYNCED_AT,
+            }}
+            onManage={(): void => undefined}
+            testId="lab-active-items-synced"
           />
         </SpecimenCell>
         <SpecimenCell label="Empty">

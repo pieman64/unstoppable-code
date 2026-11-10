@@ -95,7 +95,7 @@ import type {
   ChatTabPluginSelections,
   CommitAutomationCapabilityPackageRequest,
 } from '@canopy/desktop-shared/types';
-import type { InvocableInventoryEnableRef } from '@canopy/desktop-shared/types/invocable-inventory';
+import type { InvocableInventoryEnableRef } from '@canopy/execution-engine/types/invocable-inventory';
 import type {
   PipelinePackageBinding,
   PipelinePackageEnvironmentRequirement,
@@ -145,7 +145,7 @@ import {
   collectPipelineCapabilityRefs,
   getPipelinePluginDefaultRef,
 } from '@canopy/desktop-shared/pipelines/plugin-collections';
-import { getShareablePluginRefKey } from '@canopy/desktop-shared/plugin-refs';
+import { getShareablePluginRefKey } from '@canopy/execution-engine/plugin-refs';
 import {
   DEFAULT_CLAUDE_MODEL,
   getProviderForModel,

@@ -16,7 +16,7 @@ import {
   PickerTrigger,
   PickerTriggerChevron,
 } from '../PickerMenu';
-import { LedgerEntryTypeIcon } from './LedgerEntryTypeLabel';
+import { LedgerEntryTypeIcon } from '../../icons/LedgerEntryTypeIcon';
 
 export interface LedgerEntryTypePickerProps {
   value: LedgerPublicEntryType;
@@ -58,7 +58,7 @@ export function LedgerEntryTypePicker({
         onClick={() => setOpen((previous) => !previous)}
       >
         <span className="flex min-w-0 items-center gap-2">
-          <LedgerEntryTypeIcon type={value} size={16} />
+          <LedgerEntryTypeIcon type={value} />
           <span id={valueId} className="truncate">
             {LEDGER_ENTRY_TYPE_LABELS[value]}
           </span>

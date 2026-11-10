@@ -1,6 +1,6 @@
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import type { ClaudeModPluginDetailsTarget } from '@canopy/protocol/claude-mods';
-import type { MarketplaceInfo } from '@canopy/desktop-shared/types/plugins';
+import type { MarketplaceInfo } from '@canopy/execution-engine/types/plugins';
 import { entryIdForSelection } from '@/lib/relatedCapabilities';
 import { useNavigationStore } from '@/stores/navigationStore';
 

@@ -8,7 +8,7 @@ import type { ResourceOwner } from '../resource-owner';
 // desktop renderer and the web app (portal surfaces).
 //
 // Deliberately NOT here (they stay in
-// `packages/desktop-shared/src/types/plugins.ts`):
+// `packages/execution-engine/src/types/plugins.ts`):
 //   - on-disk Claude file shapes (`KnownMarketplace*`, `MarketplaceManifest`,
 //     `PluginManifest`)
 //   - the persisted plugins cache and its v1 migration types
@@ -26,7 +26,7 @@ import type { ResourceOwner } from '../resource-owner';
  * marketplace. The `/` is intentional and compatible with selection keys that
  * split on the final slash. Provider-facing manifest names and UI display
  * strings are brand-specific and live in brand-aware modules
- * (`@canopy/desktop-shared/plugin-refs` and the renderer), never here.
+ * (`@canopy/execution-engine/plugin-refs` and the renderer), never here.
  */
 export const BUILTIN_PLUGIN_MARKETPLACE_ID = 'builtin/app';
 
@@ -228,7 +228,7 @@ export interface PluginProviderSupport {
  *
  * Structural stand-in for the object branch of the on-disk
  * `MarketplacePluginEntry['source']` shape (which stays in
- * `packages/desktop-shared/src/types/plugins.ts` with the other Claude file
+ * `packages/execution-engine/src/types/plugins.ts` with the other Claude file
  * formats). The two must stay structurally identical.
  * Historical marketplace objects can identify a repo without a URL or source tag.
  */

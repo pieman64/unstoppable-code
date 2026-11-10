@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { projectCodexPluginWithoutMcpServers as projectInMemoryCodexPluginWithoutMcpServers } from '@canopy/plugin-interop';
-import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
+import { isPathInside } from '../lib/path-safety';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

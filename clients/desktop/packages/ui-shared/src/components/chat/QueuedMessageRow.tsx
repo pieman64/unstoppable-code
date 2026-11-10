@@ -232,16 +232,6 @@ const ROW_SURFACE_CLASS = {
   drawer: 'rounded-xl pl-2.75 pr-1 hover:bg-subtle data-[dragging]:bg-muted',
 } as const;
 
-function RowIcon({
-  icon: Icon,
-  strokePx = ROW_ICON_STROKE_PX,
-}: {
-  readonly icon: typeof DragHandleIcon;
-  readonly strokePx?: number;
-}): JSX.Element {
-  return <Icon size="sm" drawnStrokeWidth={strokePx} aria-hidden="true" />;
-}
-
 /** A 24px square with a compact 4px corner for queued media. */
 const THUMBNAIL_CLASS =
   'relative flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-sm';
@@ -269,7 +259,13 @@ export function QueuedMessageAttachments({
             className="flex min-w-0 items-center gap-1 fg-secondary"
           >
             <span className="flex shrink-0 fg-tertiary">
-              {attachment.icon ?? <RowIcon icon={FileIcon} />}
+              {attachment.icon ?? (
+                <FileIcon
+                  size="sm"
+                  drawnStrokeWidth={ROW_ICON_STROKE_PX}
+                  aria-hidden="true"
+                />
+              )}
             </span>
             <span className="max-w-32 truncate">{attachment.name}</span>
           </span>
@@ -354,7 +350,11 @@ function QueuedMessageMoreMenu({
           data-testid="queued-message-more"
           onClick={(): void => setOpen((value) => !value)}
         >
-          <RowIcon icon={MoreHorizontalIcon} />
+          <MoreHorizontalIcon
+            size="sm"
+            drawnStrokeWidth={ROW_ICON_STROKE_PX}
+            aria-hidden="true"
+          />
         </Button>
       </Tooltip>
       <FloatingMenu
@@ -378,27 +378,34 @@ function QueuedMessageMoreMenu({
               {unavailableReason}
             </p>
           ) : null}
-          {items.map((item, index) => (
-            <Fragment key={item.id}>
-              {item.destructive && index > 0 ? <DropdownMenuDivider /> : null}
-              <DropdownMenuItem
-                data-testid={`queued-message-${item.id}`}
-                tone={item.destructive ? 'destructive' : 'default'}
-                disabled={unavailableReason !== undefined || item.disabled}
-                aria-description={item.reason}
-                onClick={(): void => {
-                  setOpen(false);
-                  if (item.afterClose) setTimeout(item.onSelect, 0);
-                  else item.onSelect();
-                }}
-              >
-                <DropdownMenuItemIcon>
-                  <RowIcon icon={item.icon} />
-                </DropdownMenuItemIcon>
-                {item.label}
-              </DropdownMenuItem>
-            </Fragment>
-          ))}
+          {items.map((item, index) => {
+            const ItemIcon = item.icon;
+            return (
+              <Fragment key={item.id}>
+                {item.destructive && index > 0 ? <DropdownMenuDivider /> : null}
+                <DropdownMenuItem
+                  data-testid={`queued-message-${item.id}`}
+                  tone={item.destructive ? 'destructive' : 'default'}
+                  disabled={unavailableReason !== undefined || item.disabled}
+                  aria-description={item.reason}
+                  onClick={(): void => {
+                    setOpen(false);
+                    if (item.afterClose) setTimeout(item.onSelect, 0);
+                    else item.onSelect();
+                  }}
+                >
+                  <DropdownMenuItemIcon>
+                    <ItemIcon
+                      size="sm"
+                      drawnStrokeWidth={ROW_ICON_STROKE_PX}
+                      aria-hidden="true"
+                    />
+                  </DropdownMenuItemIcon>
+                  {item.label}
+                </DropdownMenuItem>
+              </Fragment>
+            );
+          })}
         </DropdownMenuRowStyleProvider>
       </FloatingMenu>
     </>
@@ -435,7 +442,7 @@ export const QueuedMessageRow = forwardRef<
     onInterrupt,
     sendBlockedReason,
     forceKind = 'interrupt',
-    interruptIcon,
+    interruptIcon: InterruptIcon,
     interruptUnavailableReason,
     onDelete,
     sending = false,
@@ -559,7 +566,7 @@ export const QueuedMessageRow = forwardRef<
       <Button
         variant={actionVariant(interruptReason !== undefined)}
         size="sm"
-        {...(interruptIcon
+        {...(InterruptIcon
           ? { iconOnly: true, 'aria-label': forceLabel }
           : { iconOnly: false })}
         aria-description={interruptReason}
@@ -567,7 +574,15 @@ export const QueuedMessageRow = forwardRef<
         disabled={interruptReason !== undefined}
         onClick={onInterrupt}
       >
-        {interruptIcon ? <RowIcon icon={interruptIcon} /> : forceLabel}
+        {InterruptIcon ? (
+          <InterruptIcon
+            size="sm"
+            drawnStrokeWidth={ROW_ICON_STROKE_PX}
+            aria-hidden="true"
+          />
+        ) : (
+          forceLabel
+        )}
       </Button>
     ) : null;
   // Only actions that would act now: a disabled Steer or Send now does nothing.
@@ -626,7 +641,11 @@ export const QueuedMessageRow = forwardRef<
               reorder.unavailableReason === undefined ? 'cursor-default' : ''
             }`}
           >
-            <RowIcon icon={DragHandleIcon} strokePx={DRAG_HANDLE_STROKE_PX} />
+            <DragHandleIcon
+              size="sm"
+              drawnStrokeWidth={DRAG_HANDLE_STROKE_PX}
+              aria-hidden="true"
+            />
           </Button>
         </Tooltip>
       ) : null}
@@ -690,7 +709,7 @@ export const QueuedMessageRow = forwardRef<
               Try again
             </Button>
           </ActionTooltip>
-        ) : sendNowButton && (interruptReason || interruptIcon) ? (
+        ) : sendNowButton && (interruptReason || InterruptIcon) ? (
           <Tooltip label={interruptReason ?? forceLabel} delay="long">
             {sendNowButton}
           </Tooltip>

@@ -17,7 +17,7 @@ import { SKILLS_CHANNELS } from '@canopy/desktop-shared/constants/skill-channels
 import { PLUGINS_CHANNELS } from '@canopy/desktop-shared/constants/plugin-channels';
 import type { BrowserWindow } from 'electron';
 import type { SkillUpdateProgress } from '@canopy/desktop-shared/types/skills';
-import type { MarketplaceOperationProgress } from '@canopy/desktop-shared/types/plugins';
+import type { MarketplaceOperationProgress } from '@canopy/execution-engine/types/plugins';
 import { enqueueStartupLocalMemoryImportBatch } from './memory/local/import/import-job';
 import { sweepCodexMarketplaceStaging } from './plugins/codex-staging-janitor';
 import { prefetchBlueprints } from './blueprints/blueprint-catalog';

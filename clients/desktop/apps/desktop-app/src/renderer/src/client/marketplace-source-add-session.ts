@@ -7,7 +7,7 @@ import type {
 import type {
   PluginsAPI,
   MarketplaceInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { parseGitHubRepo } from '@canopy/plugin-interop/github-repo';
 import { toMarketplaceSource } from './marketplace-source-summary';
 

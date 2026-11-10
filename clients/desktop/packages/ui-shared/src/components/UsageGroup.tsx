@@ -2,7 +2,7 @@
 
 import { useId, type JSX, type ReactNode } from 'react';
 import { USAGE_ALERT_WARNING_THRESHOLD } from '@canopy/protocol/provider-usage';
-import { ModelProviderIcon } from './ModelProviderIcon';
+import { ModelProviderIcon } from '../icons/ModelProviderIcon';
 import { NoticeShapeProvider } from './Notice';
 import { formatRelativeTime } from '../lib/format-relative-time';
 import { Button } from './Button';
@@ -509,7 +509,7 @@ export function UsageGroupHeading({
   // The mark is a flex item centred on the line box, not inline text, so it
   // never sits on the baseline below the words' centre.
   return (
-    <div className="mb-3 flex h-6 min-w-0 items-center px-0.5">
+    <div className="flex h-6 min-w-0 items-center px-0.5">
       <Heading level={2} variant="label" id={headingId} className="min-w-0">
         <span className="flex min-w-0 items-center gap-1.5">
           {provider ? (
@@ -562,18 +562,20 @@ export function UsageGroup({
       data-testid={testId}
       className="min-w-0"
     >
-      <UsageGroupHeading
-        title={title}
-        provider={provider}
-        plan={plan}
-        planTestId={planTestId}
-        headingId={headingId}
-      />
-      {childrenGap === undefined ? (
-        children
-      ) : (
-        <Stack gap={childrenGap}>{children}</Stack>
-      )}
+      <Stack gap="item">
+        <UsageGroupHeading
+          title={title}
+          provider={provider}
+          plan={plan}
+          planTestId={planTestId}
+          headingId={headingId}
+        />
+        {childrenGap === undefined ? (
+          <div>{children}</div>
+        ) : (
+          <Stack gap={childrenGap}>{children}</Stack>
+        )}
+      </Stack>
     </section>
   );
 }
@@ -628,25 +630,27 @@ export function UsageProviderGroup({
       data-testid={testId}
       className="min-w-0"
     >
-      <UsageGroupHeading
-        title={title}
-        provider={provider}
-        plan={plan}
-        planTestId={planTestId}
-        headingId={headingId}
-      />
-      {/* Notices under the box take its corners. */}
-      {separateFooter ? (
-        <div className="flex flex-col gap-1.5">
-          {body}
-          <div className="empty:hidden">{footerContent}</div>
-        </div>
-      ) : (
-        <>
-          {body}
-          {footerContent}
-        </>
-      )}
+      <Stack gap="item">
+        <UsageGroupHeading
+          title={title}
+          provider={provider}
+          plan={plan}
+          planTestId={planTestId}
+          headingId={headingId}
+        />
+        {/* Notices under the box take its corners. */}
+        {separateFooter ? (
+          <div className="flex flex-col gap-1.5">
+            {body}
+            <div className="empty:hidden">{footerContent}</div>
+          </div>
+        ) : (
+          <div>
+            {body}
+            {footerContent}
+          </div>
+        )}
+      </Stack>
     </section>
   );
 }

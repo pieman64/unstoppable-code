@@ -30,7 +30,7 @@ import {
 } from '../../agents/agent-default-model';
 import { CHAT_UNIT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { THINKING_LEVELS } from '@canopy/protocol/thinking';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { MAX_ARCHIVE_RETENTION_DAYS } from '@canopy/desktop-shared/lib/archive-retention';
 import { validateId } from '../../lib/validation';
 import {

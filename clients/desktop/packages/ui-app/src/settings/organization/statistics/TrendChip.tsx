@@ -77,7 +77,7 @@ export function TrendChip({
       )}`}
       data-testid={testId}
     >
-      <TrendIcon direction={trend.direction} />
+      {TREND_GLYPHS[trend.direction]}
       {trend.label}
       {trend.deltaPct !== null && comparisonLabel && (
         <span className="fg-secondary">{comparisonLabel}</span>
@@ -100,12 +100,8 @@ function trendColor(
   }
 }
 
-function TrendIcon({ direction }: { direction: TrendDirection }): JSX.Element {
-  if (direction === 'up') {
-    return <ArrowUpRight size={13} aria-hidden="true" />;
-  }
-  if (direction === 'down') {
-    return <ArrowDownRight size={13} aria-hidden="true" />;
-  }
-  return <Minus size={13} aria-hidden="true" />;
-}
+const TREND_GLYPHS: Readonly<Record<TrendDirection, JSX.Element>> = {
+  up: <ArrowUpRight size="sm" aria-hidden="true" />,
+  down: <ArrowDownRight size="sm" aria-hidden="true" />,
+  flat: <Minus size="sm" aria-hidden="true" />,
+};

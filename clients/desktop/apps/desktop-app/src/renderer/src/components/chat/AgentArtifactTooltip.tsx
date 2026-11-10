@@ -41,7 +41,7 @@ import {
   PIPELINE_SCOPE_META,
   normalizePipelineShareScope,
 } from '@/components/pipeline/pipeline-scope-badge-helpers';
-import { PipelineTriggerTypeIcon } from '@/components/pipeline/PipelineTriggerBadge';
+import { PIPELINE_TRIGGER_GLYPHS } from '@/components/pipeline/PipelineTriggerBadge';
 import { TRIGGER_META } from '@/components/pipeline/pipeline-trigger-meta';
 
 const SKILL_SOURCE_META: Record<
@@ -179,7 +179,7 @@ function PipelineTooltip({ receipt }: PipelineTooltipProps): JSX.Element {
                   aria-label={TRIGGER_META[mode].label}
                   className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded ${TRIGGER_META[mode].badgeClass}`}
                 >
-                  <PipelineTriggerTypeIcon type={mode} />
+                  {PIPELINE_TRIGGER_GLYPHS[mode]}
                 </span>
               ))
             : '—'}

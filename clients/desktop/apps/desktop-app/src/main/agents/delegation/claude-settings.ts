@@ -6,7 +6,7 @@ import {
   inspectClaudePluginHooks,
   listClaudeAutoLoadedPlugins,
   parseClaudeJsonFile,
-} from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+} from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

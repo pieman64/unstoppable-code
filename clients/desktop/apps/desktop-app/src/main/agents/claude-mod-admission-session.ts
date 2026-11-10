@@ -1,7 +1,7 @@
 import {
   isSkippedClaudeMod,
   type SkippedClaudeMod,
-} from '@canopy/desktop-shared/types/claude-mod-admission';
+} from '@canopy/execution-engine/types/claude-mod-admission';
 import {
   CANOPY_CLAUDE_MODS_SKIPPED_EVENT_TYPE,
   type ClaudeModsSkippedEntry,

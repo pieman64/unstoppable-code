@@ -4,8 +4,8 @@
  * source has an equivalent. Each renders through `AppIconBase` with the same
  * sizing contract as the generated glyphs, so it sits beside them as one set.
  * `icon-manifest.json` lists these with `"source": "canopy"`.
- * `apps/desktop-app`'s `BannerGlyphs.tsx` does the same for its two app-local
- * banner icons.
+ * `apps/desktop-app`'s `BannerGlyphs.tsx` does the same for its app-local
+ * dev banner icon.
  */
 import React, { type JSX } from 'react';
 import { AppIconBase, type AppIconBaseProps } from './AppIconBase';

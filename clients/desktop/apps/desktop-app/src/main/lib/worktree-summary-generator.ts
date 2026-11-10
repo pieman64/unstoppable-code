@@ -50,7 +50,7 @@ import { isWorktreeSummaryData } from './worktree-summary-persistence';
 import { resolveHelperInvocation } from '../ollama/helper-invocation';
 import { resolveInvocationWorkOwner } from '../agents/work-owner';
 import { resolveClaudeModAdmissionLaunch } from '../agents/claude-mod-admission-launch';
-import { mergeClaudeModAdmissionSettings } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+import { mergeClaudeModAdmissionSettings } from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 import { markObservedHelperTaskAiCreditsRouted } from './helper-observed-task';
 import {
   codexStructuredHelperRunner,

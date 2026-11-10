@@ -348,9 +348,11 @@ export function ContextSection(): JSX.Element {
     <Panel id="context" title="In context">
       <span className="text-xs font-medium fg-secondary">Schema diagram</span>
       <Surface variant="group" size="small" className="w-full max-w-90">
-        <div className="border-b px-3 py-1.5 text-xs font-medium fg-primary">
-          users
-        </div>
+        <Surface variant="section" boundary="bottom">
+          <div className="px-3 py-1.5 text-xs font-medium fg-primary">
+            users
+          </div>
+        </Surface>
         <ContextRow label={<span className="font-mono text-xs">id uuid</span>}>
           <Badge size="compact">PK</Badge>
         </ContextRow>
@@ -448,46 +450,48 @@ export function MarkersLabPage(): JSX.Element {
   const visible = view === 'all' ? SECTIONS : [view];
 
   return (
-    <div className="min-h-screen bg-base fg-primary">
-      <main className="mx-auto flex max-w-240 flex-col gap-8 px-4 py-6">
-        <header className="flex flex-wrap items-center justify-between gap-3">
-          <Heading level={1} variant="page">
-            Markers lab
-          </Heading>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Button
-              size="sm"
-              variant={view === 'all' ? 'secondary' : 'ghost'}
-              onClick={(): void => selectView('all')}
-            >
-              All
-            </Button>
-            {SECTIONS.map((section) => (
+    <Surface variant="pane">
+      <div className="min-h-screen fg-primary">
+        <main className="mx-auto flex max-w-240 flex-col gap-8 px-4 py-6">
+          <header className="flex flex-wrap items-center justify-between gap-3">
+            <Heading level={1} variant="page">
+              Markers lab
+            </Heading>
+            <div className="flex flex-wrap items-center gap-1.5">
               <Button
-                key={section}
                 size="sm"
-                variant={view === section ? 'secondary' : 'ghost'}
-                onClick={(): void => selectView(section)}
+                variant={view === 'all' ? 'secondary' : 'ghost'}
+                onClick={(): void => selectView('all')}
               >
-                {SECTION_LABELS[section]}
+                All
               </Button>
-            ))}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={(): void =>
-                setColorMode(colorMode === 'light' ? 'dark' : 'light')
-              }
-            >
-              {colorMode === 'light' ? 'Dark' : 'Light'}
-            </Button>
-          </div>
-        </header>
-        {visible.map((section) => {
-          const View = SECTION_VIEWS[section];
-          return <View key={section} />;
-        })}
-      </main>
-    </div>
+              {SECTIONS.map((section) => (
+                <Button
+                  key={section}
+                  size="sm"
+                  variant={view === section ? 'secondary' : 'ghost'}
+                  onClick={(): void => selectView(section)}
+                >
+                  {SECTION_LABELS[section]}
+                </Button>
+              ))}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={(): void =>
+                  setColorMode(colorMode === 'light' ? 'dark' : 'light')
+                }
+              >
+                {colorMode === 'light' ? 'Dark' : 'Light'}
+              </Button>
+            </div>
+          </header>
+          {visible.map((section) => {
+            const View = SECTION_VIEWS[section];
+            return <View key={section} />;
+          })}
+        </main>
+      </div>
+    </Surface>
   );
 }

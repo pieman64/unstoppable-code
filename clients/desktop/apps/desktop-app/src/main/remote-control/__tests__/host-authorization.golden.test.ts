@@ -912,6 +912,65 @@ describe('browser controller channels', () => {
     }
     expect(host.bridge.invokes).toEqual(Object.values(added));
   });
+
+  it('serves script review to browsers only, and never the found push or a terminal', async () => {
+    // The script review the desktop's own dialog makes, and the push its
+    // snapshot refreshes on (CAN-6038). Execution stays terminal-bound.
+    const invoked = [
+      IPC_CHANNELS.scriptActionsList,
+      IPC_CHANNELS.scriptActionsReceipt,
+      IPC_CHANNELS.scriptActionsRescan,
+      IPC_CHANNELS.scriptActionsReview,
+      IPC_CHANNELS.scriptActionsSetShortcut,
+      IPC_CHANNELS.scriptActionsSetPinned,
+      IPC_CHANNELS.scriptActionsEnableShellAliasScan,
+    ];
+    for (const channel of [...invoked, IPC_CHANNELS.scriptActionsChanged]) {
+      expect(BROWSER_CONTROLLER_CHANNELS).toContain(channel);
+      expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
+      expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+    }
+    const withheld = [
+      IPC_CHANNELS.scriptActionsFound,
+      IPC_CHANNELS.terminalSpawn,
+    ];
+    for (const channel of withheld) {
+      expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(channel);
+    }
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          pinned(phone, 'mobile'),
+        ],
+      },
+    });
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    const fromPhone = await control(host, phone);
+    await hello(fromPhone.rpc, {
+      version: VERSION,
+      controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const channel of invoked) {
+      expect(await invokeCode(fromBrowser.rpc, channel)).toBe('ok');
+      expect(await invokeCode(fromPhone.rpc, channel)).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    for (const channel of withheld) {
+      expect(await invokeCode(fromBrowser.rpc, channel)).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    expect(host.bridge.invokes).toEqual(invoked);
+  });
 });
 
 // ---------------------------------------------------------------------------

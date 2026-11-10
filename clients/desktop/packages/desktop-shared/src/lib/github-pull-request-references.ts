@@ -3,6 +3,10 @@ import type {
   WatchGitHubItemsResult,
 } from '../types/github-watchers';
 import { normalizeGitHubRepositoryReference } from './github-workflow-run-references';
+import {
+  normalizeGitHubPullRequestNumber,
+  parseGitHubPullRequestReference,
+} from '@canopy/protocol/portable-tasks/pull-request-reference';
 
 type ReferenceFailure = Extract<WatchGitHubItemsResult, { ok: false }>;
 
@@ -16,10 +20,7 @@ const REPOSITORY_REQUIRED_MESSAGE =
   'A repository is required for a pull request number. Add repository: "owner/repository" or pass a pull request URL.';
 const DUPLICATE_MESSAGE =
   'The same GitHub pull request was supplied more than once.';
-const MAX_PULL_REQUEST_NUMBER_DIGITS = 10;
-const MAX_PULL_REQUEST_NUMBER = 10 ** MAX_PULL_REQUEST_NUMBER_DIGITS - 1;
-
-export type ParseGitHubPullRequestReferenceResult =
+type PullRequestItemResult =
   | { ok: true; value: { repository: string; number: number } }
   | ReferenceFailure;
 
@@ -75,94 +76,6 @@ function normalizeRepository(value: unknown): string | null {
     : null;
 }
 
-function isPullRequestNumber(value: number): boolean {
-  return (
-    Number.isSafeInteger(value) && value > 0 && value <= MAX_PULL_REQUEST_NUMBER
-  );
-}
-
-/** Positive integer of at most ten digits, from a number or a decimal string. */
-export function normalizeGitHubPullRequestNumber(
-  value: unknown,
-): number | null {
-  if (typeof value === 'number') {
-    return isPullRequestNumber(value) ? value : null;
-  }
-  if (
-    typeof value !== 'string' ||
-    value.length > MAX_PULL_REQUEST_NUMBER_DIGITS ||
-    !/^\d+$/.test(value)
-  ) {
-    return null;
-  }
-  const numeric = Number(value);
-  return isPullRequestNumber(numeric) ? numeric : null;
-}
-
-function parsePullRequestUrl(
-  value: string,
-): ParseGitHubPullRequestReferenceResult {
-  if (hasControlCharacter(value)) {
-    return failure('invalid_reference', INVALID_PULL_REQUEST_MESSAGE);
-  }
-  const nonCanonical = nonCanonicalUrlFailure(value);
-  if (nonCanonical) return nonCanonical;
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return failure('invalid_reference', INVALID_PULL_REQUEST_MESSAGE);
-  }
-  const host = url.hostname.toLowerCase();
-  if (
-    url.protocol !== 'https:' ||
-    (host !== 'github.com' && host !== 'www.github.com') ||
-    url.username ||
-    url.password ||
-    url.port
-  ) {
-    return failure('invalid_reference', GITHUB_COM_ONLY_MESSAGE);
-  }
-  if (/\/{2,}/.test(url.pathname)) {
-    return failure('invalid_reference', INVALID_PULL_REQUEST_MESSAGE);
-  }
-  // Trailing tabs such as /files or /commits/<sha> still name the same PR.
-  const segments = url.pathname.split('/').filter(Boolean);
-  const repository =
-    segments.length >= 4 && segments[2] === 'pull'
-      ? normalizeRepository(`${segments[0]}/${segments[1]}`)
-      : null;
-  const number = normalizeGitHubPullRequestNumber(segments[3]);
-  return repository && number
-    ? { ok: true, value: { repository, number } }
-    : failure('invalid_reference', INVALID_PULL_REQUEST_MESSAGE);
-}
-
-/** True for a GitHub.com pull request URL; used to redirect misfiled run items. */
-export function isGitHubPullRequestUrl(value: unknown): boolean {
-  return (
-    typeof value === 'string' &&
-    /^https?:\/\//i.test(value) &&
-    parsePullRequestUrl(value).ok
-  );
-}
-
-/** Parse a PR URL or `owner/repository#number` without any GitHub request. */
-export function parseGitHubPullRequestReference(
-  reference: unknown,
-): ParseGitHubPullRequestReferenceResult {
-  if (typeof reference !== 'string' || reference !== reference.trim()) {
-    return failure('invalid_reference', INVALID_PULL_REQUEST_MESSAGE);
-  }
-  if (/^https?:\/\//i.test(reference)) return parsePullRequestUrl(reference);
-  const compact = reference.match(/^([^/#]+\/[^/#]+)#(\d+)$/);
-  const repository = compact ? normalizeRepository(compact[1]) : null;
-  const number = compact ? normalizeGitHubPullRequestNumber(compact[2]) : null;
-  return repository && number
-    ? { ok: true, value: { repository, number } }
-    : failure('invalid_reference', INVALID_PULL_REQUEST_MESSAGE);
-}
-
 function withItemIndex(
   error: ReferenceFailure,
   itemIndex: number,
@@ -173,7 +86,7 @@ function withItemIndex(
 function resolveItem(
   raw: unknown,
   defaultRepository: string | undefined,
-): ParseGitHubPullRequestReferenceResult {
+): PullRequestItemResult {
   if (!isRecord(raw) || raw.kind !== 'pull_request') {
     return failure('invalid_input', 'Invalid WatchGitHubItems input.');
   }

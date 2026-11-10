@@ -25,7 +25,7 @@ import {
   updateAccountMcpConnection,
 } from '../canopy-cloud/mcp-connections';
 import { rewriteMcpServerRefs } from '../mcp/server-ref-rewrite';
-import { getMcpHttpAuthDefault } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import { getMcpHttpAuthDefault } from '@canopy/execution-engine/lib/mcp-http-auth';
 import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
 import {
   readMcpAccountIndexEntry,
@@ -76,7 +76,7 @@ import {
   normalizeCuratedMetadata,
   normalizeHttpAuthHandler,
 } from '@canopy/execution-engine/types/mcp-servers';
-import { sanitizeEnvVars } from '@canopy/desktop-shared/lib/mcp-security';
+import { sanitizeEnvVars } from '@canopy/execution-engine/lib/mcp-security';
 import {
   projectMcpServerData,
   projectMcpServerFile,

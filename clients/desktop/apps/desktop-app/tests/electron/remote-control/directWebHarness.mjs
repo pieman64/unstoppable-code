@@ -134,13 +134,16 @@ export async function launchRemoteControlDesktop({
           keepUserData: true,
         });
       },
-      /** Starts the app again on the same data and waits for the relay. */
-      async relaunch() {
+      /**
+       * Starts the app again on the same data and waits for the relay.
+       * `env` overrides the launch environment for this start only.
+       */
+      async relaunch({ env: relaunchEnv = {} } = {}) {
         if (running) await handle.quit();
         running = await startSignedInDesktop({
           relay,
           seeded,
-          env,
+          env: { ...env, ...relaunchEnv },
           userDataDir,
         });
         if (running.deviceId !== handle.deviceId) {

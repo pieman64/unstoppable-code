@@ -81,7 +81,7 @@ import { ShareablePluginSelector } from './ShareablePluginSelector';
 import {
   getShareablePluginRefKey,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import { buildPluginMentionAbsolutePath } from '@canopy/desktop-shared/lib/plugin-mention';
 import type {
   ConfigurationChatComposerProps,

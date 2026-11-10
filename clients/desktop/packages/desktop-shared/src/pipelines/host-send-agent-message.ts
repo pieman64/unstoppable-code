@@ -28,7 +28,7 @@ import {
 import { WorkerPipelineChatSendRecordSchema } from '@canopy/protocol/canopy-core';
 import { isThinkingLevel, THINKING_LEVELS } from '@canopy/protocol/thinking';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
-import { normalizePluginSelections } from '../lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type { ChatTabPluginSelections } from '../types';
 import { APPROVAL_MODES, type ApprovalMode } from '../types/approvals';
 import type { PipelineChatSendRecord } from '@canopy/execution-engine/types/pipeline';

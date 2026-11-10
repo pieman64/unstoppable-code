@@ -10,7 +10,7 @@ import {
   readPluginCacheIndex,
   type PluginCacheIndex,
   type PluginReadHealth,
-} from '@canopy/desktop-shared/node/plugins/catalog-read-health';
+} from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import { BRAND } from '@canopy/brand/current';
 import {
   claudeMarketplaceNames,
@@ -26,7 +26,7 @@ import {
   type InstalledItemRef,
 } from '@canopy/protocol/installed-items';
 import { DEFAULT_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
-import { normalizeGitHubRepoRef } from '@canopy/desktop-shared/plugin-refs';
+import { normalizeGitHubRepoRef } from '@canopy/execution-engine/plugin-refs';
 import {
   getBundledClaudePluginMarketplaceManifestPath,
   getBundledClaudeBinaryPath,
@@ -151,7 +151,7 @@ import {
   type PluginProviderFacet,
   type PluginsCache,
   type PluginsCacheV1,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { PluginMarketplaceEntry } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginMarketplaceEntry';
 import type { PluginSummary } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginSummary';
@@ -5382,7 +5382,7 @@ async function installPluginUnlocked(
 export type {
   MarketplaceRegistrationResult,
   MarketplaceRemovalResult,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 
 export function installPlugin(
   ...args: Parameters<typeof installPluginUnlocked>

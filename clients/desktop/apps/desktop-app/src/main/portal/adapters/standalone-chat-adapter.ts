@@ -1,9 +1,21 @@
-import { isSidebarItemGroupId } from '@canopy/protocol/sidebar';
+import {
+  isSidebarItemGroupColor,
+  isSidebarItemGroupId,
+  normalizeSidebarItemGroupName,
+} from '@canopy/protocol/sidebar';
+import type {
+  PortalStandaloneChatCreatePayload,
+  PortalStandaloneChatCreateResult,
+  PortalTaskFirstChat,
+  PortalTaskFirstChatResult,
+  PortalTaskSidebarItemGroupName,
+} from '@canopy/protocol/portal';
 import {
   getProviderForModel,
   isThinkingLevel,
   resolveKnownModel,
   type AgentModelConfig,
+  type ChatTabPluginSelections,
   type PortalCommandEnvelope,
   type PortalCommandPayloadMap,
 } from '@canopy/desktop-shared/types';
@@ -13,7 +25,10 @@ import {
   isCodexSpeed,
   type CodexSpeed,
 } from '@canopy/execution-engine/lib/codex-speed';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import {
+  isChatTabPluginSelections,
+  normalizePluginSelections,
+} from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type { PortalAdapterContext } from './types';
 import {
   commitPortalPluginSelections,
@@ -31,6 +46,7 @@ import { resolveAiCreditsScopeOwner } from '../../agents/work-owner';
 import {
   createStandaloneChatTab,
   resolveStandaloneChatTarget,
+  sendStandaloneChatMessage,
 } from '../../services/standalone-chat-service';
 import {
   handlePortalChatSend,
@@ -39,6 +55,7 @@ import {
 } from './chat-adapter';
 import { readPortalChatCloudAttachmentRefs } from '../portal-chat-attachments';
 import { validateId } from '../../lib/validation';
+import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { PortalServiceError } from '../../services/portal-service-error';
 import { noDispatchableModelSendMessage } from '../../lib/send-billing-refusal';
 
@@ -47,21 +64,14 @@ export async function handlePortalStandaloneChatCreate(
   context: PortalAdapterContext,
 ): Promise<void> {
   try {
-    const payload = command.payload;
-    if (
-      !isRecord(payload) ||
-      typeof payload.projectLocalId !== 'string' ||
-      typeof payload.chatId !== 'string' ||
-      (payload.sidebarItemGroupId !== undefined &&
-        !isSidebarItemGroupId(payload.sidebarItemGroupId))
-    ) {
+    const read = readStandaloneChatCreatePayload(command.payload);
+    if (!read) {
       throw new PortalServiceError(
         'invalid_payload',
         'Invalid standalone chat create payload.',
       );
     }
-    validateId(payload.projectLocalId, 'projectLocalId');
-    validateId(payload.chatId, 'chatId');
+    const { payload, firstChat } = read;
     if (
       context.canReadAssets?.() !== true ||
       command.target?.standaloneChatLocalId !== payload.chatId ||
@@ -80,23 +90,28 @@ export async function handlePortalStandaloneChatCreate(
         'The chat service is temporarily unavailable.',
       );
     }
-    const request = {
-      projectLocalId: payload.projectLocalId,
-      chatId: payload.chatId,
-      ...(isSidebarItemGroupId(payload.sidebarItemGroupId)
-        ? { sidebarItemGroupId: payload.sidebarItemGroupId }
-        : {}),
-    };
+    const request = payload;
     const resolved = await resolveStandaloneChatTarget(request);
     if (resolved.isArchived) {
       throw new PortalServiceError(
-        'invalid_target',
+        payload.workEntryId === undefined ? 'invalid_target' : 'not_found',
         'Archived chats must be restored before they can be used.',
       );
     }
+    const requestedModel =
+      firstChat?.payload.model === undefined
+        ? undefined
+        : {
+            model:
+              resolveKnownModel(firstChat.payload.model) ??
+              firstChat.payload.model,
+            ...(firstChat.payload.providerType === undefined
+              ? {}
+              : { providerType: firstChat.payload.providerType }),
+          };
     const seed = resolved.entryId
       ? {}
-      : await resolveRemoteCreateTabSeed(resolved.workspaceId);
+      : await resolveRemoteCreateTabSeed(resolved.workspaceId, requestedModel);
     if ('noDispatchableModel' in seed) {
       throw new PortalServiceError(
         'invalid_payload',
@@ -116,7 +131,66 @@ export async function handlePortalStandaloneChatCreate(
         'The paired session is no longer authorized.',
       );
     }
-    context.complete(command, result);
+    let response: PortalStandaloneChatCreateResult = result;
+    let chatError: string | undefined;
+    if (firstChat) {
+      try {
+        if (!canCreate()) {
+          throw new PortalServiceError(
+            'invalid_target',
+            'The paired session is no longer authorized.',
+          );
+        }
+        const sent = await sendStandaloneChatMessage(
+          {
+            projectLocalId: result.projectLocalId,
+            workEntryId: result.workEntryId,
+            chatId: firstChat.payload.chatId,
+            userMessageId: firstChat.payload.userMessageId,
+            message: firstChat.payload.text,
+            initiationSource: 'portal',
+            ...(context.origin ? { agentSent: context.origin } : {}),
+            ...(firstChat.payload.planMode === undefined
+              ? {}
+              : { planMode: firstChat.payload.planMode }),
+            ...(firstChat.payload.model === undefined
+              ? {}
+              : { model: firstChat.payload.model }),
+            ...(firstChat.payload.providerType === undefined
+              ? {}
+              : { providerType: firstChat.payload.providerType }),
+            ...(firstChat.modelConfig === undefined
+              ? {}
+              : { modelConfig: firstChat.modelConfig }),
+            ...(firstChat.pluginSelections === undefined
+              ? {}
+              : { pluginSelections: firstChat.pluginSelections }),
+          },
+          { getWindow: context.getWindow, canCommitSend: canCreate },
+        );
+        if (!canCreate()) {
+          throw new PortalServiceError(
+            'invalid_target',
+            'The paired session is no longer authorized.',
+          );
+        }
+        const chat: PortalTaskFirstChatResult = {
+          chatId: firstChat.payload.chatId,
+          userMessageId: firstChat.payload.userMessageId,
+          delivery: sent.delivery === 'queued' ? 'queued' : 'started',
+        };
+        response = { ...result, chat };
+      } catch (error) {
+        logMainProcessWarn(
+          'Portal first chat message failed after standalone chat creation',
+          { error },
+        );
+        chatError =
+          'The chat was created, but its first message could not be sent.';
+      }
+      if (chatError) response = { ...result, chatError };
+    }
+    context.complete(command, response);
   } catch (error) {
     failServiceError(command, context, error);
   }
@@ -174,6 +248,261 @@ function readPortalModelConfigSpeed(
     };
   }
   return { ok: true, fields: { speed, fastMode: derivedFastMode } };
+}
+
+interface ParsedStandaloneFirstChat {
+  payload: PortalTaskFirstChat;
+  modelConfig?: AgentModelConfig;
+  pluginSelections?: ChatTabPluginSelections;
+}
+
+interface ParsedStandaloneCreatePayload {
+  payload: PortalStandaloneChatCreatePayload;
+  firstChat?: ParsedStandaloneFirstChat;
+}
+
+function isPortalTaskProviderType(
+  value: unknown,
+): value is NonNullable<PortalTaskFirstChat['providerType']> {
+  return (
+    value === 'claude' ||
+    value === 'codex' ||
+    value === 'ollama' ||
+    value === 'cursor' ||
+    value === 'copilot' ||
+    value === 'opencode'
+  );
+}
+
+function hasOnlyFields(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function recordArrayHasOnlyFields(
+  value: unknown,
+  allowed: readonly string[],
+): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every((entry) => isRecord(entry) && hasOnlyFields(entry, allowed))
+  );
+}
+
+function isStrictPortalPluginSelections(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasOnlyFields(value, [
+      'unresolvedCapabilities',
+      'collectionIds',
+      'bundleIds',
+      'skillRefs',
+      'pluginRefs',
+      'mcpServerRefs',
+      'mcpHttpAuthPreferences',
+    ]) ||
+    !isChatTabPluginSelections(value) ||
+    !recordArrayHasOnlyFields(value.skillRefs, ['sourceId', 'skillName']) ||
+    !recordArrayHasOnlyFields(value.pluginRefs, ['marketplaceId', 'pluginName'])
+  ) {
+    return false;
+  }
+  if (
+    value.mcpServerRefs !== undefined &&
+    !recordArrayHasOnlyFields(value.mcpServerRefs, ['serverId', 'configId'])
+  ) {
+    return false;
+  }
+  if (value.mcpHttpAuthPreferences !== undefined) {
+    if (
+      !Array.isArray(value.mcpHttpAuthPreferences) ||
+      !value.mcpHttpAuthPreferences.every((entry: unknown) => {
+        if (
+          !isRecord(entry) ||
+          !hasOnlyFields(entry, ['target', 'handler']) ||
+          !isRecord(entry.target)
+        ) {
+          return false;
+        }
+        const allowedTargetFields =
+          entry.target.kind === 'standalone'
+            ? ['kind', 'serverId', 'configId']
+            : ['kind', 'marketplaceId', 'pluginName', 'serverName'];
+        return hasOnlyFields(entry.target, allowedTargetFields);
+      })
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function readSidebarItemGroupName(
+  value: unknown,
+): PortalTaskSidebarItemGroupName | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyFields(value, ['name', 'color']) ||
+    typeof value.name !== 'string' ||
+    !normalizeSidebarItemGroupName(value.name)
+  ) {
+    return null;
+  }
+  const color: unknown = value.color;
+  if (color !== undefined && !isSidebarItemGroupColor(color)) return null;
+  return {
+    name: value.name,
+    ...(color === undefined ? {} : { color }),
+  };
+}
+
+function readStandaloneFirstChat(
+  value: unknown,
+  createChatId: string,
+): ParsedStandaloneFirstChat | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyFields(value, [
+      'chatId',
+      'userMessageId',
+      'text',
+      'planMode',
+      'model',
+      'providerType',
+      'modelConfig',
+      'pluginSelections',
+    ]) ||
+    typeof value.chatId !== 'string' ||
+    value.chatId !== createChatId ||
+    typeof value.userMessageId !== 'string' ||
+    typeof value.text !== 'string' ||
+    value.text.trim().length === 0 ||
+    (value.planMode !== undefined && typeof value.planMode !== 'boolean') ||
+    (value.model !== undefined &&
+      (typeof value.model !== 'string' ||
+        value.model.trim().length === 0 ||
+        value.model.length > 256)) ||
+    (value.providerType !== undefined && value.model === undefined) ||
+    (value.providerType !== undefined &&
+      !isPortalTaskProviderType(value.providerType)) ||
+    (value.modelConfig !== undefined &&
+      (!isRecord(value.modelConfig) ||
+        !hasOnlyFields(value.modelConfig, [
+          'thinkingLevel',
+          'speed',
+          'fastMode',
+        ]))) ||
+    (value.pluginSelections !== undefined &&
+      !isStrictPortalPluginSelections(value.pluginSelections))
+  ) {
+    return null;
+  }
+  try {
+    validateId(value.chatId, 'chatId');
+    validateId(value.userMessageId, 'userMessageId');
+  } catch {
+    return null;
+  }
+
+  let modelConfig: AgentModelConfig | undefined;
+  if (value.modelConfig !== undefined) {
+    const thinkingLevel: unknown = value.modelConfig.thinkingLevel;
+    if (thinkingLevel !== undefined && !isThinkingLevel(thinkingLevel)) {
+      return null;
+    }
+    const speed = readPortalModelConfigSpeed(value.modelConfig);
+    if (!speed.ok) return null;
+    modelConfig = {
+      ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+      ...speed.fields,
+    };
+  }
+
+  const pluginSelections =
+    value.pluginSelections === undefined
+      ? undefined
+      : normalizePluginSelections(value.pluginSelections);
+  const firstChatPayload: PortalTaskFirstChat = {
+    chatId: value.chatId,
+    userMessageId: value.userMessageId,
+    text: value.text,
+    ...(value.planMode === undefined ? {} : { planMode: value.planMode }),
+    ...(value.model === undefined ? {} : { model: value.model }),
+    ...(value.providerType === undefined
+      ? {}
+      : { providerType: value.providerType }),
+    ...(modelConfig === undefined ? {} : { modelConfig }),
+    ...(pluginSelections === undefined ? {} : { pluginSelections }),
+  };
+  return {
+    payload: firstChatPayload,
+    ...(modelConfig === undefined ? {} : { modelConfig }),
+    ...(pluginSelections === undefined ? {} : { pluginSelections }),
+  };
+}
+
+function readStandaloneChatCreatePayload(
+  value: unknown,
+): ParsedStandaloneCreatePayload | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyFields(value, [
+      'projectLocalId',
+      'chatId',
+      'workEntryId',
+      'sidebarItemGroupId',
+      'sidebarItemGroupName',
+      'firstChat',
+    ]) ||
+    typeof value.projectLocalId !== 'string' ||
+    typeof value.chatId !== 'string' ||
+    (value.workEntryId !== undefined &&
+      typeof value.workEntryId !== 'string') ||
+    (value.sidebarItemGroupId !== undefined &&
+      !isSidebarItemGroupId(value.sidebarItemGroupId))
+  ) {
+    return null;
+  }
+  try {
+    validateId(value.projectLocalId, 'projectLocalId');
+    validateId(value.chatId, 'chatId');
+    if (value.workEntryId !== undefined)
+      validateId(value.workEntryId, 'workEntryId');
+    if (value.sidebarItemGroupId !== undefined)
+      validateId(value.sidebarItemGroupId, 'sidebarItemGroupId');
+  } catch {
+    return null;
+  }
+
+  let sidebarItemGroupName: PortalTaskSidebarItemGroupName | undefined;
+  if (value.sidebarItemGroupName !== undefined) {
+    const parsed = readSidebarItemGroupName(value.sidebarItemGroupName);
+    if (!parsed) return null;
+    sidebarItemGroupName = parsed;
+  }
+  let firstChat: ParsedStandaloneFirstChat | undefined;
+  if (value.firstChat !== undefined) {
+    const parsed = readStandaloneFirstChat(value.firstChat, value.chatId);
+    if (!parsed) return null;
+    firstChat = parsed;
+  }
+  return {
+    payload: {
+      projectLocalId: value.projectLocalId,
+      chatId: value.chatId,
+      ...(value.workEntryId === undefined
+        ? {}
+        : { workEntryId: value.workEntryId }),
+      ...(value.sidebarItemGroupId === undefined
+        ? {}
+        : { sidebarItemGroupId: value.sidebarItemGroupId }),
+      ...(sidebarItemGroupName === undefined ? {} : { sidebarItemGroupName }),
+      ...(firstChat === undefined ? {} : { firstChat: firstChat.payload }),
+    },
+    ...(firstChat === undefined ? {} : { firstChat }),
+  };
 }
 
 /** The validated model-config patch of a worktree `portal.chat.send`. */

@@ -16,6 +16,10 @@ import {
   readProjectAvatarUrl,
   retainProjectAvatarRepoPaths,
 } from './project-avatar-cache';
+import {
+  readProjectRepositoryIdentity,
+  retainProjectRepositoryRepoPaths,
+} from './project-repository-identity-cache';
 import { getSplitPrRuntimeProjection } from './split-pr-runtime-projection';
 import { isSplitLocked } from './split-lock-service';
 import {
@@ -448,8 +452,9 @@ export async function listWorkspacePortalEntities(
   const items = withoutPendingRemovalRows(requestedItems);
 
   // Every single-repo project this pass projects; an unscoped pass prunes
-  // the avatar cache to exactly these after the loop.
+  // the avatar and repository identity caches to exactly these after the loop.
   const avatarRepoPaths = new Set<string>();
+  const repositoryIdentityRepoPaths = new Set<string>();
 
   for (const item of items) {
     if (target?.workspaceLocalId && target.workspaceLocalId !== item.id) {
@@ -525,7 +530,12 @@ export async function listWorkspacePortalEntities(
       // Cached and never awaited: a miss projects no avatar and republishes
       // the snapshot once the origin remote has been read.
       const avatarUrl = readProjectAvatarUrl(item.repoPath);
+      const repositoryIdentity = readProjectRepositoryIdentity(
+        item.id,
+        item.repoPath,
+      );
       avatarRepoPaths.add(item.repoPath);
+      repositoryIdentityRepoPaths.add(item.repoPath);
       const workspace: PortalSessionShellState['workspaces'][number] = {
         localId: item.id,
         ...(itemGroups === undefined ? {} : { itemGroups }),
@@ -535,6 +545,7 @@ export async function listWorkspacePortalEntities(
         layout: 'tree',
         color: item.color,
         ...(avatarUrl === undefined ? {} : { avatarUrl }),
+        ...(repositoryIdentity === undefined ? {} : { repositoryIdentity }),
         order: item.order,
         collapsed: item.collapsed,
         itemSortMode:
@@ -594,6 +605,11 @@ export async function listWorkspacePortalEntities(
     }
 
     if (item.type === 'multi-repo') {
+      const repositoryPath = item.sourceRepoPath;
+      const repositoryIdentity = repositoryPath
+        ? readProjectRepositoryIdentity(item.id, repositoryPath)
+        : undefined;
+      if (repositoryPath) repositoryIdentityRepoPaths.add(repositoryPath);
       const workspace: PortalSessionShellState['workspaces'][number] = {
         localId: item.id,
         ...(itemGroups === undefined ? {} : { itemGroups }),
@@ -605,6 +621,7 @@ export async function listWorkspacePortalEntities(
         type: 'multi-repo',
         layout: 'tree',
         color: item.color,
+        ...(repositoryIdentity === undefined ? {} : { repositoryIdentity }),
         order: item.order,
         collapsed: item.collapsed,
         itemSortMode:
@@ -672,6 +689,7 @@ export async function listWorkspacePortalEntities(
   // would prune the projects it skipped.
   if (!target?.workspaceLocalId) {
     retainProjectAvatarRepoPaths(avatarRepoPaths);
+    retainProjectRepositoryRepoPaths(repositoryIdentityRepoPaths);
   }
   options?.onTiming?.('worktrees', performance.now() - worktreesStartedAt);
   return entities;

@@ -4,7 +4,7 @@ import type { JSX, Ref } from 'react';
 import type { SubagentRecipient } from '@canopy/agent-transcript';
 import { PickerTrigger, PickerTriggerChevron } from '../../../PickerMenu';
 import { ChatIcon } from '../../../../icons/AppIcons';
-import { SubagentIcon } from '../common/SubagentIcon';
+import { SubagentIcon } from '../../../../icons/SubagentIcon';
 import {
   SUBAGENT_COMPOSER_TO_LABEL,
   subagentComposerToAccessibleLabel,

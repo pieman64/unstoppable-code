@@ -2,7 +2,7 @@ import type { JSX, KeyboardEvent } from 'react';
 import type { ModelCatalogProvider } from '@canopy/protocol/models';
 import { ArchiveIcon } from '../icons/AppIcons';
 import { Button } from './Button';
-import { ModelProviderIcon } from './ModelProviderIcon';
+import { ModelProviderIcon } from '../icons/ModelProviderIcon';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
 export type StandaloneChatProviderType = ModelCatalogProvider;

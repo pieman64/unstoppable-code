@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
 import { RichHoverCard } from './RichHoverTooltip';
+import { Stack } from './Stack';
 import type { WorktreeTerminalStatus } from './WorktreeRow';
 
 function terminalStatusDisplayLabel(status: WorktreeTerminalStatus): string {
@@ -29,48 +30,55 @@ export interface TerminalStatusPopoverProps {
   anchorRect: DOMRect;
   rows: TerminalPopoverRow[];
   status: WorktreeTerminalStatus;
+  /** Lets the badge that opened it name it in `aria-describedby`. */
+  id?: string;
 }
 
 export function TerminalStatusPopover({
   anchorRect,
   rows,
   status,
+  id,
 }: TerminalStatusPopoverProps): JSX.Element | null {
   const statusLabel = terminalStatusDisplayLabel(status);
 
   return (
     <RichHoverCard
       anchorRect={anchorRect}
+      id={id}
+      role="tooltip"
       dataTestId="terminal-status-popover"
       {...BADGE_HOVER_CARD_SURFACE}
       surfaceClassName="min-w-40 max-w-65"
     >
-      <div className="mb-1 text-3xs font-semibold fg-secondary">
-        Terminals {statusLabel}
-      </div>
-      {rows.length === 0 ? (
-        <div className="text-xs fg-secondary">No terminal details</div>
-      ) : (
-        <div className="flex flex-col gap-1.5">
-          {rows.map((row) => (
-            <div
-              key={row.terminalId}
-              data-testid="terminal-status-popover-row"
-              data-terminal-id={row.terminalId}
-            >
-              <div className="flex items-center gap-1.5 text-xs">
-                <span
-                  className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${row.dotClass}`}
-                />
-                <span className="truncate fg-primary">{row.label}</span>
-                <span className={`ml-auto shrink-0 ${row.statusClass}`}>
-                  {row.statusText}
-                </span>
-              </div>
-            </div>
-          ))}
+      <Stack gap="tight">
+        <div className="text-3xs font-semibold fg-secondary">
+          Terminals {statusLabel}
         </div>
-      )}
+        {rows.length === 0 ? (
+          <div className="text-xs fg-secondary">No terminal details</div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {rows.map((row) => (
+              <div
+                key={row.terminalId}
+                data-testid="terminal-status-popover-row"
+                data-terminal-id={row.terminalId}
+              >
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span
+                    className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${row.dotClass}`}
+                  />
+                  <span className="truncate fg-primary">{row.label}</span>
+                  <span className={`ml-auto shrink-0 ${row.statusClass}`}>
+                    {row.statusText}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Stack>
     </RichHoverCard>
   );
 }

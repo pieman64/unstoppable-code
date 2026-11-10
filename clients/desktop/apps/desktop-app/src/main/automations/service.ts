@@ -90,6 +90,7 @@ import {
   type WorktreeGitFailedEvent,
 } from '@canopy/desktop-shared/types';
 import type { PipelineShareInstallPin } from '@canopy/protocol/pipelines';
+import type { PortalChatScheduledMessages } from '@canopy/protocol/portal';
 import {
   projectKindToTargetContext,
   validateSharedAutomationTargetRequirement,
@@ -278,7 +279,7 @@ import {
 } from '../agents/agent-default-model';
 import { mergePluginSelections } from '../lib/plugin-selection-utils';
 import { resolveBackgroundChatPluginSelections } from '../plugins/global-plugin-overlay';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { resolveConfiguredPrompt } from '../lib/configured-prompt-resolution';
 import { loadStandaloneProject } from '../lib/standalone-project-state';
 import { isRecord } from '../lib/type-guards';
@@ -446,6 +447,115 @@ const MAX_MISSED_BACKFILL_RUNS = 50;
 const MISSED_BACKFILL_TIME_BUDGET_MS = 50;
 const IF_COMMAND_OUTPUT_MAX_CHARS = 4_000;
 const WORKTREE_GIT_READY_TIMEOUT_MS = 10 * 60 * 1000;
+
+export interface ScheduledMessageChatIdentity {
+  readonly workspaceId: string;
+  readonly worktreeId: string;
+  readonly chatId: string;
+}
+
+interface ScheduledMessageContributor {
+  identity: ScheduledMessageChatIdentity;
+  runAt: string;
+  updatedAt: string;
+}
+
+export function scheduledMessageChatKey(
+  identity: ScheduledMessageChatIdentity,
+): string {
+  return JSON.stringify([
+    identity.workspaceId,
+    identity.worktreeId,
+    identity.chatId,
+  ]);
+}
+
+const scheduledMessageChangeListeners = new Set<
+  (identities: readonly ScheduledMessageChatIdentity[]) => void
+>();
+
+export function subscribeScheduledMessageChanges(
+  listener: (identities: readonly ScheduledMessageChatIdentity[]) => void,
+): () => void {
+  scheduledMessageChangeListeners.add(listener);
+  return () => {
+    scheduledMessageChangeListeners.delete(listener);
+  };
+}
+
+function scheduledMessageContributors(
+  activities: readonly ScheduledActivity[],
+): Map<string, ScheduledMessageContributor> {
+  const contributors = new Map<string, ScheduledMessageContributor>();
+  for (const activity of activities) {
+    if (
+      !activity.enabled ||
+      activity.schedule.kind !== 'one_time' ||
+      activity.action.type !== 'worktree_session_prompt' ||
+      activity.action.purpose !== 'scheduled_send'
+    ) {
+      continue;
+    }
+    contributors.set(activity.id, {
+      identity: {
+        workspaceId: activity.action.workspaceId,
+        worktreeId: activity.action.worktreeId,
+        chatId: activity.action.chatId,
+      },
+      // Keep the persisted definition rather than evaluating it against the
+      // current clock; firing after runAt must still invalidate its old target.
+      runAt: activity.schedule.runAt,
+      updatedAt: activity.updatedAt,
+    });
+  }
+  return contributors;
+}
+
+function changedScheduledMessageTargets(
+  previous: ReadonlyMap<string, ScheduledMessageContributor>,
+  next: ReadonlyMap<string, ScheduledMessageContributor>,
+): ScheduledMessageChatIdentity[] {
+  const targets = new Map<string, ScheduledMessageChatIdentity>();
+  const activityIds = new Set([...previous.keys(), ...next.keys()]);
+  for (const activityId of activityIds) {
+    const before = previous.get(activityId);
+    const after = next.get(activityId);
+    if (
+      before &&
+      after &&
+      before.runAt === after.runAt &&
+      before.updatedAt === after.updatedAt &&
+      scheduledMessageChatKey(before.identity) ===
+        scheduledMessageChatKey(after.identity)
+    ) {
+      continue;
+    }
+    if (before)
+      targets.set(scheduledMessageChatKey(before.identity), before.identity);
+    if (after)
+      targets.set(scheduledMessageChatKey(after.identity), after.identity);
+  }
+  return Array.from(targets.values());
+}
+
+function notifyScheduledMessageChanges(
+  identities: readonly ScheduledMessageChatIdentity[],
+): void {
+  if (identities.length === 0) return;
+  for (const listener of scheduledMessageChangeListeners) {
+    try {
+      listener(
+        identities.map((identity) => ({
+          workspaceId: identity.workspaceId,
+          worktreeId: identity.worktreeId,
+          chatId: identity.chatId,
+        })),
+      );
+    } catch {
+      // A summary subscriber must not interrupt an already-persisted change.
+    }
+  }
+}
 
 function missedOccurrenceRunId(
   activityId: string,
@@ -1662,6 +1772,11 @@ async function sharedPipelineReadDecision(
 export class AutomationsService {
   private surfaces: AutomationsServiceSurfaces | null = null;
   private file: AutomationsFile | null = null;
+  private loadingFile: Promise<AutomationsFile> | null = null;
+  private persistedScheduledMessageContributors: Map<
+    string,
+    ScheduledMessageContributor
+  > | null = null;
   private writeQueue: Promise<unknown> = Promise.resolve();
   private interval: ReturnType<typeof setInterval> | null = null;
   private sessionActivityUnsubscribe: (() => void) | null = null;
@@ -1693,6 +1808,11 @@ export class AutomationsService {
       return;
     }
     const file = await this.readFile();
+    if (this.persistedScheduledMessageContributors === null) {
+      this.persistedScheduledMessageContributors = scheduledMessageContributors(
+        file.activities,
+      );
+    }
     this.archiveMaintenance = this.archiveMaintenance
       .then(async () => {
         const preferences = await readPreferencesFile();
@@ -1787,6 +1907,64 @@ export class AutomationsService {
   async list(): Promise<AutomationsListResponse> {
     const file = await this.ensureFile();
     return contextSnapshot(file);
+  }
+
+  /** Undefined when the automations file cannot be read: the count is unknown. */
+  async getScheduledMessagesIndex(
+    now?: Date,
+  ): Promise<ReadonlyMap<string, PortalChatScheduledMessages> | undefined> {
+    let file: AutomationsFile;
+    try {
+      file = await this.ensureFile();
+    } catch {
+      return undefined;
+    }
+    const after = now ?? new Date();
+    const index = new Map<string, PortalChatScheduledMessages>();
+    for (const activity of file.activities) {
+      if (
+        !activity.enabled ||
+        activity.schedule.kind !== 'one_time' ||
+        activity.action.type !== 'worktree_session_prompt' ||
+        activity.action.purpose !== 'scheduled_send'
+      ) {
+        continue;
+      }
+      if (hasRunForOccurrence(file, activity.id, activity.schedule.runAt)) {
+        continue;
+      }
+      const nextRun = getNextAutomationTriggerRun(activity.schedule, after);
+      const overdueRunAt =
+        !nextRun && Date.parse(activity.schedule.runAt) <= after.getTime()
+          ? activity.schedule.runAt
+          : undefined;
+      const nextAt = nextRun?.toISOString() ?? overdueRunAt;
+      if (nextAt === undefined) continue;
+      const identity = {
+        workspaceId: activity.action.workspaceId,
+        worktreeId: activity.action.worktreeId,
+        chatId: activity.action.chatId,
+      };
+      const key = scheduledMessageChatKey(identity);
+      const nextAtTime = Date.parse(nextAt);
+      const existing = index.get(key);
+      const existingTime = existing?.nextAt
+        ? Date.parse(existing.nextAt)
+        : Number.NaN;
+      index.set(
+        key,
+        existing
+          ? {
+              count: existing.count + 1,
+              nextAt:
+                Number.isFinite(existingTime) && existingTime < nextAtTime
+                  ? existing.nextAt
+                  : nextAt,
+            }
+          : { count: 1, nextAt },
+      );
+    }
+    return index;
   }
 
   /**
@@ -6536,15 +6714,32 @@ export class AutomationsService {
     return reconciled;
   }
 
-  private async ensureFile(): Promise<AutomationsFile> {
-    if (!this.file) {
+  private ensureFile(): Promise<AutomationsFile> {
+    if (this.file) return Promise.resolve(this.file);
+    if (this.loadingFile) return this.loadingFile;
+    const loading = (async (): Promise<AutomationsFile> => {
       const file = await this.readFile();
-      this.file = this.normalizeFile(
+      if (this.persistedScheduledMessageContributors === null) {
+        this.persistedScheduledMessageContributors =
+          scheduledMessageContributors(file.activities);
+      }
+      const normalized = this.normalizeFile(
         await this.reconcileArchivedTerminalRuns(file),
       );
+      this.file = normalized;
       await this.flushPendingArchiveWrites();
-    }
-    return this.file;
+      return normalized;
+    })();
+    this.loadingFile = loading;
+    void loading.then(
+      () => {
+        if (this.loadingFile === loading) this.loadingFile = null;
+      },
+      () => {
+        if (this.loadingFile === loading) this.loadingFile = null;
+      },
+    );
+    return loading;
   }
 
   private async flushPendingArchiveWrites(): Promise<void> {
@@ -6600,6 +6795,9 @@ export class AutomationsService {
       activities: file.activities,
       recentRuns: trimRecentRuns(file.recentRuns),
     };
+    const previousContributors =
+      this.persistedScheduledMessageContributors ?? new Map();
+    const nextContributors = scheduledMessageContributors(payload.activities);
     const tempPath = join(
       dir,
       `.automations-${process.pid}-${randomUUID()}.tmp`,
@@ -6615,6 +6813,10 @@ export class AutomationsService {
       renamed = true;
       file.updatedAt = payload.updatedAt;
       file.recentRuns = payload.recentRuns;
+      this.persistedScheduledMessageContributors = nextContributors;
+      notifyScheduledMessageChanges(
+        changedScheduledMessageTargets(previousContributors, nextContributors),
+      );
     } finally {
       if (!renamed) await unlink(tempPath).catch(() => undefined);
     }

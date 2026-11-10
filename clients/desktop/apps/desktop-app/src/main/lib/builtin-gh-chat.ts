@@ -14,7 +14,7 @@ import {
   type PreferencesData,
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
-import { BUILTIN_PLUGIN_MARKETPLACE_ID } from '@canopy/desktop-shared/types/plugins';
+import { BUILTIN_PLUGIN_MARKETPLACE_ID } from '@canopy/execution-engine/types/plugins';
 import { sendToWindow } from './window-send';
 import { dispatchWorktreeChatTurn } from './worktree-chat-turn';
 import { runAdmittedDirectDispatch } from '../services/chat-queue-service';

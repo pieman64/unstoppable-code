@@ -1,5 +1,6 @@
 import { useState, type JSX, type ReactNode } from 'react';
 import { MinusIcon, PlusIcon } from '../../icons';
+import { Stack } from '../Stack';
 import { useCleanChatLook } from '../chat-look';
 import { STEP_ROW_BODY_CLASS, StepRow } from './StepRow';
 import { LightbulbIcon } from '../../icons/AppIcons';
@@ -91,7 +92,7 @@ export function CollapsibleBlock({
     preview ?? (content.length > 80 ? content.slice(0, 80) + '…' : content);
 
   return (
-    <div>
+    <Stack gap="tight">
       <button
         type="button"
         onClick={() => setIsOpen((prev) => !prev)}
@@ -115,10 +116,12 @@ export function CollapsibleBlock({
         </span>
       </button>
       {isOpen && (
-        <pre className="ml-5.5 mt-1 max-h-75 overflow-auto whitespace-pre-wrap break-all rounded border bg-fg-primary/[0.02] px-2.5 py-2 text-xs fg-secondary">
-          {content}
-        </pre>
+        <div className="pl-5.5">
+          <pre className="max-h-75 overflow-auto whitespace-pre-wrap break-all rounded border bg-fg-primary/[0.02] px-2.5 py-2 text-xs fg-secondary">
+            {content}
+          </pre>
+        </div>
       )}
-    </div>
+    </Stack>
   );
 }

@@ -87,6 +87,22 @@ export const DAEMON_OLLAMA_MODEL_ACTIONS: ReadonlySet<string> = new Set([
   'agent-resume',
 ]);
 
+/**
+ * Portable model actions whose model may name a workflow model alias
+ * (CAN-5832): the step runner resolves aliases only for these.
+ */
+export const DAEMON_ALIAS_MODEL_ACTIONS: ReadonlySet<string> = new Set([
+  'agent-prompt',
+  'agent-resume',
+]);
+
+/** What a pipeline model alias names for one run, as its core resolved it (CAN-5832). */
+export interface DaemonModelAliasResolution {
+  readonly base: string;
+  /** The alias adds plugins (an inline plugin collection or an Agent's plugins). */
+  readonly plugins: boolean;
+}
+
 /** How deep composite actions may nest before a pipeline is refused. */
 export const DAEMON_PIPELINE_MAX_COMPOSITE_DEPTH = 8;
 
@@ -125,6 +141,11 @@ export interface DaemonPipelineClassifierContext {
   >;
   /** The repository project actions resolve in; the run's `repoPath` or `cwd`. */
   readonly repoPath?: string;
+  /**
+   * The pipeline's model aliases, resolved for this run by its core
+   * (CAN-5832). An alias step whose alias is absent here is `model_alias`.
+   */
+  readonly modelAliases?: Readonly<Record<string, DaemonModelAliasResolution>>;
 }
 
 const BUILTIN_ACTION_PREFIX = 'builtin/';
@@ -282,15 +303,15 @@ function stepModelValue(step: Step, definition: ActionDefinition): string {
   return typeof fallback === 'string' ? fallback : '';
 }
 
-/** The model checks for a step of portable model action `name` (CAN-5095 D5a, CAN-5831). */
+/** The model checks for a step of portable model action `name` (CAN-5095 D5a, CAN-5831, CAN-5832). */
 function classifyModelStep(
   pipeline: Pipeline,
   step: Step,
   definition: ActionDefinition,
   name: string,
+  context: DaemonPipelineClassifierContext,
   tally: ModelStepTally,
 ): DaemonPipelineRefusalReason | null {
-  if (pipeline.model_aliases?.length) return 'model_alias';
   if (
     pipeline.plugin_collections?.length ||
     step.with?.plugin_collection_id !== undefined
@@ -299,7 +320,15 @@ function classifyModelStep(
   }
   const value = stepModelValue(step, definition);
   if (value.includes('${{')) return 'dynamic_model';
-  const model = value.trim();
+  let model = value.trim();
+  if (pipeline.model_aliases?.some((alias) => alias.id === model)) {
+    const target = DAEMON_ALIAS_MODEL_ACTIONS.has(name)
+      ? context.modelAliases?.[model]
+      : undefined;
+    if (target === undefined) return 'model_alias';
+    if (target.plugins) return 'plugin_collections';
+    model = target.base.trim();
+  }
   let harness: DaemonModelHarness;
   if (model.length === 0) {
     harness = 'claude';
@@ -361,7 +390,14 @@ function classifyStepAdmittingModels(
       // Case-insensitive volumes resolve `builtin/Condenser` to `condenser`.
       const name = builtinActionName(uses, resolved, context)?.toLowerCase();
       if (name !== undefined && DAEMON_PORTABLE_MODEL_ACTIONS.has(name)) {
-        return classifyModelStep(pipeline, step, definition, name, tally);
+        return classifyModelStep(
+          pipeline,
+          step,
+          definition,
+          name,
+          context,
+          tally,
+        );
       }
       if (
         step.log_format_hint === 'agent' ||
@@ -407,7 +443,9 @@ function classifyStepsAdmittingModels(
  * default a step that calls a model refuses the run; with
  * `modelSteps: 'claude_codex'` the steps on the Claude and Codex harnesses
  * that CAN-5095 D2 and CAN-5831 admit are counted instead, Ollama models on
- * the agent actions included. Fails closed on anything unknown.
+ * the agent actions included, and model alias steps by what
+ * `context.modelAliases` says their alias names (CAN-5832). Fails closed on
+ * anything unknown.
  */
 export function classifyDaemonPipeline(
   pipeline: Pipeline,

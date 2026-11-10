@@ -21,13 +21,13 @@ import {
   type ResolvePortablePluginRefsResponse,
   type ResolvePortableEnableRefRequest,
   type AnalyzeSharedPluginReferenceRequest,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import {
   computePluginShareableRef,
   getShareablePluginRefKey,
   isShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
-import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
+import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import {
   loadShareablePluginCatalog,
   resolveShareablePluginRefs,
@@ -63,7 +63,7 @@ function toErrorMessage(error: unknown): string {
  * Plugin marketplace IPC channel registration.
  *
  * Channel signatures (renderer ↔ main) — see `PluginsAPI` in
- * `@canopy/desktop-shared/types/plugins` for the typed contract:
+ * `@canopy/execution-engine/types/plugins` for the typed contract:
  *
  * - `plugins:load`               input: void
  *                                output: IPCResult<PluginsCache>

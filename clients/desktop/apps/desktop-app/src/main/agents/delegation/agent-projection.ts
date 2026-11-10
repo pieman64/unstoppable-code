@@ -11,8 +11,8 @@ import {
   getMcpHttpAuthDefault,
   getMcpHttpAuthHandler,
   mcpHttpAuthTargetKey,
-} from '@canopy/desktop-shared/lib/mcp-http-auth';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+} from '@canopy/execution-engine/lib/mcp-http-auth';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import type {
   AgentCapabilitySnapshot,

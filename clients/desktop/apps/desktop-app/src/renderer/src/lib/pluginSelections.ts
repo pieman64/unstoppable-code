@@ -1,12 +1,12 @@
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import { emptyChatTabPluginSelections } from '@canopy/desktop-shared/lib/app-advisor-chat-reads';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type {
   McpHttpAuthHandler,
   McpHttpAuthPreference,
   McpHttpAuthTarget,
 } from '@canopy/execution-engine/types/mcp-servers';
-import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import { mcpHttpAuthTargetKey } from '@canopy/execution-engine/lib/mcp-http-auth';
 
 export const EMPTY_SELECTIONS: ChatTabPluginSelections = {
   collectionIds: [],

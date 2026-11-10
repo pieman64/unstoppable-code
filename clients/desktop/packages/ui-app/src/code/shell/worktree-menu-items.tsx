@@ -252,27 +252,19 @@ const GROUPING_LABELS = {
 
 export type WorktreeGroupingActionKind = keyof typeof GROUPING_LABELS;
 
-// Stack direction and scope each have a distinct catalog glyph. Pin/Unpin
-// intentionally share a glyph as opposite states of the same action.
-const GROUPING_ICONS: Readonly<Record<keyof typeof GROUPING_LABELS, AppIcon>> =
-  {
-    'group-with-base': FormatIndentIncreaseIcon,
-    'ungroup-from-base': FormatIndentDecreaseIcon,
-    'group-children': GitMergeIcon,
-    'ungroup-children': WorktreeIcon,
-  };
-
-/** The shared and fallback desktop rails use the same action glyphs. */
-export function WorktreeGroupingMenuIcon({
-  kind,
-  className,
-}: {
-  kind: WorktreeGroupingActionKind;
-  className?: string;
-}): JSX.Element {
-  const Icon = GROUPING_ICONS[kind];
-  return <Icon className={className} />;
-}
+/**
+ * The shared and fallback desktop rails use the same action glyphs. Stack
+ * direction and scope each have a distinct catalog glyph. Pin/Unpin
+ * intentionally share a glyph as opposite states of the same action.
+ */
+export const WORKTREE_GROUPING_GLYPHS: Readonly<
+  Record<WorktreeGroupingActionKind, JSX.Element>
+> = {
+  'group-with-base': <FormatIndentIncreaseIcon />,
+  'ungroup-from-base': <FormatIndentDecreaseIcon />,
+  'group-children': <GitMergeIcon />,
+  'ungroup-children': <WorktreeIcon />,
+};
 
 /**
  * Rows that are rare or for advanced setups. The compact menu moves them into
@@ -521,7 +513,7 @@ export function deriveWorktreeMenuItems(
     items.push({
       key: context.groupingAction.kind,
       label: GROUPING_LABELS[context.groupingAction.kind],
-      icon: <WorktreeGroupingMenuIcon kind={context.groupingAction.kind} />,
+      icon: WORKTREE_GROUPING_GLYPHS[context.groupingAction.kind],
       onSelect: callbacks.onGroupingRequested,
       testId: callbacks.testIds?.grouping,
     });

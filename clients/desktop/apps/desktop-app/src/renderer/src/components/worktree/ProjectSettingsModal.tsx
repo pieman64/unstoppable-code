@@ -29,7 +29,7 @@ import {
   type SetStateAction,
 } from 'react';
 import { normalizeScriptName } from '@canopy/desktop-shared/scripts';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type {
   ChatTabPluginSelections,
   SingleRepoSidebarItem,
@@ -38,7 +38,7 @@ import {
   buildShareablePluginDisplay,
   getShareablePluginRefKey,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import { EMPTY_SELECTIONS, normalizeSelections } from '@/lib/pluginSelections';
 import {
   DEFAULT_AUTO_ARCHIVE_DAYS,

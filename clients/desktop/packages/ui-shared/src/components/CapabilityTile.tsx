@@ -212,7 +212,7 @@ function TileBody({
         >
           <Icon size="sm" />
         </span>
-        <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 flex-1 flex-col gap-1">
           <span
             className={`flex min-w-0 items-baseline gap-1${padForAccessory ? ' pr-7' : ''}`}
           >
@@ -242,7 +242,7 @@ function TileBody({
               </span>
             ) : null}
           </span>
-          <span className="mt-1 block wrap-anywhere text-pretty text-xs fg-tertiary">
+          <span className="block wrap-anywhere text-pretty text-xs fg-tertiary">
             {detail}
           </span>
         </span>
@@ -253,20 +253,20 @@ function TileBody({
           reason about 12px below it. A card
           with nothing to say there has no footer. */}
       {model.reason || model.removedNote ? (
-        <span className="mt-auto block pt-2.75 pl-5.5 supports-[grid-template-rows:subgrid]:mt-0">
+        <span className="mt-auto flex flex-col gap-2 pt-2.75 pl-5.5 supports-[grid-template-rows:subgrid]:mt-0">
           <span className="block border-t" aria-hidden="true" />
-          {model.reason ? (
-            <span className="mt-2 block wrap-anywhere text-pretty text-xs fg-secondary">
-              {model.reason}
-            </span>
-          ) : null}
-          {model.removedNote ? (
-            <span
-              className={`block wrap-anywhere text-pretty text-xs fg-tertiary ${model.reason ? 'mt-0.5' : 'mt-2'}`}
-            >
-              {model.removedNote}
-            </span>
-          ) : null}
+          <span className="flex flex-col gap-0.5">
+            {model.reason ? (
+              <span className="block wrap-anywhere text-pretty text-xs fg-secondary">
+                {model.reason}
+              </span>
+            ) : null}
+            {model.removedNote ? (
+              <span className="block wrap-anywhere text-pretty text-xs fg-tertiary">
+                {model.removedNote}
+              </span>
+            ) : null}
+          </span>
         </span>
       ) : null}
     </>

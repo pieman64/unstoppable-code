@@ -3,7 +3,7 @@ import type {
   ChatTabPluginSelections,
   PreferencesData,
 } from '@canopy/desktop-shared/types';
-import { emptyPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { emptyPluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 
 /**
  * Renderer mirror of `PreferencesData.globalPluginSelections` — the global

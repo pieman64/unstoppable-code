@@ -7,11 +7,11 @@ import {
   computePluginShareableRef,
   getShareablePluginRefKey,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import {
   CURATED_PLUGIN_MARKETPLACE_ID,
   type MarketplaceInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import {
   MARKETPLACE_SHARE_BLOCKED_REASONS,
   type MarketplaceEntryShareResolution,

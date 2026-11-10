@@ -1,8 +1,8 @@
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
-import { parseClaudeJsonFile } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
-import { isClaudeModPluginId } from '@canopy/desktop-shared/types/claude-mod-admission';
+import { parseClaudeJsonFile } from '@canopy/execution-engine/node/plugins/claude-mod-admission';
+import { isClaudeModPluginId } from '@canopy/execution-engine/types/claude-mod-admission';
 import {
   claudeMarketplaceNames,
   type InheritedPluginMarketplace,

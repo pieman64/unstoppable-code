@@ -117,21 +117,23 @@ export const DeferredTextOutput = memo(function DeferredTextOutput({
         )}
       </div>
       {error && (
-        <Notice
-          intent="destructive"
-          className="mx-2.5 my-2"
-          liveRegionScope="content"
-          actions={
-            <NoticeButton
-              data-testid="chat-tool-output-retry"
-              onClick={onRetry}
-            >
-              {TRY_AGAIN_LABEL}
-            </NoticeButton>
-          }
-        >
-          {error}
-        </Notice>
+        // The output's 10px side inset, as the text and controls use.
+        <div className="px-2.5 py-2">
+          <Notice
+            intent="destructive"
+            liveRegionScope="content"
+            actions={
+              <NoticeButton
+                data-testid="chat-tool-output-retry"
+                onClick={onRetry}
+              >
+                {TRY_AGAIN_LABEL}
+              </NoticeButton>
+            }
+          >
+            {error}
+          </Notice>
+        </div>
       )}
     </div>
   );

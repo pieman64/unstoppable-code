@@ -154,10 +154,8 @@ export function JobCard({
 
       {/* Job body (steps) */}
       {!collapsed && (
-        <div
-          ref={setDropRef}
-          className="flex flex-col px-2 py-2 min-h-10 gap-1.5"
-        >
+        // 2px inside the job's 12px corners keeps the 10px rows concentric.
+        <div ref={setDropRef} className="flex flex-col p-0.5 min-h-10">
           {job.steps.length === 0 ? (
             <EmptyStateRow title="No steps yet" />
           ) : (

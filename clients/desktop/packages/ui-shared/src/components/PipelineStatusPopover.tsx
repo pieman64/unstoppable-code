@@ -3,6 +3,7 @@ import { StatusGlyph } from './StatusGlyph';
 import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react';
 import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
 import { RichHoverCard } from './RichHoverTooltip';
+import { Stack } from './Stack';
 import type { WorktreePipelineStatus } from './WorktreeRow';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { formatElapsed, getElapsedMs } from '../lib/pipeline-timing-display';
@@ -231,113 +232,122 @@ export function PipelineStatusPopover({
       {...BADGE_HOVER_CARD_SURFACE}
       surfaceClassName="min-w-40 max-w-65"
     >
-      {/* Header stays put; only the entry list below it scrolls. */}
-      <div
-        className="mb-1 text-3xs font-semibold fg-secondary"
-        data-testid="pipeline-status-popover-header"
-      >
-        {entries.length > 0
-          ? `Workflows ${statusLabel} (${String(entries.length)})`
-          : `Workflows ${statusLabel}`}
-      </div>
-      {entries.length === 0 ? (
-        <div id={listId} className="text-xs fg-secondary">
-          No workflow details
-        </div>
-      ) : (
+      <Stack gap="tight">
+        {/* Header stays put; only the entry list below it scrolls. */}
         <div
-          ref={listRef}
-          id={listId}
-          data-testid="pipeline-status-popover-list"
-          data-scrollable={isScrollable ? 'true' : 'false'}
-          aria-label={isScrollable ? 'Workflow runs' : undefined}
-          tabIndex={isScrollable ? 0 : undefined}
-          className={`grid grid-cols-1 content-start gap-1.5${
-            isScrollable ? ' pointer-events-auto overflow-y-auto pr-1' : ''
-          }`}
-          style={isScrollable ? { maxHeight: listMaxHeight } : undefined}
-          onMouseEnter={isScrollable ? onListMouseEnter : undefined}
-          onMouseLeave={isScrollable ? onListMouseLeave : undefined}
-          onPointerDown={
-            isScrollable ? (event): void => event.stopPropagation() : undefined
-          }
-          onClick={
-            isScrollable ? (event): void => event.stopPropagation() : undefined
-          }
-          onContextMenu={
-            isScrollable ? (event): void => event.stopPropagation() : undefined
-          }
-          onFocus={(): void => {
-            listHasFocusRef.current = true;
-            onListFocus?.();
-          }}
-          onBlur={(): void => {
-            listHasFocusRef.current = false;
-            onListBlur?.();
-          }}
-          onKeyDown={
-            isScrollable
-              ? (event): void => {
-                  if (event.key !== 'Escape' && event.key !== 'ArrowUp') return;
-                  event.preventDefault();
-                  onListDismiss?.();
-                }
-              : undefined
-          }
+          className="text-3xs font-semibold fg-secondary"
+          data-testid="pipeline-status-popover-header"
         >
-          {entries.map((entry) => {
-            const elapsed = getElapsedMs({
-              startedAt: entry.startedAt,
-              completedAt: entry.completedAt,
-              pausedAt: entry.pausedAt,
-              pausedMs: entry.pausedMs,
-              nowMs,
-            });
-            const runtime =
-              elapsed !== null ? formatElapsed(elapsed) : undefined;
-
-            return (
-              <div key={entry.id}>
-                <div className="flex items-center gap-1.5 text-xs">
-                  <StatusGlyph
-                    state={PIPELINE_ENTRY_GLYPH[entry.status]}
-                    size={12}
-                  />
-                  <span className="truncate fg-primary">{entry.name}</span>
-                  <span
-                    className={`ml-auto shrink-0 ${pipelineEntryStatusColor(entry.status)}`}
-                  >
-                    {pipelineEntryStatusLabel(entry.status)}
-                  </span>
-                </div>
-                {(runtime ||
-                  (entry.runningJobs && entry.runningJobs.length > 0) ||
-                  (entry.failedJobs && entry.failedJobs.length > 0)) && (
-                  <div className="ml-3 mt-0.5 flex flex-col gap-px">
-                    {runtime && (
-                      <div className="text-3xs fg-secondary">{runtime}</div>
-                    )}
-                    {entry.runningJobs && entry.runningJobs.length > 0 && (
-                      <div
-                        className={`truncate text-3xs ${OPERATIONAL_STATUS_COLORS.active.foregroundMuted}`}
-                      >
-                        Running: {entry.runningJobs.join(', ')}
-                      </div>
-                    )}
-                    {entry.failedJobs && entry.failedJobs.length > 0 && (
-                      <div
-                        className={`truncate text-3xs ${OPERATIONAL_STATUS_COLORS.failed.foregroundMuted}`}
-                      >
-                        Failed: {entry.failedJobs.join(', ')}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {entries.length > 0
+            ? `Workflows ${statusLabel} (${String(entries.length)})`
+            : `Workflows ${statusLabel}`}
         </div>
-      )}
+        {entries.length === 0 ? (
+          <div id={listId} className="text-xs fg-secondary">
+            No workflow details
+          </div>
+        ) : (
+          <div
+            ref={listRef}
+            id={listId}
+            data-testid="pipeline-status-popover-list"
+            data-scrollable={isScrollable ? 'true' : 'false'}
+            aria-label={isScrollable ? 'Workflow runs' : undefined}
+            tabIndex={isScrollable ? 0 : undefined}
+            className={`grid grid-cols-1 content-start gap-1.5${
+              isScrollable ? ' pointer-events-auto overflow-y-auto pr-1' : ''
+            }`}
+            style={isScrollable ? { maxHeight: listMaxHeight } : undefined}
+            onMouseEnter={isScrollable ? onListMouseEnter : undefined}
+            onMouseLeave={isScrollable ? onListMouseLeave : undefined}
+            onPointerDown={
+              isScrollable
+                ? (event): void => event.stopPropagation()
+                : undefined
+            }
+            onClick={
+              isScrollable
+                ? (event): void => event.stopPropagation()
+                : undefined
+            }
+            onContextMenu={
+              isScrollable
+                ? (event): void => event.stopPropagation()
+                : undefined
+            }
+            onFocus={(): void => {
+              listHasFocusRef.current = true;
+              onListFocus?.();
+            }}
+            onBlur={(): void => {
+              listHasFocusRef.current = false;
+              onListBlur?.();
+            }}
+            onKeyDown={
+              isScrollable
+                ? (event): void => {
+                    if (event.key !== 'Escape' && event.key !== 'ArrowUp')
+                      return;
+                    event.preventDefault();
+                    onListDismiss?.();
+                  }
+                : undefined
+            }
+          >
+            {entries.map((entry) => {
+              const elapsed = getElapsedMs({
+                startedAt: entry.startedAt,
+                completedAt: entry.completedAt,
+                pausedAt: entry.pausedAt,
+                pausedMs: entry.pausedMs,
+                nowMs,
+              });
+              const runtime =
+                elapsed !== null ? formatElapsed(elapsed) : undefined;
+
+              return (
+                <div key={entry.id}>
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <StatusGlyph
+                      state={PIPELINE_ENTRY_GLYPH[entry.status]}
+                      size={12}
+                    />
+                    <span className="truncate fg-primary">{entry.name}</span>
+                    <span
+                      className={`ml-auto shrink-0 ${pipelineEntryStatusColor(entry.status)}`}
+                    >
+                      {pipelineEntryStatusLabel(entry.status)}
+                    </span>
+                  </div>
+                  {(runtime ||
+                    (entry.runningJobs && entry.runningJobs.length > 0) ||
+                    (entry.failedJobs && entry.failedJobs.length > 0)) && (
+                    <div className="ml-3 mt-0.5 flex flex-col gap-px">
+                      {runtime && (
+                        <div className="text-3xs fg-secondary">{runtime}</div>
+                      )}
+                      {entry.runningJobs && entry.runningJobs.length > 0 && (
+                        <div
+                          className={`truncate text-3xs ${OPERATIONAL_STATUS_COLORS.active.foregroundMuted}`}
+                        >
+                          Running: {entry.runningJobs.join(', ')}
+                        </div>
+                      )}
+                      {entry.failedJobs && entry.failedJobs.length > 0 && (
+                        <div
+                          className={`truncate text-3xs ${OPERATIONAL_STATUS_COLORS.failed.foregroundMuted}`}
+                        >
+                          Failed: {entry.failedJobs.join(', ')}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Stack>
     </RichHoverCard>
   );
 }

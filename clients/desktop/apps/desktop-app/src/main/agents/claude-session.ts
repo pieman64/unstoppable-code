@@ -203,7 +203,7 @@ import {
   respondToFileCommentInSession,
 } from '../canopy-tools/session-runtime';
 import { claudeNativeMemoryOptions } from '@canopy/execution-engine/node/lib/native-memory';
-import { mergeClaudeModAdmissionSettings } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+import { mergeClaudeModAdmissionSettings } from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 import {
   readLatestPreferencesFile,
   readLocalMemoryEnabledPreference,
@@ -249,7 +249,7 @@ import {
 } from '../observability/capture-fields';
 
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import { buildRtkClaudeHooks } from '@canopy/desktop-shared/node/rtk/claude-hooks';
+import { buildRtkClaudeHooks } from '@canopy/execution-engine/node/rtk/claude-hooks';
 import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   spawnClaudeCodeProcessOffMain,

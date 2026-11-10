@@ -42,7 +42,11 @@ export type AppAdvisorCoreExecutor =
   | 'delegation-control'
   | 'pipeline-execution'
   | 'catalog'
+  | 'sharing'
   | 'file-tree'
+  | 'credentials'
+  | 'remote-access'
+  | 'settings-surface'
   | 'project-bot'
   | 'message-control'
   | 'send'
@@ -64,6 +68,8 @@ export type AppAdvisorActionDisposition =
       readonly kind: 'core';
       readonly access: 'read';
       readonly executor: AppAdvisorCoreExecutor;
+      /** CAN-6008: only while the session binds the main window's lease. */
+      readonly requiresInterface?: true;
     }
   | {
       readonly kind: 'core';
@@ -81,6 +87,12 @@ export type AppAdvisorActionDisposition =
        * window; with no lease the action is refused with the guard's reason.
        */
       readonly presentationWhenGuarded?: true;
+      /**
+       * CAN-6008 (CAN-4133 N2): runs in main only while the session binds
+       * the main window's lease (`ui.app_advisor.present`); never headless,
+       * and a remote route never satisfies it.
+       */
+      readonly requiresInterface?: true;
     }
   | { readonly kind: 'presentation' }
   | {
@@ -139,9 +151,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'agents.delete_shared': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'agents.get': Object.freeze({
     kind: 'core',
@@ -149,9 +163,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     executor: 'catalog',
   }),
   'agents.import_shared': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'agents.list': Object.freeze({
     kind: 'core',
@@ -161,14 +177,18 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   'agents.list_shared': Object.freeze({ kind: 'legacy', access: 'read' }),
   'agents.open_manager': Object.freeze({ kind: 'presentation' }),
   'agents.publish_public_share': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'agents.revoke_public_share': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'agents.update': Object.freeze({
     kind: 'core',
@@ -583,37 +603,56 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'canopy_cloud.cancel_oauth_login': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'credentials',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'canopy_cloud.clear_api_key': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'credentials',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'canopy_cloud.disconnect': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'credentials',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'canopy_cloud.load_account': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'credentials',
+    requiresInterface: true,
   }),
   'canopy_cloud.save_api_key': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'credentials',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'canopy_cloud.start_oauth_login': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'credentials',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'canopy_cloud.validate_api_key': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'read',
+    executor: 'credentials',
+    requiresInterface: true,
   }),
   'canopy_portal.close': Object.freeze({ kind: 'presentation' }),
   'canopy_portal.open': Object.freeze({ kind: 'presentation' }),
@@ -621,14 +660,20 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     kind: 'presentation',
   }),
   'canopy_portal.start': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'remote-access',
     grants: Object.freeze(['core.remoteAccess.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'canopy_portal.stop': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'remote-access',
     grants: Object.freeze(['core.remoteAccess.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'chat.content.read': Object.freeze({
     kind: 'core',
@@ -744,14 +789,20 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.sharing.write'] as const),
   }),
   'cursor.approval_check': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings-surface',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'cursor.connection': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings-surface',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'delegation.read_changes': Object.freeze({
     kind: 'core',
@@ -897,29 +948,44 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   'ledger.open': Object.freeze({ kind: 'presentation' }),
   'ledger.search': Object.freeze({ kind: 'legacy', access: 'read' }),
   'mcp.account_connect': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings-surface',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'mcp.account_disconnect': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings-surface',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'mcp.account_edit': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings-surface',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'mcp.account_promote': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings-surface',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'mcp.account_reconnect': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'settings-surface',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'memory.consolidate_now': Object.freeze({
     kind: 'legacy',
@@ -960,14 +1026,20 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   'navigation.open_settings': Object.freeze({ kind: 'presentation' }),
   'navigation.open_workspace_settings': Object.freeze({ kind: 'presentation' }),
   'ollama.install': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'credentials',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'opencode.connection': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'credentials',
     grants: Object.freeze(['core.integration.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'org_project.create_code': Object.freeze({
     kind: 'legacy',
@@ -1213,9 +1285,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'plan.share': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'plugins.list_marketplaces': Object.freeze({
     kind: 'core',
@@ -1317,23 +1391,35 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.chat.write'] as const),
     revision: 'none',
   }),
-  'remote_control.get_state': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'remote_control.get_state': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'remote-access',
+    requiresInterface: true,
+  }),
   'remote_control.open_computer': Object.freeze({ kind: 'presentation' }),
   'remote_control.set_allow_incoming': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'remote-access',
     grants: Object.freeze(['core.remoteAccess.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
   }),
   'runs.open_comments': Object.freeze({ kind: 'presentation' }),
   'runs.share': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'sharing',
     grants: Object.freeze(['core.sharing.write'] as const),
+    revision: 'none',
   }),
   'runs.unshare': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
-    grants: Object.freeze(['core.sharing.write'] as const),
+    executor: 'sharing',
+    grants: Object.freeze(['core.chat.write', 'core.sharing.write'] as const),
+    revision: 'none',
   }),
   'script_actions.list': Object.freeze({
     kind: 'core',
@@ -1464,16 +1550,8 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   }),
   'shared-containers.open_invite': Object.freeze({ kind: 'presentation' }),
   'shared-containers.open_received': Object.freeze({ kind: 'presentation' }),
-  'shared-containers.retry_received': Object.freeze({
-    kind: 'legacy',
-    access: 'write',
-    grants: Object.freeze(['core.sharing.write'] as const),
-  }),
-  'shared-containers.revoke_recipient': Object.freeze({
-    kind: 'legacy',
-    access: 'write',
-    grants: Object.freeze(['core.sharing.write'] as const),
-  }),
+  'shared-containers.retry_received': Object.freeze({ kind: 'presentation' }),
+  'shared-containers.revoke_recipient': Object.freeze({ kind: 'presentation' }),
   'sharing.open_dialog': Object.freeze({ kind: 'presentation' }),
   'sidebar.item_groups.create': Object.freeze({
     kind: 'core',
@@ -2127,6 +2205,21 @@ export function appAdvisorActionDisposition(
 
 /** The 81 presentation types (D8); the renderer refuses any other type arriving on ui.app_advisor.present. */
 /** Core writes the main window's lease may apply when their guard fails (CAN-5999 D3). */
+/**
+ * CAN-6008 B1: core writes main hands to a mounted Settings surface through
+ * the main window's lease, inside the keyed run for their tool call.
+ */
+export const APP_ADVISOR_SURFACE_REQUEST_ACTION_TYPES: ReadonlySet<string> =
+  new Set(
+    Object.entries(APP_ADVISOR_ACTION_DISPOSITIONS)
+      .filter(
+        ([, disposition]) =>
+          disposition.kind === 'core' &&
+          disposition.executor === 'settings-surface',
+      )
+      .map(([type]) => type),
+  );
+
 export const APP_ADVISOR_GUARDED_PRESENTATION_ACTION_TYPES: ReadonlySet<string> =
   new Set(
     Object.entries(APP_ADVISOR_ACTION_DISPOSITIONS)

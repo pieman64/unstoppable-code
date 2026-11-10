@@ -213,7 +213,15 @@ export type InstalledItemSnapshotState =
   | { readonly kind: 'loading' }
   | { readonly kind: 'error'; readonly message: string }
   | { readonly kind: 'unsupported'; readonly reason: string }
-  | { readonly kind: 'ready'; readonly snapshot: InstalledItemSnapshot };
+  | {
+      readonly kind: 'ready';
+      readonly snapshot: InstalledItemSnapshot;
+      /**
+       * When the snapshot is a synced copy rather than a live read, the ISO
+       * time it was synced (CAN-6037). Live reads leave it unset.
+       */
+      readonly syncedAt?: string;
+    };
 
 /** One catalog row's status, as the status picker and Status row render it. */
 export type InstalledEntryStatusState =

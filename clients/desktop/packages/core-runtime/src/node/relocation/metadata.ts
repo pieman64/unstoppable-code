@@ -1,3 +1,4 @@
+import { relative } from 'node:path';
 import type { WorkspaceManifestRepository } from '../w5/workspace-manifest-repository';
 import type { WorktreeListRepository } from '../w5/worktree-list-repository';
 import { parseWorktreeReplica } from '../w5/worktree-replica-codec';
@@ -217,12 +218,15 @@ export async function repairRelocatedWorkspace(
     (document.targetId !== undefined && document.targetId !== evidence.targetId)
   )
     throw new RelocationRefusedError('foreign-manifest');
-  const project = (path: unknown): string => {
+  const project = (path: unknown, field: string): string => {
     if (typeof path !== 'string')
       throw new RelocationRefusedError('invalid-repository-path');
     const moved = movedOwnedPath(transition, path);
     if (moved !== path && !evidence.repositoryPaths.includes(path))
-      throw new RelocationRefusedError('unproven-repository-path');
+      throw new RelocationRefusedError(
+        'unproven-repository-path',
+        `workspace=${JSON.stringify(evidence.workspaceId.slice(0, 160))} field=${field} path=${JSON.stringify(relative(transition.from.canonicalDataRoot, path).slice(0, 1000))}`,
+      );
     return moved;
   };
   const next = { ...document };
@@ -234,25 +238,28 @@ export async function repairRelocatedWorkspace(
     'externalPath',
     'folderPath',
   ] as const)
-    if (document[key] !== undefined) next[key] = project(document[key]);
+    if (document[key] !== undefined) next[key] = project(document[key], key);
   if (document.repos !== undefined) {
     if (!Array.isArray(document.repos))
       throw new RelocationRefusedError('invalid-repositories');
-    next.repos = document.repos.map((repo: unknown) => {
+    next.repos = document.repos.map((repo: unknown, index: number) => {
       if (!isJsonObject(repo))
         throw new RelocationRefusedError('invalid-repository');
-      return { ...repo, repoPath: project(repo.repoPath) };
+      return {
+        ...repo,
+        repoPath: project(repo.repoPath, `repos[${index}].repoPath`),
+      };
     });
   }
   if (document.temporaryRepoIdentityKeys !== undefined) {
     if (!Array.isArray(document.temporaryRepoIdentityKeys))
       throw new RelocationRefusedError('invalid-repository-identity-keys');
     next.temporaryRepoIdentityKeys = document.temporaryRepoIdentityKeys.map(
-      (key: unknown) => {
+      (key: unknown, index: number) => {
         if (typeof key !== 'string')
           throw new RelocationRefusedError('invalid-repository-identity-key');
         return key.startsWith('path:')
-          ? `path:${project(key.slice('path:'.length))}`
+          ? `path:${project(key.slice('path:'.length), `temporaryRepoIdentityKeys[${index}]`)}`
           : key;
       },
     );

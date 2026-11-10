@@ -51,7 +51,7 @@ import {
   type BackgroundTrayRun,
   type BackgroundTrayRunKind,
 } from './RunRow';
-import { TaskKindIcon, TaskRow } from './TaskRow';
+import { TASK_KIND_GLYPHS, TaskRow } from './TaskRow';
 import {
   WatcherRow,
   type BackgroundTrayWatcher,
@@ -902,7 +902,7 @@ function CollapsedKinds({
             role="img"
             data-testid={`background-tray-kind-${kind}`}
           >
-            <TaskKindIcon kind={kind} />
+            {TASK_KIND_GLYPHS[kind]}
             {count > 1 && <Count value={count} aria-hidden />}
           </span>
         </Tooltip>

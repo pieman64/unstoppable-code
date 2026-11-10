@@ -5,7 +5,7 @@
 // facets, component details, marketplace identity constants) live in
 // `@canopy/protocol/plugins` so the web app and the desktop app agree on the
 // same data model. They are re-exported below so existing imports of
-// `@canopy/desktop-shared/types/plugins` keep working unchanged.
+// `@canopy/execution-engine/types/plugins` keep working unchanged.
 //
 // Do NOT redefine those shapes locally — the protocol package is the single
 // source of truth. What remains declared here is desktop-local by design:
@@ -30,11 +30,11 @@ import type {
   SharedPluginPublicShareInfo,
   SharedPluginUpdateRequest,
 } from '@canopy/protocol/plugins';
-import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
+import type { IPCResult } from './pipeline';
 import type { ShareablePluginRef } from '@canopy/protocol/plugins';
-import type { ChatTabPluginSelections } from '../types';
+import type { ChatTabPluginSelections } from '../execution-types';
 import type { InvocableInventoryEnableRef } from './invocable-inventory';
-import type { PipelinePackageAnalysisSummary } from '@canopy/execution-engine/types/pipeline';
+import type { PipelinePackageAnalysisSummary } from './pipeline';
 
 export interface AnalyzeSharedPluginReferenceRequest {
   ref: ShareablePluginRef;

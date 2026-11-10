@@ -24,7 +24,7 @@ import {
   resolveAutomationTargetRequirement,
   type AutomationPipelineResolution,
 } from '@canopy/pipeline-interop/automation-target';
-import { emptyPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { emptyPluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   AUTOMATION_SHARE_BLOCK_MESSAGES,
   AUTOMATION_RUN_CONDITION_SHARE_WARNING_MESSAGES,
@@ -39,7 +39,7 @@ import type {
   ScheduledActivity,
 } from '@canopy/desktop-shared/types';
 import { actionTypeTakesPipelineDependencies } from './form/automationFormState';
-import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
+import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import { hasAnySelections } from '@canopy/desktop-shared/types';
 import {
   SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION,

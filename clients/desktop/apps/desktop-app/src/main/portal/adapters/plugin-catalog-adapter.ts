@@ -35,7 +35,7 @@ import type {
   PortalCommandEnvelope,
   PortalCommandPayloadMap,
 } from '@canopy/desktop-shared/types';
-import type { PluginProvider } from '@canopy/desktop-shared/types/plugins';
+import type { PluginProvider } from '@canopy/execution-engine/types/plugins';
 import type { PortalAdapterContext } from './types';
 import {
   dispatchPortalCatalogInstruction,

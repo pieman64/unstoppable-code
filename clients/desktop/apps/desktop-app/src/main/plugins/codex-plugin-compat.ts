@@ -15,7 +15,7 @@ import {
   type PluginFileContent,
   type ProjectClaudePluginForCodexInput,
 } from '@canopy/plugin-interop';
-import type { PluginManifest } from '@canopy/desktop-shared/types/plugins';
+import type { PluginManifest } from '@canopy/execution-engine/types/plugins';
 import { safeReadJson, safeReadText } from '../lib/fs-utils';
 import { parseFrontmatter, parseFrontmatterAndBody } from '../lib/frontmatter';
 import { isPathInside } from '../lib/path-safety';

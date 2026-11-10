@@ -1,4 +1,4 @@
-import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import { mcpHttpAuthTargetKey } from '@canopy/execution-engine/lib/mcp-http-auth';
 import {
   hasAnySelections,
   type ChatTabPluginSelections,

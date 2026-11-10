@@ -37,7 +37,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { useComposerMenu } from '@/hooks/useComposerMenu';
-import { ChoiceField, Heading } from '@canopy/ui-shared/components';
+import { ChoiceField, Heading, Surface } from '@canopy/ui-shared/components';
 import { applyTheme } from '@/lib/theme';
 import { DICTATION_SHORTCUT_LABEL } from '@/lib/keyboardShortcuts';
 import type { EditorSelectionContext } from '@/lib/editorSelectionContext';
@@ -1160,61 +1160,65 @@ export function ComposerStatesGallery(): JSX.Element {
     () => new URLSearchParams(window.location.search).get('theme') !== 'light',
   );
   return (
-    <div className="min-h-screen bg-secondary fg-primary">
-      <div className="flex items-center gap-4 border-b bg-base px-4 py-3">
-        <span className="text-s">Composer states</span>
-        <ChoiceField
-          label="Dark"
-          checked={dark}
-          onChange={(event): void => {
-            setDark(event.target.checked);
-            applyTheme('default', event.target.checked ? 'dark' : 'light');
-          }}
-        />
-      </div>
-      <div className="flex flex-col gap-8 p-6">
-        {SECTIONS.map((section) => (
-          <section key={section.title} className="flex flex-col gap-3">
-            <Heading level={2} variant="title">
-              {section.title}
-            </Heading>
-            <div className="flex flex-wrap items-start gap-4">
-              {section.states.map((state) => (
-                <figure
-                  key={state.id}
-                  data-gallery-state={state.id}
-                  className="m-0 flex flex-col gap-1.5"
-                >
-                  <figcaption className="text-xs fg-secondary">
-                    {state.title}
-                  </figcaption>
-                  <div
-                    data-gallery-capture
-                    className="relative overflow-hidden rounded-lg bg-base"
-                    style={{
-                      width:
-                        'width' in state && state.width !== undefined
-                          ? state.width
-                          : PANEL_WIDTH,
-                    }}
+    <Surface variant="well">
+      <div className="min-h-screen fg-primary">
+        <Surface variant="pane" boundary="bottom">
+          <div className="flex items-center gap-4 px-4 py-3">
+            <span className="text-s">Composer states</span>
+            <ChoiceField
+              label="Dark"
+              checked={dark}
+              onChange={(event): void => {
+                setDark(event.target.checked);
+                applyTheme('default', event.target.checked ? 'dark' : 'light');
+              }}
+            />
+          </div>
+        </Surface>
+        <div className="flex flex-col gap-8 p-6">
+          {SECTIONS.map((section) => (
+            <section key={section.title} className="flex flex-col gap-3">
+              <Heading level={2} variant="title">
+                {section.title}
+              </Heading>
+              <div className="flex flex-wrap items-start gap-4">
+                {section.states.map((state) => (
+                  <figure
+                    key={state.id}
+                    data-gallery-state={state.id}
+                    className="m-0 flex flex-col gap-1.5"
                   >
-                    {'readOnly' in state ? (
-                      <ReadOnlyComposer stale={state.readOnly === 'stale'} />
-                    ) : (
-                      <>
-                        {state.dragging ? <GalleryTranscript /> : null}
-                        <GalleryComposer spec={state} />
-                        {/* The whole chat dims while files are dragged. */}
-                        {state.dragging ? <ChatDropOverlay /> : null}
-                      </>
-                    )}
-                  </div>
-                </figure>
-              ))}
-            </div>
-          </section>
-        ))}
+                    <figcaption className="text-xs fg-secondary">
+                      {state.title}
+                    </figcaption>
+                    <div
+                      data-gallery-capture
+                      className="relative overflow-hidden rounded-lg bg-base"
+                      style={{
+                        width:
+                          'width' in state && state.width !== undefined
+                            ? state.width
+                            : PANEL_WIDTH,
+                      }}
+                    >
+                      {'readOnly' in state ? (
+                        <ReadOnlyComposer stale={state.readOnly === 'stale'} />
+                      ) : (
+                        <>
+                          {state.dragging ? <GalleryTranscript /> : null}
+                          <GalleryComposer spec={state} />
+                          {/* The whole chat dims while files are dragged. */}
+                          {state.dragging ? <ChatDropOverlay /> : null}
+                        </>
+                      )}
+                    </div>
+                  </figure>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
       </div>
-    </div>
+    </Surface>
   );
 }

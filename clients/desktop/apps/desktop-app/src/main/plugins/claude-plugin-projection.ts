@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { safeReadJson } from '../lib/fs-utils';
 import { isPathInside } from '../lib/path-safety';
-export { projectClaudePluginForLaunch } from '@canopy/desktop-shared/node/plugins/claude-mod-projection';
+export { projectClaudePluginForLaunch } from '@canopy/execution-engine/node/plugins/claude-mod-projection';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

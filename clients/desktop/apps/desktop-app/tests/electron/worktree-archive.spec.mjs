@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { CanopyAppDriver } from './canopyApp.mjs';
+import { CanopyAppDriver, revealRowActions } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { seedWorktreeChat } from './seeders/index.mjs';
@@ -126,8 +126,11 @@ test.describe('worktree archive', () => {
       const row = window.locator(
         `[data-testid="worktree-row"][data-branch="${WORKTREE_BRANCH}"]`,
       );
-      await row.hover();
-      await row.getByTestId('worktree-archive-button').click();
+      const archiveButton = await revealRowActions(
+        window,
+        row.getByTestId('worktree-archive-button'),
+      );
+      await archiveButton.click();
 
       // Cleanup has removed the live sidecar but is paused before metadata
       // teardown, so this renderer request is guaranteed to arrive while the
@@ -204,8 +207,11 @@ test.describe('worktree archive', () => {
       await window.evaluate(() =>
         window.__canopyProjectsTestApi.waitForHeldLoad(),
       );
-      await row.hover();
-      await row.getByTestId('worktree-archive-button').click();
+      const archiveButton = await revealRowActions(
+        window,
+        row.getByTestId('worktree-archive-button'),
+      );
+      await archiveButton.click();
       await expect(row).toContainText(/teardown/i);
       await expect(row).toHaveCount(0, { timeout: 30_000 });
       // The sidebar hid the row optimistically; main must agree for as long as
@@ -281,9 +287,10 @@ test.describe('worktree archive', () => {
         '[data-testid="worktree-row"][data-branch="demo-main"]',
       );
       await expect(row).toBeVisible();
-      await row.hover();
-
-      const archiveButton = row.getByTestId('worktree-archive-button');
+      const archiveButton = await revealRowActions(
+        window,
+        row.getByTestId('worktree-archive-button'),
+      );
       await expect(archiveButton).toBeVisible();
       // While removal cannot run (teardown in flight), the button is REMOVED
       // from the hover rail rather than rendered greyed out. Observe the DOM

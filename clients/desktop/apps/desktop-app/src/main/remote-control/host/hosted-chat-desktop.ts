@@ -21,6 +21,7 @@ import {
   remoteCreateTabModelRefusal,
   remoteCreateTabNoModelMessage,
   resolveRemoteCreateTabSeed,
+  sendReceiptFields,
 } from '../../portal/adapters/chat-adapter';
 import {
   createHostedChatDispatcher,
@@ -109,4 +110,8 @@ export const dispatchHostedChatCommandOnDesktop = createHostedChatDispatcher({
       executionOptions: { agentSent: request.attribution.sender },
       dispatch: (next, options) => dispatch(next, request.attribution, options),
     }),
+  sendDelivery: async (target, userMessageId) => {
+    const { delivery } = await sendReceiptFields(target, userMessageId);
+    return delivery === undefined ? {} : { delivery };
+  },
 });

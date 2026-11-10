@@ -39,7 +39,7 @@ import {
   chatSurfaceUsesGlobalPluginDefaults,
   hasAnyTombstones,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import { emptyPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { emptyPluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { applyNewChatPluginSelections } from '@/lib/chatPluginEditing';
 import {
   attachmentMetasFromPaths,

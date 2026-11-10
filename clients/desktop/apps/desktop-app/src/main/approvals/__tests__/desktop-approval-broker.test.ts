@@ -13,6 +13,8 @@ import { createPendingRequest } from '../../mcp/pending-requests';
 import { resetDesktopApprovalBrokerForTests } from '../approval-broker';
 import {
   hasPendingApprovalForSession,
+  hasPendingApprovalForChat,
+  subscribePendingApprovalChanges,
   pendingApprovalRequests,
   rejectAllApprovalsForSession,
   resolveApproval,
@@ -181,6 +183,32 @@ describe('desktop approvals through the core broker', () => {
     setDesktopChatWaitPresence(null);
     mockAppEvents.removeAllListeners();
     jest.useRealTimers();
+  });
+
+  // queueMicrotask projects the scoped wait only after broker registration.
+  it('projects broker approval changes into Tasks chat summaries', async () => {
+    const statuses: boolean[] = [];
+    const unsubscribe = subscribePendingApprovalChanges((identity) => {
+      expect(identity).toEqual(IDENTITY);
+      statuses.push(hasPendingApprovalForChat(identity));
+    });
+    const decision = open(() => mainWindow);
+    await flush();
+    expect(hasPendingApprovalForChat(IDENTITY)).toBe(true);
+    expect(hasPendingApprovalForChat({ ...IDENTITY, chatId: 'other' })).toBe(
+      false,
+    );
+    expect(statuses).toEqual([true]);
+    rejectAllApprovalsForSession(SESSION);
+    await expect(decision).rejects.toThrow();
+    await flush();
+    expect(statuses).toEqual([true, false]);
+    unsubscribe();
+    const next = open(() => mainWindow);
+    await flush();
+    rejectAllApprovalsForSession(SESSION);
+    await expect(next).rejects.toThrow();
+    expect(statuses).toEqual([true, false]);
   });
 
   it('a request delivered to one window is answered from the window that replaced it', async () => {

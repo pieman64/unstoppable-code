@@ -17,7 +17,7 @@ import {
   getShareablePluginRefKey,
   normalizeGitHubRepoRef,
   type ShareablePluginRef,
-} from '../../plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import {
   MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH,
   MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH,

@@ -6,7 +6,7 @@ import type {
   PluginInfo,
   PluginProvider,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { AgentProviderAuthStatus } from '@canopy/desktop-shared/types';
 import { getBrandEnv } from '@canopy/execution-engine/brand/env';

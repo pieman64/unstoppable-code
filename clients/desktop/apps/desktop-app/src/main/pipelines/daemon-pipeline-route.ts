@@ -23,14 +23,19 @@ import {
 import {
   classifyDaemonPipeline,
   DAEMON_PIPELINE_REFUSAL_REASONS,
+  type DaemonModelAliasResolution,
 } from '@canopy/desktop-shared/node/pipelines/daemon-eligibility';
+import { resolveExecutionModelAliasPreferences } from '@canopy/desktop-shared/node/pipelines/executor/model-alias-preferences';
 import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import {
+  getSecretValues,
+  resolvePipelineModelAliasTarget,
+} from '@canopy/desktop-shared/node/pipelines/executor/step-runner';
 import {
   DAEMON_PIPELINE_PLATFORMS,
   daemonPipelineProcessEnvironment,
   isDaemonPipelineLaunchInRoots,
 } from '@canopy/desktop-shared/node/pipelines/daemon-launch';
-import { getSecretValues } from '@canopy/desktop-shared/node/pipelines/executor/step-runner';
 import type {
   ExecutionOptions,
   PipelineStepNotification,
@@ -38,6 +43,7 @@ import type {
 import type {
   ExecutionState,
   Pipeline,
+  PipelineModelAliasPreference,
 } from '@canopy/execution-engine/types/pipeline';
 import {
   daemonUnreachableReason,
@@ -164,13 +170,17 @@ function definedEntries(
 function modelStepLaunch(
   options: ExecutionOptions,
   classification: { readonly modelHarnesses: readonly string[] },
+  agentAliases: boolean,
 ): Record<string, unknown> {
-  const codexEnvironment = classification.modelHarnesses.includes('codex')
-    ? resolveCodexRuntimeEnvironmentProfile({
-        runtime: 'pipeline',
-        ...(options.projectId ? { workspaceId: options.projectId } : {}),
-      })
-    : undefined;
+  // Each step resolves its Agent's base model again, as in process (CAN-5832),
+  // so a run with an Agent alias may reach Codex though it launched on Claude.
+  const codexEnvironment =
+    classification.modelHarnesses.includes('codex') || agentAliases
+      ? resolveCodexRuntimeEnvironmentProfile({
+          runtime: 'pipeline',
+          ...(options.projectId ? { workspaceId: options.projectId } : {}),
+        })
+      : undefined;
   return {
     ...(options.modelConfig !== undefined && {
       modelConfig: options.modelConfig,
@@ -190,12 +200,60 @@ function modelStepLaunch(
   };
 }
 
-export function buildDaemonPipelineLaunch(
+/** A run's model aliases as its executor will merge and resolve them (CAN-5832). */
+interface LaunchModelAliases {
+  readonly preferences?: Record<string, PipelineModelAliasPreference>;
+  /** Each alias a step could resolve; an alias that would fail is absent. */
+  readonly resolutions: Record<string, DaemonModelAliasResolution>;
+  /** Some alias names an Agent, which its steps resolve again. */
+  readonly agents: boolean;
+}
+
+async function resolveLaunchModelAliases(
   pipeline: Pipeline,
   options: ExecutionOptions,
-):
+): Promise<LaunchModelAliases | undefined> {
+  if (!pipeline.model_aliases?.length) return undefined;
+  let preferences: Record<string, PipelineModelAliasPreference> | undefined;
+  try {
+    preferences = resolveExecutionModelAliasPreferences(pipeline, options);
+  } catch {
+    // Unreadable preferences: no alias resolves, so its steps run in process.
+    return { resolutions: {}, agents: false };
+  }
+  const resolveAgent = options.runtime.resolvePipelineAgentModelAlias;
+  const scope = {
+    ...(options.projectId !== undefined && { projectId: options.projectId }),
+    ...(options.worktreeId !== undefined && {
+      worktreeId: options.worktreeId,
+    }),
+    ...(options.executionContext !== undefined && {
+      executionContext: options.executionContext,
+    }),
+  };
+  const resolutions: Record<string, DaemonModelAliasResolution> = {};
+  let agents = false;
+  for (const alias of pipeline.model_aliases) {
+    const target = await resolvePipelineModelAliasTarget(
+      alias,
+      preferences?.[alias.id],
+      (agentId) =>
+        resolveAgent ? resolveAgent(agentId, scope) : Promise.resolve(null),
+    ).catch(() => null);
+    if (!target) continue;
+    resolutions[alias.id] = { base: target.base, plugins: target.plugins };
+    agents ||= target.agent;
+  }
+  return { ...(preferences && { preferences }), resolutions, agents };
+}
+
+export async function buildDaemonPipelineLaunch(
+  pipeline: Pipeline,
+  options: ExecutionOptions,
+): Promise<
   | { readonly ok: true; readonly launch: DaemonPipelineLaunch }
-  | { readonly ok: false; readonly reason: DaemonPipelineIneligibleReason } {
+  | { readonly ok: false; readonly reason: DaemonPipelineIneligibleReason }
+> {
   // A renderer start leaves its source unset; agents, hooks, automations and
   // Portal name theirs. Its scope is derived as dispatch derives runScope.
   if (
@@ -233,11 +291,15 @@ export function buildDaemonPipelineLaunch(
   // Codex model steps only when this app owns it and answers their owner
   // requests (CAN-5095).
   const ownerPossible = isDaemonPipelineOwnerPossible();
+  const aliases = ownerPossible
+    ? await resolveLaunchModelAliases(pipeline, options)
+    : undefined;
   const classification = classifyDaemonPipeline(
     pipeline,
     {
       runtime: options.runtime,
       repoPath: options.repoPath ?? options.cwd,
+      ...(aliases && { modelAliases: aliases.resolutions }),
     },
     {
       hostSteps:
@@ -252,13 +314,12 @@ export function buildDaemonPipelineLaunch(
     return { ok: false, reason: classification.reason };
   const hasModelSteps = classification.modelSteps > 0;
   // D6: these resolve in Electron main, and the terminal worker runs there.
+  // Model alias preferences reach the host in the launch (CAN-5832).
   if (hasModelSteps) {
     if (options.agentTerminalMode === true)
       return { ok: false, reason: 'terminal_mode' };
     if (Object.keys(options.pluginCollectionPreferences ?? {}).length > 0)
       return { ok: false, reason: 'plugin_collections' };
-    if (Object.keys(options.modelAliasPreferences ?? {}).length > 0)
-      return { ok: false, reason: 'model_alias' };
   }
   const inputs: Record<string, string> = {};
   for (const [name, value] of Object.entries(options.inputs ?? {})) {
@@ -296,7 +357,15 @@ export function buildDaemonPipelineLaunch(
     ...(((classification.hostSteps ?? 0) > 0 || hasModelSteps) && {
       ownerBound: true,
     }),
-    ...(hasModelSteps && modelStepLaunch(options, classification)),
+    ...(hasModelSteps &&
+      modelStepLaunch(options, classification, aliases?.agents === true)),
+    ...(hasModelSteps &&
+      aliases && {
+        ...(aliases.preferences && {
+          modelAliasPreferences: aliases.preferences,
+        }),
+        modelAliasResolutions: aliases.resolutions,
+      }),
   };
   // Only defined members cross; JSON drops nothing else the schema admits.
   const defined: Record<string, unknown> = {};

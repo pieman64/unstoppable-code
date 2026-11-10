@@ -84,6 +84,12 @@ export class InternalRootMigrationRefused extends Error {
     this.name = 'InternalRootMigrationRefused';
   }
 }
+
+export function internalRootDestinationExistsRecovery(
+  destination: string,
+): string {
+  return `An independent destination already exists at ${JSON.stringify(destination)}. It may contain data created after an internal-478 launch. Check its contents, then manually move or rename it to an unused location; never delete it. Re-run --apply only when the destination is absent. See docs/internal-root-migration.md#unstoppable-code-history-stored-in-canopy for the manual step. No automatic merge or overwrite is supported.`;
+}
 export interface InternalRootRepairContext {
   readonly identity: InternalRootIdentity;
   readonly transactionId: string;
@@ -121,6 +127,8 @@ export type InternalRootRepairResult =
 export interface InternalRootRepairs {
   /** Live composition freezes owner/Git evidence only after original-root W5 recovery. */
   readonly settleSourceFirst?: boolean;
+  /** Read-only inventory qualification; never persists a plan or repairs state. */
+  inspect?(context: InternalRootRepairContext): Promise<readonly string[]>;
   prepare(context: InternalRootRepairContext): Promise<
     | {
         readonly kind: 'ready';
@@ -158,6 +166,7 @@ export const unavailableInternalRootRepairs: InternalRootRepairs = {
     }),
 };
 export interface InternalRootMigrationWorker {
+  diagnose?(source: string): Promise<readonly string[]>;
   inventory(
     identity: InternalRootIdentity,
     destination?: boolean,
@@ -208,6 +217,10 @@ export interface InternalRootMigrationWorker {
 export type InternalRootMigrationResult =
   | {
       readonly kind: 'inventory';
+      readonly preflight: {
+        readonly kind: 'ready' | 'refused' | 'unavailable';
+        readonly blockers: readonly string[];
+      };
       readonly identity: InternalRootIdentity;
       readonly inventory: InternalRootInventory;
       readonly journal: InternalRootJournal | null;
@@ -311,8 +324,65 @@ export async function migrateInternalRoot(
         recovery: error.recovery,
       };
     }
+    const blockers: string[] = [];
+    if (!inventory.sourceIdentity) blockers.push('Source root is missing');
+    if (inventory.stableOwned)
+      blockers.push('Source root belongs to a stable installation');
+    if (identity.brandId === 'unstoppable-code' && inventory.nestedSecure)
+      blockers.push('Nested secure state cannot be transferred');
+    if (identity.brandId === 'unstoppable-code' && !options.declareInternal)
+      blockers.push('Apply requires --declare-internal for this brand');
+    if (
+      prior?.phase === 'complete' &&
+      prior.secureRelocation === 'complete' &&
+      !options.rebuild
+    )
+      blockers.push(
+        'Migration is already complete; rebuilding requires --apply --rebuild',
+      );
+    if (!prior && inventory.destinationIdentity)
+      blockers.push(
+        internalRootDestinationExistsRecovery(identity.destination),
+      );
+    if (coldProof.kind === 'refused') blockers.push(coldProof.recovery);
+    for (const check of [
+      worker.diagnose
+        ? worker.diagnose.bind(worker, identity.source)
+        : undefined,
+      repairs.inspect
+        ? repairs.inspect.bind(repairs, {
+            identity,
+            transactionId: prior?.transactionId ?? 'read-only-inventory',
+            inventory,
+            workingRoot: identity.source,
+            externalFiles: prior?.externalFiles ?? [],
+          })
+        : undefined,
+    ]) {
+      if (!check) continue;
+      try {
+        blockers.push(...(await check()));
+      } catch (error) {
+        blockers.push(
+          error instanceof Error ? error.message : 'Inventory check failed',
+        );
+      }
+    }
     return {
       kind: 'inventory',
+      preflight: {
+        kind: blockers.length
+          ? 'refused'
+          : worker.diagnose && repairs.inspect
+            ? 'ready'
+            : 'unavailable',
+        blockers: blockers
+          .slice(0, 60)
+          .map((value) => value.slice(0, 1000))
+          .concat(
+            blockers.length > 60 ? [`… ${blockers.length - 60} more`] : [],
+          ),
+      },
       identity,
       inventory,
       journal: prior,
@@ -341,7 +411,7 @@ export async function migrateInternalRoot(
   if (!prior && inventory.destinationIdentity)
     refuse(
       'destination-exists',
-      'No merge or overwrite is supported. Preserve both installations.',
+      internalRootDestinationExistsRecovery(identity.destination),
     );
   if (
     prior?.phase === 'complete' &&
@@ -482,7 +552,7 @@ export async function migrateInternalRoot(
       if (current.destinationIdentity)
         refuse(
           'destination-exists',
-          'Destination must be absent before source recovery.',
+          internalRootDestinationExistsRecovery(identity.destination),
         );
       await worker.recoverW5(journal);
       if (repairs.settleSourceFirst) {

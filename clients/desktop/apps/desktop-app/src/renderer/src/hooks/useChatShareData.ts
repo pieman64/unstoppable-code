@@ -10,7 +10,7 @@ import {
 } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type { InvocableInventoryEntry } from '@canopy/desktop-shared/types';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
-import type { MarketplaceInfo } from '@canopy/desktop-shared/types/plugins';
+import type { MarketplaceInfo } from '@canopy/execution-engine/types/plugins';
 import type { SharedPluginSummary } from '@canopy/protocol/plugins';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 import {

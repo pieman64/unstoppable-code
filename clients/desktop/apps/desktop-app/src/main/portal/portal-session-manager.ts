@@ -71,6 +71,11 @@ import {
   PORTAL_CAPABILITY_CHAT_CREATE_TAB_SETTINGS,
   PORTAL_CAPABILITY_CHAT_PLAN_REVIEW,
   PORTAL_CAPABILITY_STANDALONE_CHAT_CREATE,
+  PORTAL_CAPABILITY_WORKTREE_CREATE_FROM,
+  PORTAL_CAPABILITY_WORK_ENTRY_COMMANDS,
+  PORTAL_CAPABILITY_SIDEBAR_ITEM_GROUP_NAMES,
+  PORTAL_CAPABILITY_TASK_REFS,
+  PORTAL_CAPABILITY_PROJECT_REPOSITORY_IDENTITY,
   PORTAL_CAPABILITY_PLUGIN_MUTATIONS,
   PORTAL_CAPABILITY_PLUGIN_SHARE_PREFLIGHT,
   PORTAL_CAPABILITY_INSTALLED_ITEMS,
@@ -265,6 +270,15 @@ const PORTAL_SESSION_CAPABILITIES = {
   [PORTAL_CAPABILITY_TRANSCRIPT_READS_V2]: true,
   // Announced with `portal.standalone_chat.create` (standalone-chat-adapter).
   [PORTAL_CAPABILITY_STANDALONE_CHAT_CREATE]: true,
+  // Task commands for the Tasks tools: create from a branch, base or pull
+  // request with a group and first chat (worktree-adapter); Work Entry
+  // update/delete and cowork create extensions (work-entry-adapter,
+  // standalone-chat-adapter); groups by name; and the task ref list.
+  [PORTAL_CAPABILITY_WORKTREE_CREATE_FROM]: true,
+  [PORTAL_CAPABILITY_WORK_ENTRY_COMMANDS]: true,
+  [PORTAL_CAPABILITY_SIDEBAR_ITEM_GROUP_NAMES]: true,
+  [PORTAL_CAPABILITY_TASK_REFS]: true,
+  [PORTAL_CAPABILITY_PROJECT_REPOSITORY_IDENTITY]: true,
   // `portal.chat.create_tab` applies a remote New Task's model, provider and
   // plugins, and the canonical send keeps Auto (chat-adapter).
   [PORTAL_CAPABILITY_CHAT_CREATE_TAB_SETTINGS]: true,

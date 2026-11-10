@@ -59,21 +59,6 @@ const STEP_STATES: Readonly<Record<ProgressStepStatus, StatusGlyphState>> = {
   pending: 'queued',
 };
 
-function StepIcon({ status }: { status: ProgressStepStatus }): JSX.Element {
-  return (
-    <span
-      key={status}
-      className={
-        status === 'completed'
-          ? 'inline-flex animate-scale-in motion-reduce:animate-none'
-          : 'inline-flex'
-      }
-    >
-      <StatusGlyph state={STEP_STATES[status]} size={12} />
-    </span>
-  );
-}
-
 function stepLabelClass(status: ProgressStepStatus): string {
   if (status === 'error') return OPERATIONAL_STATUS_COLORS.failed.foreground;
   if (status === 'active') return 'fg-primary/80';
@@ -120,7 +105,16 @@ function ChecklistSteps({
                   : '-mt-1 flex-shrink-0'
               }
             >
-              <StepIcon status={step.status} />
+              <span
+                key={step.status}
+                className={
+                  step.status === 'completed'
+                    ? 'inline-flex animate-scale-in motion-reduce:animate-none'
+                    : 'inline-flex'
+                }
+              >
+                <StatusGlyph state={STEP_STATES[step.status]} size={12} />
+              </span>
             </span>
             <span
               className={`${stepLabelClass(step.status)}${step.privateLabel ? ` ${REPLAY_BLOCK_CLASS}` : ''}`}
@@ -161,25 +155,27 @@ export function ProgressChecklist({
   size = 'compact',
 }: ProgressChecklistProps): JSX.Element {
   return (
-    <div className={className}>
+    <Stack gap="inline" className={className}>
       {badge && (
-        <div className="mb-2 flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <Badge tone={BADGE_TONES[badge.tone]}>{badge.label}</Badge>
         </div>
       )}
-      <ChecklistSteps steps={steps} size={size} />
-      {/* The error is raw command or provider output (paths, remotes), and
-          this checklist also renders in tooltips portaled to the body, out
-          of every surface block, so it carries its own replay block. */}
-      {error && (
-        <div className={`${REPLAY_BLOCK_CLASS} mt-1 max-h-32 overflow-auto`}>
-          <p
-            className={`whitespace-pre-wrap break-words text-2xs ${OPERATIONAL_STATUS_COLORS.failed.foregroundMuted}`}
-          >
-            {error}
-          </p>
-        </div>
-      )}
-    </div>
+      <Stack gap="tight">
+        <ChecklistSteps steps={steps} size={size} />
+        {/* The error is raw command or provider output (paths, remotes), and
+            this checklist also renders in tooltips portaled to the body, out
+            of every surface block, so it carries its own replay block. */}
+        {error && (
+          <div className={`${REPLAY_BLOCK_CLASS} max-h-32 overflow-auto`}>
+            <p
+              className={`whitespace-pre-wrap break-words text-2xs ${OPERATIONAL_STATUS_COLORS.failed.foregroundMuted}`}
+            >
+              {error}
+            </p>
+          </div>
+        )}
+      </Stack>
+    </Stack>
   );
 }

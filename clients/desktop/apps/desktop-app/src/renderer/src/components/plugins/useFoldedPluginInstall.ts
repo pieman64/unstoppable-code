@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CURATED_PLUGIN_MARKETPLACE_ID } from '@canopy/desktop-shared/types/plugins';
+import { CURATED_PLUGIN_MARKETPLACE_ID } from '@canopy/execution-engine/types/plugins';
 import type { UnifiedEntryFoldedPlugin } from '@canopy/ui-shared';
 import { installRecommendedPlugin } from '@/lib/plugins/installRecommendedPlugin';
 import { curatedPluginKey } from '@/lib/onboarding/curatedOnboardingPlugins';

@@ -1,14 +1,9 @@
 import type { JSX } from 'react';
-import {
-  ClaudeLogo,
-  CodexLogo,
-  CursorLogo,
-  OllamaLogo,
-  PlanModeIcon,
-} from '../icons';
-import { GitHubIcon } from '../icons/AppIcons';
+import { PlanModeIcon } from '../icons';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { ModelProviderIcon } from '../icons/ModelProviderIcon';
 import { RichHoverCard } from './RichHoverTooltip';
+import { Stack } from './Stack';
 
 export type ChatPreviewProviderType =
   | 'claude'
@@ -49,6 +44,8 @@ export interface ChatPreviewPopoverProps {
   anchorRect: DOMRect;
   rows: ChatPreviewRow[];
   heading: string;
+  /** Lets the badge that opened it name it in `aria-describedby`. */
+  id?: string;
 }
 
 /**
@@ -61,26 +58,6 @@ export const BADGE_HOVER_CARD_SURFACE = {
   surfacePadding: 'card',
 } as const;
 
-interface ChatPreviewProviderIconProps {
-  providerType: ChatPreviewProviderType | undefined;
-}
-
-function ChatPreviewProviderIcon({
-  providerType,
-}: ChatPreviewProviderIconProps): JSX.Element {
-  if (providerType === 'copilot')
-    return <GitHubIcon size={12} className="fg-secondary" />;
-  if (providerType === 'cursor')
-    return <CursorLogo width={12} height={12} className="fg-secondary" />;
-  if (providerType === 'codex') {
-    return <CodexLogo width={12} height={12} className="fg-secondary" />;
-  }
-  if (providerType === 'ollama') {
-    return <OllamaLogo width={12} height={12} className="fg-secondary" />;
-  }
-  return <ClaudeLogo width={12} height={12} className="fg-secondary" />;
-}
-
 function formatScheduledDateTime(value: string): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return value;
@@ -91,6 +68,7 @@ export function ChatPreviewPopover({
   anchorRect,
   rows,
   heading,
+  id,
 }: ChatPreviewPopoverProps): JSX.Element | null {
   // Portaled to the body, out of any parent's replay block. Chat titles are
   // recorded; each message preview is conversation content and carries its
@@ -98,52 +76,60 @@ export function ChatPreviewPopover({
   return (
     <RichHoverCard
       anchorRect={anchorRect}
+      id={id}
+      role="tooltip"
       {...BADGE_HOVER_CARD_SURFACE}
       surfaceClassName="min-w-50 max-w-75"
     >
-      <div className="mb-1 text-3xs font-semibold fg-secondary">{heading}</div>
-      {rows.length === 0 ? (
-        <div className="text-xs fg-secondary">No chat details</div>
-      ) : (
-        <div className="flex flex-col gap-1.5">
-          {rows.map((row) => (
-            <div key={row.chatId} className="min-w-0">
-              <div className="flex items-center gap-1.5 text-xs">
-                <span className="inline-flex shrink-0 items-center">
-                  {row.isPlan ? (
-                    <PlanModeIcon size="sm" className="fg-secondary" />
-                  ) : (
-                    <ChatPreviewProviderIcon providerType={row.providerType} />
-                  )}
-                </span>
-                <span
-                  className={`${REPLAY_MASK_CLASS} truncate font-medium fg-primary`}
-                >
-                  {row.title}
-                </span>
-              </div>
-              <div
-                className={`${REPLAY_BLOCK_CLASS} truncate pl-4.5 text-3xs fg-secondary`}
-              >
-                {row.markedUnread
-                  ? CHAT_PREVIEW_MARKED_UNREAD_COPY
-                  : (row.preview ?? 'No response yet')}
-              </div>
-              {row.scheduleLabel ? (
-                <div className="truncate pl-4.5 text-3xs fg-secondary">
-                  {row.scheduleLabel}
+      <Stack gap="tight">
+        <div className="text-3xs font-semibold fg-secondary">{heading}</div>
+        {rows.length === 0 ? (
+          <div className="text-xs fg-secondary">No chat details</div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {rows.map((row) => (
+              <div key={row.chatId} className="min-w-0">
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="inline-flex shrink-0 items-center">
+                    {row.isPlan ? (
+                      <PlanModeIcon size="sm" className="fg-secondary" />
+                    ) : (
+                      <ModelProviderIcon
+                        provider={row.providerType ?? 'claude'}
+                        size="xs"
+                        tone="secondary"
+                      />
+                    )}
+                  </span>
+                  <span
+                    className={`${REPLAY_MASK_CLASS} truncate font-medium fg-primary`}
+                  >
+                    {row.title}
+                  </span>
                 </div>
-              ) : (
-                row.scheduledAt && (
+                <div
+                  className={`${REPLAY_BLOCK_CLASS} truncate pl-4.5 text-3xs fg-secondary`}
+                >
+                  {row.markedUnread
+                    ? CHAT_PREVIEW_MARKED_UNREAD_COPY
+                    : (row.preview ?? 'No response yet')}
+                </div>
+                {row.scheduleLabel ? (
                   <div className="truncate pl-4.5 text-3xs fg-secondary">
-                    Scheduled for {formatScheduledDateTime(row.scheduledAt)}
+                    {row.scheduleLabel}
                   </div>
-                )
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+                ) : (
+                  row.scheduledAt && (
+                    <div className="truncate pl-4.5 text-3xs fg-secondary">
+                      Scheduled for {formatScheduledDateTime(row.scheduledAt)}
+                    </div>
+                  )
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Stack>
     </RichHoverCard>
   );
 }

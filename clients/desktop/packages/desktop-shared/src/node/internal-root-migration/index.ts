@@ -36,6 +36,7 @@ import {
   assertInternalRootExternalPreimages,
   restoreInternalRootExternal,
   readInternalRootJournal,
+  saveInternalRootJournal,
   buildInternalRoot,
   publishInternalRoot,
   sealInternalRoot,
@@ -45,7 +46,6 @@ import {
   validateInternalRootStaging,
   exposeInternalRootStaging,
   validateExternalRootFiles,
-  durableJson,
   privateDirectory,
   statIfPresent,
   flush,
@@ -115,10 +115,16 @@ export function assertInternalRootColdProcesses(
         ),
     );
   });
+  const crashReporters = active.filter(
+    (row) => basename(row.executable) === 'chrome_crashpad_handler',
+  );
+  const crashRecovery = crashReporters.length
+    ? ` Crash reporter remains (PIDs ${crashReporters.map((row) => row.pid).join(', ')}). After quitting the app, run: pkill -f '[c]hrome_crashpad_handler'`
+    : '';
   if (active.length)
     throw new InternalRootMigrationRefused(
       'writer-active',
-      `Product executables remain (PIDs ${active.map((row) => row.pid).join(', ')}). Stop the app, CLI, daemon and helpers before retrying.`,
+      `Product executables remain (PIDs ${active.map((row) => row.pid).join(', ')}). Stop the app, CLI, daemon and helpers before retrying.${crashRecovery}`,
     );
 }
 
@@ -399,7 +405,7 @@ async function proveNativeCold(
 }
 
 /** SQLite's OS lock is outside both resolver candidates and released on crash. */
-async function coordinate(
+export async function coordinateInternalRootMigration(
   identity: InternalRootIdentity,
   host: InternalRootFilesystemHost,
 ): Promise<() => Promise<void>> {
@@ -468,6 +474,7 @@ async function coordinate(
 }
 
 export function createInternalRootMigrationWorker(options: {
+  readonly diagnose?: (source: string) => Promise<readonly string[]>;
   /** Trusted offline host only; required for Windows custody and Linux publication. */
   readonly ownedChildPath?: string;
   readonly filesystemHost?: InternalRootFilesystemHost;
@@ -496,13 +503,14 @@ export function createInternalRootMigrationWorker(options: {
       : undefined;
   const coordinationTokens = new Map<string, symbol>();
   const worker: InternalRootMigrationWorker = {
+    diagnose: options.diagnose,
     inventory: (identity, destination) =>
       inspectInternalRoot(identity, destination, host),
     readJournal: (identity) => readInternalRootJournal(identity, host),
     coordinate: async (
       identity,
     ): ReturnType<InternalRootMigrationWorker['coordinate']> => {
-      const release = await coordinate(identity, host);
+      const release = await coordinateInternalRootMigration(identity, host);
       const token = Symbol('internal-root-migration');
       coordinationTokens.set(identity.coordination, token);
       return async (): Promise<void> => {
@@ -511,19 +519,7 @@ export function createInternalRootMigrationWorker(options: {
         await release();
       };
     },
-    saveJournal: async (journal): Promise<void> => {
-      if (Buffer.byteLength(JSON.stringify(journal)) + 1 > 16 * 1024 * 1024)
-        throw new InternalRootMigrationRefused(
-          'unsupported-layout',
-          'Frozen repair evidence exceeds the journal limit. Preserve both roots and the existing journal for offline diagnosis.',
-        );
-      await privateDirectory(journal.identity.coordination, host);
-      await durableJson(
-        join(journal.identity.coordination, 'journal.json'),
-        journal,
-        host,
-      );
-    },
+    saveJournal: (journal) => saveInternalRootJournal(journal, host),
     proveCold:
       options.proveCold ??
       ((identity, externalFiles = []) =>

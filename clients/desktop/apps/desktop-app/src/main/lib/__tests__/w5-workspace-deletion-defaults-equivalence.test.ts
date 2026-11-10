@@ -120,7 +120,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import { W5CommitLog } from '@canopy/desktop-shared/node/w5-commit-log';
 import { W5CommitLogHost } from '../../w5-commit-log/commit-log-host';

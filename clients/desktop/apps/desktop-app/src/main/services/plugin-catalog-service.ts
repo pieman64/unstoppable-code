@@ -85,7 +85,7 @@ import type {
   PluginInfo,
   PluginProvider,
   PluginProviderFacet,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type {
   PortalMarketplaceMutationResult,
   PortalMarketplaceRemoveResult,
@@ -100,7 +100,7 @@ import {
 } from '@canopy/protocol/collections';
 import { pluginDisplayName } from '@canopy/ui-shared/lib';
 import { parseGitHubRepo } from '@canopy/desktop-shared/lib/github-repo';
-import { computePluginShareableRef } from '@canopy/desktop-shared/plugin-refs';
+import { computePluginShareableRef } from '@canopy/execution-engine/plugin-refs';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { assertSafeExternalPluginCloneUrl } from '../plugins/external-plugin-url';
 import type {

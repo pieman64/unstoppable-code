@@ -3,7 +3,7 @@ import {
   clampThinkingLevelToDeclared,
   type ThinkingLevel,
 } from '@canopy/protocol/thinking';
-import { runRtkRewrite } from '../rtk/rewrite';
+import { runRtkRewrite } from '@canopy/execution-engine/node/rtk/rewrite';
 import {
   getBundledRtkBinaryPath,
   getEnhancedEnv,

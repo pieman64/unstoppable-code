@@ -1346,7 +1346,7 @@ async function restoreGuestSessionAfterDisconnect(): Promise<CanopyCloudAccountP
   }
 }
 
-async function disconnectCanopyCloudAccount(): Promise<CanopyCloudAccountPublicState> {
+export async function disconnectCanopyCloudAccount(): Promise<CanopyCloudAccountPublicState> {
   // Guest credentials are device-scoped and cannot be re-minted in the same
   // state once destroyed, so a disconnect must never delete one. Return the
   // existing guest state unchanged (no-op) instead of clearing + re-minting.
@@ -1893,6 +1893,324 @@ function withUserSuppliedCredentialFlag(
     : status;
 }
 
+/** The Settings API key save, shared with App Advisor (CAN-6008). */
+export async function saveCanopyCloudApiKeyForWindow(request: {
+  apiKey: string;
+}): Promise<{
+  status: CanopyServerStatus;
+  account: CanopyCloudAccountPublicState;
+}> {
+  const previousRead = await readCanopyCloudAccountWithStatus();
+  if (previousRead.status !== 'ok') {
+    if (!previousRead.secureStorageFailure) throw previousRead.error;
+    return {
+      status: failedCanopyCloudStatus(
+        CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
+        previousRead.secureStorageFailure,
+      ),
+      account: toPublicCanopyCloudAccountState(
+        null,
+        previousRead.status,
+        previousRead.secureStorageFailure,
+      ),
+    };
+  }
+  const previousAccount = previousRead.entry;
+  const previousPublic = toPublicCanopyCloudAccountState(previousAccount);
+  const apiKey = String(request?.apiKey ?? '').trim();
+  if (!apiKey) {
+    return {
+      status: failedCanopyCloudStatus(
+        `${CLOUD_DISPLAY_NAME} API key is required.`,
+      ),
+      account: previousPublic,
+    };
+  }
+
+  if (!previousPublic.storageAvailable) {
+    let secureStorageFailure: SecureStorageFailure | null = null;
+    try {
+      assertCanopyCloudStorageAvailable();
+    } catch (error) {
+      secureStorageFailure = getSecureStorageFailure(error);
+      if (!secureStorageFailure) throw error;
+    }
+    return {
+      status: failedCanopyCloudStatus(
+        CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
+        secureStorageFailure ?? undefined,
+      ),
+      account: {
+        ...previousPublic,
+        ...(secureStorageFailure ? { secureStorageFailure } : {}),
+      },
+    };
+  }
+
+  if (isGuestAccount(previousAccount)) {
+    return {
+      status: failedCanopyCloudStatus(GUEST_MANUAL_KEY_REPLACEMENT_ERROR),
+      account: previousPublic,
+    };
+  }
+
+  const status = await probeCanopyCloud(apiKey);
+  if (
+    !status.authenticated ||
+    !status.account ||
+    status.missingCapabilities.length > 0
+  ) {
+    return {
+      status,
+      account: previousPublic,
+    };
+  }
+
+  const now = new Date().toISOString();
+  const nextAccount: CanopyCloudAccountEntry = {
+    apiKey,
+    authMode: 'api_key',
+    credentialSource: 'manual',
+    capabilities: status.capabilities,
+    ...(status.memorySearchOrganizationExternalId
+      ? {
+          memorySearchOrganizationExternalId:
+            status.memorySearchOrganizationExternalId,
+        }
+      : {}),
+    ...(status.memorySearchOrganizationExternalIds
+      ? {
+          memorySearchOrganizationExternalIds:
+            status.memorySearchOrganizationExternalIds,
+        }
+      : {}),
+    ...(status.personalOrganizationId
+      ? { personalOrganizationId: status.personalOrganizationId }
+      : {}),
+    ...personalGatewayAccountFields(status),
+    ...(status.personalModelGatewayEnforcementUnavailable
+      ? { personalModelGatewayEnforcementUnavailable: true }
+      : {}),
+    account: status.account,
+    organizations: status.organizations,
+    teams: status.teams,
+    ...(status.enforcedSettings
+      ? { enforcedSettings: status.enforcedSettings }
+      : {}),
+    telemetryEnforcementUnavailable:
+      status.telemetryEnforcementUnavailable === true,
+    modelGatewayEnforcementUnavailable:
+      status.modelGatewayEnforcementUnavailable === true,
+    ...(status.orgBillingStates
+      ? { orgBillingStates: status.orgBillingStates }
+      : {}),
+    createdAt: previousAccount?.createdAt ?? now,
+    updatedAt: now,
+  };
+  let saveResult: Awaited<ReturnType<typeof saveManualCanopyCloudAccount>>;
+  try {
+    saveResult = await saveManualCanopyCloudAccount(
+      nextAccount,
+      previousAccount,
+      (persist) =>
+        getSharedContainerReconciliationService().withReplicaPurgeFence(
+          persist,
+        ),
+      status.organizationsRefreshed
+        ? organizationSnapshotTransition(
+            status.organizations.map((organization) => organization.id),
+            status.personalOrganizationId,
+          )
+        : undefined,
+    );
+  } catch (error) {
+    const secureStorageFailure = getSecureStorageFailure(error);
+    if (!secureStorageFailure) throw error;
+    return {
+      status: failedCanopyCloudStatus(
+        CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
+        secureStorageFailure ?? undefined,
+      ),
+      account: {
+        ...previousPublic,
+        storageAvailable: getSecretStoragePolicy().isWriteAvailable(),
+        secureStorageFailure,
+      },
+    };
+  }
+  if (saveResult.status === 'guest-protected') {
+    return {
+      status: failedCanopyCloudStatus(GUEST_MANUAL_KEY_REPLACEMENT_ERROR),
+      account: toPublicCanopyCloudAccountState(saveResult.account),
+    };
+  }
+  if (saveResult.status === 'superseded') {
+    return {
+      status: failedCanopyCloudStatus(SUPERSEDED_MANUAL_KEY_SAVE_ERROR),
+      account: toPublicCanopyCloudAccountState(saveResult.account),
+    };
+  }
+  const savedEntry = saveResult.entry;
+  invalidateMobileActivationCache();
+  await bestEffortRevokeOAuthDesktopKey(
+    saveResult.previousAccount,
+    'manual save',
+  );
+  refreshFeatureFlagContextAfterSettingsChange(`${CLOUD_DISPLAY_NAME} save`);
+
+  const publicAccount = toPublicCanopyCloudAccountState(savedEntry);
+  await applyEnforcedSettings(publicAccount);
+
+  return {
+    status,
+    account: publicAccount,
+  };
+}
+
+/** The Settings browser sign-in, shared with App Advisor (CAN-6008). */
+export async function startCanopyCloudOAuthLoginForWindow(): Promise<{
+  status: CanopyServerStatus;
+  account: CanopyCloudAccountPublicState;
+  guestDataMerged?: boolean;
+}> {
+  const preparation = new AbortController();
+  pendingOAuthPreparation?.abort();
+  pendingOAuthPreparation = preparation;
+  const { signal } = preparation;
+  let releaseGuestMints: (() => void) | undefined;
+  try {
+    const guestAuth = await awaitOAuthPreparation(
+      import('../canopy-cloud/guest-auth'),
+      signal,
+    );
+    signal.throwIfAborted();
+    const guestMintBarrier = guestAuth.pauseGuestMintsForRealSignIn();
+    releaseGuestMints = guestMintBarrier.release;
+    // A guest request may have started before this OAuth attempt. Let it
+    // settle before taking the account snapshot so its identity can ride
+    // the OAuth link ticket. Mints started after the barrier wait for OAuth
+    // and then reuse the resulting real account.
+    try {
+      await awaitOAuthPreparation(
+        Promise.resolve(guestMintBarrier.activeGuestMint),
+        signal,
+      );
+    } catch (error) {
+      signal.throwIfAborted();
+      process.stderr.write(
+        `[settings] Failed to settle in-flight ${CLOUD_DISPLAY_NAME} guest mint before OAuth (continuing): ${formatErrorMessage(error)}\n`,
+      );
+    }
+
+    signal.throwIfAborted();
+    const previousRead = await awaitOAuthPreparation(
+      readCanopyCloudAccountWithStatus(),
+      signal,
+    );
+    if (previousRead.status !== 'ok') {
+      if (!previousRead.secureStorageFailure) throw previousRead.error;
+      return {
+        status: failedCanopyCloudStatus(
+          CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
+          previousRead.secureStorageFailure,
+        ),
+        account: toPublicCanopyCloudAccountState(
+          null,
+          previousRead.status,
+          previousRead.secureStorageFailure,
+        ),
+      };
+    }
+    const previousAccount = previousRead.entry;
+    signal.throwIfAborted();
+    assertCanopyCloudStorageAvailable();
+    // CAN-934: when signing in while holding a guest credential, mint a
+    // single-use link ticket so the token exchange re-owns the guest's data
+    // onto the real user. Best-effort — a failure here fails open (sign-in
+    // proceeds with no merge).
+    let guestLinkTicket: string | null = null;
+    if (isGuestAccount(previousAccount)) {
+      try {
+        guestLinkTicket = await awaitOAuthPreparation(
+          guestAuth.requestGuestLinkTicket(),
+          signal,
+        );
+      } catch (error) {
+        signal.throwIfAborted();
+        process.stderr.write(
+          `[settings] Failed to mint ${CLOUD_DISPLAY_NAME} guest link ticket (continuing without merge): ${formatErrorMessage(error)}\n`,
+        );
+      }
+    }
+    const { startCanopyCloudOAuthLogin } = await awaitOAuthPreparation(
+      import('../canopy-cloud/oauth-login'),
+      signal,
+    );
+    signal.throwIfAborted();
+    // Transfer cancellation ownership to the loopback flow synchronously.
+    if (pendingOAuthPreparation === preparation) {
+      pendingOAuthPreparation = null;
+    }
+    const response = await startCanopyCloudOAuthLogin({ guestLinkTicket });
+    invalidateMobileActivationCache();
+    if (response.guestDataMerged === true) {
+      // The server merged the guest into this account, its mirrored
+      // Ledger scopes included, so the guest's local scopes follow (LD02).
+      // Only this launch knows the guest's ID: record the rebind durably
+      // before reporting the sign-in. It is applied in the background.
+      await rebindLedgerGuestScopes(
+        previousAccount?.account?.id ?? '',
+        response.account.account?.id ?? '',
+      );
+    }
+    // OAuth already persisted and applied the authoritative token snapshot.
+    // A second account probe only delays the desktop after confirmation.
+    // Revocation targets the captured old key and cannot alter the new one.
+    void bestEffortRevokeOAuthDesktopKey(previousAccount, 'OAuth login');
+    refreshFeatureFlagContextAfterSettingsChange(
+      `${CLOUD_DISPLAY_NAME} OAuth login`,
+    );
+    return response;
+  } catch (error) {
+    const secureStorageFailure = getSecureStorageFailure(error);
+    if (!secureStorageFailure) throw error;
+    const account = await loadCanopyCloudAccountPublicState();
+    return {
+      status: failedCanopyCloudStatus(
+        CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
+        secureStorageFailure,
+      ),
+      account: { ...account, secureStorageFailure },
+    };
+  } finally {
+    if (pendingOAuthPreparation === preparation) {
+      pendingOAuthPreparation = null;
+    }
+    releaseGuestMints?.();
+  }
+}
+
+/** Cancels the pending browser sign-in, shared with App Advisor (CAN-6008). */
+export async function cancelCanopyCloudOAuthLoginForWindow(): Promise<void> {
+  pendingOAuthPreparation?.abort();
+  const { cancelCanopyCloudOAuthLogin } =
+    await import('../canopy-cloud/oauth-login');
+  cancelCanopyCloudOAuthLogin();
+}
+
+/** The Settings API key check, shared with App Advisor (CAN-6008). */
+export async function validateCanopyCloudApiKeyForWindow(request: {
+  apiKey?: string;
+}): Promise<CanopyServerStatus> {
+  const status = await validateCanopyCloudApiKey(request);
+  if (status.authenticated) {
+    refreshFeatureFlagContextAfterSettingsChange(
+      `${CLOUD_DISPLAY_NAME} validation`,
+    );
+  }
+  return status;
+}
+
 export function registerSettingsHandlers(runtime: {
   dispatcher: CoreIntegrationDispatcher;
   resolveCaller: DesktopIpcCallerResolver;
@@ -2330,181 +2648,8 @@ export function registerSettingsHandlers(runtime: {
 
   registerIpcHandler(
     IPC_CHANNELS.settingsSaveCanopyCloudApiKey,
-    async (
-      _event,
-      request: { apiKey: string },
-    ): Promise<{
-      status: CanopyServerStatus;
-      account: CanopyCloudAccountPublicState;
-    }> => {
-      const previousRead = await readCanopyCloudAccountWithStatus();
-      if (previousRead.status !== 'ok') {
-        if (!previousRead.secureStorageFailure) throw previousRead.error;
-        return {
-          status: failedCanopyCloudStatus(
-            CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
-            previousRead.secureStorageFailure,
-          ),
-          account: toPublicCanopyCloudAccountState(
-            null,
-            previousRead.status,
-            previousRead.secureStorageFailure,
-          ),
-        };
-      }
-      const previousAccount = previousRead.entry;
-      const previousPublic = toPublicCanopyCloudAccountState(previousAccount);
-      const apiKey = String(request?.apiKey ?? '').trim();
-      if (!apiKey) {
-        return {
-          status: failedCanopyCloudStatus(
-            `${CLOUD_DISPLAY_NAME} API key is required.`,
-          ),
-          account: previousPublic,
-        };
-      }
-
-      if (!previousPublic.storageAvailable) {
-        let secureStorageFailure: SecureStorageFailure | null = null;
-        try {
-          assertCanopyCloudStorageAvailable();
-        } catch (error) {
-          secureStorageFailure = getSecureStorageFailure(error);
-          if (!secureStorageFailure) throw error;
-        }
-        return {
-          status: failedCanopyCloudStatus(
-            CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
-            secureStorageFailure ?? undefined,
-          ),
-          account: {
-            ...previousPublic,
-            ...(secureStorageFailure ? { secureStorageFailure } : {}),
-          },
-        };
-      }
-
-      if (isGuestAccount(previousAccount)) {
-        return {
-          status: failedCanopyCloudStatus(GUEST_MANUAL_KEY_REPLACEMENT_ERROR),
-          account: previousPublic,
-        };
-      }
-
-      const status = await probeCanopyCloud(apiKey);
-      if (
-        !status.authenticated ||
-        !status.account ||
-        status.missingCapabilities.length > 0
-      ) {
-        return {
-          status,
-          account: previousPublic,
-        };
-      }
-
-      const now = new Date().toISOString();
-      const nextAccount: CanopyCloudAccountEntry = {
-        apiKey,
-        authMode: 'api_key',
-        credentialSource: 'manual',
-        capabilities: status.capabilities,
-        ...(status.memorySearchOrganizationExternalId
-          ? {
-              memorySearchOrganizationExternalId:
-                status.memorySearchOrganizationExternalId,
-            }
-          : {}),
-        ...(status.memorySearchOrganizationExternalIds
-          ? {
-              memorySearchOrganizationExternalIds:
-                status.memorySearchOrganizationExternalIds,
-            }
-          : {}),
-        ...(status.personalOrganizationId
-          ? { personalOrganizationId: status.personalOrganizationId }
-          : {}),
-        ...personalGatewayAccountFields(status),
-        ...(status.personalModelGatewayEnforcementUnavailable
-          ? { personalModelGatewayEnforcementUnavailable: true }
-          : {}),
-        account: status.account,
-        organizations: status.organizations,
-        teams: status.teams,
-        ...(status.enforcedSettings
-          ? { enforcedSettings: status.enforcedSettings }
-          : {}),
-        telemetryEnforcementUnavailable:
-          status.telemetryEnforcementUnavailable === true,
-        modelGatewayEnforcementUnavailable:
-          status.modelGatewayEnforcementUnavailable === true,
-        ...(status.orgBillingStates
-          ? { orgBillingStates: status.orgBillingStates }
-          : {}),
-        createdAt: previousAccount?.createdAt ?? now,
-        updatedAt: now,
-      };
-      let saveResult: Awaited<ReturnType<typeof saveManualCanopyCloudAccount>>;
-      try {
-        saveResult = await saveManualCanopyCloudAccount(
-          nextAccount,
-          previousAccount,
-          (persist) =>
-            getSharedContainerReconciliationService().withReplicaPurgeFence(
-              persist,
-            ),
-          status.organizationsRefreshed
-            ? organizationSnapshotTransition(
-                status.organizations.map((organization) => organization.id),
-                status.personalOrganizationId,
-              )
-            : undefined,
-        );
-      } catch (error) {
-        const secureStorageFailure = getSecureStorageFailure(error);
-        if (!secureStorageFailure) throw error;
-        return {
-          status: failedCanopyCloudStatus(
-            CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
-            secureStorageFailure ?? undefined,
-          ),
-          account: {
-            ...previousPublic,
-            storageAvailable: getSecretStoragePolicy().isWriteAvailable(),
-            secureStorageFailure,
-          },
-        };
-      }
-      if (saveResult.status === 'guest-protected') {
-        return {
-          status: failedCanopyCloudStatus(GUEST_MANUAL_KEY_REPLACEMENT_ERROR),
-          account: toPublicCanopyCloudAccountState(saveResult.account),
-        };
-      }
-      if (saveResult.status === 'superseded') {
-        return {
-          status: failedCanopyCloudStatus(SUPERSEDED_MANUAL_KEY_SAVE_ERROR),
-          account: toPublicCanopyCloudAccountState(saveResult.account),
-        };
-      }
-      const savedEntry = saveResult.entry;
-      invalidateMobileActivationCache();
-      await bestEffortRevokeOAuthDesktopKey(
-        saveResult.previousAccount,
-        'manual save',
-      );
-      refreshFeatureFlagContextAfterSettingsChange(
-        `${CLOUD_DISPLAY_NAME} save`,
-      );
-
-      const publicAccount = toPublicCanopyCloudAccountState(savedEntry);
-      await applyEnforcedSettings(publicAccount);
-
-      return {
-        status,
-        account: publicAccount,
-      };
-    },
+    (_event, request: { apiKey: string }) =>
+      saveCanopyCloudApiKeyForWindow(request),
   );
 
   registerIpcHandler(
@@ -2513,129 +2658,8 @@ export function registerSettingsHandlers(runtime: {
       disconnectCanopyCloudAccount(),
   );
 
-  registerIpcHandler(
-    IPC_CHANNELS.settingsStartCanopyCloudOAuthLogin,
-    async (): Promise<{
-      status: CanopyServerStatus;
-      account: CanopyCloudAccountPublicState;
-      guestDataMerged?: boolean;
-    }> => {
-      const preparation = new AbortController();
-      pendingOAuthPreparation?.abort();
-      pendingOAuthPreparation = preparation;
-      const { signal } = preparation;
-      let releaseGuestMints: (() => void) | undefined;
-      try {
-        const guestAuth = await awaitOAuthPreparation(
-          import('../canopy-cloud/guest-auth'),
-          signal,
-        );
-        signal.throwIfAborted();
-        const guestMintBarrier = guestAuth.pauseGuestMintsForRealSignIn();
-        releaseGuestMints = guestMintBarrier.release;
-        // A guest request may have started before this OAuth attempt. Let it
-        // settle before taking the account snapshot so its identity can ride
-        // the OAuth link ticket. Mints started after the barrier wait for OAuth
-        // and then reuse the resulting real account.
-        try {
-          await awaitOAuthPreparation(
-            Promise.resolve(guestMintBarrier.activeGuestMint),
-            signal,
-          );
-        } catch (error) {
-          signal.throwIfAborted();
-          process.stderr.write(
-            `[settings] Failed to settle in-flight ${CLOUD_DISPLAY_NAME} guest mint before OAuth (continuing): ${formatErrorMessage(error)}\n`,
-          );
-        }
-
-        signal.throwIfAborted();
-        const previousRead = await awaitOAuthPreparation(
-          readCanopyCloudAccountWithStatus(),
-          signal,
-        );
-        if (previousRead.status !== 'ok') {
-          if (!previousRead.secureStorageFailure) throw previousRead.error;
-          return {
-            status: failedCanopyCloudStatus(
-              CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
-              previousRead.secureStorageFailure,
-            ),
-            account: toPublicCanopyCloudAccountState(
-              null,
-              previousRead.status,
-              previousRead.secureStorageFailure,
-            ),
-          };
-        }
-        const previousAccount = previousRead.entry;
-        signal.throwIfAborted();
-        assertCanopyCloudStorageAvailable();
-        // CAN-934: when signing in while holding a guest credential, mint a
-        // single-use link ticket so the token exchange re-owns the guest's data
-        // onto the real user. Best-effort — a failure here fails open (sign-in
-        // proceeds with no merge).
-        let guestLinkTicket: string | null = null;
-        if (isGuestAccount(previousAccount)) {
-          try {
-            guestLinkTicket = await awaitOAuthPreparation(
-              guestAuth.requestGuestLinkTicket(),
-              signal,
-            );
-          } catch (error) {
-            signal.throwIfAborted();
-            process.stderr.write(
-              `[settings] Failed to mint ${CLOUD_DISPLAY_NAME} guest link ticket (continuing without merge): ${formatErrorMessage(error)}\n`,
-            );
-          }
-        }
-        const { startCanopyCloudOAuthLogin } = await awaitOAuthPreparation(
-          import('../canopy-cloud/oauth-login'),
-          signal,
-        );
-        signal.throwIfAborted();
-        // Transfer cancellation ownership to the loopback flow synchronously.
-        if (pendingOAuthPreparation === preparation) {
-          pendingOAuthPreparation = null;
-        }
-        const response = await startCanopyCloudOAuthLogin({ guestLinkTicket });
-        invalidateMobileActivationCache();
-        if (response.guestDataMerged === true) {
-          // The server merged the guest into this account, its mirrored
-          // Ledger scopes included, so the guest's local scopes follow (LD02).
-          // Only this launch knows the guest's ID: record the rebind durably
-          // before reporting the sign-in. It is applied in the background.
-          await rebindLedgerGuestScopes(
-            previousAccount?.account?.id ?? '',
-            response.account.account?.id ?? '',
-          );
-        }
-        // OAuth already persisted and applied the authoritative token snapshot.
-        // A second account probe only delays the desktop after confirmation.
-        // Revocation targets the captured old key and cannot alter the new one.
-        void bestEffortRevokeOAuthDesktopKey(previousAccount, 'OAuth login');
-        refreshFeatureFlagContextAfterSettingsChange(
-          `${CLOUD_DISPLAY_NAME} OAuth login`,
-        );
-        return response;
-      } catch (error) {
-        const secureStorageFailure = getSecureStorageFailure(error);
-        if (!secureStorageFailure) throw error;
-        const account = await loadCanopyCloudAccountPublicState();
-        return {
-          status: failedCanopyCloudStatus(
-            CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR,
-            secureStorageFailure,
-          ),
-          account: { ...account, secureStorageFailure },
-        };
-      } finally {
-        if (pendingOAuthPreparation === preparation) {
-          pendingOAuthPreparation = null;
-        }
-        releaseGuestMints?.();
-      }
-    },
+  registerIpcHandler(IPC_CHANNELS.settingsStartCanopyCloudOAuthLogin, () =>
+    startCanopyCloudOAuthLoginForWindow(),
   );
 
   registerIpcHandler(
@@ -2718,14 +2742,8 @@ export function registerSettingsHandlers(runtime: {
     },
   );
 
-  registerIpcHandler(
-    IPC_CHANNELS.settingsCancelCanopyCloudOAuthLogin,
-    async (): Promise<void> => {
-      pendingOAuthPreparation?.abort();
-      const { cancelCanopyCloudOAuthLogin } =
-        await import('../canopy-cloud/oauth-login');
-      cancelCanopyCloudOAuthLogin();
-    },
+  registerIpcHandler(IPC_CHANNELS.settingsCancelCanopyCloudOAuthLogin, () =>
+    cancelCanopyCloudOAuthLoginForWindow(),
   );
 
   registerIpcHandler(
@@ -2742,18 +2760,8 @@ export function registerSettingsHandlers(runtime: {
 
   registerIpcHandler(
     IPC_CHANNELS.settingsValidateCanopyCloudApiKey,
-    async (
-      _event,
-      request: { apiKey?: string },
-    ): Promise<CanopyServerStatus> => {
-      const status = await validateCanopyCloudApiKey(request ?? {});
-      if (status.authenticated) {
-        refreshFeatureFlagContextAfterSettingsChange(
-          `${CLOUD_DISPLAY_NAME} validation`,
-        );
-      }
-      return status;
-    },
+    (_event, request: { apiKey?: string } | undefined) =>
+      validateCanopyCloudApiKeyForWindow(request ?? {}),
   );
 
   registerIpcHandler(

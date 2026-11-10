@@ -4,7 +4,7 @@ import {
   type ChatModel,
   type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { mergeChatPluginSelections } from '@canopy/desktop-shared/lib/chat-plugin-selections-merge';
 
 export { mergeChatPluginSelections } from '@canopy/desktop-shared/lib/chat-plugin-selections-merge';

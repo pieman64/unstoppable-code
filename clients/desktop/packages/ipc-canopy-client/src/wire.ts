@@ -402,9 +402,14 @@ export interface WireTurnFeedbackRated {
   readonly feedbackId?: string;
 }
 
-/** `{ id }` of the workspace `workspace:add-from-remote` created. */
+/**
+ * `{ id, scriptActionsOperationId? }` of the workspace
+ * `workspace:add-from-remote` created; the operation is the post-add script
+ * scan, as the Portal reply carries it.
+ */
 export interface WireAddedWorkspace {
   readonly id: string;
+  readonly scriptActionsOperationId?: string;
 }
 
 /** `Preferences` fields the adapter reads. */

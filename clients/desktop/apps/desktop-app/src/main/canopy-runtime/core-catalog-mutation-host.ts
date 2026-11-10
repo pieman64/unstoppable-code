@@ -10,7 +10,7 @@ import type {
   MarketplaceInfo,
   PluginInfo,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { PortalMarketplaceMutationResult } from '@canopy/protocol/portal';
 import { UnsafeExternalPluginUrlError } from '../plugins/external-plugin-url';
 import type * as PluginHandlers from '../plugins/plugin-handlers';

@@ -7,7 +7,7 @@ import type {
 } from '@canopy/protocol/portal';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import { AgentSentMarker } from './AgentSentMarker';
-import { SubagentIcon } from './subagents/common/SubagentIcon';
+import { SubagentIcon } from '../../icons/SubagentIcon';
 import {
   watcherFiredPresentation,
   type WatcherFiredPresentation,

@@ -22,7 +22,7 @@ import { Button } from '@canopy/ui-shared/components';
 import {
   DropdownMenuSurface,
   SlashCommandAvailableDivider,
-  SlashCommandLoadingIcon,
+  SlashCommandPendingSpinner,
 } from '@canopy/ui-shared';
 import type { SlashCommandOption } from '@canopy/ui-rich/types';
 import { RefreshIcon as AppCatalogRefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -186,7 +186,7 @@ export function CommandsPopup({
                         : (cmd.disabledReason ?? cmd.description)}
                     </span>
                   )}
-                  {pending && <SlashCommandLoadingIcon />}
+                  {pending && <SlashCommandPendingSpinner />}
                 </button>
               </Fragment>
             );

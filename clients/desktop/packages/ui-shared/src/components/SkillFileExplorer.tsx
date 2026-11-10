@@ -61,7 +61,7 @@ export function FileTab({
       data-testid={dataTestId}
       data-path={dataPath}
       data-active={active ? 'true' : undefined}
-      className={`group inline-flex shrink-0 items-center rounded-md border text-xs transition-colors ${active ? 'bg-secondary fg-primary' : 'border-transparent fg-secondary hover:fg-primary hover:bg-secondary/50'}`}
+      className={`group inline-flex shrink-0 items-center rounded-md border text-xs transition-colors ${onClose ? 'pr-1' : ''} ${active ? 'bg-secondary fg-primary' : 'border-transparent fg-secondary hover:fg-primary hover:bg-secondary/50'}`}
     >
       <RichHoverTooltip
         content={title}
@@ -81,7 +81,7 @@ export function FileTab({
           type="button"
           onClick={onClose}
           aria-label={`Close ${label}`}
-          className="focus-ring mr-1 rounded p-0.5 fg-secondary opacity-60 transition-opacity hover:fg-primary hover:bg-base group-hover:opacity-100"
+          className="focus-ring rounded p-0.5 fg-secondary opacity-60 transition-opacity hover:fg-primary hover:bg-base group-hover:opacity-100"
         >
           <AppCatalogCloseIcon size="sm" />
         </button>

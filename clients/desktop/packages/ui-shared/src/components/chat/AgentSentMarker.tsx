@@ -2,7 +2,7 @@ import { memo, type JSX } from 'react';
 import type { ToolMessageSender } from '@canopy/protocol/portal';
 import { McpIcon } from '../../icons';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
-import { SubagentIcon } from './subagents/common/SubagentIcon';
+import { SubagentIcon } from '../../icons/SubagentIcon';
 
 interface AgentSentMarkerProps {
   agentSent: ToolMessageSender;

@@ -14,7 +14,9 @@ import {
   isModelHarness,
   isModelHarnessSource,
 } from '@canopy/desktop-shared/types';
-import { isClaudeModAdmission } from '../../../types/claude-mod-admission';
+import { isClaudeModAdmission } from '@canopy/execution-engine/types/claude-mod-admission';
+import { normalizePluginSelections } from '../../../lib/plugin-selections-normalization';
+import { pipelinePluginSelectionsAddPlugins } from '../executor/step-runner';
 import type { DynamicToolCallParams } from '../../codex-runtime/generated/v2/DynamicToolCallParams';
 import type { DynamicToolCallResponse } from '../../codex-runtime/generated/v2/DynamicToolCallResponse';
 import type { DynamicToolSpec } from '../../codex-runtime/generated/v2/DynamicToolSpec';
@@ -52,6 +54,7 @@ export interface DaemonPipelineOwnerPorts extends Pick<
   | 'recordModelPolicyRefusal'
   | 'pipelineLedger'
   | 'resolveClaudeModAdmissionContext'
+  | 'resolvePipelineAgentModelAlias'
 > {
   /** The Codex runner's ports, apart from the runtime itself. */
   readonly codex: Omit<CodexPipelinePromptPorts, 'runtime'>;
@@ -464,7 +467,52 @@ export function createDaemonPipelineOwnerPorts(
         }),
       };
     },
+    // An Agent model alias (CAN-5832), resolved by the run's core with the
+    // run's own scope. Plugins stay in process: an Agent that adds plugins
+    // after the launch fails its step closed.
+    resolvePipelineAgentModelAlias: async (agentId) => {
+      const { alias } = expectKind(
+        await ask(
+          { action: 'owner.model.agentAlias', agentId },
+          PIPELINE_OWNER_DEADLINE_MS.short,
+          undefined,
+        ),
+        'model.agentAlias',
+      );
+      if (alias === null) return null;
+      const pluginSelections =
+        alias.pluginSelections === undefined
+          ? undefined
+          : normalizePluginSelections(alias.pluginSelections);
+      if (pipelinePluginSelectionsAddPlugins(pluginSelections))
+        throw new Error(
+          "This Agent's plugins don't run in the background service.",
+        );
+      return {
+        agentId: alias.agentId,
+        name: alias.name,
+        base: alias.base,
+        ...(alias.instructions !== undefined && {
+          instructions: alias.instructions,
+        }),
+        // Kept, though empty, so the step records what it does in process.
+        ...(pluginSelections && { pluginSelections }),
+      };
+    },
     codex: {
+      // Selections that add nothing (an Agent's empty ones) resolve to no
+      // plugins; any other selection or package overlay stays in process.
+      resolvePlugins: (request) =>
+        request.packageOverlay === undefined &&
+        !pipelinePluginSelectionsAddPlugins(request.pluginSelections)
+          ? Promise.resolve({
+              warnings: [],
+              selectedCapabilityRoots: [],
+              codexMcpServers: {},
+            })
+          : Promise.reject(
+              new Error('Workflow plugins are not available here.'),
+            ),
       mcpCapabilityAuthorityIds: () => [],
       resolveRouting: (model, routeSessionId, request) =>
         resolveAiCreditsRouting(model, 'codex', {

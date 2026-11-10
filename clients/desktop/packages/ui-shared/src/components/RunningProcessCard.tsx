@@ -45,10 +45,10 @@ export function RunningProcessCard({
 }: RunningProcessCardProps): JSX.Element {
   return (
     <div
-      className="rounded-lg border border-fg-info/20 bg-fg-info/[0.06] p-2 text-xs"
+      className="flex flex-col gap-1.5 rounded-lg border border-fg-info/20 bg-fg-info/[0.06] p-2 text-xs"
       data-testid={dataTestId}
     >
-      <div className="mb-1.5 flex items-center justify-between">
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 fg-info">
           {enlargeButton}
           {spinner}
@@ -69,7 +69,9 @@ export function RunningProcessCard({
           )}
         </div>
       </div>
-      {body}
+      {/* The body slot keeps its place, so the gap below the header holds
+          when a run shows no output. */}
+      <div>{body}</div>
     </div>
   );
 }

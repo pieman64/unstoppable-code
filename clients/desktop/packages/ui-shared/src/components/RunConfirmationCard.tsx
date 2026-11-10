@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { Button } from './Button';
+import { Stack } from './Stack';
 
 export interface RunConfirmationCardProps {
   /** Prompt copy — typically "Run <label>?". Caller supplies the sentence so
@@ -30,16 +31,22 @@ export function RunConfirmationCard({
 }: RunConfirmationCardProps): JSX.Element {
   return (
     <div className="rounded-lg border border-line-attention bg-warning/[0.06] px-2.5 py-2 text-xs">
-      <p className="mb-1.5 fg-primary/80">{prompt}</p>
-      <div className="mb-2">{details}</div>
-      <div className="flex items-center gap-2">
-        <Button variant="primary" size="compact" onClick={onConfirm}>
-          {confirmLabel}
-        </Button>
-        <Button size="compact" onClick={onCancel}>
-          {cancelLabel}
-        </Button>
-      </div>
+      <Stack gap="inline">
+        <div className="flex flex-col gap-1.5">
+          <p className="fg-primary/80">{prompt}</p>
+          {details === undefined || details === null ? null : (
+            <div>{details}</div>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="primary" size="compact" onClick={onConfirm}>
+            {confirmLabel}
+          </Button>
+          <Button size="compact" onClick={onCancel}>
+            {cancelLabel}
+          </Button>
+        </div>
+      </Stack>
     </div>
   );
 }

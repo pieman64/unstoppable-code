@@ -17,6 +17,7 @@ import { Button } from './Button';
 import { CopyDetailsButton } from './CopyDetailsButton';
 import { DialogModal } from './DialogModal';
 import { LoadingSpinner } from './LoadingSpinner';
+import { Stack } from './Stack';
 
 /** The second option of a two-way choice, such as Discard beside Save. */
 export interface ConfirmDialogSecondaryAction {
@@ -164,26 +165,30 @@ export function ConfirmDialog({
       restoreFocusRef={restoreFocusRef}
       ownerDocument={ownerDocument}
     >
-      <div className="flex flex-col">
-        <div className="mt-1 text-s text-pretty fg-secondary">{message}</div>
-        {children ? <div className="mt-3">{children}</div> : null}
-        {errorMessage && (
-          <div
-            role="alert"
-            data-testid="confirm-dialog-error"
-            className="mt-3 text-s text-pretty fg-destructive"
-          >
-            {errorMessage}
-          </div>
-        )}
-        {errorMessage && errorDetails ? (
-          <div className="mt-2">
-            <CopyDetailsButton details={errorDetails} />
-          </div>
-        ) : null}
+      <div className="flex flex-col gap-4.5 pt-1">
+        <Stack gap="item">
+          <div className="text-s text-pretty fg-secondary">{message}</div>
+          {children ? <div>{children}</div> : null}
+          {errorMessage && (
+            <Stack gap="inline">
+              <div
+                role="alert"
+                data-testid="confirm-dialog-error"
+                className="text-s text-pretty fg-destructive"
+              >
+                {errorMessage}
+              </div>
+              {errorDetails ? (
+                <div>
+                  <CopyDetailsButton details={errorDetails} />
+                </div>
+              ) : null}
+            </Stack>
+          )}
+        </Stack>
         {/* Wraps instead of clipping when a long action label and a
             secondary action outgrow the card (CAN-5336). */}
-        <div className="mt-4.5 flex flex-wrap items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Button
             ref={cancelRef}
             variant="secondary"

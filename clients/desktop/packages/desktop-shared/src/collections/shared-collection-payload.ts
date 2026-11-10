@@ -41,8 +41,8 @@ import {
   BUILTIN_PLUGIN_MARKETPLACE_SOURCE_URL,
   isBuiltInPluginMarketplaceId,
   type PluginInfo,
-} from '../types/plugins';
-import { parseShareableGitHubSource } from '../plugin-refs';
+} from '@canopy/execution-engine/types/plugins';
+import { parseShareableGitHubSource } from '@canopy/execution-engine/plugin-refs';
 import type { PipelinePackageEnvironmentRequirement } from '@canopy/protocol/pipelines';
 
 export { MCP_SHARE_BLOCKED_MESSAGE };

@@ -107,7 +107,7 @@ export function FileSelectionMenu({
       role="menu"
       aria-label="Selected file text actions"
       data-testid="file-selection-menu"
-      className="fixed z-dropdown flex whitespace-nowrap rounded-full bg-card/95 shadow-md backdrop-blur"
+      className="fixed z-dropdown flex whitespace-nowrap rounded-full bg-card/95 shadow-xl backdrop-blur"
       style={{ top, left }}
       onMouseDown={(event): void => event.stopPropagation()}
     >

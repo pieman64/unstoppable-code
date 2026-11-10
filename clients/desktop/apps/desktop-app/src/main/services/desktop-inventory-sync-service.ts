@@ -2,26 +2,31 @@
 // Desktop inventory sync service (CAN-2830).
 //
 // Pushes the desktop's capability inventory — marketplaces, skills, MCP
-// servers, Collections, and per-worktree project pipelines — to the cloud as
-// hash-diffed documents so the web portal reads them from the database
-// instead of asking this machine live over Remote Control. The documents are
-// the exact `Portal*ListResult` shapes the portal browse commands already
-// return (built by the same readers), so nothing leaves the machine that the
-// portal did not already transmit, and nothing is projected twice.
+// servers, Collections, per-worktree project pipelines, and the installed-item
+// status snapshot — to the cloud as hash-diffed documents so the web reads
+// them from the database instead of asking this machine live over Remote
+// Control. The list documents are the exact `Portal*ListResult` shapes the
+// portal browse commands already return, and `installed_items` is the
+// snapshot the live installed-items command returns (built by the same
+// readers), so nothing leaves the machine that the portal did not already
+// transmit, and nothing is projected twice.
 //
 // Design: docs/planning/2026-09-06-desktop-inventory-cloud-sync/design.md
 //
-// Triggers: the invocable-inventory rebuild completing (plugins/skills/MCP),
-// Collection / MCP index writes and worktree or pipeline mutations
-// (`desktop-inventory-sync-signals`), cloud identity changes, the portal
-// feature flag flipping on, a periodic reconcile, and start-up. Every trigger
+// Triggers: the invocable-inventory rebuild completing (plugins/skills/MCP and
+// installed items), Collection / MCP index writes, installed-item and plugin
+// selection changes, and worktree or pipeline mutations
+// (`desktop-inventory-sync-signals`), cloud identity changes, the Remote
+// Control gate opening, a periodic reconcile, and start-up. Every trigger
 // coalesces through one trailing debounce; one flush runs at a time and a
 // trigger during a flush gets its own push once that flush settles.
 //
-// Gate: the service pushes only while the `canopy-portal-enabled` flag is on
-// and the account holds cloud credentials; the server additionally enforces
-// the portal availability + Remote Control entitlement, and a 401/403/404
-// suspends pushing until the next identity change or flag flip. No opt-in
+// Gate: the service pushes only while Remote Control is available — the
+// `canopy-portal-enabled` flag, or direct Remote Control (the Labs switch plus
+// the device and web-direct flags; see `sync-service-feature-flags.ts`) — and
+// the account holds cloud credentials. The server additionally enforces the
+// same availability (Portal or direct) + Remote Control entitlement, and a
+// 401/403/404 suspends pushing until the next identity change or gate flip. No opt-in
 // preference: this is the Remote Control data plane, not telemetry.
 // ---------------------------------------------------------------------------
 
@@ -55,6 +60,7 @@ import {
   subscribeCanopyCloudAccountChanges,
 } from '../lib/canopy-cloud-account-store';
 import { logMainProcessError } from '../lib/main-process-logging';
+import { installedItemService } from '../installed-items/installed-item-service';
 import { subscribeInvocableInventoryChanges } from '../plugins/invocable-inventory-service';
 import { readPortalStateStore } from '../portal/portal-state-store';
 import {
@@ -86,6 +92,7 @@ export const DESKTOP_INVENTORY_DEVICE_KINDS = [
   'skills',
   'mcp_servers',
   'collections',
+  'installed_items',
 ] as const satisfies readonly DesktopInventoryKind[];
 
 export type DesktopInventoryDeviceKind =
@@ -106,6 +113,9 @@ const DEFAULT_READERS: Readers = {
   skills: listPersonalPortalSkills,
   mcp_servers: listPortalMcpServers,
   collections: listPersonalPortalCollections,
+  // The status snapshot the live installed-items command and the settings
+  // sections read; it starts no MCP probes.
+  installed_items: () => installedItemService.listStatus(),
   pipelines: listWorktreePipelineInventoryDocuments,
 };
 
@@ -154,6 +164,15 @@ const REQUEST_ENVELOPE_HEADROOM_BYTES = 16 * 1024;
 const REQUEST_BUDGET_BYTES =
   MAX_DESKTOP_INVENTORY_REQUEST_BYTES - REQUEST_ENVELOPE_HEADROOM_BYTES;
 
+/**
+ * Kinds that always travel in a request of their own. A server older than
+ * the kind rejects the whole request with 400 (`unknown kind`), which drops
+ * the batch; alone, and sent after every other batch, such a kind can never
+ * take other kinds' documents down with it.
+ */
+const OWN_REQUEST_KINDS: ReadonlySet<DesktopInventoryKind> =
+  new Set<DesktopInventoryKind>(['installed_items']);
+
 function utf8Bytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
@@ -172,6 +191,8 @@ interface SyncBatch {
  * FIRST, in their own batches: the server checks its per-device storage cap
  * before applying a request's removals, so a worktree replacement at the
  * cap only fits when the rows it frees are gone before the new rows arrive.
+ * Documents of an {@link OWN_REQUEST_KINDS} kind go LAST, one per request,
+ * so the batching of every other kind is unchanged.
  */
 function splitIntoBatches(
   documents: readonly DesktopInventoryDocument[],
@@ -201,6 +222,7 @@ function splitIntoBatches(
   }
   flush();
   for (const document of documents) {
+    if (OWN_REQUEST_KINDS.has(document.kind)) continue;
     const bytes = utf8Bytes(document);
     if (
       current.documents.length >= MAX_DESKTOP_INVENTORY_DOCUMENTS_PER_REQUEST ||
@@ -213,6 +235,11 @@ function splitIntoBatches(
     currentBytes += bytes;
   }
   flush();
+  for (const document of documents) {
+    if (!OWN_REQUEST_KINDS.has(document.kind)) continue;
+    current.documents.push(document);
+    flush();
+  }
   return batches;
 }
 
@@ -274,7 +301,12 @@ export class DesktopInventorySyncService {
     this.started = true;
     this.unsubscribers.push(
       subscribeInvocableInventoryChanges((): void => {
-        this.schedule(['marketplaces', 'skills', 'mcp_servers']);
+        this.schedule([
+          'marketplaces',
+          'skills',
+          'mcp_servers',
+          'installed_items',
+        ]);
       }),
       subscribeDesktopInventoryChanges((kinds): void => {
         this.schedule(kinds);
@@ -301,6 +333,11 @@ export class DesktopInventorySyncService {
     this.scheduleAll();
   }
 
+  /**
+   * Open or close the Remote Control gate (Portal or direct). Opening clears
+   * a suspension and schedules every kind, so changes made while the gate
+   * was closed go out; closing cancels the pending debounce and retry.
+   */
   setFeatureFlagEnabled(enabled: boolean): void {
     if (this.featureFlagEnabled === enabled) return;
     this.featureFlagEnabled = enabled;
@@ -472,7 +509,7 @@ export class DesktopInventorySyncService {
 
   /**
    * True once this flush must not issue another request: the service was
-   * disposed, the portal gate closed, or the account changed since the
+   * disposed, the Remote Control gate closed, or the account changed since the
    * flush started (`generation` is the identity it was started under).
    */
   private flushAborted(generation: number): boolean {
@@ -574,6 +611,12 @@ export class DesktopInventorySyncService {
           return deviceDocument(
             kind,
             await this.readers.collections(),
+            capturedAt,
+          );
+        case 'installed_items':
+          return deviceDocument(
+            kind,
+            await this.readers.installed_items(),
             capturedAt,
           );
       }

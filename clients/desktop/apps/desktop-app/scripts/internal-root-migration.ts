@@ -19,7 +19,14 @@ import {
   internalRootIdentity,
 } from '../../../packages/desktop-shared/src/node/internal-root-migration';
 
-import { createInternalRootRelocationRepairs } from '../../../packages/desktop-shared/src/node/internal-root-migration/repairs';
+import {
+  createInternalRootRelocationRepairs,
+  reportInternalRootCleanup,
+} from '../../../packages/desktop-shared/src/node/internal-root-migration/repairs';
+import {
+  formatInternalRootCleanupReport,
+  type InternalRootCleanupReport,
+} from '../../../packages/desktop-shared/src/node/internal-root-migration/cleanup-candidates';
 import { desktopW5Durability } from '../../../packages/desktop-shared/src/node/w5-commit-log/durability';
 
 async function main(): Promise<void> {
@@ -53,6 +60,11 @@ async function main(): Promise<void> {
       ? { nativeColdHost: { kind: 'repository', root: resolve('.') } as const }
       : {}),
     executableBrands: [canopy, unstoppableCode],
+    diagnose: async (source): Promise<readonly string[]> => {
+      const { diagnoseInternalRootW5 } =
+        await import('../src/main/lib/internal-root-migration-inventory');
+      return diagnoseInternalRootW5(source);
+    },
     recoverW5: async (source, qualification): Promise<void> => {
       const { settleInternalRootW5 } =
         await import('../src/main/lib/internal-root-migration-maintenance');
@@ -106,7 +118,27 @@ async function main(): Promise<void> {
       filesystemHost,
     }),
   );
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  let cleanupCandidates: InternalRootCleanupReport | null = null;
+  let cleanupReportError: string | undefined;
+  try {
+    cleanupCandidates = await reportInternalRootCleanup(
+      identity,
+      result.kind === 'complete' || result.journal?.phase === 'complete',
+      filesystemHost,
+      result.kind === 'inventory'
+        ? result.inventory.bytes
+        : result.journal.inventory.bytes,
+    );
+    process.stderr.write(formatInternalRootCleanupReport(cleanupCandidates));
+  } catch (error: unknown) {
+    // Reporting failure cannot turn a durably completed migration into a refusal.
+    cleanupReportError = `Migration returned ${result.kind}, but cleanup reporting failed: ${error instanceof Error ? error.message : 'Unknown report failure'}. Retain both roots and the journal; reporting did not roll back migration. Resolve the report issue and run --inventory, not --rebuild, to refresh the report. Removal is your choice; no cleanup candidates were changed.`;
+    process.stderr.write(`Cleanup candidates\n${cleanupReportError}\n`);
+    process.exitCode = 1;
+  }
+  process.stdout.write(
+    `${JSON.stringify({ ...result, cleanupCandidates, ...(cleanupReportError ? { cleanupReportError } : {}) }, null, 2)}\n`,
+  );
 }
 
 void main().catch((error: unknown): void => {

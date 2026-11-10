@@ -13,8 +13,15 @@
 // records what the owner posts), the relay's logs show its connections, and
 // Chrome DevTools reaches the SharedWorker only to shorten the five-minute
 // hidden-tab timer.
+import { execFileSync } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
@@ -495,6 +502,49 @@ function writeFlagOverrides(overrides) {
   writeFileSync(flagOverridesFile, JSON.stringify(overrides), 'utf8');
 }
 
+const SCRIPT_CONTEXT = { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID };
+
+/** The demo worktree's script actions as the desktop itself lists them. */
+function desktopScriptActions() {
+  return desktop.window.evaluate(
+    (request) => window.api.scriptActions.list(request),
+    SCRIPT_CONTEXT,
+  );
+}
+
+async function desktopScriptStatus(name) {
+  const snapshot = await desktopScriptActions();
+  return snapshot.actions.find((action) => action.name === name)?.status;
+}
+
+/**
+ * A bare repository whose one commit declares a package.json script, cloned
+ * offline through its `file://` URL. Returns that URL.
+ */
+function seedScriptRepository(root, name) {
+  const git = (cwd, args) =>
+    execFileSync(
+      'git',
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args],
+      {
+        cwd,
+        encoding: 'utf8',
+      },
+    );
+  const source = path.join(root, `${name}-source`);
+  mkdirSync(source, { recursive: true });
+  git(source, ['init', '-q', '-b', 'main']);
+  writeFileSync(
+    path.join(source, 'package.json'),
+    `${JSON.stringify({ name, private: true, scripts: { check: 'echo ok' } }, null, 2)}\n`,
+  );
+  git(source, ['add', 'package.json']);
+  git(source, ['commit', '-q', '-m', 'init']);
+  const remote = path.join(root, `${name}.git`);
+  git(root, ['clone', '-q', '--bare', source, remote]);
+  return `file://${remote}`;
+}
+
 test.beforeAll(async ({ portalServerManager }) => {
   // A cold Turbopack compile of `/chat`, the pairing page and the owner's
   // worker chunk can take minutes; the budget absorbs it here.
@@ -910,7 +960,7 @@ test('the desktop refuses a paired browser session’s forbidden invokes and nev
     hostPublicKey = controller.pairing.hostPublicKey;
     const session = await controller.openSession();
     const transport = session.transport;
-    const received = { stale: 0, preferences: 0, terminal: 0 };
+    const received = { stale: 0, preferences: 0, terminal: 0, found: 0 };
     transport.on('desktop:session-snapshot-stale', () => {
       received.stale += 1;
     });
@@ -920,9 +970,20 @@ test('the desktop refuses a paired browser session’s forbidden invokes and nev
     transport.on('terminal:output', () => {
       received.terminal += 1;
     });
+    // A post-add scan notice the desktop pushes to its own windows (CAN-6038):
+    // web notices poll the receipt, so the browser never gets the push.
+    transport.on('script-actions:found', () => {
+      received.found += 1;
+    });
 
     const snapshot = await settle(transport.invoke('desktop:session-snapshot'));
     expect(snapshot.ok, snapshot.message).toBe(true);
+
+    // Script review is in the browser list (CAN-6038); terminals stay out.
+    const scripts = await settle(
+      transport.invoke('script-actions:list', SCRIPT_CONTEXT),
+    );
+    expect(scripts.ok, scripts.message).toBe(true);
 
     // Outside BROWSER_CONTROLLER_CHANNELS: terminals, chat interest
     // subscriptions and preferences reads.
@@ -959,6 +1020,30 @@ test('the desktop refuses a paired browser session’s forbidden invokes and nev
         POLL,
       )
       .toBeGreaterThan(0);
+    // A desktop clone pushes `script-actions:found` to the desktop's
+    // windows once its scan completes; this session never gets it.
+    const foundRoot = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-direct-web-found-'),
+    );
+    try {
+      const foundUrl = seedScriptRepository(foundRoot, 'direct-web-found');
+      await desktop.window.evaluate(async (remoteUrl) => {
+        window.__directWebFoundPushes = 0;
+        window.api.scriptActions.onFound(() => {
+          window.__directWebFoundPushes += 1;
+        });
+        const destinationDir = await window.api.getDefaultCloneDirectory();
+        await window.api.addWorkspaceFromRemote({ remoteUrl, destinationDir });
+      }, foundUrl);
+      await expect
+        .poll(
+          () => desktop.window.evaluate(() => window.__directWebFoundPushes),
+          POLL,
+        )
+        .toBeGreaterThan(0);
+    } finally {
+      rmSync(foundRoot, { recursive: true, force: true });
+    }
     const invalidate = await settle(
       transport.invoke('desktop:session-snapshot-invalidate'),
     );
@@ -966,6 +1051,7 @@ test('the desktop refuses a paired browser session’s forbidden invokes and nev
     await expect.poll(() => received.stale, POLL).toBeGreaterThan(0);
     expect(received.preferences).toBe(0);
     expect(received.terminal).toBe(0);
+    expect(received.found).toBe(0);
 
     // Refusals leave the session usable.
     const after = await settle(transport.invoke('desktop:session-snapshot'));
@@ -1303,6 +1389,79 @@ test('Portal coexists with direct, and with Portal off its routes answer 410 whi
     expect(desktopRoute.status).toBe(410);
     expect(await desktopRoute.json()).toEqual({ code: 'portal_retired' });
 
+    // Inventory sync and the Marketplace keep working with Portal off
+    // (CAN-6037): the Portal inventory alias retires, the account read serves
+    // the pushed documents including the installed-item snapshot, the
+    // Marketplace lists answer, and the desktop's manifest read is admitted.
+    const portalInventory = await page.evaluate(async (namespace) => {
+      const response = await fetch(
+        `/api/v1/${namespace}/portal/browser/inventory`,
+      );
+      return { status: response.status, body: await response.json() };
+    }, PORTAL_API_NAMESPACE);
+    expect(portalInventory).toEqual({
+      status: 410,
+      body: { code: 'portal_retired' },
+    });
+    const readInventory = () =>
+      page.evaluate(async () => {
+        const response = await fetch('/api/account/desktop-inventory');
+        return { status: response.status, body: await response.json() };
+      });
+    await expect
+      .poll(
+        async () => {
+          const { status, body } = await readInventory();
+          return status === 200 &&
+            body.device !== null &&
+            body.documents.some(
+              (document) => document.kind === 'installed_items',
+            )
+            ? 'synced'
+            : status;
+        },
+        { timeout: 120_000 },
+      )
+      .toBe('synced');
+    const inventory = (await readInventory()).body;
+    const installedItems = inventory.documents.find(
+      (document) => document.kind === 'installed_items',
+    );
+    expect(Array.isArray(installedItems.payload.items)).toBe(true);
+    for (const item of installedItems.payload.items) {
+      expect(typeof item.target.kind).toBe('string');
+      expect(typeof item.removable).toBe('boolean');
+      expect(Array.isArray(item.notices)).toBe(true);
+    }
+    const catalogStatuses = await page.evaluate(async () =>
+      Promise.all(
+        [
+          '/api/account/pipeline-catalog/pipelines?limit=25',
+          '/api/account/automation-catalog/automations?limit=25',
+        ].map(async (path) => (await fetch(path)).status),
+      ),
+    );
+    expect(catalogStatuses).toEqual([200, 200]);
+    const manifest = await fetch(
+      `${PORTAL_WEB_ORIGIN_LOOPBACK}/api/v1/${PORTAL_API_NAMESPACE}/desktop-inventory/documents?clientDeviceId=${encodeURIComponent(inventory.device.clientDeviceId)}`,
+      { headers: { Authorization: `Bearer ${userA.apiKey}` } },
+    );
+    expect(manifest.status).toBe(200);
+
+    // With no live session, Settings → Plugins counts the synced snapshot
+    // instead of asking to connect the desktop, and says when it was synced
+    // (CAN-6037).
+    await page.goto('/account/plugins');
+    const activeItems = page.getByTestId('settings-plugins-active');
+    await expect(
+      activeItems.getByTestId('active-items-summary-counts'),
+    ).toHaveText(/(?:are|is) active\.$|^Nothing is active yet\.$/, {
+      timeout: 60_000,
+    });
+    await expect(
+      activeItems.getByTestId('active-items-summary-synced-at'),
+    ).toHaveText(/^Updated (?:just now|\d+[smhd] ago)$/);
+
     // Direct still works with Portal off: a fresh load lists the computer's
     // rows and runs a chat turn there.
     await primary.page.reload();
@@ -1312,8 +1471,153 @@ test('Portal coexists with direct, and with Portal off its routes answer 410 whi
     await openNewChat(primary.page);
     await sendChat(primary.page, turn.prompt, turn.reply);
     expect(primary.portalRequests).toEqual([]);
+
+    // The desktop's inventory sync gate opens on direct Remote Control alone
+    // (CAN-6037): with Portal off on the desktop too, the Labs Remote access
+    // switch (isRemoteControlEnabled) and the device and web-direct flags keep
+    // it pushing, so a relaunch re-sends the installed-item snapshot.
+    const syncedBefore = installedItems.syncedAt;
+    await desktop.relaunch({
+      env: {
+        CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+          'canopy-portal-enabled': false,
+          'canopy-device-remote-control': true,
+          'canopy-web-direct-remote-control': true,
+        }),
+      },
+    });
+    await expect
+      .poll(
+        async () => {
+          const { body } = await readInventory();
+          const document = body.documents?.find(
+            (candidate) => candidate.kind === 'installed_items',
+          );
+          return document !== undefined && document.syncedAt > syncedBefore;
+        },
+        { timeout: 120_000 },
+      )
+      .toBe(true);
+    await desktop.relaunch();
   } finally {
     await portal.close();
+  }
+});
+
+test('script review: a direct browser reviews detected scripts with Portal off, and the desktop sees the decision', async () => {
+  test.setTimeout(300_000);
+  // Independent of the Portal-off test above, which leaves the flag off.
+  writeFlagOverrides({ 'canopy-portal-enabled': false });
+  const page = primary.page;
+  const packagePath = path.join(
+    desktop.demo.workspaces[0].worktreePath,
+    'package.json',
+  );
+  const originalPackage = readFileSync(packagePath, 'utf8');
+  const repositoryRoot = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-direct-web-scripts-'),
+  );
+  const fromBrowser = `direct-web-browser-${randomBytes(3).toString('hex')}`;
+  const fromDesktop = `direct-web-desktop-${randomBytes(3).toString('hex')}`;
+  try {
+    // Two detected scripts: one approved from the browser, one from the
+    // desktop.
+    const manifest = JSON.parse(originalPackage);
+    writeFileSync(
+      packagePath,
+      `${JSON.stringify(
+        {
+          ...manifest,
+          scripts: {
+            ...manifest.scripts,
+            [fromBrowser]: 'echo browser',
+            [fromDesktop]: 'echo desktop',
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await desktop.window.evaluate(
+      (request) => window.api.scriptActions.rescan(request),
+      SCRIPT_CONTEXT,
+    );
+    await expect
+      .poll(
+        async () => [
+          await desktopScriptStatus(fromBrowser),
+          await desktopScriptStatus(fromDesktop),
+        ],
+        POLL,
+      )
+      .toEqual(['pending', 'pending']);
+
+    // The worktree panel's Detected scripts opens the shared review over
+    // direct, and an approval there lands on the desktop.
+    primary.portalRequests.length = 0;
+    await page.reload();
+    await expect(projectRow(page)).toBeVisible({ timeout: 60_000 });
+    await openWorktree(page);
+    await page
+      .locator('[data-testid="script-actions-review-entry-open"]:visible')
+      .first()
+      .click({ timeout: 60_000 });
+    const review = page.getByTestId('script-actions-review');
+    await expect(review).toBeVisible({ timeout: 30_000 });
+    await review
+      .locator(
+        `[data-testid="script-actions-pending-row"][data-script-name="${fromBrowser}"] [data-testid="script-actions-row-select"]`,
+      )
+      .click();
+    await review.getByTestId('script-actions-approve').click();
+    await expect
+      .poll(() => desktopScriptStatus(fromBrowser), POLL)
+      .toBe('approved');
+    const approvedRow = (name) =>
+      review.locator(
+        `[data-testid="script-actions-approved-row"][data-script-name="${name}"]`,
+      );
+    await expect(approvedRow(fromBrowser)).toBeVisible();
+
+    // A desktop approval reaches the open review without a reload: the
+    // `script-actions:changed` push refreshes the snapshot.
+    await desktop.window.evaluate(
+      async ({ request, name }) => {
+        const snapshot = await window.api.scriptActions.list(request);
+        const action = snapshot.actions.find((entry) => entry.name === name);
+        await window.api.scriptActions.review({
+          ...request,
+          entries: [{ id: action.id, revision: action.revision }],
+          decision: 'approve',
+        });
+      },
+      { request: SCRIPT_CONTEXT, name: fromDesktop },
+    );
+    await expect(approvedRow(fromDesktop)).toBeVisible({ timeout: 30_000 });
+    expect(primary.portalRequests).toEqual([]);
+    await page.keyboard.press('Escape');
+    await expect(review).toBeHidden();
+
+    // A clone from the browser polls its scan receipt and offers Review.
+    const remoteUrl = seedScriptRepository(repositoryRoot, 'direct-web-notice');
+    await page.getByTestId('portal-workspaces-header').hover();
+    await page.getByTestId('portal-add-workspace').click();
+    const dialog = page.getByTestId('chat-add-workspace-dialog');
+    await expect(dialog).toBeVisible();
+    await dialog.getByTestId('chat-add-workspace-destination-device').click();
+    await dialog.getByTestId('chat-add-workspace-value').fill(remoteUrl);
+    await dialog.getByTestId('chat-add-workspace-submit').click();
+    await expect(dialog).toBeHidden({ timeout: 90_000 });
+    const notice = page
+      .getByTestId('toast-stack-card')
+      .filter({ hasText: /Found .+ in direct-web-notice to review/ });
+    await expect(notice).toBeVisible({ timeout: 60_000 });
+    await expect(notice.getByTestId('toast-action')).toHaveText('Review');
+    expect(primary.portalRequests).toEqual([]);
+  } finally {
+    writeFileSync(packagePath, originalPackage, 'utf8');
+    rmSync(repositoryRoot, { recursive: true, force: true });
+    writeFlagOverrides({});
   }
 });
 

@@ -10,7 +10,7 @@ import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { getGitExecutableDetectionMode } from '@canopy/protocol/git-executable';
 import { BRAND } from '@canopy/brand/current';
 import { getBrandEnv } from '@canopy/execution-engine/brand/env';
-import { sanitizeEnvVars } from '../lib/mcp-security';
+import { sanitizeEnvVars } from '@canopy/execution-engine/lib/mcp-security';
 import { stripAgentSecretValues } from '@canopy/execution-engine/lib/agent-secret-values-env';
 import { getCanopyDataDir, getCanopyRuntimeMode } from '../canopy-paths';
 import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';

@@ -10,7 +10,7 @@ import {
 import { DetailMoreMenu } from '@canopy/ui-shared/components';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { postShareToast } from '@/lib/share-toast';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 import {
   type JSX,
   type ReactNode,
@@ -1132,25 +1132,27 @@ export function SharedCollectionDetailModal({
           </div>
           {/* View mode has no footer: a Close would duplicate the X. */}
           {presentation === 'modal' && isEdit && (
-            <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
-              <Button size="compact" onClick={onClose} disabled={saving}>
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                size="compact"
-                onClick={() => void handleSave()}
-                disabled={
-                  loading ||
-                  saving ||
-                  !editable ||
-                  editable.name.trim().length === 0 ||
-                  warnings.length > 0
-                }
-              >
-                {saving ? 'Saving…' : 'Save changes'}
-              </Button>
-            </div>
+            <Surface variant="section" boundary="top">
+              <div className="flex items-center justify-end gap-2 px-6 py-3">
+                <Button size="compact" onClick={onClose} disabled={saving}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  size="compact"
+                  onClick={() => void handleSave()}
+                  disabled={
+                    loading ||
+                    saving ||
+                    !editable ||
+                    editable.name.trim().length === 0 ||
+                    warnings.length > 0
+                  }
+                >
+                  {saving ? 'Saving…' : 'Save changes'}
+                </Button>
+              </div>
+            </Surface>
           )}
         </div>
       </SharedCollectionDetailShell>

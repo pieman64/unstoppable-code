@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
 import { RichHoverCard } from './RichHoverTooltip';
+import { Stack } from './Stack';
 
 export interface RunBadgeRow {
   id: string;
@@ -18,6 +19,8 @@ export interface RunBadgePopoverProps {
   rows: RunBadgeRow[];
   heading: string;
   emptyText: string;
+  /** Lets the badge that opened it name it in `aria-describedby`. */
+  id?: string;
 }
 
 /**
@@ -31,32 +34,37 @@ export function RunBadgePopover({
   rows,
   heading,
   emptyText,
+  id,
 }: RunBadgePopoverProps): JSX.Element | null {
   return (
     <RichHoverCard
       anchorRect={anchorRect}
+      id={id}
+      role="tooltip"
       dataTestId="worktree-row-script-popover"
       {...BADGE_HOVER_CARD_SURFACE}
       surfaceClassName="min-w-40 max-w-65"
     >
-      <div className="mb-1 text-3xs font-semibold fg-secondary">{heading}</div>
-      {rows.length === 0 ? (
-        <div className="text-xs fg-secondary">{emptyText}</div>
-      ) : (
-        <div className="flex flex-col gap-1.5">
-          {rows.map((row) => (
-            <div key={row.id} className="flex items-center gap-1.5 text-xs">
-              <span
-                className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${row.dotClass}`}
-              />
-              <span className="truncate fg-primary">{row.label}</span>
-              <span className={`ml-auto shrink-0 ${row.statusClass}`}>
-                {row.statusText}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      <Stack gap="tight">
+        <div className="text-3xs font-semibold fg-secondary">{heading}</div>
+        {rows.length === 0 ? (
+          <div className="text-xs fg-secondary">{emptyText}</div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {rows.map((row) => (
+              <div key={row.id} className="flex items-center gap-1.5 text-xs">
+                <span
+                  className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${row.dotClass}`}
+                />
+                <span className="truncate fg-primary">{row.label}</span>
+                <span className={`ml-auto shrink-0 ${row.statusClass}`}>
+                  {row.statusText}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Stack>
     </RichHoverCard>
   );
 }

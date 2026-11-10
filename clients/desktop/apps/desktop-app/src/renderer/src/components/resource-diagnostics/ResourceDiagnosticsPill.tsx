@@ -3,7 +3,6 @@ import { Popover, Tooltip } from '@canopy/ui-shared';
 import {
   ChipSimpleIcon,
   ResourceMonitorIcon,
-  type IconSize,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import { useResourceMonitorStore } from '@/stores/resourceMonitorStore';
@@ -33,11 +32,14 @@ export interface ResourceDiagnosticsPillProps {
 
 type Tone = 'ok' | 'warning' | 'critical' | 'loading' | 'error';
 
-interface ResourceDiagnosticsIconProps {
-  tone?: Tone;
-  size?: IconSize;
-  testId?: string;
-}
+/** The diagnostics glyph's ink for each tone. */
+const TONE_GLYPH_CLASS_NAMES: Readonly<Record<Tone, string>> = {
+  ok: OPERATIONAL_STATUS_COLORS.success.foreground,
+  warning: 'fg-warning',
+  critical: OPERATIONAL_STATUS_COLORS.failed.foreground,
+  error: OPERATIONAL_STATUS_COLORS.failed.foreground,
+  loading: 'fg-quaternary',
+};
 
 function formatMemoryGigabytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return '0.0 GB';
@@ -58,30 +60,6 @@ function toneClasses(tone: Tone): string {
     default:
       return `${OPERATIONAL_STATUS_COLORS.success.foreground} hover:bg-subtle`;
   }
-}
-
-export function ResourceDiagnosticsIcon({
-  tone = 'ok',
-  size = 'xl',
-  testId = 'sidebar-resource-diagnostics-icon',
-}: ResourceDiagnosticsIconProps): JSX.Element {
-  const toneClassName =
-    tone === 'critical' || tone === 'error'
-      ? OPERATIONAL_STATUS_COLORS.failed.foreground
-      : tone === 'warning'
-        ? 'fg-warning'
-        : tone === 'loading'
-          ? 'fg-quaternary'
-          : OPERATIONAL_STATUS_COLORS.success.foreground;
-
-  return (
-    <ResourceMonitorIcon
-      size={size}
-      className={toneClassName}
-      aria-hidden="true"
-      data-testid={testId}
-    />
-  );
 }
 
 export function ResourceDiagnosticsPill({
@@ -276,7 +254,12 @@ export function ResourceDiagnosticsPill({
                 <ResourceMonitorIcon size={14} />
               )
             ) : (
-              <ResourceDiagnosticsIcon tone={tone} size="sm" />
+              <ResourceMonitorIcon
+                size="sm"
+                className={TONE_GLYPH_CLASS_NAMES[tone]}
+                aria-hidden="true"
+                data-testid="sidebar-resource-diagnostics-icon"
+              />
             )}
           </span>
           <span

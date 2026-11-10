@@ -36,8 +36,8 @@ import type {
   AccountMcpConnection,
   McpHttpAuthPreference,
 } from '@canopy/execution-engine/types/mcp-servers';
-import { mcpHttpAuthTargetKey } from './mcp-http-auth';
-import { normalizePluginSelections } from './plugin-selections-normalization';
+import { mcpHttpAuthTargetKey } from '@canopy/execution-engine/lib/mcp-http-auth';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 
 /**
  * Single source of truth for which chat surfaces inherit default plugins

@@ -7,10 +7,14 @@ import {
 } from '@canopy/desktop-shared/types';
 import type {
   ModelHarnessInvocationOptions,
+  PipelineAgentModelAliasResolution,
   PipelineAiCreditsRoutingContext,
   PipelineAiCreditsRoutingOverride,
   PipelineModelPolicyScope,
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import { isAgentDefaultBaseModel } from '@canopy/protocol/agents';
+import { resolveAgentDestinationDefaultModel } from '../agents/agent-default-model';
+import { getAgentModel } from '../agents/agent-model-store';
 import { resolveAiCreditsRoutingOverride } from '../agents/ai-credits-routing';
 import { resolveBackgroundWorkOwner } from '../agents/work-owner';
 import {
@@ -181,6 +185,25 @@ export function resolveDesktopPipelineAiCreditsRouting(
         : {}),
     },
   );
+}
+
+/** A workflow model alias's Agent, for both compositions (CAN-5832). */
+export async function resolveDesktopPipelineAgentModelAlias(
+  agentId: string,
+  scope?: PipelineModelPolicyScope,
+): Promise<PipelineAgentModelAliasResolution | null> {
+  const agent = await getAgentModel(agentId);
+  if (!agent) return null;
+  return {
+    agentId: agent.id,
+    name: agent.name,
+    // An inheriting Agent takes the default of the step's workspace.
+    base: isAgentDefaultBaseModel(agent.baseModel)
+      ? await resolveAgentDestinationDefaultModel(scope?.projectId)
+      : agent.baseModel,
+    instructions: agent.instructions,
+    pluginSelections: agent.pluginSelections,
+  };
 }
 
 export async function isDesktopPipelineModelBlocked(

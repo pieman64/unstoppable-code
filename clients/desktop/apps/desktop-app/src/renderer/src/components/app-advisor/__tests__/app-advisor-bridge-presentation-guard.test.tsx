@@ -162,4 +162,32 @@ describe('App Advisor bridge presentation guard (CAN-4133)', () => {
       expect.objectContaining({ requestId: 'call-4', ok: false }),
     ]);
   });
+
+  it('an account MCP or Cursor request main hands over reaches its Settings surface (CAN-6008 B1)', async () => {
+    await deliver({
+      kind: 'dispatch_action',
+      requestId: 'call-5',
+      action: { type: 'mcp.account_connect', serverId: 'srv-1' },
+      originWorktreeId: 'global',
+      interfaceToolCall: true,
+    });
+
+    expect(mockDispatchAppAction).toHaveBeenCalledTimes(1);
+    expect(completed).toMatchObject([{ requestId: 'call-5', ok: true }]);
+  });
+
+  it('a credential write that runs in main is never handed to the window through the lease (CAN-6008)', async () => {
+    await deliver({
+      kind: 'dispatch_action',
+      requestId: 'call-6',
+      action: { type: 'canopy_cloud.save_api_key', apiKey: 'sk-test' },
+      originWorktreeId: 'global',
+      interfaceToolCall: true,
+    });
+
+    expect(mockDispatchAppAction).not.toHaveBeenCalled();
+    expect(completed).toMatchObject([
+      { requestId: 'call-6', ok: false, error: { code: 'unsupported_action' } },
+    ]);
+  });
 });

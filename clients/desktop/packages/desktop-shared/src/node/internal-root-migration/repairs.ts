@@ -1,4 +1,10 @@
 import { execFile } from 'node:child_process';
+import { coordinateInternalRootMigration } from './index';
+import {
+  collectInternalRootCleanupCandidates,
+  saveInternalRootCleanupReport,
+  type InternalRootCleanupReport,
+} from './cleanup-candidates';
 import { promisify, isDeepStrictEqual } from 'node:util';
 import {
   chmod,
@@ -26,21 +32,26 @@ import {
 } from '@canopy/core-platform';
 import {
   createInternalRootRepairs,
+  projectInternalRootMetadata,
   type InternalRootRepairWorker,
   type InternalRootRepairPlan,
 } from '@canopy/core-runtime/node/internal-root-repairs';
 import {
   InternalRootMigrationRefused,
+  type InternalRootIdentity,
   type InternalRootRepairContext,
 } from '@canopy/core-runtime/node/internal-root-migration';
 import {
   prepareRelocationGit,
+  isMissingPrunableGitWorktree,
   qualifyRelocationGit,
   projectRelocationBacklinks,
   assertRelocationOwnedPathsSafe,
   relocationWorktreeOwnedPaths,
   isWithin,
+  movedOwnedPath,
   type RelocationGit,
+  type RelocationGitPlan,
   type RelocationWorkspaceEvidence,
 } from '@canopy/core-runtime/node/relocation';
 import { createWorkspaceIndexRepository } from '@canopy/core-runtime/node/w5/workspace-index-repository';
@@ -57,6 +68,11 @@ import {
 import { assertRelocationW5Settled } from '@canopy/core-runtime/node/relocation';
 import { fingerprintW5File } from '@canopy/core-runtime/node/w5/commit-log/fingerprint';
 import type { W5DurabilityPort } from '@canopy/core-runtime/node/w5/commit-log';
+import {
+  freezeInternalRootJournals,
+  internalRootJournalOwnedPaths,
+  relocateInternalRootJournals,
+} from './lifecycle-journals';
 import {
   durableJson,
   privateDirectory,
@@ -86,6 +102,28 @@ const git: RelocationGit = async (cwd, args) =>
       maxBuffer: 64 * 1024 * 1024,
     })
   ).stdout;
+
+/** Reuses the migration's read-only Git host, not a new execution surface. */
+export async function reportInternalRootCleanup(
+  identity: InternalRootIdentity,
+  applied: boolean,
+  host: InternalRootFilesystemHost,
+  sourceBytes?: number,
+): Promise<InternalRootCleanupReport> {
+  // Only the exclusive holder can distinguish abandoned staging from a live writer.
+  const release = await coordinateInternalRootMigration(identity, host);
+  try {
+    const report = await collectInternalRootCleanupCandidates(identity, {
+      applied,
+      git,
+      sourceBytes,
+    });
+    await saveInternalRootCleanupReport(report, host);
+    return report;
+  } finally {
+    await release();
+  }
+}
 function refuse(reason: string): never {
   throw new InternalRootMigrationRefused(
     'repair-refused',
@@ -101,19 +139,22 @@ const readonlyStore: W5FileStore = {
 /** Inventory links and Git roots; W5 supplies the other exact owned path fields. */
 async function inventoryTree(
   root: string,
+  opaqueDirectories: ReadonlySet<string>,
 ): Promise<{ paths: string[]; checkouts: string[] }> {
   const paths: string[] = [root];
   const checkouts: string[] = [];
   const visit = async (path: string): Promise<void> => {
+    if (opaqueDirectories.has(path)) return;
     const state = await lstat(path);
     if (state.isSymbolicLink()) {
       paths.push(path);
-      const target = resolve(dirname(path), await readlink(path));
-      if (await statIfPresent(target)) paths.push(target);
       return;
     }
     if (!state.isDirectory()) return;
-    if (await statIfPresent(join(path, '.git'))) {
+    if (
+      !isWithin(join(root, 'w5'), path) &&
+      (await statIfPresent(join(path, '.git')))
+    ) {
       paths.push(path);
       checkouts.push(path);
       return;
@@ -127,6 +168,7 @@ async function inventoryTree(
 async function freeze(
   context: InternalRootRepairContext,
   observation: LocalAuthorityObservation,
+  diagnostics?: string[],
 ): Promise<InternalRootRepairPlan> {
   const { identity } = context;
   const transition = await observeLocalAuthorityRelocation(
@@ -138,7 +180,6 @@ async function freeze(
     },
     observation,
   );
-  const inventory = await inventoryTree(identity.source);
   const workspaceRoot = join(identity.source, 'workspaces');
   const index = createWorkspaceIndexRepository({
     store: readonlyStore,
@@ -172,101 +213,176 @@ async function freeze(
     ids.some((id) => !/^[A-Za-z0-9_-]+$/.test(id))
   )
     refuse('Ambiguous workspace membership');
+  // Unindexed sidecars carry no Git/owned-path discovery grant. Lifecycle and
+  // indexed records still supply their explicit owner paths below.
+  const opaqueDirectories = new Set<string>();
   if (await statIfPresent(workspaceRoot)) {
     for (const entry of await readdir(workspaceRoot, { withFileTypes: true })) {
-      if (
-        entry.isDirectory() &&
-        !ids.includes(entry.name) &&
-        (await statIfPresent(join(workspaceRoot, entry.name, 'workspace.json')))
-      )
-        refuse('Unindexed workspace requires original-root diagnosis');
+      if (entry.isDirectory() && !ids.includes(entry.name))
+        opaqueDirectories.add(join(workspaceRoot, entry.name));
     }
   }
-  for (const workspaceId of ids) {
-    const document = await manifest.read(workspaceId);
-    const trees = await list.read(workspaceId);
-    if (
-      document.authority !== 'ok' ||
-      trees.authority === 'unreadable' ||
-      (trees.authority === 'ok' && !trees.complete)
-    )
-      refuse('Unreadable workspace owner evidence');
-    const repoPaths: string[] = [];
-    const ownerDirectories: string[] = [];
-    for (const key of ['folderPath', 'externalPath'] as const) {
-      const path = document.document[key];
-      if (typeof path === 'string' && isWithin(identity.source, path)) {
-        const state = await statIfPresent(path);
-        if (!state?.isDirectory() || !unlinkedStoragePath(path))
-          refuse('Unproven managed folder');
-        ownerDirectories.push(path);
-        inventory.paths.push(path);
-      }
-    }
-    for (const key of ['repoPath', 'sourceRepoPath'] as const) {
-      const path = document.document[key];
-      if (typeof path === 'string') repoPaths.push(path);
-    }
-    const repos: unknown = document.document.repos;
-    if (Array.isArray(repos))
-      for (const entry of repos) {
-        const repo: unknown = entry;
-        if (
-          typeof repo !== 'object' ||
-          repo === null ||
-          !('repoPath' in repo) ||
-          typeof repo.repoPath !== 'string'
-        )
-          refuse('Unreadable repository owner evidence');
-        repoPaths.push(repo.repoPath);
-      }
-    for (const path of repoPaths) {
-      // External owner references are read only, never a recursive walk grant.
-      if (
-        (await statIfPresent(path)) &&
-        (await statIfPresent(join(path, '.git')))
-      )
-        inventory.checkouts.push(path);
-    }
-    const worktreePaths = relocationWorktreeOwnedPaths(
-      trees.authority === 'ok' ? trees.raw : null,
+  const inventory = await inventoryTree(identity.source, opaqueDirectories);
+  const lifecycleJournals = await freezeInternalRootJournals(
+    identity.source,
+  ).catch((error: unknown) => {
+    if (!diagnostics) throw error;
+    diagnostics.push(
+      error instanceof Error
+        ? error.message
+        : 'Unreadable lifecycle owner evidence',
     );
-    for (const path of worktreePaths) {
-      if (resolve(path) !== path) refuse('Noncanonical owner path');
-      inventory.paths.push(path);
-      const stat = await statIfPresent(path);
-      if (stat?.isSymbolicLink())
-        inventory.paths.push(resolve(dirname(path), await readlink(path)));
+    return [];
+  });
+  inventory.paths.push(
+    ...internalRootJournalOwnedPaths(identity.source, lifecycleJournals),
+  );
+  for (const workspaceId of ids) {
+    try {
+      const document = await manifest.read(workspaceId);
+      const trees = await list.read(workspaceId);
+      if (
+        document.authority !== 'ok' ||
+        trees.authority === 'unreadable' ||
+        (trees.authority === 'ok' && !trees.complete)
+      )
+        refuse('Unreadable workspace owner evidence');
+      const repoPaths: string[] = [];
+      const ownerDirectories: string[] = [];
+      for (const key of ['folderPath', 'externalPath'] as const) {
+        const path = document.document[key];
+        if (typeof path === 'string' && isWithin(identity.source, path)) {
+          const state = await statIfPresent(path);
+          if (!state?.isDirectory() || !unlinkedStoragePath(path))
+            refuse('Unproven managed folder');
+          ownerDirectories.push(path);
+          inventory.paths.push(path);
+        }
+      }
+      for (const key of ['repoPath', 'sourceRepoPath'] as const) {
+        const path = document.document[key];
+        if (typeof path === 'string') repoPaths.push(path);
+      }
+      const repos: unknown = document.document.repos;
+      if (Array.isArray(repos))
+        for (const entry of repos) {
+          const repo: unknown = entry;
+          if (
+            typeof repo !== 'object' ||
+            repo === null ||
+            !('repoPath' in repo) ||
+            typeof repo.repoPath !== 'string'
+          )
+            refuse('Unreadable repository owner evidence');
+          repoPaths.push(repo.repoPath);
+        }
+      for (const path of repoPaths) {
+        // External owner references are read only, never a recursive walk grant.
+        if (
+          (await statIfPresent(path)) &&
+          (await statIfPresent(join(path, '.git')))
+        )
+          inventory.checkouts.push(path);
+      }
+      const worktreePaths = relocationWorktreeOwnedPaths(
+        trees.authority === 'ok' ? trees.raw : null,
+      );
+      for (const path of worktreePaths) {
+        if (resolve(path) !== path) refuse('Noncanonical owner path');
+        inventory.paths.push(path);
+        const stat = await statIfPresent(path);
+        if (stat?.isSymbolicLink())
+          inventory.paths.push(resolve(dirname(path), await readlink(path)));
+      }
+      workspaces.push({
+        workspaceId,
+        targetId: 'local',
+        manifestRaw: document.raw,
+        listRaw: trees.authority === 'ok' ? trees.raw : null,
+        repositoryPaths: ownerDirectories,
+        ownedPaths: worktreePaths,
+      });
+    } catch (error) {
+      if (!diagnostics) throw error;
+      diagnostics.push(
+        `Workspace ${workspaceId}: ${error instanceof Error ? error.message : 'unreadable owner evidence'}`,
+      );
     }
-    workspaces.push({
-      workspaceId,
-      targetId: 'local',
-      manifestRaw: document.raw,
-      listRaw: trees.authority === 'ok' ? trees.raw : null,
-      repositoryPaths: ownerDirectories,
-      ownedPaths: worktreePaths,
-    });
   }
   // Complete each common repository's membership, including external linked checkouts.
   const checkouts = new Set(inventory.checkouts);
+  const reportedMissingPrunable = new Set<string>();
   for (const path of checkouts) {
-    for (const record of (
-      await git(path, ['worktree', 'list', '--porcelain', '-z'])
-    ).split('\0\0')) {
+    let listed: string;
+    try {
+      listed = await git(path, ['worktree', 'list', '--porcelain', '-z']);
+    } catch (error) {
+      if (!diagnostics) throw error;
+      diagnostics.push(
+        `Git ${path}: ${error instanceof Error ? error.message : 'unreadable checkout'}`,
+      );
+      checkouts.delete(path);
+      continue;
+    }
+    for (const record of listed.split('\0\0')) {
       const fields = record.split('\0');
-      if (fields.includes('bare')) continue;
+      if (
+        fields.includes('bare') ||
+        (await isMissingPrunableGitWorktree(fields, reportedMissingPrunable))
+      )
+        continue;
       const member = fields
         .find((field) => field.startsWith('worktree '))
         ?.slice(9);
       if (member) checkouts.add(member);
     }
   }
-  const gitPlan = await prepareRelocationGit(git, [...checkouts], {
-    portableFilesystem: portableGitFilesystem(),
-  });
+  let gitPlan: RelocationGitPlan = { checkouts: [], backlinks: [] };
+  if (diagnostics) {
+    const groups = new Map<string, string[]>();
+    for (const path of checkouts) {
+      try {
+        const common = (
+          await git(path, [
+            'rev-parse',
+            '--path-format=absolute',
+            '--git-common-dir',
+          ])
+        ).trim();
+        const members = groups.get(common) ?? [];
+        members.push(path);
+        groups.set(common, members);
+      } catch (error) {
+        diagnostics.push(
+          `Git ${path}: ${error instanceof Error ? error.message : 'unreadable checkout'}`,
+        );
+      }
+    }
+    for (const [common, paths] of groups) {
+      try {
+        const group = await prepareRelocationGit(git, paths, {
+          portableFilesystem: portableGitFilesystem(),
+          reportedMissingPrunable,
+        });
+        gitPlan = {
+          checkouts: [...gitPlan.checkouts, ...group.checkouts],
+          backlinks: [...gitPlan.backlinks, ...group.backlinks],
+        };
+      } catch (error) {
+        diagnostics.push(
+          `Git ${common}: ${error instanceof Error ? error.message : 'preparation refused'}`,
+        );
+      }
+    }
+  } else
+    gitPlan = await prepareRelocationGit(git, [...checkouts], {
+      portableFilesystem: portableGitFilesystem(),
+      reportedMissingPrunable,
+    });
   const repositoryPaths = gitPlan.checkouts.map((row) => row.path);
   return {
     transition,
+    lifecycleJournals,
     gitPlan,
     ownedPaths: [...new Set(inventory.paths)],
     workspaces: workspaces.map((evidence) => ({
@@ -274,6 +390,25 @@ async function freeze(
       repositoryPaths: [...repositoryPaths, ...evidence.repositoryPaths],
     })),
   };
+}
+
+/** Legacy inventory included external payload targets, which confer no owner authority. */
+function ownedPathsForProof(plan: InternalRootRepairPlan): readonly string[] {
+  return [
+    ...plan.ownedPaths.filter((path) =>
+      isWithin(plan.transition.from.canonicalDataRoot, path),
+    ),
+    ...plan.workspaces.flatMap((row) => [
+      ...(row.ownedPaths ?? relocationWorktreeOwnedPaths(row.listRaw)),
+      ...row.repositoryPaths,
+    ]),
+    ...internalRootJournalOwnedPaths(
+      plan.transition.from.canonicalDataRoot,
+      plan.lifecycleJournals ?? [],
+    ),
+    ...plan.gitPlan.checkouts.flatMap((row) => [row.path, row.commonDirectory]),
+    ...plan.gitPlan.backlinks.map((row) => row.path),
+  ];
 }
 
 function checkedPlan(
@@ -308,6 +443,7 @@ export function createInternalRootRelocationRepairs(options: {
     options.filesystemHost ??
     internalRootFilesystemHost(options.ownedChildPath);
   const worker: InternalRootRepairWorker = {
+    ownedPathsForProof,
     ...(host.windows
       ? {
           replaceBacklink: async (image: {
@@ -389,6 +525,12 @@ export function createInternalRootRelocationRepairs(options: {
       } else await durableJson(path, plan.transition, host);
     },
     repairMetadata: async (context, plan, images) => {
+      await relocateInternalRootJournals(
+        plan.transition,
+        context.workingRoot,
+        host,
+        plan.lifecycleJournals ?? [],
+      );
       if (!images.length) return;
       const root = context.workingRoot;
       await mkdir(join(root, 'w5'), { recursive: true, mode: 0o700 });
@@ -489,7 +631,7 @@ export function createInternalRootRelocationRepairs(options: {
       await assertRelocationOwnedPathsSafe(
         plan.transition,
         [
-          ...plan.ownedPaths,
+          ...ownedPathsForProof(plan),
           ...plan.gitPlan.checkouts.flatMap((row) => [
             row.path,
             row.commonDirectory,
@@ -497,6 +639,11 @@ export function createInternalRootRelocationRepairs(options: {
         ],
         root,
         published,
+        {
+          preserveSourceTargetsWithin: plan.gitPlan.checkouts.map((row) =>
+            movedOwnedPath(plan.transition, row.path),
+          ),
+        },
       );
       for (const image of await projectRelocationBacklinks(
         plan.transition,
@@ -523,11 +670,50 @@ export function createInternalRootRelocationRepairs(options: {
             refuse('Owner projection verification failed');
         }
       }
+      await relocateInternalRootJournals(
+        plan.transition,
+        root,
+        host,
+        plan.lifecycleJournals ?? [],
+        true,
+        published,
+      );
       if (published)
         await qualifyRelocationGit(git, plan.transition, plan.gitPlan, {
           portableFilesystem: portableGitFilesystem(),
         });
     },
   };
-  return createInternalRootRepairs(worker);
+  return {
+    ...createInternalRootRepairs(worker),
+    inspect: async (
+      context: InternalRootRepairContext,
+    ): Promise<readonly string[]> => {
+      const diagnostics: string[] = [];
+      try {
+        const plan = await freeze(context, observation, diagnostics);
+        await assertRelocationOwnedPathsSafe(
+          plan.transition,
+          [
+            ...ownedPathsForProof(plan),
+            ...plan.gitPlan.checkouts.flatMap((row) => [
+              row.path,
+              row.commonDirectory,
+            ]),
+          ],
+          context.identity.source,
+          false,
+          { source: true },
+        );
+        await projectInternalRootMetadata(plan);
+      } catch (error) {
+        diagnostics.push(
+          error instanceof Error
+            ? error.message
+            : 'Git/owner inspection failed',
+        );
+      }
+      return diagnostics;
+    },
+  };
 }

@@ -50,6 +50,20 @@ export function interfaceToolAudienceOf(chatId: string | undefined): {
   return audience === undefined ? {} : { audience };
 }
 
+/**
+ * CAN-6008 (CAN-4133 N2): whether this computer's own main window serves the
+ * App Advisor presentation tool to this chat now. A chat a connected computer
+ * drives, or a lease of another computer's window, never counts, whatever
+ * tools that window registered.
+ */
+export function localMainWindowServes(chatId: string | undefined): boolean {
+  if (interfaceToolAudience(chatId) !== undefined) return false;
+  return (
+    sessionRegistry?.available().toolNames.includes('ui.app_advisor.present') ??
+    false
+  );
+}
+
 /** D12: the catalog tools a session of this kind binds now, from the windows of the computer driving its chat, sorted. Empty without a registry. */
 export function resolveSessionInterfaceTools(opts: {
   assistantMode?: AssistantMode;

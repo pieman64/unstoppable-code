@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type {
   ExternalAgentComputer,
   ExternalAgentComputerConnectOutcome,
+  ExternalAgentComputerList,
 } from '@canopy/protocol/external-agents';
 import type { ExternalAgentComputersClient } from '@canopy/app-core';
 import {
@@ -24,6 +25,20 @@ import {
 /** UX copy E1/E2 (CAN-5985). */
 const AGENT_LIMITS =
   'Agents can start and follow chats, read files and run pipelines. They can’t use terminals, answer approvals or delete work.';
+
+/**
+ * UX copy for computers agents still reach through the retiring Remote
+ * Control path (CAN-6039). Users know that path only as Remote Control, so
+ * the copy never says Portal. Every row the relay can't see right now uses the
+ * unseen sentence, whether or not its desktop has minted a relay token, so
+ * the copy covers both an outdated app and Remote Control being off.
+ */
+const NEEDS_CONNECTING_ONLINE =
+  'Connect this computer so agents can keep using it.';
+const NEEDS_CONNECTING_UNSEEN =
+  'Update the app on this computer and turn on Remote Control to connect it.';
+
+type PortalOnlyComputer = ExternalAgentComputerList['portalOnly'][number];
 
 type ConnectFailure = Exclude<
   ExternalAgentComputerConnectOutcome,
@@ -54,6 +69,9 @@ function connectFailureMessage(status: ConnectFailure, name: string): string {
 }
 
 function agentsLabel(computer: ExternalAgentComputer): string {
+  if (computer.viaPortal) {
+    return computer.online ? NEEDS_CONNECTING_ONLINE : NEEDS_CONNECTING_UNSEEN;
+  }
   switch (computer.agents) {
     case 'connected':
       return 'Connected for agents';
@@ -72,6 +90,9 @@ export function ExternalAgentComputersSection({
   const [computers, setComputers] = useState<
     readonly ExternalAgentComputer[] | null
   >(null);
+  const [portalOnly, setPortalOnly] = useState<readonly PortalOnlyComputer[]>(
+    [],
+  );
   const [problem, setProblem] = useState(false);
   const [connecting, setConnecting] = useState<ExternalAgentComputer | null>(
     null,
@@ -85,6 +106,7 @@ export function ExternalAgentComputersSection({
     const result = await client.list();
     if (result.ok) {
       setComputers(result.value.computers);
+      setPortalOnly(result.value.portalOnly);
       setProblem(false);
     } else {
       setProblem(true);
@@ -148,52 +170,82 @@ export function ExternalAgentComputersSection({
       <SettingsGroup>
         {computers === null && !problem ? (
           <EmptyStateRow title="Loading computers…" />
-        ) : computers !== null && computers.length === 0 ? (
+        ) : computers !== null &&
+          computers.length === 0 &&
+          portalOnly.length === 0 ? (
           <EmptyStateRow
             title="Turn on Remote Control on a computer to see it here."
             testId="external-agents-computers-empty"
           />
         ) : (
-          (computers ?? []).map((computer) => (
-            <SettingsRow
-              key={computer.deviceId}
-              testId={`external-agents-computer-${computer.deviceId}`}
-              label={computer.name}
-              description={
-                <span className="flex flex-wrap items-center gap-2">
-                  <span>{agentsLabel(computer)}</span>
-                  <Badge tone={computer.online ? 'success' : 'neutral'}>
-                    {computer.online ? 'Online' : 'Offline'}
-                  </Badge>
-                </span>
-              }
-              control={
-                computer.agents === 'not_connected' ? (
-                  <Button
-                    variant="secondary"
-                    size="compact"
-                    disabled={!computer.online}
-                    onClick={(): void => setConnecting(computer)}
-                    data-testid="external-agents-computer-connect"
-                  >
-                    Connect
-                  </Button>
-                ) : (
-                  <Button
-                    variant="secondary"
-                    size="compact"
-                    onClick={(): void => {
-                      setRemoveError(null);
-                      setRemoving(computer);
-                    }}
-                    data-testid="external-agents-computer-remove"
-                  >
-                    Remove
-                  </Button>
-                )
-              }
-            />
-          ))
+          <>
+            {(computers ?? []).map((computer) => (
+              <SettingsRow
+                key={computer.deviceId}
+                testId={`external-agents-computer-${computer.deviceId}`}
+                label={computer.name}
+                description={
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span>{agentsLabel(computer)}</span>
+                    <Badge tone={computer.online ? 'success' : 'neutral'}>
+                      {computer.online ? 'Online' : 'Offline'}
+                    </Badge>
+                    {computer.viaPortal ? (
+                      <Badge
+                        tone="warning"
+                        data-testid="external-agents-computer-needs-connecting"
+                      >
+                        Needs connecting
+                      </Badge>
+                    ) : null}
+                  </span>
+                }
+                control={
+                  computer.agents === 'not_connected' ? (
+                    <Button
+                      variant="secondary"
+                      size="compact"
+                      disabled={!computer.online}
+                      onClick={(): void => setConnecting(computer)}
+                      data-testid="external-agents-computer-connect"
+                    >
+                      Connect
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="secondary"
+                      size="compact"
+                      onClick={(): void => {
+                        setRemoveError(null);
+                        setRemoving(computer);
+                      }}
+                      data-testid="external-agents-computer-remove"
+                    >
+                      Remove
+                    </Button>
+                  )
+                }
+              />
+            ))}
+            {portalOnly.map((computer) => (
+              <SettingsRow
+                key={computer.remoteId}
+                testId={`external-agents-computer-portal-${computer.remoteId}`}
+                label={computer.name}
+                description={
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span>{NEEDS_CONNECTING_UNSEEN}</span>
+                    <Badge
+                      tone="warning"
+                      data-testid="external-agents-computer-needs-connecting"
+                    >
+                      Needs connecting
+                    </Badge>
+                  </span>
+                }
+              />
+            ))}
+          </>
         )}
       </SettingsGroup>
       <p className="text-xs text-pretty fg-secondary">{AGENT_LIMITS}</p>

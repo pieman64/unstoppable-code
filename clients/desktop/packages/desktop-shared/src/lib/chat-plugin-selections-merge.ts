@@ -5,7 +5,7 @@ import {
   type DeferredToolsReloadAdditions,
   type McpHttpAuthPreference,
 } from '../types';
-import { normalizePluginSelections } from './plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { withRequiredPipelineEditorSkill } from './pipeline-editor-tools';
 
 /**

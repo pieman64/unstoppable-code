@@ -15,7 +15,7 @@ export {
 // `src/shared/plugin-refs.ts` and are reused across features.
 // ---------------------------------------------------------------------------
 
-import { buildShareablePluginDisplay } from '../plugin-refs';
+import { buildShareablePluginDisplay } from '@canopy/execution-engine/plugin-refs';
 import type {
   Pipeline,
   PipelinePluginDefault,

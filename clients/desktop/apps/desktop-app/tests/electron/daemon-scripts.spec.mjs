@@ -55,7 +55,11 @@ function daemonPid(userDataDir) {
 }
 
 function processTable() {
-  return execFileSync('ps', ['-axo', 'pid=,ppid=,args='], { encoding: 'utf8' })
+  // A busy host's full process table can pass execFileSync's 1 MiB default.
+  return execFileSync('ps', ['-axo', 'pid=,ppid=,args='], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  })
     .split('\n')
     .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/))
     .filter(Boolean)
@@ -83,10 +87,28 @@ function runLogMeta(userDataDir, workspaceId, worktreeId, scriptName) {
     .update(`project:${scriptName}`)
     .digest('hex')
     .slice(0, 12);
-  const name = readdirSync(dir).find((entry) =>
-    entry.endsWith(`__${stem}.json`),
-  );
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch (error) {
+    // No run has written a log in this worktree yet.
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+  const name = entries.find((entry) => entry.endsWith(`__${stem}.json`));
   return name ? JSON.parse(readFileSync(path.join(dir, name), 'utf8')) : null;
+}
+
+// Whether a process running `args` descends from `ancestor`.
+function runsUnder(args, ancestor) {
+  const rows = processTable();
+  const parents = new Map(rows.map((row) => [row.pid, row.ppid]));
+  return rows.some((row) => {
+    if (row.args !== args) return false;
+    for (let pid = row.ppid; pid > 1; pid = parents.get(pid) ?? 0)
+      if (pid === ancestor) return true;
+    return false;
+  });
 }
 
 // The seed summary carries the worktree's path but not its id; the id is the
@@ -198,13 +220,16 @@ test.describe('daemon scripts (CAN-5087)', () => {
       .poll(() => existsSync(path.join(userDataDir, 'runtime', 'core.json')))
       .toBe(true);
     const daemon = daemonPid(userDataDir);
+    // Wait for this script's own run log and process: another daemon child
+    // can start before either exists (CAN-6043).
     await expect
-      .poll(() =>
-        processTable().some(
-          (row) => row.args.includes('sleep 60') || row.ppid === daemon,
-        ),
+      .poll(
+        () =>
+          runLogMeta(userDataDir, workspace.id, worktreeId, 'daemon-sleep')
+            ?.status,
       )
-      .toBe(true);
+      .toBe('running');
+    await expect.poll(() => runsUnder('sleep 60', daemon)).toBe(true);
     const meta = runLogMeta(
       userDataDir,
       workspace.id,

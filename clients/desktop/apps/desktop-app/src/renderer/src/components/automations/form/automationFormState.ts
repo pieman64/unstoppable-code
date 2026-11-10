@@ -27,7 +27,7 @@ import {
   APP_ADVISOR_PROJECT_ID,
   hasAnySelections,
 } from '@canopy/desktop-shared/types';
-import { emptyPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { emptyPluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { canonicalizeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import { CHAT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { validateConfiguredPromptReferences } from '@canopy/protocol/configured-prompt-references';
@@ -35,7 +35,7 @@ import {
   normalizeSidebarItemGroupName,
   type SidebarItemGroupScope,
 } from '@canopy/protocol/sidebar';
-import { type ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
+import { type ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import {
   formatCronValidationError,
   validateAutomationTrigger,

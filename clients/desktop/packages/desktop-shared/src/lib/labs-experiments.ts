@@ -59,17 +59,6 @@ export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
     flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsActivityCard.key,
     requiresEarlyAccess: false,
   },
-  {
-    // CAN-4551: desktop only, so not in WEB_LABS_EXPERIMENTS.
-    id: 'chat-automation-pipelines',
-    name: 'Chat automations as workflows',
-    description:
-      'Save chat automations you edit as workflows. Turn it off and save again to undo.',
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key,
-    requiresEarlyAccess: false,
-  },
 
   {
     id: 'overview-page',

@@ -16,11 +16,11 @@ export function SlashCommandAvailabilityTag(): JSX.Element {
 }
 
 /**
- * Default busy spinner for slash-command surfaces. Shared so host menus that
- * render slash rows outside the rich editor's `SlashCommandMenu` (e.g. the
- * portal Commands popup) share the same pending treatment.
+ * The pending spinner on a slash-command row while its command enables.
+ * Shared so every slash-row surface (the rich editor's menu, the Commands
+ * popup) draws the same pending treatment.
  */
-export function SlashCommandLoadingIcon(): JSX.Element {
+export function SlashCommandPendingSpinner(): JSX.Element {
   return <LoadingSpinner decorative sizePx={14} />;
 }
 

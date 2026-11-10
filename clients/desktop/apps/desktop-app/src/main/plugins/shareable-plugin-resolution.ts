@@ -9,13 +9,13 @@ import {
   normalizeShareableSource,
   type ShareablePluginRef,
   type ShareablePluginSource,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
 import {
   BUILTIN_PLUGIN_MARKETPLACE_ID,
   type MarketplaceInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { loadSkills } from '../skills/skill-service';
 import { loadMarketplaces } from './plugin-service';
 import { parseGitHubSource } from '../skills/source-parser';

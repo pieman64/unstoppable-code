@@ -2,7 +2,7 @@ import {
   isCuratedPluginMarketplaceId,
   type PluginInfo,
   type PluginProvider,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { curatedPluginKey } from '@/lib/onboarding/curatedOnboardingPlugins';
 import { pluginNeedsInstall } from '@/lib/pluginInstallStatus';
 import { applyPluginUpdateToMarketplaceCaches } from '@/hooks/useMarketplaceList';

@@ -4,6 +4,7 @@ import {
   Button,
   ListRow,
   SegmentedControl,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { applyTheme } from '@/lib/theme';
 import {
@@ -156,112 +157,127 @@ export function ComponentsLabPage(): JSX.Element {
       : COMPONENTS_LAB_ENTRIES.filter((entry) => entry.id === selected);
 
   return (
-    <div className="flex min-h-screen bg-base fg-primary">
-      <nav
-        aria-label="Components"
-        className="sticky top-0 flex h-screen w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r px-2 py-4"
-      >
-        <div className="px-2">
-          <Heading level={1} variant="title">
-            Components
-          </Heading>
-        </div>
-        <ListRow
-          selected={selected === OVERVIEW}
-          aria-current={selected === OVERVIEW ? 'page' : undefined}
-          onClick={(): void => setSelected(OVERVIEW)}
+    <Surface variant="pane">
+      <div className="flex min-h-screen fg-primary">
+        <Surface
+          as="nav"
+          aria-label="Components"
+          variant="section"
+          boundary="right"
+          extent="viewport"
+          className="sticky top-0 w-60 shrink-0 overflow-y-auto"
         >
-          Overview
-        </ListRow>
-        <ListRow
-          selected={selected === ALL}
-          aria-current={selected === ALL ? 'page' : undefined}
-          onClick={(): void => setSelected(ALL)}
-        >
-          All unified
-        </ListRow>
-        {COMPONENTS_LAB_GROUPS.map((group) => (
-          <div key={group} className="flex flex-col gap-0.5">
-            <div className="px-2 pb-1">
-              <Heading level={2} variant="label">
-                {group}
+          <div className="flex flex-col gap-4 px-2 py-4">
+            <div className="px-2">
+              <Heading level={1} variant="title">
+                Components
               </Heading>
             </div>
-            {COMPONENTS_LAB_ENTRIES.filter(
-              (entry) => entry.group === group,
-            ).map((entry) => (
-              <ListRow
-                key={entry.id}
-                selected={selected === entry.id}
-                aria-current={selected === entry.id ? 'page' : undefined}
-                onClick={(): void => setSelected(entry.id)}
-              >
-                {entry.name}
-              </ListRow>
-            ))}
-          </div>
-        ))}
-      </nav>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b bg-base px-6 py-3">
-          <SegmentedControl
-            label="Preview width"
-            value={width}
-            width="content"
-            onChange={setWidth}
-            options={[
-              { value: 'desktop', label: 'Desktop' },
-              { value: 'phone', label: 'Phone' },
-            ]}
-          />
-          <SegmentedControl
-            label="Color mode"
-            value={colorMode}
-            width="content"
-            onChange={setColorMode}
-            options={[
-              { value: 'light', label: 'Light' },
-              { value: 'dark', label: 'Dark' },
-            ]}
-          />
-          <p className="text-xs fg-tertiary">
-            Real shared components only. Each stage plays its story once; the
-            sheets under it are live, so point at a control to judge it.
-          </p>
-        </header>
-        <main
-          id="components-lab-preview"
-          className={`flex flex-col gap-12 py-6 ${width === 'phone' ? 'px-4' : 'px-6'}`}
-          data-view={overview ? 'overview' : 'sheets'}
-          style={
-            width === 'phone'
-              ? { width: PHONE_VIEWPORT_PX, maxWidth: '100%' }
-              : undefined
-          }
-        >
-          <LabColorModeContext.Provider value={colorMode}>
-            {overview ? (
-              <div
-                data-testid="components-lab-overview"
-                className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),35rem))] gap-x-8 gap-y-10"
-              >
+            <ListRow
+              selected={selected === OVERVIEW}
+              aria-current={selected === OVERVIEW ? 'page' : undefined}
+              onClick={(): void => setSelected(OVERVIEW)}
+            >
+              Overview
+            </ListRow>
+            <ListRow
+              selected={selected === ALL}
+              aria-current={selected === ALL ? 'page' : undefined}
+              onClick={(): void => setSelected(ALL)}
+            >
+              All unified
+            </ListRow>
+            {COMPONENTS_LAB_GROUPS.map((group) => (
+              <div key={group} className="flex flex-col gap-0.5">
+                <div className="px-2 pb-1">
+                  <Heading level={2} variant="label">
+                    {group}
+                  </Heading>
+                </div>
                 {COMPONENTS_LAB_ENTRIES.filter(
-                  (entry) => entry.group === 'Unified' && entry.Stage,
+                  (entry) => entry.group === group,
                 ).map((entry) => (
-                  <OverviewCard
+                  <ListRow
                     key={entry.id}
-                    entry={entry}
-                    onOpen={setSelected}
-                  />
+                    selected={selected === entry.id}
+                    aria-current={selected === entry.id ? 'page' : undefined}
+                    onClick={(): void => setSelected(entry.id)}
+                  >
+                    {entry.name}
+                  </ListRow>
                 ))}
               </div>
-            ) : null}
-            {visible.map((entry) => (
-              <Sheet key={entry.id} entry={entry} />
             ))}
-          </LabColorModeContext.Provider>
-        </main>
+          </div>
+        </Surface>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Surface
+            as="header"
+            variant="pane"
+            boundary="bottom"
+            className="sticky top-0 z-10"
+          >
+            <div className="flex flex-wrap items-center gap-3 px-6 py-3">
+              <SegmentedControl
+                label="Preview width"
+                value={width}
+                width="content"
+                onChange={setWidth}
+                options={[
+                  { value: 'desktop', label: 'Desktop' },
+                  { value: 'phone', label: 'Phone' },
+                ]}
+              />
+              <SegmentedControl
+                label="Color mode"
+                value={colorMode}
+                width="content"
+                onChange={setColorMode}
+                options={[
+                  { value: 'light', label: 'Light' },
+                  { value: 'dark', label: 'Dark' },
+                ]}
+              />
+              <p className="text-xs fg-tertiary">
+                Real shared components only. Each stage plays its story once;
+                the sheets under it are live, so point at a control to judge it.
+              </p>
+            </div>
+          </Surface>
+          <main
+            id="components-lab-preview"
+            className={`flex flex-col gap-12 py-6 ${width === 'phone' ? 'px-4' : 'px-6'}`}
+            data-view={overview ? 'overview' : 'sheets'}
+            style={
+              width === 'phone'
+                ? { width: PHONE_VIEWPORT_PX, maxWidth: '100%' }
+                : undefined
+            }
+          >
+            <LabColorModeContext.Provider value={colorMode}>
+              {overview ? (
+                <div
+                  data-testid="components-lab-overview"
+                  className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),35rem))] gap-x-8 gap-y-10"
+                >
+                  {COMPONENTS_LAB_ENTRIES.filter(
+                    (entry) => entry.group === 'Unified' && entry.Stage,
+                  ).map((entry) => (
+                    <OverviewCard
+                      key={entry.id}
+                      entry={entry}
+                      onOpen={setSelected}
+                    />
+                  ))}
+                </div>
+              ) : null}
+              {visible.map((entry) => (
+                <Sheet key={entry.id} entry={entry} />
+              ))}
+            </LabColorModeContext.Provider>
+          </main>
+        </div>
       </div>
-    </div>
+    </Surface>
   );
 }

@@ -298,8 +298,16 @@ const RECENT_ENTRY_LIMIT = 200;
 const INTERFACE_TOOL_CALLS_PER_ENTRY = 64;
 /** Delivered calls awaiting settlement whose entry is remembered. */
 const INTERFACE_TOOL_CALL_BINDINGS = 1_024;
+// Every chat kind whose waits pause the canonical turn reducer (CAN-5096,
+// CAN-5827 for App Advisor and the Pipeline Editor).
 const CANONICAL_DURATION_EVENT_TYPES: ReadonlySet<AgentAuditEventType> =
-  new Set(['worktree_chat', 'standalone_chat', 'worktree_plan_chat']);
+  new Set([
+    'worktree_chat',
+    'standalone_chat',
+    'worktree_plan_chat',
+    'app_advisor',
+    'pipeline_editor',
+  ]);
 
 /** The chat turn a plan usage event is counted on. */
 interface PlanUsageTarget {

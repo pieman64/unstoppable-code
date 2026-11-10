@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { ArchiveIcon, TrashIcon, type IconSize } from '../icons/AppIcons';
+import { ArchiveIcon, TrashIcon, type IconSize } from './AppIcons';
 import type { ArchivedContainerState } from '../lib/archived-state';
 
 export function ArchivedStateIcon({

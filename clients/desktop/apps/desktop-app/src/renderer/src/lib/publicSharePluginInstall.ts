@@ -1,13 +1,13 @@
 import {
   getShareablePluginRefKey,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import type {
   MarketplaceInfo,
   PluginInfo,
   PluginProvider,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import { computePluginShareableRef } from '@/hooks/useUnifiedTableData';
 import { entryIdForSelection } from '@/lib/relatedCapabilities';

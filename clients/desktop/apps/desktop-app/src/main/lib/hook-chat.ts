@@ -46,7 +46,7 @@ import {
   readCodexSpeedRecord,
   type CodexSpeed,
 } from '@canopy/execution-engine/lib/codex-speed';
-import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
+import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import { resolvePipelineModelAlias } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
 import { readPreferencesFile } from '../lib/preferences-store';
 import {
@@ -63,7 +63,7 @@ import {
 } from '../agents/agent-default-model';
 import { getEffectiveClaudeChatModePreferences } from './claude-tui-chats';
 import { mergePluginSelections } from '../lib/plugin-selection-utils';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { sendToWindow } from './window-send';
 import { dispatchWorktreeChatTurn } from './worktree-chat-turn';

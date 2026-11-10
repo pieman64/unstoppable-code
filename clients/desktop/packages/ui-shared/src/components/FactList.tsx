@@ -81,15 +81,15 @@ const ROW_HEIGHT_CLASS: Record<FactListRowHeight, string> = {
   control: ' auto-rows-[minmax(1.75rem,auto)] items-center',
 };
 
-/** Placement only: margins around the list. */
-export type FactListPlacement = 'mt-1' | 'mt-2' | 'mt-3' | 'mt-4' | 'mb-4';
+/**
+ * Placement only: margins around the list. Legacy: prefer the parent's gap
+ * (Stack); only the values existing callers still pass remain.
+ */
+export type FactListPlacement = 'mt-3' | 'mt-4';
 
 const PLACEMENT_CLASS: Record<FactListPlacement, string> = {
-  'mt-1': ' mt-1',
-  'mt-2': ' mt-2',
   'mt-3': ' mt-3',
   'mt-4': ' mt-4',
-  'mb-4': ' mb-4',
 };
 
 /**

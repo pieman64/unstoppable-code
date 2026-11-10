@@ -37,41 +37,43 @@ export function OrgEnforcedConsentList({
       }`}
       data-testid="org-enforced-consent-list"
     >
-      {heading ? (
-        <p className="text-s font-medium fg-primary">{heading}</p>
-      ) : null}
-      <ul className={`flex flex-col gap-3 ${heading ? 'mt-3' : ''}`}>
-        {items.map((item) => (
-          // Key and test id both carry the disposition: one policy kind can now
-          // yield two items (what it requires and what it blocks), so keying on
-          // `policyKind` alone would collide.
-          <Stack
-            as="li"
-            gap="tight"
-            key={`${item.policyKind}-${item.disposition}`}
-            data-testid={`consent-item-${item.policyKind}-${item.disposition}`}
-            data-disposition={item.disposition}
-          >
-            <p className="text-s font-medium fg-primary">{item.title}</p>
-            {item.disposition === 'blocked' ? (
-              // The blast radius is genuinely surprising and has to be stated:
-              // a prohibition is global, so it also silences these scopes for
-              // the member's own private account and any other organization.
-              <p className="text-xs fg-secondary">
-                This data stays on your machine everywhere, including your
-                personal account and any other organization.
-              </p>
-            ) : null}
-            {item.details.length > 0 ? (
-              <ul className="list-disc flex flex-col gap-0.5 pl-5 text-xs fg-secondary">
-                {item.details.map((detail) => (
-                  <li key={detail}>{detail}</li>
-                ))}
-              </ul>
-            ) : null}
-          </Stack>
-        ))}
-      </ul>
+      <Stack gap="item">
+        {heading ? (
+          <p className="text-s font-medium fg-primary">{heading}</p>
+        ) : null}
+        <ul className="flex flex-col gap-3">
+          {items.map((item) => (
+            // Key and test id both carry the disposition: one policy kind can now
+            // yield two items (what it requires and what it blocks), so keying on
+            // `policyKind` alone would collide.
+            <Stack
+              as="li"
+              gap="tight"
+              key={`${item.policyKind}-${item.disposition}`}
+              data-testid={`consent-item-${item.policyKind}-${item.disposition}`}
+              data-disposition={item.disposition}
+            >
+              <p className="text-s font-medium fg-primary">{item.title}</p>
+              {item.disposition === 'blocked' ? (
+                // The blast radius is genuinely surprising and has to be stated:
+                // a prohibition is global, so it also silences these scopes for
+                // the member's own private account and any other organization.
+                <p className="text-xs fg-secondary">
+                  This data stays on your machine everywhere, including your
+                  personal account and any other organization.
+                </p>
+              ) : null}
+              {item.details.length > 0 ? (
+                <ul className="list-disc flex flex-col gap-0.5 pl-5 text-xs fg-secondary">
+                  {item.details.map((detail) => (
+                    <li key={detail}>{detail}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </Stack>
+          ))}
+        </ul>
+      </Stack>
     </div>
   );
 }

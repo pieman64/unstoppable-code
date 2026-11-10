@@ -4,6 +4,7 @@ import {
   Button,
   CopyButton,
   ProviderStatusDot,
+  Surface,
 } from '@canopy/ui-shared/components';
 import type { CopilotConnectionStatus } from '@canopy/desktop-shared/types';
 import {
@@ -253,13 +254,18 @@ export function CopilotConnection({
       {busy && status?.phase === 'authorizing' && status.userCode && (
         <div className="flex flex-wrap items-center gap-2">
           {/* The device code is a live sign-in secret. */}
-          <span
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} rounded-md px-3 py-1 font-mono text-m fg-primary ring-[length:var(--border-hairline)] ring-inset ring-line-base`}
+          <Surface
+            as="span"
+            variant="outline"
+            size="small"
+            replay="block"
             data-testid="copilot-device-code"
             aria-label={`Device code ${status.userCode}`}
           >
-            {status.userCode}
-          </span>
+            <span className="block px-3 py-1 font-mono text-m fg-primary">
+              {status.userCode}
+            </span>
+          </Surface>
           <CopyButton
             variant="secondary"
             size="compact"

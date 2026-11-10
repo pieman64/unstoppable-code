@@ -169,7 +169,30 @@ function ModelMetadataBlock({
 }
 
 const MODEL_METADATA_PRE_CLASS_NAME =
-  'overflow-x-auto whitespace-pre-wrap rounded-md bg-base p-2 font-mono fg-secondary';
+  'overflow-x-auto whitespace-pre-wrap font-mono fg-secondary';
+
+/** A metadata text block: a code-sample well inside the model's group. */
+function ModelMetadataPre({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}): JSX.Element {
+  return (
+    <Surface variant="inset" padding="tight">
+      <pre
+        className={
+          className
+            ? `${className} ${MODEL_METADATA_PRE_CLASS_NAME}`
+            : MODEL_METADATA_PRE_CLASS_NAME
+        }
+      >
+        {children}
+      </pre>
+    </Surface>
+  );
+}
 
 /**
  * One installed model as a row of the Installed models group: its name and
@@ -274,30 +297,22 @@ export function OllamaModelCard({
           </div>
           {model.show?.system && (
             <ModelMetadataBlock title="System">
-              <pre className={MODEL_METADATA_PRE_CLASS_NAME}>
-                {model.show.system}
-              </pre>
+              <ModelMetadataPre>{model.show.system}</ModelMetadataPre>
             </ModelMetadataBlock>
           )}
           {model.show?.template && (
             <ModelMetadataBlock title="Template">
-              <pre className={MODEL_METADATA_PRE_CLASS_NAME}>
-                {model.show.template}
-              </pre>
+              <ModelMetadataPre>{model.show.template}</ModelMetadataPre>
             </ModelMetadataBlock>
           )}
           {model.show?.parameters && (
             <ModelMetadataBlock title="Parameters">
-              <pre className={MODEL_METADATA_PRE_CLASS_NAME}>
-                {model.show.parameters}
-              </pre>
+              <ModelMetadataPre>{model.show.parameters}</ModelMetadataPre>
             </ModelMetadataBlock>
           )}
           {model.show?.license && (
             <ModelMetadataBlock title="License">
-              <pre className={MODEL_METADATA_PRE_CLASS_NAME}>
-                {model.show.license}
-              </pre>
+              <ModelMetadataPre>{model.show.license}</ModelMetadataPre>
             </ModelMetadataBlock>
           )}
           {model.show?.messages && model.show.messages.length > 0 && (
@@ -333,11 +348,9 @@ export function OllamaModelCard({
           )}
           {model.show?.rawJson && (
             <ModelMetadataBlock title="Raw show() response">
-              <pre
-                className={`max-h-80 overflow-auto ${MODEL_METADATA_PRE_CLASS_NAME}`}
-              >
+              <ModelMetadataPre className="max-h-80 overflow-auto">
                 {model.show.rawJson}
-              </pre>
+              </ModelMetadataPre>
             </ModelMetadataBlock>
           )}
         </div>
@@ -1105,12 +1118,14 @@ export function OllamaTab(): JSX.Element {
                 </Button>
               }
             >
-              <pre
-                className="overflow-x-auto rounded-md bg-base px-2.5 py-1.5 font-mono text-xs fg-primary"
-                data-testid="ollama-manual-command"
-              >
-                {manualCommand}
-              </pre>
+              <Surface variant="inset">
+                <pre
+                  className="overflow-x-auto px-2.5 py-1.5 font-mono text-xs fg-primary"
+                  data-testid="ollama-manual-command"
+                >
+                  {manualCommand}
+                </pre>
+              </Surface>
               <p className="text-xs text-pretty fg-secondary">
                 Ollama normally uses port{' '}
                 <code className="font-mono fg-primary">11434</code>. On another

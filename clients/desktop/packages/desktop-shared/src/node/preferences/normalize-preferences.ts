@@ -119,7 +119,7 @@ import {
   isClaudeModAdmission,
   isClaudeModPluginId,
   type ClaudeModAdmission,
-} from '../../types/claude-mod-admission';
+} from '@canopy/execution-engine/types/claude-mod-admission';
 
 /** Valid admissions only; a plugin listed more than once keeps none. */
 function normalizeClaudeModAdmissions(value: unknown): ClaudeModAdmission[] {

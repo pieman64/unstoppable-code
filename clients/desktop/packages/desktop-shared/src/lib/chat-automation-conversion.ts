@@ -46,7 +46,7 @@ import type {
   FileReference,
 } from '@canopy/agent-transcript/types';
 import { parseSendAgentMessageInputs } from '../pipelines/host-send-agent-message';
-import { normalizePluginSelections } from './plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 
 /** The generated pipeline's only job. */
 export const CHAT_AUTOMATION_JOB = 'chat';

@@ -1,4 +1,4 @@
-import { claudeMarketplaceNames } from '@canopy/desktop-shared/lib/claude-marketplace-names';
+import { claudeMarketplaceNames } from '@canopy/execution-engine/lib/claude-marketplace-names';
 
 export { claudeMarketplaceNames };
 

@@ -26,7 +26,7 @@ import type {
   MarketplaceInfo,
   MarketplaceProviderStatus,
   PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { InstalledItemRef } from '@canopy/protocol/installed-items';
 import {
   createDesktopMaterializationResolver,
@@ -45,7 +45,7 @@ import { CatalogSelectionUnavailableError } from '@canopy/core-runtime/node/cata
 import {
   readPluginCatalog,
   readPluginCacheIndex,
-} from '@canopy/desktop-shared/node/plugins/catalog-read-health';
+} from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import { relayAllows } from '../renderer-relay/surface-allowlist';
 import {
   mcpServerConfigRevision,

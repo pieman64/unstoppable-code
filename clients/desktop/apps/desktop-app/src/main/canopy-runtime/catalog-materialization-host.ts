@@ -30,7 +30,7 @@ import type {
   MarketplaceInfo,
   PluginInfo,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { EffectivePluginSelectionRefs } from '../plugins/plugin-resolver';
 import { skillCatalogRevision } from '../skills/skill-catalog-revision';
 import {

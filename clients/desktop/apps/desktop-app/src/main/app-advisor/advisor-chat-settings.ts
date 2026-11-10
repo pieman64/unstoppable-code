@@ -1,4 +1,4 @@
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { BRAND } from '@canopy/brand/current';
 import {
   chatSettingsResult,

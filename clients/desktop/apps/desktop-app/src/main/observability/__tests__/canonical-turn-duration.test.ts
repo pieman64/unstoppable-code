@@ -133,7 +133,7 @@ function service(context: GoldenScenarioContext): ObservabilityService {
 
 interface TurnOptions {
   chatId: string;
-  assistantMode?: 'app-advisor';
+  assistantMode?: 'app-advisor' | 'pipeline-editor';
   canonical?: {
     userMessageId: string;
     durationMs?: number;
@@ -345,15 +345,18 @@ describe('canonical chat turn duration', () => {
     expect(stores).toContain('"turnDurationMs": 40000');
   });
 
-  it("App Advisor entries keep the audit's own pauses", async () => {
-    const { durationMs } = await storedDuration(
-      pausedTurn({
-        chatId: 'chat-advisor',
-        assistantMode: 'app-advisor',
-        canonical: { userMessageId: 'msg-1' },
-      }),
-    );
-    expect(durationMs).toBe(30_000);
+  it("App Advisor and pipeline editor entries take the reducer's duration (CAN-5827)", async () => {
+    for (const assistantMode of ['app-advisor', 'pipeline-editor'] as const) {
+      const { durationMs } = await storedDuration(
+        pausedTurn({
+          chatId: `chat-${assistantMode}`,
+          assistantMode,
+          canonical: { userMessageId: 'msg-1' },
+        }),
+      );
+      // The reducer's 42 s, not the audit's own 60 s minus its 30 s tally.
+      expect(durationMs).toBe(42_000);
+    }
   });
 
   it('an implausible canonical duration reports the canonical paused time', async () => {

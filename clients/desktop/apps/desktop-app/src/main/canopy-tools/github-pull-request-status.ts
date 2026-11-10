@@ -1,5 +1,5 @@
 import { BRAND } from '@canopy/brand/current';
-import { parseGitHubPullRequestReference } from '@canopy/desktop-shared/lib/github-pull-request-references';
+import { parseGitHubPullRequestReference } from '@canopy/protocol/portable-tasks/pull-request-reference';
 import { GitHubBrokerError } from '../lib/github-broker/errors';
 import type {
   GitHubPullRequestRef,

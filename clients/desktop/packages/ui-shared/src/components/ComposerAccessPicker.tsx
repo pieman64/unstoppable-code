@@ -8,6 +8,7 @@ import {
 import { FloatingMenu, COMPOSER_ROW_MENU_GAP } from './FloatingMenu';
 import { FoldReveal } from './FoldReveal';
 import { PickerTrigger, PickerTriggerChevron } from './PickerMenu';
+import { Inline } from './Stack';
 import { Tooltip } from './Tooltip';
 import { CheckIcon, type AppIcon } from '../icons/AppIcons';
 
@@ -223,25 +224,27 @@ export function ComposerAccessPicker<Value extends string>({
               // the coloured shields read as a column beside the copy.
               multiline
             >
-              <DropdownMenuItemIcon tone={entry.tone}>
-                <OptionIcon
-                  data-testid={`approval-mode-option-icon-${option}`}
-                  size="sm"
-                />
-              </DropdownMenuItemIcon>
-              {/* The label keeps its text size's own 20px line (a 16px line
-                  clipped its descenders against the subtitle). Its 4px
-                  margin on the row's 8px gap sets the copy 12px off the
-                  mode glyph, which reads as a column of its own. */}
-              <span className="ml-1 flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="truncate">{entry.label}</span>
-                <span
-                  data-testid={`approval-mode-option-description-${option}`}
-                  className="text-pretty whitespace-normal text-xs fg-secondary"
-                >
-                  {entry.description}
+              {/* The glyph and its copy keep 12px apart, wider than the
+                  row's 8px gap, so the copy reads as a column of its own.
+                  The label keeps its text size's own 20px line (a 16px line
+                  clipped its descenders against the subtitle). */}
+              <Inline gap="item" as="span" className="min-w-0 flex-1">
+                <DropdownMenuItemIcon tone={entry.tone}>
+                  <OptionIcon
+                    data-testid={`approval-mode-option-icon-${option}`}
+                    size="sm"
+                  />
+                </DropdownMenuItemIcon>
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="truncate">{entry.label}</span>
+                  <span
+                    data-testid={`approval-mode-option-description-${option}`}
+                    className="text-pretty whitespace-normal text-xs fg-secondary"
+                  >
+                    {entry.description}
+                  </span>
                 </span>
-              </span>
+              </Inline>
               {selected && (
                 <span
                   aria-hidden="true"

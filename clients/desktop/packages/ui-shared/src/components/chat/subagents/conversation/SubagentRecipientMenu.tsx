@@ -13,7 +13,7 @@ import {
   PickerMenuSectionLabel,
 } from '../../../PickerMenu';
 import { ChatIcon } from '../../../../icons/AppIcons';
-import { SubagentIcon } from '../common/SubagentIcon';
+import { SubagentIcon } from '../../../../icons/SubagentIcon';
 import {
   SUBAGENT_COMPOSER_NATIVE_NOTICE,
   SUBAGENT_COMPOSER_READ_ONLY_NOTICE,

@@ -8,7 +8,7 @@ import type {
   ModelHarness,
 } from '@canopy/desktop-shared/types';
 import { validateConfiguredPromptReferences } from '@canopy/protocol/configured-prompt-references';
-import { getShareablePluginRefKey } from '@canopy/desktop-shared/plugin-refs';
+import { getShareablePluginRefKey } from '@canopy/execution-engine/plugin-refs';
 import {
   buildPluginMentionAbsolutePath,
   PLUGIN_MENTION_KIND,

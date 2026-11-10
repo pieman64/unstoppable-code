@@ -212,11 +212,11 @@ import type {
   FileImageSaveSupport,
   FileSaveOptions,
 } from '@canopy/protocol/file-image-save';
-import type { ClaudeModAdmission } from './types/claude-mod-admission';
+import type { ClaudeModAdmission } from '@canopy/execution-engine/types/claude-mod-admission';
 export type {
   ClaudeModAdmission,
   SkippedClaudeMod,
-} from './types/claude-mod-admission';
+} from '@canopy/execution-engine/types/claude-mod-admission';
 import type { CloudProjectBinding } from '@canopy/protocol/memory-sync';
 import type {
   SharedMultiRepoCreateCommand,
@@ -914,7 +914,7 @@ import type {
   ThinkingUiLevel,
 } from '@canopy/execution-engine/types/thinking';
 import type { ShareablePluginRef } from './types/plugin-refs';
-import type { PluginProvider } from './types/plugins';
+import type { PluginProvider } from '@canopy/execution-engine/types/plugins';
 import type {
   PlanDiagramArtifacts,
   PlanCommentAnchorState,
@@ -926,7 +926,7 @@ import type {
   ReviewAnnotation,
   ReviewCommentThread,
 } from './types/code-review';
-import type { InvocableInventoryEntry } from './types/invocable-inventory';
+import type { InvocableInventoryEntry } from '@canopy/execution-engine/types/invocable-inventory';
 import type {
   DeferredToolsReloadBeginRequest,
   DeferredToolsReloadFinishRequest,
@@ -1108,7 +1108,7 @@ export type {
   ListInvocableInventoryResponse,
   ResolveInvocableSelectionRequest,
   ResolveInvocableSelectionResponse,
-} from './types/invocable-inventory';
+} from '@canopy/execution-engine/types/invocable-inventory';
 
 export type {
   CreateMemoryReportFailureReason,
@@ -2539,6 +2539,8 @@ export interface PullRequestSummary {
   isDraft: boolean;
   /** Head branch lives in a fork — cannot be checked out from this repo. */
   isCrossRepo: boolean;
+  /** Latest pull-request update time, when supplied by the source. */
+  updatedAt?: string;
 }
 
 export interface ListPullRequestsResponse {
@@ -28472,7 +28474,7 @@ export {
   getShareablePluginRefKey,
   normalizeGitHubRepoRef,
   normalizeShareableSource,
-} from './plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 
 // ---------------------------------------------------------------------------
 // Hook chat plugin dependency inspector (Phase T7)

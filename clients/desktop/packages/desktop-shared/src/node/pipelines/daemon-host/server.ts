@@ -21,6 +21,7 @@ import { applyModelRegistrySnapshot } from '@canopy/execution-engine/builtin-act
 import { getCanopyDataDir } from '../../../canopy-paths';
 import { normalizeAgentModelConfig } from '../../../types';
 import { classifyDaemonPipeline } from '../daemon-eligibility';
+import { normalizeExecutionModelAliasPreferences } from '../executor/model-alias-preferences';
 import { projectPipelineExecution } from '../execution-projection';
 import { cancelPipelineExecution, executePipeline } from '../executor';
 import { recoverOrphanedPipelineExecutions } from '../executor/crash-recovery';
@@ -348,7 +349,15 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       return fail(id, 'start_failed');
     const classification = classifyDaemonPipeline(
       pipeline,
-      { runtime, repoPath: launch.repoPath ?? launch.cwd },
+      {
+        runtime,
+        repoPath: launch.repoPath ?? launch.cwd,
+        // The run's aliases as its core resolved them at launch (CAN-5832).
+        ...(isOwnerBound &&
+          launch.modelAliasResolutions && {
+            modelAliases: launch.modelAliasResolutions,
+          }),
+      },
       {
         hostSteps: isOwnerBound ? 'owner' : 'refuse',
         modelSteps: isOwnerBound ? 'claude_codex' : 'refuse',
@@ -405,6 +414,12 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       ...(classification.modelSteps > 0 && {
         modelConfig: normalizeAgentModelConfig(launch.modelConfig),
         agentTerminalMode: false,
+      }),
+      ...(launch.modelAliasPreferences !== undefined && {
+        // The executor's own normalizer: a run's reset entries must survive.
+        modelAliasPreferences: normalizeExecutionModelAliasPreferences(
+          launch.modelAliasPreferences,
+        ),
       }),
       executionId,
       projectId: worktree.workspaceId,

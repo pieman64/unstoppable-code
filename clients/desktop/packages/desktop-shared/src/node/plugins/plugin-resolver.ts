@@ -1,7 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
-import { readPluginCatalog, readPluginCacheIndex } from './catalog-read-health';
+import {
+  readPluginCatalog,
+  readPluginCacheIndex,
+} from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import { getCanopyDataDir } from '../../canopy-paths';
 import { getBundledSkillDir } from '../../pipelines/config-paths';
 import type {
@@ -13,34 +16,34 @@ import type {
   MarketplaceInfo,
   PluginInfo,
   PluginsCache,
-} from '../../types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import {
   normalizeMcpServerFile,
   type McpServerFile,
 } from '@canopy/execution-engine/types/mcp-servers';
-import { sanitizeEnvVars } from '../../lib/mcp-security';
+import { sanitizeEnvVars } from '@canopy/execution-engine/lib/mcp-security';
 import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 import { createLocalCapabilityRoot } from '../codex-runtime/capability-root';
-import { getInstalledSkillDirectory } from '../skills/paths';
-import { projectCodexPluginWithoutMcpServers } from './codex-plugin-projection';
+import { getInstalledSkillDirectory } from '@canopy/execution-engine/node/skills/paths';
+import { projectCodexPluginWithoutMcpServers } from '@canopy/execution-engine/node/plugins/codex-plugin-projection';
 import {
   evaluateClaudeModAdmission,
   isClaudeModAdmissionLaunch,
   type ClaudeModAdmissionLaunch,
   type ClaudeModPluginInput,
-} from './claude-mod-admission';
-import { projectClaudePluginForLaunch } from './claude-mod-projection';
+} from '@canopy/execution-engine/node/plugins/claude-mod-admission';
+import { projectClaudePluginForLaunch } from '@canopy/execution-engine/node/plugins/claude-mod-projection';
 import {
   isClaudeModPluginId,
   type ClaudeModAdmission,
   type SkippedClaudeMod,
-} from '../../types/claude-mod-admission';
-import { claudeMarketplaceNames } from '../../lib/claude-marketplace-names';
+} from '@canopy/execution-engine/types/claude-mod-admission';
+import { claudeMarketplaceNames } from '@canopy/execution-engine/lib/claude-marketplace-names';
 import type { ClaudeModAdmissionContext } from '../pipelines/executor/types';
 import {
   buildManagedMcpServerName,
   normalizeManagedMcpServerLabel,
-} from './mcp-server-name';
+} from '@canopy/execution-engine/node/plugins/mcp-server-name';
 
 interface SdkPluginConfig {
   type: 'local';

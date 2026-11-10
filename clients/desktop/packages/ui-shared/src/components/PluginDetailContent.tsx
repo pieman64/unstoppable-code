@@ -875,83 +875,96 @@ export function PluginDetailContent({
 
       {/* Plugin metadata */}
       <section className="min-w-0">
-        <div className="flex items-center gap-3">
-          {headerIcon ?? (
-            <McpServerLogo
-              name={displayName}
-              size={40}
-              fallback="monogram"
-              fit="contain"
-            />
-          )}
-          <div className="flex flex-col min-w-0 flex-1 gap-1">
-            <Title
-              id="plugin-detail-title"
-              className="break-words text-lg font-semibold fg-primary"
-            >
-              <span className="inline-flex flex-wrap items-baseline gap-x-2">
-                {displayName}
-                <DetailEntityType />
-              </span>
-            </Title>
-            <div className="flex flex-wrap items-center gap-2">
-              {displayVersion && (
-                <span className="text-xs fg-secondary">v{displayVersion}</span>
+        <Stack gap="group">
+          <Stack gap="item">
+            <div className="flex items-center gap-3">
+              {headerIcon ?? (
+                <McpServerLogo
+                  name={displayName}
+                  size={40}
+                  fallback="monogram"
+                  fit="contain"
+                />
               )}
-              {displayCategory && (
-                <span className="text-xs fg-secondary">{displayCategory}</span>
-              )}
-              {displayAuthor && (
-                <span
-                  data-testid="plugin-detail-author"
-                  className="text-xs fg-secondary"
+              <div className="flex flex-col min-w-0 flex-1 gap-1">
+                <Title
+                  id="plugin-detail-title"
+                  className="break-words text-lg font-semibold fg-primary"
                 >
-                  by {displayAuthor}
-                </span>
-              )}
-              {isCompat && (
-                <Tooltip label={CODEX_COMPATIBILITY_BADGE_TOOLTIP}>
-                  <Badge
-                    tone="warning"
-                    data-testid="plugin-detail-codex-compat-badge"
-                  >
-                    Codex compatibility
-                  </Badge>
-                </Tooltip>
-              )}
-              {compatCapable && codexCompatDisabled && (
-                <Tooltip label={CODEX_COMPATIBILITY_DISABLED_TOOLTIP}>
-                  <Badge data-testid="plugin-detail-codex-compat-disabled-badge">
-                    Codex disabled
-                  </Badge>
-                </Tooltip>
-              )}
+                  <span className="inline-flex flex-wrap items-baseline gap-x-2">
+                    {displayName}
+                    <DetailEntityType />
+                  </span>
+                </Title>
+                <div className="flex flex-wrap items-center gap-2">
+                  {displayVersion && (
+                    <span className="text-xs fg-secondary">
+                      v{displayVersion}
+                    </span>
+                  )}
+                  {displayCategory && (
+                    <span className="text-xs fg-secondary">
+                      {displayCategory}
+                    </span>
+                  )}
+                  {displayAuthor && (
+                    <span
+                      data-testid="plugin-detail-author"
+                      className="text-xs fg-secondary"
+                    >
+                      by {displayAuthor}
+                    </span>
+                  )}
+                  {isCompat && (
+                    <Tooltip label={CODEX_COMPATIBILITY_BADGE_TOOLTIP}>
+                      <Badge
+                        tone="warning"
+                        data-testid="plugin-detail-codex-compat-badge"
+                      >
+                        Codex compatibility
+                      </Badge>
+                    </Tooltip>
+                  )}
+                  {compatCapable && codexCompatDisabled && (
+                    <Tooltip label={CODEX_COMPATIBILITY_DISABLED_TOOLTIP}>
+                      <Badge data-testid="plugin-detail-codex-compat-disabled-badge">
+                        Codex disabled
+                      </Badge>
+                    </Tooltip>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        {displayDescription && (
-          <p className="max-w-2xl text-s fg-secondary mt-3">
-            {displayDescription}
-          </p>
-        )}
-        {/* Links sit apart from the metadata line, where "Website" read as
-            part of the author ("by Microsoft Website"). */}
-        {statusContent && <div className="mt-4">{statusContent}</div>}
-        {(displayHomepage || metadataFacts) && (
-          <div className="-mb-1">
-            <DetailFactList placement={statusContent ? 'mt-1' : 'mt-4'}>
-              {displayHomepage && (
-                <DetailFact label="Website" testId="plugin-detail-links">
-                  <ExternalTextLink
-                    href={displayHomepage}
-                    label={websiteHost(displayHomepage)}
-                  />
-                </DetailFact>
+            {displayDescription && (
+              <p className="max-w-2xl text-s fg-secondary">
+                {displayDescription}
+              </p>
+            )}
+          </Stack>
+          {/* Links sit apart from the metadata line, where "Website" read as
+            part of the author ("by Microsoft Website"). Status and links
+            share one group 4px apart; either alone sits 16px below. */}
+          {(statusContent || displayHomepage || metadataFacts) && (
+            <Stack gap="tight">
+              {statusContent && <div>{statusContent}</div>}
+              {(displayHomepage || metadataFacts) && (
+                <div className="-mb-1">
+                  <DetailFactList>
+                    {displayHomepage && (
+                      <DetailFact label="Website" testId="plugin-detail-links">
+                        <ExternalTextLink
+                          href={displayHomepage}
+                          label={websiteHost(displayHomepage)}
+                        />
+                      </DetailFact>
+                    )}
+                    {metadataFacts}
+                  </DetailFactList>
+                </div>
               )}
-              {metadataFacts}
-            </DetailFactList>
-          </div>
-        )}
+            </Stack>
+          )}
+        </Stack>
         {mcpTargetError && (
           <p
             role="status"

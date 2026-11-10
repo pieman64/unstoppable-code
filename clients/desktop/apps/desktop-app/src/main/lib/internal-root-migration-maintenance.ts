@@ -1,5 +1,7 @@
 import { join } from 'node:path';
 import { readdir, realpath } from 'node:fs/promises';
+import { inertArchiveGroup } from '@canopy/desktop-shared/node/internal-root-migration/lifecycle-policy';
+import { inspectDestructiveJournals } from '@canopy/desktop-shared/node/w5-destructive-journal';
 import {
   InternalRootMigrationRefused,
   type InternalRootColdRecovery,
@@ -17,6 +19,23 @@ import {
 } from '@canopy/desktop-shared/node/internal-root-migration/filesystem-host';
 import { createW5RecoveryMaintenanceContext } from './w5-recovery-maintenance';
 import { runW5Maintenance, W5MaintenanceRefusedError } from './w5-maintenance';
+import {
+  adoptInternalRootW5Metadata,
+  isToleratedInternalRootW5Issue,
+} from './internal-root-migration-w5-adoption';
+import {
+  diagnoseW5State,
+  type W5Diagnosis,
+  type W5FileIssue,
+} from './w5-maintenance-diagnosis';
+
+function warnUnindexedWorkspaceFolders(diagnosis: W5Diagnosis): void {
+  for (const issue of diagnosis.files)
+    if (issue.artifactKind === 'unindexed-workspace-directory')
+      process.stderr.write(
+        `Internal-root migration warning: copying unindexed workspace folder ${JSON.stringify(`workspaces/${issue.path}`)} unchanged.\n`,
+      );
+}
 
 function diagnosticField(error: unknown, field: string): string | undefined {
   if (typeof error !== 'object' || error === null) return undefined;
@@ -47,6 +66,28 @@ function recoveryDiagnostic(error: unknown): string {
   return `${text || 'Unknown failure'}${message && message.length > limit ? '…' : ''}${fields.length ? ` (${fields.join(', ')})` : ''}`;
 }
 
+function boundedDiagnostics(items: readonly string[]): string {
+  const limit = 20;
+  return (
+    items
+      .slice(0, limit)
+      .map((item) => recoveryDiagnostic(item))
+      .join('; ') +
+      (items.length > limit ? `; … ${items.length - limit} more` : '') || 'none'
+  );
+}
+
+function blockingFileIssues(issues: readonly W5FileIssue[]): W5FileIssue[] {
+  return issues
+    .filter((issue) => !isToleratedInternalRootW5Issue(issue))
+    .filter(
+      (issue, index, all) =>
+        all.findIndex(
+          (other) => other.path === issue.path && other.reason === issue.reason,
+        ) === index,
+    );
+}
+
 /**
  * Transaction-qualified pre-Cut-B source recovery (no UI/flip gate or destination startup).
  * Preconditions: migration coordination and targeted cold proof are held by the
@@ -56,11 +97,11 @@ function recoveryDiagnostic(error: unknown): string {
  * Qualification is rechecked before/after recovery and at W5 worker admission,
  * and revoked before migration coordination releases;
  * W5 retains startup/lifetime/endpoint, cohort and recovery-writer exclusion.
- * Outcomes: settled, or nothing-to-settle for a preferences-only root without a log.
+ * Outcomes: settled, or nothing-to-settle for a root with no owned W5 history.
  * Refusals: recovery-required for lost qualification, aliased W5/workspaces,
  * history without a log, aliased/nonregular/foreign/linked log or SQLite sidecars,
  * missing worker, W5 exclusion/recovery failures, remaining
- * commits/reservations, non-untracked W5-owned file issues, lifecycle artifacts or log issues.
+ * commits/reservations, owned-state file issues, unfinished/unreadable lifecycle journals or log issues.
  * unsupported-layout refuses nonprivate source permissions; investigate ownership
  * rather than blindly repairing permissions.
  * Recovery: preserve the ORIGINAL root and journal; use teammate-assisted offline
@@ -125,13 +166,57 @@ export async function settleInternalRootW5(
     if (stat) await observeMigrationNode(path, stat, host);
   }
   if (!(await statIfPresent(logPath))) {
-    if ((await statIfPresent(w5)) && (await readdir(w5)).length)
+    const diagnosis = await diagnoseW5State(source, 'w5-owned');
+    warnUnindexedWorkspaceFolders(diagnosis);
+    const workspaceRootPresent = await statIfPresent(
+      join(source, 'workspaces'),
+    );
+    const journals = await inspectDestructiveJournals(source);
+    const unfinished: string[] = [];
+    for (const { record } of journals.records) {
+      if (record.state === 'completed') continue;
+      const group = await inertArchiveGroup(source, record);
+      if (!group)
+        unfinished.push(
+          `${record.operation} workspace=${recoveryDiagnostic(record.workspaceId.slice(0, 160))} worktree=${recoveryDiagnostic((record.worktreeId ?? '(workspace)').slice(0, 160))} state=${record.state}`,
+        );
+      else
+        process.stderr.write(
+          `Internal-root migration: carrying inert archive ${JSON.stringify({ workspace: record.workspaceId, worktree: record.worktreeId, group, lastDone: record.steps.filter((step) => step.state === 'done').slice(-1)[0]?.phase ?? '(none)' })} unchanged except destination owner projection.\n`,
+        );
+    }
+    // A never-indexed root is valid; absent W5 infrastructure needs no worker.
+    const fileIssues = blockingFileIssues([
+      ...diagnosis.files,
+      ...journals.issues,
+    ]).filter(
+      (issue) =>
+        !(issue.path === 'index.json' && issue.reason === 'missing-file') &&
+        !(issue.path === '.' && !workspaceRootPresent),
+    );
+    if (fileIssues.length || unfinished.length)
       throw new InternalRootMigrationRefused(
         'recovery-required',
-        'W5 history exists without its log. Retain the original root and use W5 offline diagnosis.',
+        `W5 remains unresolved: file issues ${fileIssues.length} [${boundedDiagnostics(fileIssues.map((issue) => `${issue.reason}: ${issue.path}`))}], lifecycle journals ${unfinished.length} [${boundedDiagnostics(unfinished)}]. Use offline W5 recovery at the ORIGINAL root.`,
+      );
+    const history = (await statIfPresent(w5))
+      ? (await readdir(w5)).filter(
+          (name) =>
+            name !== 'destructive-lifecycles' &&
+            !diagnosis.files.some(
+              (issue) =>
+                issue.path === `w5/${name}` &&
+                issue.artifactKind === 'unrecognized-w5-file',
+            ),
+        )
+      : [];
+    if (history.length)
+      throw new InternalRootMigrationRefused(
+        'recovery-required',
+        `W5 history exists without its log [${boundedDiagnostics(history.map((name) => `w5/${name}`))}]. Retain the original root and use W5 offline diagnosis.`,
       );
     await qualification.assertHeld();
-    return 'nothing-to-settle'; // No worker or W5 writes for preferences-only roots.
+    return 'nothing-to-settle'; // No worker or W5 infrastructure for opaque files alone.
   }
   try {
     // Pre-Cut-A roots may contain W5 history but no daemon runtime yet. This is
@@ -151,44 +236,79 @@ export async function settleInternalRootW5(
         'Compiled W5 worker unavailable. Build it with pnpm run dev:core-daemon before retrying at the original root.',
       );
     await qualification.assertHeld();
+    const context = createW5RecoveryMaintenanceContext(source, {
+      workerEntry,
+      admission: qualification.assertHeld,
+      windowsProcessPath: options.windowsProcessPath,
+      confinementAddon: options.ownedChildPath,
+      ...(qualification.assertCold
+        ? {
+            offlineMigration: async (): Promise<void> => {
+              await qualification.assertHeld();
+              if (!qualification.assertCold)
+                throw new Error('Missing native cold qualification');
+              await qualification.assertCold();
+            },
+          }
+        : {}),
+    });
     const result = await runW5Maintenance(
       {
-        ...createW5RecoveryMaintenanceContext(source, {
-          workerEntry,
-          admission: qualification.assertHeld,
-          windowsProcessPath: options.windowsProcessPath,
-          confinementAddon: options.ownedChildPath,
-          ...(qualification.assertCold
-            ? {
-                offlineMigration: async (): Promise<void> => {
-                  await qualification.assertHeld();
-                  if (!qualification.assertCold)
-                    throw new Error('Missing native cold qualification');
-                  await qualification.assertCold();
-                },
-              }
-            : {}),
-        }),
+        ...context,
         diagnosisScope: 'w5-owned',
+        adoptInternalRootMetadata: async (
+          diagnosis,
+          assertHeld,
+        ): Promise<void> => {
+          await qualification.assertHeld();
+          await adoptInternalRootW5Metadata(
+            context.host,
+            diagnosis,
+            async () => {
+              await qualification.assertHeld();
+              await assertHeld();
+            },
+          );
+        },
       },
       { source: 'offline_maintenance', mode: 'reopen' },
     );
     if (result.mode !== 'reopen') throw new Error('Unexpected recovery result');
     const diagnosis = result.diagnosis;
-    // Legacy documents may predate W5 capture; untracked alone is not corruption.
-    const fileIssues = diagnosis.files.filter(
-      (issue) => issue.reason !== 'untracked-file',
-    );
+    // Opaque artifacts are copied, never adopted as W5-owned state.
+    warnUnindexedWorkspaceFolders(diagnosis);
+    const journals = await inspectDestructiveJournals(source);
+    const unfinished: Array<(typeof journals.records)[number]> = [];
+    for (const entry of journals.records) {
+      if (entry.record.state === 'completed') continue;
+      const group = await inertArchiveGroup(source, entry.record);
+      if (!group) unfinished.push(entry);
+      else {
+        const lastDone =
+          entry.record.steps
+            .filter((step) => step.state === 'done')
+            .slice(-1)[0]?.phase ?? '(none)';
+        process.stderr.write(
+          `Internal-root migration: carrying inert archive ${JSON.stringify({ workspace: entry.record.workspaceId, worktree: entry.record.worktreeId, group, lastDone })} unchanged except destination owner projection.\n`,
+        );
+      }
+    }
+    const fileIssues = blockingFileIssues([
+      ...diagnosis.files,
+      ...journals.issues,
+    ]);
+    const field = (value: string): string =>
+      `${recoveryDiagnostic(value.slice(0, 160))}${value.length > 160 ? '…' : ''}`;
     if (
       diagnosis.logIssue ||
       diagnosis.commits.length ||
       diagnosis.reservations.length ||
       fileIssues.length ||
-      diagnosis.destructiveJournalArtifactCount !== 0
+      unfinished.length
     )
       throw new InternalRootMigrationRefused(
         'recovery-required',
-        `W5 remains unresolved: commits ${diagnosis.commits.map((row) => row.commitId).join(',') || 'none'}, reservations ${diagnosis.reservations.length}, file issues ${fileIssues.length}, lifecycle artifacts ${diagnosis.destructiveJournalArtifactCount ?? 'unknown'}, log ${diagnosis.logIssue ?? 'readable'}. Use offline W5 recovery at the ORIGINAL root; never replay uncertain effects.`,
+        `W5 remains unresolved: commits ${boundedDiagnostics(diagnosis.commits.map((row) => String(row.commitId)))}, reservations ${diagnosis.reservations.length}, file issues ${fileIssues.length} [${boundedDiagnostics(fileIssues.map((issue) => `${issue.reason}: ${issue.path}`))}], lifecycle journals ${unfinished.length} [${boundedDiagnostics(unfinished.map(({ record }) => `${record.operation} workspace=${field(record.workspaceId)} worktree=${field(record.worktreeId ?? '(workspace)')} state=${record.state}`))}], log ${diagnosis.logIssue ?? 'readable'}. Use offline W5 recovery at the ORIGINAL root; never replay uncertain effects.`,
       );
     await qualification.assertHeld();
     return 'settled';

@@ -5,7 +5,7 @@ import {
   type AccountMcpConnectionTarget,
 } from '../canopy-cloud/mcp-connections';
 import { isAccountMcpReauthRequired } from './account-route-status';
-import { getMcpHttpAuthDefault } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import { getMcpHttpAuthDefault } from '@canopy/execution-engine/lib/mcp-http-auth';
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_MCP_HTTP_AUTH_HANDLER } from '@canopy/desktop-shared/types';
 import type {

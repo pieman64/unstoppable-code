@@ -1079,13 +1079,49 @@ test('moves real linked Git checkouts using final identities and restores exact 
   ).toBe('complete');
 });
 
-test('refuses source hardlinks before construction without removing either link', async () => {
-  const original = join(identity.source, 'empty');
-  const alias = join(identity.source, 'alias');
+test('copies source hardlinks independently without changing either source link', async () => {
+  const directory = join(
+    identity.source,
+    'workspaces/fixture/worktrees/feature/node_modules/esbuild/bin',
+  );
+  await fs.mkdir(directory, { recursive: true });
+  const original = join(directory, 'esbuild');
+  const alias = join(directory, 'alias');
+  const bytes = Buffer.from([0, 127, 255]);
+  await fs.writeFile(original, bytes, { mode: 0o755 });
   await fs.link(original, alias);
-  await expect(run()).rejects.toBeDefined();
-  expect((await fs.lstat(original)).nlink).toBe(2);
-  expect((await fs.lstat(alias)).nlink).toBe(2);
+  const before = await fs.lstat(original, { bigint: true });
+  await expect(
+    migrateInternalRoot(
+      worker,
+      identity,
+      { apply: false, declareInternal: false },
+      repairs,
+    ),
+  ).resolves.toMatchObject({ kind: 'inventory' });
+  await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+  const copy = join(
+    identity.destination,
+    'workspaces/fixture/worktrees/feature/node_modules/esbuild/bin/esbuild',
+  );
+  const copiedAlias = join(dirname(copy), 'alias');
+  const first = await fs.lstat(copy, { bigint: true });
+  const second = await fs.lstat(copiedAlias, { bigint: true });
+  expect(first.ino).not.toBe(before.ino);
+  expect(second.ino).not.toBe(first.ino);
+  expect(first.nlink).toBe(1n);
+  expect(second.nlink).toBe(1n);
+  expect(await fs.readFile(copy)).toEqual(bytes);
+  await fs.writeFile(copy, 'destination-only');
+  expect(await fs.readFile(copiedAlias)).toEqual(bytes);
+  for (const path of [original, alias]) {
+    expect(await fs.readFile(path)).toEqual(bytes);
+    const after = await fs.lstat(path, { bigint: true });
+    expect(after.ino).toBe(before.ino);
+    expect(after.nlink).toBe(2n);
+    expect(after.mtimeNs).toBe(before.mtimeNs);
+    expect(after.ctimeNs).toBe(before.ctimeNs);
+  }
 });
 
 copyTest(

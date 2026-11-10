@@ -24,7 +24,7 @@ import type {
   PortalPluginsInstallExternalPayload,
 } from '@canopy/protocol/portal';
 import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
-import type { MarketplaceInfo } from '@canopy/desktop-shared/types/plugins';
+import type { MarketplaceInfo } from '@canopy/execution-engine/types/plugins';
 import {
   resetPluginMutationQueueForTests,
   runSerializedPluginMutation,

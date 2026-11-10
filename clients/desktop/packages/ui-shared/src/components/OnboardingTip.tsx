@@ -250,10 +250,10 @@ export function OnboardingTip({
       className={`relative flex items-start gap-2.5 rounded-xl bg-secondary py-3 pl-3.5 pr-11 text-xs shadow-xs ring-[length:var(--border-hairline)] ring-line-secondary ${className}`}
     >
       {glyph}
-      <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col gap-2.5">
         {copy}
         {gotIt !== null || verb !== null ? (
-          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {gotIt}
             {verb}
           </div>

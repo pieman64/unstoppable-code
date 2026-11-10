@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import { HeaderActionButton } from '../../../HeaderActionButton';
 import { Button } from '../../../Button';
-import { SubagentIcon } from './SubagentIcon';
+import { SubagentIcon } from '../../../../icons/SubagentIcon';
 
 export const SUBAGENT_VIEW_TREE_LABEL = 'View tree';
 

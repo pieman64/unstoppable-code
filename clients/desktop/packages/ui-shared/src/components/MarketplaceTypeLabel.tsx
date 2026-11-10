@@ -22,31 +22,17 @@ interface MarketplaceTypeLabelProps {
   readonly dataTestId?: string;
 }
 
-function MarketplaceTypeIcon({
-  kind,
-}: {
-  kind: UnifiedEntryKind;
-}): JSX.Element {
-  const props = { size: 12, exactSize: true, ariaHidden: true };
-  switch (kind) {
-    case 'plugin':
-      return <PluginsIcon {...props} />;
-    case 'app':
-      return <McpServerIcon {...props} />;
-    case 'skill':
-      return <SkillIcon {...props} />;
-    case 'pipeline':
-      return <PipelineIcon {...props} />;
-    case 'automation':
-      return <AutomationsIcon {...props} />;
-    case 'collection':
-      return <BundleIcon {...props} />;
-    case 'agent':
-      return <AgentIcon {...props} />;
-    case 'blueprint':
-      return <SingleRepoWorkspaceIcon {...props} />;
-  }
-}
+const MARKETPLACE_TYPE_GLYPHS: Readonly<Record<UnifiedEntryKind, JSX.Element>> =
+  {
+    plugin: <PluginsIcon size="xs" ariaHidden />,
+    app: <McpServerIcon size="xs" ariaHidden />,
+    skill: <SkillIcon size="xs" ariaHidden />,
+    pipeline: <PipelineIcon size="xs" ariaHidden />,
+    automation: <AutomationsIcon size="xs" ariaHidden />,
+    collection: <BundleIcon size="xs" ariaHidden />,
+    agent: <AgentIcon size="xs" ariaHidden />,
+    blueprint: <SingleRepoWorkspaceIcon size="xs" ariaHidden />,
+  };
 
 /** The kind a detail page is showing, so every header labels it the same way. */
 export const DetailEntityTypeContext = createContext<{
@@ -104,7 +90,7 @@ export function MarketplaceTypeLabel({
       data-testid={dataTestId}
       className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs fg-tertiary"
     >
-      <MarketplaceTypeIcon kind={kind} />
+      {MARKETPLACE_TYPE_GLYPHS[kind]}
       <span>{label}</span>
     </span>
   );

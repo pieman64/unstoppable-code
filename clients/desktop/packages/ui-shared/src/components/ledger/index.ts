@@ -6,6 +6,7 @@ export * from './LedgerEntryForm';
 export * from './LedgerEntryParts';
 export * from './LedgerEntryPost';
 export * from './LedgerEntryThread';
+export * from '../../icons/LedgerEntryTypeIcon';
 export * from './LedgerEntryTypeLabel';
 export * from './LedgerEntryTypePicker';
 export * from './LedgerFileSearch';

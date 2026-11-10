@@ -103,11 +103,47 @@ async function observe(
   };
 }
 
+/** A missing prunable entry has no checkout or backlink to relocate. */
+export async function isMissingPrunableGitWorktree(
+  fields: readonly string[],
+  reported?: Set<string>,
+): Promise<boolean> {
+  const path = fields.find((field) => field.startsWith('worktree '))?.slice(9);
+  if (
+    !path ||
+    !fields.some(
+      (field) => field === 'prunable' || field.startsWith('prunable '),
+    )
+  )
+    return false;
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    if (
+      typeof error !== 'object' ||
+      error === null ||
+      !('code' in error) ||
+      error.code !== 'ENOENT'
+    )
+      throw error;
+    if (!reported?.has(path))
+      process.stderr.write(
+        `Internal-root migration: skipping absent prunable Git worktree ${JSON.stringify(path)}.\n`,
+      );
+    reported?.add(path);
+    return true;
+  }
+}
+
 /** Run before copying, under B's cold-maintenance proof. No file is changed. */
 export async function prepareRelocationGit(
   git: RelocationGit,
   paths: readonly string[],
-  options: { readonly portableFilesystem?: boolean } = {},
+  options: {
+    readonly portableFilesystem?: boolean;
+    readonly reportedMissingPrunable?: Set<string>;
+  } = {},
 ): Promise<RelocationGitPlan> {
   const checkouts: RelocationGitCheckout[] = [];
   const backlinks = new Map<string, string>();
@@ -116,7 +152,10 @@ export async function prepareRelocationGit(
     if (checkouts.some((checkout) => checkout.path === path)) continue;
     const dotGit = join(path, '.git');
     const dotGitState = await lstat(dotGit);
-    if (dotGitState.isSymbolicLink())
+    if (
+      dotGitState.isSymbolicLink() ||
+      (dotGitState.isFile() && dotGitState.nlink !== 1)
+    )
       throw new RelocationRefusedError('symlink-git-directory');
     const checkout = await observe(git, path);
     if (options.portableFilesystem) {
@@ -167,7 +206,8 @@ export async function prepareRelocationGit(
       for (const file of ['gitdir', 'commondir']) {
         const target = join(gitDir, file);
         await canonicalGitPath(target, 'symlink-backlink');
-        if (!(await lstat(target)).isFile())
+        const targetState = await lstat(target);
+        if (!targetState.isFile() || targetState.nlink !== 1)
           throw new RelocationRefusedError('symlink-backlink');
         backlinks.set(target, await readFile(target, 'utf8'));
       }
@@ -186,7 +226,14 @@ export async function prepareRelocationGit(
     const represented = new Set(checkouts.map((row) => row.path));
     for (const record of listed.split('\0\0')) {
       const fields = record.split('\0');
-      if (fields.includes('bare')) continue;
+      if (
+        fields.includes('bare') ||
+        (await isMissingPrunableGitWorktree(
+          fields,
+          options.reportedMissingPrunable,
+        ))
+      )
+        continue;
       for (const field of fields) {
         if (
           field.startsWith('worktree ') &&

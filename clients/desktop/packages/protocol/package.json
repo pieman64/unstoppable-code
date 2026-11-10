@@ -139,6 +139,7 @@
     "./digests": "./src/digests/index.ts",
     "./external-agents": "./src/external-agents/index.ts",
     "./portable-tasks": "./src/portable-tasks/index.ts",
+    "./portable-tasks/pull-request-reference": "./src/portable-tasks/pull-request-reference.ts",
     "./account-notifications": "./src/account-notifications/index.ts",
     "./shared-item-subscriptions": "./src/shared-item-subscriptions/index.ts",
     "./shared-containers": "./src/shared-containers/index.ts",

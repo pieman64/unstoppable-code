@@ -84,6 +84,17 @@ import {
   type PortalProviderUsageEntry,
   type PortalProviderUsageProjection,
   type PortalWorktreeUpdatePayload,
+  PORTAL_ADAPTER_FAILURE_CODES,
+  PORTAL_WORKTREE_CREATE_REFUSAL_REASONS,
+  PORTAL_CAPABILITY_WORKTREE_CREATE_FROM,
+  PORTAL_CAPABILITY_WORK_ENTRY_COMMANDS,
+  PORTAL_CAPABILITY_SIDEBAR_ITEM_GROUP_NAMES,
+  PORTAL_CAPABILITY_TASK_REFS,
+  type PortalStandaloneChatCreateResult,
+  type PortalTaskRefsListResult,
+  type PortalWorktreeCreateResult,
+  type PortalChatScheduledMessages,
+  type PortalCommandFailedPayload,
   type PortalCommandEnumParityGuards,
   type PortalWorkspaceItemsListNotesResult,
   type PortalWorkspaceItemsReadNoteResult,
@@ -1086,6 +1097,249 @@ describe('portal protocol contract', () => {
 
     expect(explicit.trackedBaseBranch).toBe('release/1.2');
     expect(PORTAL_COMMAND_TYPES_SET.has('portal.worktree.update')).toBe(true);
+  });
+
+  it('lets portal.worktree.update clear base branches, per repository too', () => {
+    const payload: PortalWorktreeUpdatePayload = {
+      workspaceId: 'ws',
+      worktreeId: 'wt',
+      trackedBaseBranch: null,
+      trackedRepoBaseBranches: { api: 'main', web: null },
+    };
+
+    expect(JSON.parse(JSON.stringify(payload))).toEqual(payload);
+  });
+
+  it('carries a typed worktree create refusal on the failed payload', () => {
+    const failed: PortalCommandFailedPayload = {
+      commandId: 'cmd-1',
+      sequenceNumber: 4,
+      error: {
+        code: 'branch_checked_out',
+        message: 'The branch is already checked out.',
+      },
+      refusal: { reason: 'branch_checked_out', existingWorktreeId: 'wt-2' },
+      retryable: false,
+      generatedAt: '2026-11-04T00:00:00.000Z',
+    };
+    const legacy: PortalCommandFailedPayload = {
+      commandId: 'cmd-2',
+      sequenceNumber: 5,
+      error: { code: 'execution_failed', message: 'Failed.' },
+      generatedAt: '2026-11-04T00:00:00.000Z',
+    };
+
+    expect(JSON.parse(JSON.stringify(failed))).toEqual(failed);
+    expect(legacy.refusal).toBeUndefined();
+    // Every refusal reason is also a closed adapter failure code.
+    expect(PORTAL_WORKTREE_CREATE_REFUSAL_REASONS).toHaveLength(13);
+    for (const reason of PORTAL_WORKTREE_CREATE_REFUSAL_REASONS) {
+      expect(PORTAL_ADAPTER_FAILURE_CODES).toContain(reason);
+    }
+  });
+
+  it('adds the task commands behind their capabilities', () => {
+    expect([
+      PORTAL_CAPABILITY_WORKTREE_CREATE_FROM,
+      PORTAL_CAPABILITY_WORK_ENTRY_COMMANDS,
+      PORTAL_CAPABILITY_SIDEBAR_ITEM_GROUP_NAMES,
+      PORTAL_CAPABILITY_TASK_REFS,
+    ]).toEqual([
+      'worktree_create_from_v1',
+      'work_entry_commands_v1',
+      'sidebar_item_group_names_v1',
+      'task_refs_v1',
+    ]);
+    const commands = [
+      'portal.work_entry.update',
+      'portal.work_entry.delete',
+      'portal.sidebar.item_groups.assign_named',
+      'portal.task_refs.list',
+    ] as const;
+    for (const command of commands) {
+      expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
+      expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
+    }
+    expect(
+      PORTAL_DESTRUCTIVE_COMMAND_TYPES.has('portal.work_entry.delete'),
+    ).toBe(true);
+    expect(
+      PORTAL_DESTRUCTIVE_COMMAND_TYPES.has('portal.work_entry.update'),
+    ).toBe(false);
+  });
+
+  it('carries create-from, group name and first chat on task creates', () => {
+    const firstChat = {
+      chatId: 'chat-1',
+      userMessageId: 'msg-1',
+      text: 'Start here',
+      planMode: true,
+    };
+    const create: PortalCommandPayloadMap['portal.worktree.create'] = {
+      workspaceId: 'ws',
+      existingBranch: 'feature/x',
+      pullRequest: { number: 42, as: 'base' },
+      sidebarItemGroupName: { name: 'Sprint', color: 'categorical-2' },
+      firstChat,
+    };
+    const older: PortalCommandPayloadMap['portal.worktree.create'] = {
+      workspaceId: 'ws',
+      baseWorktreeId: 'wt-1',
+    };
+    // Older hosts answer with only the legacy fields; `id` stays the worktree id.
+    const legacyResult: PortalWorktreeCreateResult = {
+      id: 'wt-2',
+      branchName: 'feature/x',
+      createdAt: '2026-11-04T00:00:00.000Z',
+    };
+    const result: PortalWorktreeCreateResult = {
+      ...legacyResult,
+      setupPhase: 'git-pending',
+      chat: { chatId: 'chat-1', userMessageId: 'msg-1', delivery: 'queued' },
+      groupError: 'The group limit was reached.',
+    };
+    const chatErrorResult: PortalWorktreeCreateResult = {
+      ...legacyResult,
+      chatError:
+        'The task was created, but its first chat message could not be sent.',
+    };
+    const cowork: PortalCommandPayloadMap['portal.standalone_chat.create'] = {
+      projectLocalId: 'p',
+      chatId: 'chat-2',
+      workEntryId: 'entry-1',
+      firstChat,
+    };
+    const coworkResult: PortalStandaloneChatCreateResult = {
+      ok: true,
+      chatId: 'chat-2',
+      projectLocalId: 'p',
+      projectId: 'p',
+      worktreeId: 'entry-1',
+      workEntryId: 'entry-1',
+      chat: { chatId: 'chat-2', userMessageId: 'msg-1', delivery: 'started' },
+    };
+    const coworkChatErrorResult: PortalStandaloneChatCreateResult = {
+      ok: true,
+      chatId: 'chat-2',
+      projectLocalId: 'p',
+      projectId: 'p',
+      worktreeId: 'entry-1',
+      workEntryId: 'entry-1',
+      chatError:
+        'The chat was created, but its first message could not be sent.',
+    };
+
+    for (const value of [
+      create,
+      older,
+      legacyResult,
+      result,
+      chatErrorResult,
+      cowork,
+      coworkResult,
+      coworkChatErrorResult,
+    ]) {
+      expect(JSON.parse(JSON.stringify(value))).toEqual(value);
+    }
+    expect(older.firstChat).toBeUndefined();
+  });
+
+  it('pins the Work Entry, named group and task ref payloads', () => {
+    const update: PortalCommandPayloadMap['portal.work_entry.update'] = {
+      projectLocalId: 'p',
+      entryId: 'entry-1',
+      title: null,
+    };
+    const remove: PortalCommandPayloadMap['portal.work_entry.delete'] = {
+      projectLocalId: 'p',
+      entryId: 'entry-1',
+      archive: true,
+    };
+    const assign: PortalCommandPayloadMap['portal.sidebar.item_groups.assign_named'] =
+      {
+        scope: { workspaceLocalId: 'ws' },
+        itemId: 'wt-1',
+        name: 'Sprint',
+      };
+    const refs: PortalCommandPayloadMap['portal.task_refs.list'] = {
+      workspaceId: 'ws',
+      kind: 'pr',
+      query: 'fix',
+      limit: 50,
+      offset: 0,
+    };
+    const page: PortalTaskRefsListResult = {
+      items: [
+        {
+          kind: 'branch',
+          name: 'main',
+          local: true,
+          remote: true,
+          isDefault: true,
+          checkedOutWorktreeId: 'wt-1',
+        },
+        {
+          kind: 'pr',
+          number: 7,
+          title: 'Fix',
+          headBranch: 'fix',
+          baseBranch: 'main',
+          draft: false,
+        },
+      ],
+      nextOffset: 50,
+    };
+
+    for (const value of [update, remove, assign, refs, page]) {
+      expect(JSON.parse(JSON.stringify(value))).toEqual(value);
+    }
+  });
+
+  it('carries approval and scheduled-send activity on chat summaries', () => {
+    const scheduledMessages: PortalChatScheduledMessages = {
+      count: 2,
+      nextAt: '2026-11-05T09:00:00.000Z',
+    };
+    const worktreeChat: PortalChatSummaryEntity = {
+      localId: 'chat',
+      chatId: 'chat',
+      scope: 'worktree',
+      title: 'Chat',
+      awaitingApproval: true,
+      scheduledMessages,
+    };
+    const cleared: PortalChatSummaryEntity = {
+      ...worktreeChat,
+      awaitingApproval: false,
+      scheduledMessages: { count: 0 },
+    };
+    const coworkChat: PortalStandaloneChatSummary = {
+      projectLocalId: 'p',
+      projectId: 'p',
+      chatId: 'chat',
+      title: 'Chat',
+      awaitingApproval: false,
+      scheduledMessages,
+    };
+    const snapshotChat: PortalSessionShellState['standaloneChats'][number] = {
+      localId: 'chat',
+      projectLocalId: 'p',
+      title: 'Chat',
+      scheduledMessages,
+    };
+    const older: PortalChatSummaryEntity = {
+      localId: 'chat',
+      chatId: 'chat',
+      scope: 'worktree',
+      title: 'Chat',
+    };
+
+    for (const value of [worktreeChat, cleared, coworkChat, snapshotChat]) {
+      expect(JSON.parse(JSON.stringify(value))).toEqual(value);
+    }
+    expect(cleared.scheduledMessages).toEqual({ count: 0 });
+    expect(older.awaitingApproval).toBeUndefined();
+    expect(older.scheduledMessages).toBeUndefined();
   });
 
   it('pins the setter command payload shapes on the payload map', () => {

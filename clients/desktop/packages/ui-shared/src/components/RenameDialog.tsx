@@ -129,8 +129,8 @@ export function RenameDialog({
       initialFocusRef={inputRef}
       restoreFocusRef={restoreFocusRef}
     >
-      <form className="flex flex-col" onSubmit={handleSubmit}>
-        <div className="mt-3">
+      <form className="flex flex-col gap-4.5 pt-3" onSubmit={handleSubmit}>
+        <div>
           <DialogFormField
             label={label}
             htmlFor={fieldId}
@@ -167,7 +167,7 @@ export function RenameDialog({
             />
           </DialogFormField>
         </div>
-        <div className="mt-4.5 flex items-center justify-end gap-2">
+        <div className="flex items-center justify-end gap-2">
           <Button
             variant="secondary"
             size="compact"

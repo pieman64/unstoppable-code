@@ -231,7 +231,7 @@ export function ApprovalFileChangePreview({
     <div
       data-testid="approval-file-change-preview"
       data-mode={mode}
-      className={`${REPLAY_BLOCK_CLASS} min-w-0`}
+      className={`${REPLAY_BLOCK_CLASS} flex min-w-0 flex-col gap-1`}
     >
       <div className="flex flex-wrap items-baseline gap-x-2 text-2xs fg-secondary">
         <span>{label}</span>
@@ -245,7 +245,7 @@ export function ApprovalFileChangePreview({
         <div
           data-testid="approval-file-change-source-truncated"
           role="note"
-          className="mt-1 text-2xs fg-secondary"
+          className="text-2xs fg-secondary"
         >
           Part of the requested change is too long to show and is unavailable.
         </div>
@@ -254,7 +254,7 @@ export function ApprovalFileChangePreview({
         <ul
           data-testid="approval-file-change-rows"
           aria-label={label}
-          className={`mt-1 overflow-x-auto rounded bg-fg-primary/[0.06] py-1 font-mono ${
+          className={`overflow-x-auto rounded bg-fg-primary/[0.06] py-1 font-mono ${
             mode === 'compact' ? 'text-2xs' : 'text-xs'
           }`}
         >
@@ -267,7 +267,7 @@ export function ApprovalFileChangePreview({
       ) : (
         <div
           data-testid="approval-file-change-state"
-          className="mt-1 rounded bg-fg-primary/[0.06] px-2 py-1.5 text-2xs italic fg-secondary"
+          className="rounded bg-fg-primary/[0.06] px-2 py-1.5 text-2xs italic fg-secondary"
         >
           {result.state === 'empty' && 'Empty content'}
           {result.state === 'unchanged' && 'No text change'}
@@ -277,7 +277,7 @@ export function ApprovalFileChangePreview({
       )}
       {canExpand && (
         // The link action takes the size of the copy around it.
-        <div className="mt-1 text-2xs">
+        <div className="text-2xs">
           <Button
             variant="link"
             data-testid="approval-file-change-expand"

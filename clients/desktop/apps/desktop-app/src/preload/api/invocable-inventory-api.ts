@@ -4,7 +4,7 @@ import type {
   InvocableInventoryAPI,
   ListInvocableInventoryRequest,
   ResolveInvocableSelectionRequest,
-} from '@canopy/desktop-shared/types/invocable-inventory';
+} from '@canopy/execution-engine/types/invocable-inventory';
 
 export type { InvocableInventoryAPI };
 

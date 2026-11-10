@@ -1,15 +1,52 @@
-import { isSidebarItemGroupId } from '@canopy/protocol/sidebar';
+import type {
+  PortalTaskFirstChat,
+  PortalTaskFirstChatResult,
+  PortalTaskSidebarItemGroupName,
+  PortalWorktreeCreatePayload,
+  PortalWorktreeCreateResult,
+  PortalWorktreeCreateRefusal,
+  PortalWorktreeCreateRefusalReason,
+  PortalRepositoryIdentity,
+} from '@canopy/protocol/portal';
+import { parsePortalRepositoryIdentity } from '@canopy/protocol/portal';
+import {
+  isSidebarItemGroupId,
+  isSidebarItemGroupColor,
+} from '@canopy/protocol/sidebar';
+import { CORE_PULL_REQUEST_GRANTS } from '@canopy/protocol/canopy-core';
+import { mintPullRequestId } from '@canopy/core-runtime/node/github';
+import { getDesktopCanopyRuntime } from '../../canopy-runtime/desktop-runtime-access';
+import { readRepositoryRemoteUrl } from '../../canopy-runtime/worker-git-dispatch';
+import {
+  runInGitHubProjection,
+  type PullRequestResolveCapture,
+} from '../../github/projection-capture';
+import {
+  bindPullRequestReference,
+  parsePullRequestReferenceForResolver,
+} from '../../lib/github-pr-resolver';
+import { parseGitHubRemote } from '../../lib/github-pr';
+import { recordedRepositoryPath } from '../../lib/workspace-recorded-repo';
+import { createPortalCaller } from '../portal-caller';
+import { sidebarItemGroupsService } from '../../services/sidebar-item-groups-service';
+import { createTaskFirstChat, parseTaskFirstChat } from './task-first-chat';
 import {
   IPC_CHANNELS,
   type PortalCommandEnvelope,
   type PortalCommandPayloadMap,
   type WorktreeData,
+  type WorkspaceConfigFile,
 } from '@canopy/desktop-shared/types';
 import {
   createMultiRepoWorktree,
   createSingleRepoWorktree,
   type CreateWorktreeServiceOptions,
 } from '../../lib/worktree-service';
+import {
+  WorktreeCreationRefusedError,
+  type WorktreeCreationRefusal,
+} from '../../lib/worktree-creation-selection';
+import { findManagedCheckoutWorktreeId } from './worktree-checkout-owner';
 import {
   readWorkspaceConfig,
   readWorkspaceWorktrees,
@@ -23,6 +60,7 @@ import {
 } from '../../lib/worktree-update';
 import { recordWorktreeCrudTelemetry } from '../../lib/desktop-telemetry';
 import { validateId } from '../../lib/validation';
+import { logMainProcessWarn } from '../../lib/main-process-logging';
 import {
   archiveWorktree,
   WorktreeArchiveRefusedError,
@@ -46,6 +84,261 @@ import { trackDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work
 
 const GENERIC_WORKTREE_CREATE_FAILURE =
   'Failed to create the task worktree. Check the repository state, then try again.';
+
+type WorktreeCreateRefusalPresentation = {
+  code: PortalWorktreeCreateRefusalReason;
+  message: string;
+};
+
+type CreateRefusal =
+  | WorktreeCreationRefusal
+  | 'pr_not_found'
+  | 'pr_not_in_repository';
+
+type CreatePullRequestResolution =
+  | { kind: 'resolved'; headBranch: string; isCrossRepo: boolean }
+  | { kind: 'not_found' }
+  | { kind: 'not_in_repository' };
+
+const PORTAL_WORKTREE_CREATE_REFUSAL: Record<
+  CreateRefusal,
+  WorktreeCreateRefusalPresentation
+> = {
+  pr_not_found: {
+    code: 'pr_not_found',
+    message: 'The pull request was not found.',
+  },
+  pr_not_in_repository: {
+    code: 'pr_not_in_repository',
+    message: "The pull request is not on this project's repository.",
+  },
+  'branch-not-found': {
+    code: 'branch_not_found',
+    message: 'The branch was not found.',
+  },
+  'branch-checked-out': {
+    code: 'branch_checked_out',
+    message: 'The branch is already checked out.',
+  },
+  'base-not-found': {
+    code: 'base_not_found',
+    message: 'The base branch was not found.',
+  },
+  'branch-reserved': {
+    code: 'branch_name_in_use',
+    message: 'The branch name is already in use. Try again.',
+  },
+  'checkout-reserved': {
+    code: 'checkout_in_use',
+    message: 'Another task is being created in this location. Try again.',
+  },
+  'invalid-branch-name': {
+    code: 'invalid_branch_name',
+    message: 'The branch name is not valid.',
+  },
+  'invalid-selection': {
+    code: 'invalid_selection',
+    message: 'This create request does not suit the project.',
+  },
+  'invalid-repository-selection': {
+    code: 'invalid_repository_selection',
+    message: 'The repository selection does not suit the project.',
+  },
+  'unsupported-workspace': {
+    code: 'unsupported_project',
+    message: 'This project cannot create worktree tasks.',
+  },
+  'read-only-scope': {
+    code: 'read_only_project',
+    message: 'This project is read-only on this host.',
+  },
+  'base-task-detached': {
+    code: 'base_task_detached',
+    message: 'The base task has no branch.',
+  },
+};
+
+function isStringOrNullRecord(
+  value: unknown,
+): value is Record<string, string | null> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (entry) => entry === null || typeof entry === 'string',
+    )
+  );
+}
+
+function failWorktreeCreateRefusal(
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+  reason: CreateRefusal,
+  existingWorktreeId?: string,
+): void {
+  const presentation = PORTAL_WORKTREE_CREATE_REFUSAL[reason];
+  const refusal: PortalWorktreeCreateRefusal = {
+    reason: presentation.code,
+    ...(existingWorktreeId ? { existingWorktreeId } : {}),
+  };
+  context.fail(command, presentation.code, presentation.message, false, {
+    refusal,
+  });
+}
+
+/** Reuse Home's core PR read and projection, retaining fork metadata for typed refusals. */
+async function resolveCreatePullRequest(
+  workspaceId: string,
+  config: WorkspaceConfigFile,
+  number: number,
+  context: PortalAdapterContext,
+  repository?: PortalRepositoryIdentity,
+): Promise<CreatePullRequestResolution> {
+  const repoPath = recordedRepositoryPath(config);
+  if (!repoPath) {
+    if (repository) return { kind: 'not_in_repository' };
+    throw new Error('This project has no repository for pull requests.');
+  }
+  if (!context.sessionId) {
+    if (repository) return { kind: 'not_in_repository' };
+    throw new Error('Portal session is not active.');
+  }
+  let runtime: ReturnType<typeof getDesktopCanopyRuntime>;
+  let caller: ReturnType<typeof createPortalCaller>;
+  let remoteUrl: string | null;
+  try {
+    runtime = getDesktopCanopyRuntime();
+    caller = createPortalCaller({ sessionId: context.sessionId }, []);
+    ({ remoteUrl } = await readRepositoryRemoteUrl(runtime, caller, repoPath));
+  } catch (error) {
+    if (repository) return { kind: 'not_in_repository' };
+    throw error;
+  }
+  if (repository) {
+    const rootIdentity =
+      remoteUrl === null
+        ? undefined
+        : parsePortalRepositoryIdentity(parseGitHubRemote(remoteUrl));
+    if (
+      !rootIdentity ||
+      rootIdentity.owner !== repository.owner ||
+      rootIdentity.repo !== repository.repo
+    )
+      return { kind: 'not_in_repository' };
+  }
+  const ref = bindPullRequestReference(
+    parsePullRequestReferenceForResolver(String(number)),
+    remoteUrl,
+  );
+  const pullRequestId = mintPullRequestId({
+    repository: { workspaceId },
+    github: { owner: ref.owner, repo: ref.repo },
+    number,
+  });
+  if (!pullRequestId) throw new Error('The pull request cannot be identified.');
+  const capture: PullRequestResolveCapture = { kind: 'resolve', repoPath };
+  try {
+    await runInGitHubProjection(capture, () =>
+      runtime.query(
+        'core.pullRequest.get',
+        { pullRequestId, refresh: false },
+        { caller: { ...caller, grants: [CORE_PULL_REQUEST_GRANTS.read] } },
+      ),
+    );
+  } catch (error) {
+    // The legacy projection can capture a usable view even when the canonical
+    // detail is unavailable. Home's resolver deliberately keeps that answer.
+    if (!capture.view) {
+      if (
+        isRecord(error) &&
+        isRecord(error.payload) &&
+        error.payload.code === 'core.pullRequest.notFound'
+      )
+        return { kind: 'not_found' };
+      throw error;
+    }
+  }
+  if (!capture.view)
+    throw new Error('Pull request resolution was not captured.');
+  const headRepository = capture.view.headRepository;
+  return {
+    kind: 'resolved',
+    headBranch: capture.view.headBranch,
+    isCrossRepo:
+      headRepository === null ||
+      headRepository.toLowerCase() !== `${ref.owner}/${ref.repo}`.toLowerCase(),
+  };
+}
+
+function parseCreateAdditions(payload: Record<string, unknown>): Pick<
+  PortalWorktreeCreatePayload,
+  'existingBranch' | 'baseBranch' | 'pullRequest'
+> & {
+  firstChat?: PortalTaskFirstChat;
+  sidebarItemGroupName?: PortalTaskSidebarItemGroupName;
+} {
+  const nonblank = (value: unknown): value is string =>
+    typeof value === 'string' && value.trim().length > 0;
+  for (const field of ['existingBranch', 'baseBranch']) {
+    if (payload[field] !== undefined && !nonblank(payload[field]))
+      throw new Error('Invalid branch selection.');
+  }
+  const count = ['existingBranch', 'baseBranch', 'pullRequest'].filter(
+    (field) => payload[field] !== undefined,
+  ).length;
+  if (count > 1 || (count > 0 && payload.baseWorktreeId !== undefined))
+    throw new Error('Conflicting branch selections.');
+  let pullRequest: PortalWorktreeCreatePayload['pullRequest'];
+  if (payload.pullRequest !== undefined) {
+    const pr = payload.pullRequest;
+    if (
+      !isRecord(pr) ||
+      typeof pr.number !== 'number' ||
+      !Number.isSafeInteger(pr.number) ||
+      pr.number <= 0 ||
+      (pr.as !== 'checkout' && pr.as !== 'base')
+    )
+      throw new Error('Invalid pull request selection.');
+    const hasRepository = Object.prototype.hasOwnProperty.call(
+      pr,
+      'repository',
+    );
+    const repository = hasRepository
+      ? parsePortalRepositoryIdentity(pr.repository)
+      : undefined;
+    if (hasRepository && repository === undefined)
+      throw new Error('Invalid pull request selection.');
+    pullRequest = {
+      number: pr.number,
+      as: pr.as,
+      ...(repository === undefined ? {} : { repository }),
+    };
+  }
+  let sidebarItemGroupName: PortalTaskSidebarItemGroupName | undefined;
+  if (payload.sidebarItemGroupName !== undefined) {
+    const group = payload.sidebarItemGroupName;
+    if (
+      !isRecord(group) ||
+      !nonblank(group.name) ||
+      (group.color !== undefined && !isSidebarItemGroupColor(group.color))
+    )
+      throw new Error('Invalid group selection.');
+    sidebarItemGroupName = {
+      name: group.name,
+      ...(isSidebarItemGroupColor(group.color) ? { color: group.color } : {}),
+    };
+  }
+  return {
+    ...(nonblank(payload.existingBranch)
+      ? { existingBranch: payload.existingBranch }
+      : {}),
+    ...(nonblank(payload.baseBranch) ? { baseBranch: payload.baseBranch } : {}),
+    ...(pullRequest ? { pullRequest } : {}),
+    ...(sidebarItemGroupName ? { sidebarItemGroupName } : {}),
+    ...(payload.firstChat !== undefined
+      ? { firstChat: parseTaskFirstChat(payload.firstChat) }
+      : {}),
+  };
+}
 
 /** Push the authoritative post-setup row without issuing another portal command. */
 async function publishPortalWorktreeSetupStatus(
@@ -159,10 +452,26 @@ export async function handlePortalWorktreeUpdate(
   }
   const hasLabel = Object.prototype.hasOwnProperty.call(payload, 'label');
   const hasHidden = Object.prototype.hasOwnProperty.call(payload, 'hidden');
+  const hasTrackedBaseBranch = Object.prototype.hasOwnProperty.call(
+    payload,
+    'trackedBaseBranch',
+  );
+  const hasTrackedRepoBaseBranches = Object.prototype.hasOwnProperty.call(
+    payload,
+    'trackedRepoBaseBranches',
+  );
   if (
-    (!hasLabel && !hasHidden) ||
+    (!hasLabel &&
+      !hasHidden &&
+      !hasTrackedBaseBranch &&
+      !hasTrackedRepoBaseBranches) ||
     (hasLabel && payload.label !== null && typeof payload.label !== 'string') ||
-    (hasHidden && typeof payload.hidden !== 'boolean')
+    (hasHidden && typeof payload.hidden !== 'boolean') ||
+    (hasTrackedBaseBranch &&
+      payload.trackedBaseBranch !== null &&
+      typeof payload.trackedBaseBranch !== 'string') ||
+    (hasTrackedRepoBaseBranches &&
+      !isStringOrNullRecord(payload.trackedRepoBaseBranches))
   ) {
     context.fail(
       command,
@@ -185,6 +494,19 @@ export async function handlePortalWorktreeUpdate(
       patch.label = payload.label;
     if (hasHidden && typeof payload.hidden === 'boolean')
       patch.hidden = payload.hidden;
+    if (
+      hasTrackedBaseBranch &&
+      (payload.trackedBaseBranch === null ||
+        typeof payload.trackedBaseBranch === 'string')
+    ) {
+      patch.trackedBaseBranch = payload.trackedBaseBranch;
+    }
+    if (
+      hasTrackedRepoBaseBranches &&
+      isStringOrNullRecord(payload.trackedRepoBaseBranches)
+    ) {
+      patch.trackedRepoBaseBranches = payload.trackedRepoBaseBranches;
+    }
     const { worktree } = await updateWorktree({
       workspaceId,
       worktreeId: payload.worktreeId,
@@ -331,6 +653,18 @@ export async function handlePortalWorktreeCreate(
     );
     return;
   }
+  let additions: ReturnType<typeof parseCreateAdditions>;
+  try {
+    additions = parseCreateAdditions(payload);
+  } catch {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Invalid worktree create options.',
+      false,
+    );
+    return;
+  }
   const workspaceId = payload.workspaceId;
   const filteredExistingIds = Array.isArray(payload.existingWorktreeIds)
     ? payload.existingWorktreeIds.filter(
@@ -369,36 +703,64 @@ export async function handlePortalWorktreeCreate(
     // reject cowork workspaces explicitly — matching the renderer IPC path.
     const config = await readWorkspaceConfig(workspaceId);
     if (config.type === 'cowork') {
-      context.fail(
-        command,
-        'invalid_payload',
-        'Cannot create a worktree in a cowork project.',
-      );
+      failWorktreeCreateRefusal(command, context, 'unsupported-workspace');
       return;
     }
+    let { existingBranch, baseBranch } = additions;
+    if (additions.pullRequest) {
+      const pr = await resolveCreatePullRequest(
+        workspaceId,
+        config,
+        additions.pullRequest.number,
+        context,
+        additions.pullRequest.repository,
+      );
+      if (pr.kind === 'not_in_repository') {
+        failWorktreeCreateRefusal(command, context, 'pr_not_in_repository');
+        return;
+      }
+      if (pr.kind === 'not_found') {
+        failWorktreeCreateRefusal(command, context, 'pr_not_found');
+        return;
+      }
+      if (pr.isCrossRepo) {
+        failWorktreeCreateRefusal(command, context, 'pr_not_in_repository');
+        return;
+      }
+      if (additions.pullRequest.as === 'checkout')
+        existingBranch = pr.headBranch;
+      else baseBranch = pr.headBranch;
+    }
+    let tabsFork: Promise<void> | undefined;
+    const forkTabsBeforeReady = (worktreeId: string): Promise<void> => {
+      if (payload.forkOpenTabs !== true || !baseWorktreeId)
+        return Promise.resolve();
+      // A first chat must be installed after inherited tabs, not overwritten
+      // by the Git-ready callback. Start this same best-effort step at reserve
+      // time for first-chat creates; it never waits for Git.
+      tabsFork ??= forkOpenWorktreeTabs({
+        projectId: workspaceId,
+        sourceWorktreeId: baseWorktreeId,
+        destinationWorktreeId: worktreeId,
+      })
+        .then(() => undefined)
+        .catch(() => undefined);
+      return tabsFork;
+    };
     const options: CreateWorktreeServiceOptions = {
       workspaceId,
-      ...(isSidebarItemGroupId(payload.sidebarItemGroupId)
+      ...(existingBranch !== undefined ? { existingBranch } : {}),
+      ...(baseBranch !== undefined ? { baseBranch } : {}),
+      ...(!additions.sidebarItemGroupName &&
+      isSidebarItemGroupId(payload.sidebarItemGroupId)
         ? { sidebarItemGroupId: payload.sidebarItemGroupId }
         : {}),
       existingWorktreeIds,
       baseWorktreeId,
       startPostCreateSetup: false,
       deferGitSetup: true,
-      beforeGitReady: async (event): Promise<void> => {
-        if (payload.forkOpenTabs === true && baseWorktreeId) {
-          try {
-            await forkOpenWorktreeTabs({
-              projectId: workspaceId,
-              sourceWorktreeId: baseWorktreeId,
-              destinationWorktreeId: event.worktreeId,
-            });
-          } catch {
-            // Tab inheritance is best effort. It must settle before readiness
-            // so it cannot replace a tab opened by a readiness consumer.
-          }
-        }
-      },
+      beforeGitReady: (event): Promise<void> =>
+        forkTabsBeforeReady(event.worktreeId),
       onGitReady: (event): void => {
         sendToWindow(
           context.getWindow?.() ?? null,
@@ -433,15 +795,70 @@ export async function handlePortalWorktreeCreate(
       config.type === 'multi-repo'
         ? await createMultiRepoWorktree(options)
         : await createSingleRepoWorktree(options);
+    if (additions.firstChat) await forkTabsBeforeReady(result.id);
+    let groupError: string | undefined;
+    if (additions.sidebarItemGroupName) {
+      try {
+        await sidebarItemGroupsService.assignItemToNamedGroup({
+          scope: { workspaceLocalId: workspaceId },
+          itemId: result.id,
+          ...additions.sidebarItemGroupName,
+        });
+      } catch {
+        groupError =
+          'The task was created, but could not be added to the group.';
+      }
+    }
+    let chat: PortalTaskFirstChatResult | undefined;
+    let chatError: string | undefined;
+    if (additions.firstChat) {
+      try {
+        chat = await createTaskFirstChat({
+          commandId: command.id,
+          workspaceId,
+          worktreeId: result.id,
+          firstChat: additions.firstChat,
+          context,
+        });
+      } catch (error) {
+        logMainProcessWarn(
+          'Portal task first chat failed after worktree creation',
+          {
+            error,
+          },
+        );
+        chatError =
+          'The task was created, but its first chat message could not be sent.';
+      }
+    }
+    const response: PortalWorktreeCreateResult = {
+      ...result,
+      ...(chat ? { chat } : {}),
+      ...(groupError ? { groupError } : {}),
+      ...(chatError ? { chatError } : {}),
+    };
     recordWorktreeCrudTelemetry({
       action: 'create',
       workspaceId,
       source: 'portal',
     });
     await broadcastWorktreeListToRenderer(context, workspaceId);
-    context.complete(command, result);
+    context.complete(command, response);
     await broadcastWorkspaceWorktrees(context, workspaceId);
-  } catch {
+  } catch (error) {
+    if (error instanceof WorktreeCreationRefusedError) {
+      const existingWorktreeId =
+        error.reason === 'branch-checked-out' && error.checkoutPath
+          ? await findManagedCheckoutWorktreeId(workspaceId, error.checkoutPath)
+          : undefined;
+      failWorktreeCreateRefusal(
+        command,
+        context,
+        error.reason,
+        existingWorktreeId,
+      );
+      return;
+    }
     context.fail(
       command,
       'execution_failed',

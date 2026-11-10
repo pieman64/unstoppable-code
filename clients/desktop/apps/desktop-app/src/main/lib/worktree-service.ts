@@ -2457,6 +2457,7 @@ async function ensureExistingBranchIsUsable(
     throw new WorktreeCreationRefusedError(
       'branch-checked-out',
       `Branch "${branchName}" is already checked out at ${usedAt}`,
+      { checkoutPath: usedAt },
     );
   }
 }

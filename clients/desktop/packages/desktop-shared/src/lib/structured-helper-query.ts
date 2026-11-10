@@ -56,7 +56,7 @@ import {
   parseClaudeModAdmissionEnvelope,
   readClaudeModAdmissionEnvelope,
   type ClaudeModAdmissionLaunch,
-} from '../node/plugins/claude-mod-admission';
+} from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 
 export interface ClaudeModAdmissionLaunchRequest {

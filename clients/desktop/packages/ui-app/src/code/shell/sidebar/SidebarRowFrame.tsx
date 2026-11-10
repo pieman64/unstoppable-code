@@ -95,6 +95,8 @@ export function SidebarRowFrame({
       data-sidebar-density={density}
       onClick={onClick}
       onKeyDown={handleKeyDown}
+      // Lets a row inside find its own frame (the worktree row's focus card).
+      data-sidebar-row-frame=""
       data-sidebar-variant={variant}
       className={`flex w-full min-w-0${chromeClassName ? ` ${chromeClassName}` : ''}${className ? ` ${className}` : ''}`}
     >

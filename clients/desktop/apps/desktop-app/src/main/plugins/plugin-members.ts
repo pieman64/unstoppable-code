@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { comparePluginPaths } from '@canopy/plugin-interop';
-import type { PluginManifest } from '@canopy/desktop-shared/types/plugins';
+import type { PluginManifest } from '@canopy/execution-engine/types/plugins';
 import { safeReadText } from '../lib/fs-utils';
 import { parseFrontmatter } from '../lib/frontmatter';
 import { isPathInside } from '../lib/path-safety';

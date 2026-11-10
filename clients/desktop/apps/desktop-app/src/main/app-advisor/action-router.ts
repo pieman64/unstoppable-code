@@ -20,6 +20,7 @@ import type {
 } from '../canopy-tools/resource-actions';
 import { readLocalFileContent } from '../ipc/file-preview';
 import { routeRendererToolRequest } from '../ipc/app-advisor';
+import { localMainWindowServes } from '../agents/interface-tool-binding';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { validateAbsolutePath, validateId } from '../lib/validation';
 import {
@@ -275,6 +276,26 @@ export async function routeAppAdvisorAction(
       });
   }
 
+  // CAN-6008 (CAN-4133 N2): credential and remote-access actions run in main
+  // only while this session binds the presentation tool and this computer's
+  // own main window serves it. A headless turn, a chat a connected computer
+  // drives, or that computer's window lease (CAN-5823) never satisfies it.
+  if (disposition.kind === 'core' && disposition.requiresInterface === true) {
+    const bound = (
+      call.context?.interfaceTools ?? (await runtime.boundInterfaceTools())
+    ).includes('ui.app_advisor.present');
+    if (!bound || !localMainWindowServes(runtime.watcherDestination.chatId))
+      return respond({
+        requestId,
+        ok: false,
+        error: {
+          code: 'surface_unavailable',
+          message: APP_ADVISOR_ACTION_TEXTS.legacyNeedsWindow,
+          retryable: true,
+        },
+      });
+  }
+
   const execute = async (): Promise<CanopyInjectedToolTextResult> => {
     if (presentation) {
       const presented = appAdvisorActionSchema.safeParse(action);
@@ -391,6 +412,27 @@ export async function routeAppAdvisorAction(
             resolved.runtime,
           );
           return respond({ ...response, requestId });
+        }
+        case 'settings-surface': {
+          // CAN-6008 B1: the mounted Settings surface takes the operation
+          // through the main window's lease, as the window's own event did.
+          const surfaceAction = appAdvisorActionSchema.safeParse(action);
+          if (!surfaceAction.success) break;
+          return respond(
+            await presentAppAdvisorAction({
+              action: surfaceAction.data,
+              requestId,
+              ...(call.expectedUiRevision !== undefined
+                ? { expectedUiRevision: call.expectedUiRevision }
+                : {}),
+              destination: runtime.watcherDestination,
+              boundTools:
+                call.context?.interfaceTools ??
+                (await runtime.boundInterfaceTools()),
+              surfaceRequest: true,
+              ...(signal ? { signal } : {}),
+            }),
+          );
         }
         case 'shared-engine':
           break;

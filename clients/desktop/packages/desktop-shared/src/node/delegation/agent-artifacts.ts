@@ -7,7 +7,7 @@ import {
   DELEGATION_CAPABILITY_SOURCES,
   type DelegationCapabilitySource,
 } from '@canopy/protocol/delegation';
-import { isMcpHttpAuthHandler } from '../../lib/mcp-http-auth';
+import { isMcpHttpAuthHandler } from '@canopy/execution-engine/lib/mcp-http-auth';
 import { isDelegationCapabilityId } from './capability-grant';
 import type {
   ResolvedAgentOverlaySnapshot,

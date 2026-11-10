@@ -112,7 +112,11 @@ import {
   logMainProcessWarn,
 } from './lib/main-process-logging';
 import { getOrgProjectMaterialization } from './lib/org-project-materialization';
-import { setRemoteControlEnabled } from './lib/remote-control-preference';
+import {
+  isRemoteControlEnabled,
+  onRemoteControlEnabledChanged,
+  setRemoteControlEnabled,
+} from './lib/remote-control-preference';
 import {
   CHILD_TOOL_LIVENESS_STAMP,
   readChildToolLivenessStamp,
@@ -901,7 +905,6 @@ let uninstallFeatureFlagRecoveryTriggers: (() => void) | null = null;
 let disposeTurnFeedbackFlush: (() => void) | null = null;
 let disposeSharedItemSubscriptionFlush: (() => void) | null = null;
 let stopArchivedContainerRetention: (() => void) | null = null;
-let stopChatAutomationMigration: (() => void) | null = null;
 let autoArchiveScheduler: ReturnType<typeof startAutoArchiveScheduler> | null =
   null;
 let disposeCuratedMcpRefresh: (() => void) | null = null;
@@ -1915,10 +1918,7 @@ function unlockStartupWork(): void {
       recordRealisticStartupPerformanceEvent('startup:automations:completed');
       // CAN-5479: converts the remaining chat automations once released.
       if (!appIsQuitting)
-        stopChatAutomationMigration = startChatAutomationMigration({
-          service: getAutomationsService(),
-          labs: getLabsExperimentsService(),
-        });
+        startChatAutomationMigration({ service: getAutomationsService() });
     })
     .catch((error: unknown): void => {
       recordRealisticStartupPerformanceEvent('startup:automations:failed');
@@ -2249,8 +2249,6 @@ async function cleanupRuntimeResources(
       ),
     );
     // Stop schedulers before closing admission and checkpointing active work.
-    stopChatAutomationMigration?.();
-    stopChatAutomationMigration = null;
     getAutomationsService().stop();
     getAppAdvisorWatcherService().shutdown();
     const localWatcherShutdown = settleBestEffortCleanup(
@@ -5561,9 +5559,11 @@ void app.whenReady().then(async (): Promise<void> => {
       });
     }
 
-    applySyncServiceFeatureFlags(snapshot.values, {
-      inventory: getDesktopInventorySyncService(),
-    });
+    applySyncServiceFeatureFlags(
+      snapshot.values,
+      { inventory: getDesktopInventorySyncService() },
+      { remoteAccessEnabled: isRemoteControlEnabled() },
+    );
     setLedgerSyncEnabled(
       snapshot.values[CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key] === true,
     );
@@ -6958,9 +6958,20 @@ void app.whenReady().then(async (): Promise<void> => {
     focusMainWindow,
   }).catch(() => undefined);
   // Apply the initial Remote Control gate to cloud inventory sync (CAN-2830)
-  // before it starts.
-  applySyncServiceFeatureFlags(getFeatureFlagService().getSnapshot().values, {
-    inventory: getDesktopInventorySyncService(),
+  // before it starts, and re-apply it whenever the Labs Remote access switch
+  // changes, since direct Remote Control opens the gate too (CAN-6037). The
+  // listener lives for the process: after dispose the service ignores it.
+  applySyncServiceFeatureFlags(
+    getFeatureFlagService().getSnapshot().values,
+    { inventory: getDesktopInventorySyncService() },
+    { remoteAccessEnabled: isRemoteControlEnabled() },
+  );
+  onRemoteControlEnabledChanged((enabled): void => {
+    applySyncServiceFeatureFlags(
+      getFeatureFlagService().getSnapshot().values,
+      { inventory: getDesktopInventorySyncService() },
+      { remoteAccessEnabled: enabled },
+    );
   });
   getDesktopInventorySyncService().start();
   // Agent Ledger sync (LD01, LD02): a scheduled check only; it reads nothing

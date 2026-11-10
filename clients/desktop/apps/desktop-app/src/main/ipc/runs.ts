@@ -104,19 +104,39 @@ async function requireSharedRunExternalId(request: {
   return externalId;
 }
 
+/** The window's run share, which App Advisor's runs.share shares (CAN-6003). */
+export async function shareRunForWindow(
+  request: ShareRunRequest,
+): Promise<ShareOperationResult<ShareRunResponse>> {
+  validateSessionRef(request);
+  if (request.teamId !== undefined) {
+    validateId(request.teamId, 'teamId');
+  }
+  if (request.organizationId !== undefined) {
+    validateId(request.organizationId, 'organizationId');
+  }
+  return toShareOperationResult(() => shareRun(request));
+}
+
+/** The window's run unshare, which App Advisor's runs.unshare shares (CAN-6003). */
+export async function unshareRunForWindow(
+  request: UnshareRunRequest,
+): Promise<UnshareRunResponse> {
+  validateSessionRef(request);
+  // Cancel any pending auto-reshare for this session first, so unsharing
+  // can't be undone by a debounced timer resurrecting the deleted grant.
+  getSharedRunAutoUpdater().cancelPending(
+    request.projectId,
+    request.worktreeId,
+    request.chatId,
+  );
+  return unshareRun(request);
+}
+
 export function registerRunsHandlers(): void {
   registerIpcHandler<[ShareRunRequest], ShareOperationResult<ShareRunResponse>>(
     IPC_CHANNELS.runsShare,
-    async (_event, request) => {
-      validateSessionRef(request);
-      if (request.teamId !== undefined) {
-        validateId(request.teamId, 'teamId');
-      }
-      if (request.organizationId !== undefined) {
-        validateId(request.organizationId, 'organizationId');
-      }
-      return toShareOperationResult(() => shareRun(request));
-    },
+    (_event, request) => shareRunForWindow(request),
   );
 
   registerIpcHandler<[ShareRunEligibilityRequest], ShareRunEligibilityResponse>(
@@ -129,17 +149,7 @@ export function registerRunsHandlers(): void {
 
   registerIpcHandler<[UnshareRunRequest], UnshareRunResponse>(
     IPC_CHANNELS.runsUnshare,
-    async (_event, request) => {
-      validateSessionRef(request);
-      // Cancel any pending auto-reshare for this session first, so unsharing
-      // can't be undone by a debounced timer resurrecting the deleted grant.
-      getSharedRunAutoUpdater().cancelPending(
-        request.projectId,
-        request.worktreeId,
-        request.chatId,
-      );
-      return unshareRun(request);
-    },
+    (_event, request) => unshareRunForWindow(request),
   );
 
   registerIpcHandler<[ListRunCommentsRequest], ListRunCommentsResponse>(

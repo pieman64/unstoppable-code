@@ -49,7 +49,7 @@ import {
 } from '../codex/speed-policy';
 import { getClaudeWorkerSessionService } from '../integration/claude-worker-session-service';
 import { resolveClaudeModAdmissionLaunch } from './claude-mod-admission-launch';
-import { mergeClaudeModAdmissionSettings } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+import { mergeClaudeModAdmissionSettings } from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 import { getEffectiveClaudeWorkerModePreferences } from '../lib/claude-tui-workers';
 import { markObservedHelperTaskAiCreditsRouted } from '../lib/helper-observed-task';
 import { checkModelGatewayRoute } from '../lib/model-gateway-state';

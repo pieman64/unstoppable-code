@@ -22,6 +22,10 @@ import {
   getChatApprovalStateRevision,
 } from '../approvals/rule-revisions';
 import {
+  hasPendingApprovalForChat,
+  subscribePendingApprovalChanges,
+} from '../approvals/pending-approvals';
+import {
   stageTerminalPresentationTurn,
   resolvePresentationSource,
   cancelTerminalPresentationTurn,
@@ -100,11 +104,14 @@ import {
   worktreeScopedParentLocalId,
 } from '@canopy/protocol';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
-import { portalChatAssetId } from '@canopy/protocol/portal';
+import {
+  portalChatAssetId,
+  type PortalChatScheduledMessages,
+} from '@canopy/protocol/portal';
 import { resolveClaudeForkResumePoint } from '@canopy/desktop-shared/lib/claude-fork-resume-point';
 import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 import { getPortalChatToolFamily } from '@canopy/desktop-shared/lib/portal-tool-family';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
 import {
@@ -2169,6 +2176,35 @@ function chatTabOrder(
     .findIndex((tab) => tab.id === chatId);
 }
 
+type ScheduledMessageChatIdentity = {
+  workspaceId: string;
+  worktreeId: string;
+  chatId: string;
+};
+
+type ScheduledMessageSummaryContext = {
+  scheduledMessagesIndex:
+    | ReadonlyMap<string, PortalChatScheduledMessages>
+    | undefined;
+  scheduledMessageChatKey: (identity: ScheduledMessageChatIdentity) => string;
+};
+
+/**
+ * Read the scheduled-send projection once per summary operation. Automations
+ * imports chat-service for dispatch, so keep this edge deferred to avoid a
+ * service initialization cycle. Explicit summary listings hydrate the facts
+ * even without Portal; emission callers gate this read on Portal activity.
+ */
+async function getScheduledMessageSummaryContext(): Promise<ScheduledMessageSummaryContext> {
+  const { getAutomationsService, scheduledMessageChatKey } =
+    await import('../automations/service');
+  return {
+    scheduledMessagesIndex:
+      await getAutomationsService().getScheduledMessagesIndex(),
+    scheduledMessageChatKey,
+  };
+}
+
 function chatSummaryEntity(input: {
   workspaceId: string;
   worktreeId: string;
@@ -2193,6 +2229,8 @@ function chatSummaryEntity(input: {
   owner: WorkOwner | undefined;
   /** See `resolveCatalogAgentDefaultModel`. */
   agentDefaultModel: string | undefined;
+  scheduledMessagesIndex?: ReadonlyMap<string, PortalChatScheduledMessages>;
+  scheduledMessageChatKey?: (identity: ScheduledMessageChatIdentity) => string;
 }): PortalChatSummaryEntity {
   const surface = input.surface;
   const inputSession = getInputSession(
@@ -2336,6 +2374,27 @@ function chatSummaryEntity(input: {
     ...(turnElapsedMs !== undefined ? { turnElapsedMs } : {}),
     ...(canonicalTurn ? { turnPhase: canonicalTurn.phase } : {}),
     ...(backgroundTasks !== undefined ? { backgroundTasks } : {}),
+    ...(canonicalTurn
+      ? {
+          awaitingApproval: hasPendingApprovalForChat({
+            projectId: input.workspaceId,
+            worktreeId: input.worktreeId,
+            chatId: input.tab.id,
+          }),
+          // Omitted when the index is unknown, rather than reported as 0.
+          ...(input.scheduledMessagesIndex && input.scheduledMessageChatKey
+            ? {
+                scheduledMessages: input.scheduledMessagesIndex.get(
+                  input.scheduledMessageChatKey({
+                    workspaceId: input.workspaceId,
+                    worktreeId: input.worktreeId,
+                    chatId: input.tab.id,
+                  }),
+                ) ?? { count: 0 },
+              }
+            : {}),
+        }
+      : {}),
     // The Portal tray's delegates row (turn-state phase 41e).
     ...(canonicalTurn
       ? {
@@ -2708,6 +2767,9 @@ async function emitTargetChatSummary(input: {
       chatId: input.tab.id,
     });
   const agentDefaultModel = await catalogAgentDefaultModel(input.workspaceId);
+  const scheduledMessageContext = isCanopyPortalActive()
+    ? await getScheduledMessageSummaryContext()
+    : undefined;
   emitChatSummary(
     chatSummaryEntity({
       ...input,
@@ -2715,6 +2777,7 @@ async function emitTargetChatSummary(input: {
       surface: 'worktree',
       owner,
       agentDefaultModel,
+      ...(scheduledMessageContext ?? {}),
     }),
   );
 }
@@ -2751,6 +2814,39 @@ export async function emitLatestTargetChatSummary(input: {
     order: chatTabOrder(latestTabsFile.tabs, input.chatId),
   });
 }
+
+function refreshChangedChatSummary(
+  identity: ScheduledMessageChatIdentity,
+): Promise<void> {
+  if (!isCanopyPortalActive()) {
+    return Promise.resolve();
+  }
+  return emitLatestTargetChatSummary(identity).catch(() => undefined);
+}
+
+subscribePendingApprovalChanges((identity) => {
+  void refreshChangedChatSummary({
+    workspaceId: identity.projectId,
+    worktreeId: identity.worktreeId,
+    chatId: identity.chatId,
+  });
+});
+
+// Automations imports chat-service for dispatch. Defer subscriber registration
+// until both modules have initialized, regardless of which service is loaded
+// first; this is an event subscription, not polling.
+void import('../automations/service')
+  .then(({ subscribeScheduledMessageChanges }) => {
+    subscribeScheduledMessageChanges((identities) => {
+      if (!isCanopyPortalActive()) {
+        return;
+      }
+      for (const identity of identities) {
+        void refreshChangedChatSummary(identity);
+      }
+    });
+  })
+  .catch(() => undefined);
 
 /** A host queue update must use the target's actual Portal entity family. */
 export async function projectChatQueueSummary(target: {
@@ -4624,6 +4720,7 @@ export async function listWorktreeChatSummaries(input: {
     (tab) => (tab.kind ?? 'chat') === 'chat',
   );
   const agentDefaultModel = await catalogAgentDefaultModel(input.workspaceId);
+  const scheduledMessageContext = await getScheduledMessageSummaryContext();
   return mapWithConcurrency(chatTabs, 4, async (tab, index) => {
     const owner = await resolveAiCreditsScopeOwner({
       kind: 'work',
@@ -4644,6 +4741,7 @@ export async function listWorktreeChatSummaries(input: {
       surface: 'worktree',
       owner,
       agentDefaultModel,
+      ...scheduledMessageContext,
     });
     return {
       ...summary,
@@ -4975,6 +5073,7 @@ export async function listAppAdvisorChatSummaries(
   const agentDefaultModel = await catalogAgentDefaultModel(
     APP_ADVISOR_PROJECT_ID,
   );
+  const scheduledMessageContext = await getScheduledMessageSummaryContext();
   return tabsFile.tabs
     .filter((tab) => (tab.kind ?? 'chat') === 'chat')
     .map((tab, index) => {
@@ -4992,6 +5091,7 @@ export async function listAppAdvisorChatSummaries(
           surface: 'app-advisor',
           owner: { kind: 'personal' },
           agentDefaultModel,
+          ...scheduledMessageContext,
         });
       void scope;
       void workspaceLocalId;

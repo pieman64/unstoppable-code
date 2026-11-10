@@ -10,9 +10,9 @@ import type {
   PluginHookInfo,
   PluginMcpServerInfo,
   PluginLspServerInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { PluginModInfo } from '@canopy/protocol/plugins';
-import { parseClaudeJsonFile } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+import { parseClaudeJsonFile } from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 import { safeReadJson, safeReadText } from '../lib/fs-utils';
 import { parseFrontmatter } from '../lib/frontmatter';
 import { canonicalPathInside } from './plugin-members';

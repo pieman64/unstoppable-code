@@ -1358,7 +1358,15 @@ class PortableIpcCanopyClient implements CanopyClient {
           { remoteUrl: args.remoteUrl, destinationDir },
         );
         await this.invalidateSessionSnapshot();
-        return { status: 'completed', workspaceId: workspace.id };
+        // The guard checked only `id`; read the optional field as wire data.
+        const operationId: unknown = workspace.scriptActionsOperationId;
+        return {
+          status: 'completed',
+          workspaceId: workspace.id,
+          ...(typeof operationId === 'string' && operationId !== ''
+            ? { scriptActionsOperationId: operationId }
+            : {}),
+        };
       },
       'workspace.update': async (args) => {
         await channels.invokeVoid(C.workspaceUpdateMetadata, {

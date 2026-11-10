@@ -316,16 +316,17 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                 </Button>
               </>
             }
+            childrenGap="tight"
           >
             {row.attachmentCount > 0 && (
-              <div className="mt-1 text-xs fg-secondary">
+              <div className="text-xs fg-secondary">
                 {row.attachmentCount} retained attachment
                 {row.attachmentCount === 1 ? '' : 's'}
               </div>
             )}
             {(error || row.reason) && (
               <p
-                className="mt-1 text-s fg-secondary"
+                className="text-s fg-secondary"
                 role={error ? 'alert' : undefined}
               >
                 {error || row.reason}
@@ -335,7 +336,7 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
         </Stack>
       ) : (
         <div className="flex justify-end">
-          <div className="group relative min-w-0 max-w-full">
+          <div className="group relative flex min-w-0 max-w-full flex-col gap-1">
             <MessageEditSurface
               onEdit={
                 editable && !busy ? (): Promise<void> => act('edit') : undefined
@@ -411,105 +412,114 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                   </Tooltip>
                 </div>
               )}
-              <div
-                className="mb-1 text-3xs fg-secondary"
-                role="status"
-                aria-live="polite"
-              >
-                {statusLabel}
-              </div>
-              {agentTitle}
-              {row.watcherFired ? (
-                <WatcherFiredTitle watcherFired={row.watcherFired} />
-              ) : (
-                steeringRequest?.title
-              )}
-              <div className="whitespace-pre-wrap break-words">
-                {steeringRequest?.text ?? shownText}
-              </div>
-              {row.attachmentCount > 0 && (
-                <div className="mt-1 text-3xs fg-secondary">
-                  {row.attachmentCount} retained attachment
-                  {row.attachmentCount === 1 ? '' : 's'}
-                </div>
-              )}
-              {detail && (
-                <p
-                  className="mt-1 text-3xs fg-secondary"
-                  role={error ? 'alert' : undefined}
+              <Stack gap="tight">
+                <div
+                  className="text-3xs fg-secondary"
+                  role="status"
+                  aria-live="polite"
                 >
-                  {detail}
-                </p>
-              )}
+                  {statusLabel}
+                </div>
+                {/* The title controls keep their own spacing above the text. */}
+                <div>
+                  {agentTitle}
+                  {row.watcherFired ? (
+                    <WatcherFiredTitle watcherFired={row.watcherFired} />
+                  ) : (
+                    steeringRequest?.title
+                  )}
+                  <div className="whitespace-pre-wrap break-words">
+                    {steeringRequest?.text ?? shownText}
+                  </div>
+                </div>
+                {row.attachmentCount > 0 && (
+                  <div className="text-3xs fg-secondary">
+                    {row.attachmentCount} retained attachment
+                    {row.attachmentCount === 1 ? '' : 's'}
+                  </div>
+                )}
+                {detail && (
+                  <p
+                    className="text-3xs fg-secondary"
+                    role={error ? 'alert' : undefined}
+                  >
+                    {detail}
+                  </p>
+                )}
+              </Stack>
             </MessageEditSurface>
             {((row.state === 'pending' && row.canWithdraw) ||
               row.state === 'cancelled' ||
               row.state === 'uncertain') && (
-              <div className="mt-1 flex flex-wrap justify-end gap-2">
-                {(row.state === 'cancelled' || row.state === 'uncertain') && (
-                  <Button
-                    ref={
-                      row.state === 'uncertain' ? resendButtonRef : undefined
-                    }
-                    variant="secondary"
-                    size="compact"
-                    data-testid="input-delivery-resend"
-                    disabled={busy}
-                    onClick={() => {
-                      if (row.state === 'uncertain') {
-                        setResendWarningOpen(true);
-                      } else {
-                        void act('resend');
+              // The resend warning only follows these actions (it needs the
+              // uncertain state), so they share one group.
+              <Stack gap="inline">
+                <div className="flex flex-wrap justify-end gap-2">
+                  {(row.state === 'cancelled' || row.state === 'uncertain') && (
+                    <Button
+                      ref={
+                        row.state === 'uncertain' ? resendButtonRef : undefined
                       }
-                    }}
+                      variant="secondary"
+                      size="compact"
+                      data-testid="input-delivery-resend"
+                      disabled={busy}
+                      onClick={() => {
+                        if (row.state === 'uncertain') {
+                          setResendWarningOpen(true);
+                        } else {
+                          void act('resend');
+                        }
+                      }}
+                    >
+                      Resend
+                    </Button>
+                  )}
+                  {row.state !== 'uncertain' && (
+                    <Button
+                      variant="secondary"
+                      size="compact"
+                      data-testid="input-delivery-queue"
+                      disabled={busy}
+                      onClick={() => void act('queue')}
+                    >
+                      Queue
+                    </Button>
+                  )}
+                </div>
+                {row.state === 'uncertain' && resendWarningOpen && (
+                  <div
+                    data-testid="input-delivery-resend-warning"
+                    className="flex flex-wrap items-center justify-end gap-2 text-3xs fg-secondary"
+                    role="status"
+                    aria-live="polite"
                   >
-                    Resend
-                  </Button>
+                    <span>Send again? It may arrive twice.</span>
+                    <Button
+                      variant="secondary"
+                      size="compact"
+                      data-testid="input-delivery-resend-confirm"
+                      disabled={busy}
+                      onClick={() => void act('resend')}
+                    >
+                      Send again
+                    </Button>
+                    <Button
+                      ref={resendKeepButtonRef}
+                      variant="secondary"
+                      size="compact"
+                      data-testid="input-delivery-resend-keep"
+                      disabled={busy}
+                      onClick={() => {
+                        setResendWarningOpen(false);
+                        resendButtonRef.current?.focus();
+                      }}
+                    >
+                      Keep
+                    </Button>
+                  </div>
                 )}
-                {row.state !== 'uncertain' && (
-                  <Button
-                    variant="secondary"
-                    size="compact"
-                    data-testid="input-delivery-queue"
-                    disabled={busy}
-                    onClick={() => void act('queue')}
-                  >
-                    Queue
-                  </Button>
-                )}
-              </div>
-            )}
-            {row.state === 'uncertain' && resendWarningOpen && (
-              <div
-                data-testid="input-delivery-resend-warning"
-                className="mt-2 flex flex-wrap items-center justify-end gap-2 text-3xs fg-secondary"
-                role="status"
-                aria-live="polite"
-              >
-                <span>Send again? It may arrive twice.</span>
-                <Button
-                  variant="secondary"
-                  size="compact"
-                  data-testid="input-delivery-resend-confirm"
-                  disabled={busy}
-                  onClick={() => void act('resend')}
-                >
-                  Send again
-                </Button>
-                <Button
-                  ref={resendKeepButtonRef}
-                  variant="secondary"
-                  size="compact"
-                  data-testid="input-delivery-resend-keep"
-                  disabled={busy}
-                  onClick={() => {
-                    setResendWarningOpen(false);
-                    resendButtonRef.current?.focus();
-                  }}
-                >
-                  Keep
-                </Button>
-              </div>
+              </Stack>
             )}
           </div>
         </div>

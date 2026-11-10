@@ -6,8 +6,8 @@ import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-
 import {
   shareablePluginSourceLabel,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
-import type { SharedPluginDetail } from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/plugin-refs';
+import type { SharedPluginDetail } from '@canopy/execution-engine/types/plugins';
 import {
   classifyShareFailure,
   deriveExistingShare,

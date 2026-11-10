@@ -36,7 +36,6 @@ import {
   UD_PROVIDER_ID,
   authSourceLabel,
   isAuthSourcesResponse,
-  type AuthProviderId,
   type AuthSource,
   type AuthSourcesResponse,
   type SocialProviderId,
@@ -293,37 +292,30 @@ export function SecurityPanel({
  * Provider glyph for a login-method row. Social providers render their real
  * brand logos (shared with the login page), Canopy SSO renders the neutral
  * key mark, and email/password plus unrecognized providers fall back to neutral
- * UI Kit marks.
+ * UI Kit marks. A `Map`, so a provider id such as `constructor` finds no
+ * inherited `Object.prototype` member and takes the fallback.
  */
-function AuthSourceIcon({
-  providerId,
-}: {
-  providerId: AuthProviderId;
-}): JSX.Element {
-  switch (providerId) {
-    case 'google':
-      return <GoogleIcon size={16} />;
-    case 'github':
-      return <GitHubIcon size={16} />;
-    case UD_PROVIDER_ID:
-      return <UnstoppableDomainsIcon size={16} />;
-    // Explicit case, not the `Globe` default: without it an SSO row renders the
-    // fallback globe and every test still passes.
-    case SSO_SERVER_PROVIDER_ID:
-      return <SingleSignOnIcon size={16} />;
-    case CREDENTIAL_PROVIDER_ID:
-      return (
-        <Mail
-          size={16}
-          className="fg-secondary"
-          aria-hidden="true"
-          data-testid="auth-source-mail-icon"
-        />
-      );
-    default:
-      return <Globe size={16} className="fg-secondary" aria-hidden="true" />;
-  }
-}
+const AUTH_SOURCE_GLYPHS: ReadonlyMap<string, JSX.Element> = new Map([
+  ['google', <GoogleIcon size={16} />],
+  ['github', <GitHubIcon size="md" />],
+  [UD_PROVIDER_ID, <UnstoppableDomainsIcon size={16} />],
+  // Explicit entry, not the `Globe` fallback: without it an SSO row renders
+  // the fallback globe and every test still passes.
+  [SSO_SERVER_PROVIDER_ID, <SingleSignOnIcon size={16} />],
+  [
+    CREDENTIAL_PROVIDER_ID,
+    <Mail
+      size="sm"
+      className="fg-secondary"
+      aria-hidden="true"
+      data-testid="auth-source-mail-icon"
+    />,
+  ],
+]);
+
+const FALLBACK_AUTH_SOURCE_GLYPH = (
+  <Globe size="sm" className="fg-secondary" aria-hidden="true" />
+);
 
 interface AuthSourceRowProps {
   source: AuthSource;
@@ -365,7 +357,8 @@ export function AuthSourceRow({
   return (
     <li className={`${SETTINGS_CARD_ROW_CLASS} flex-wrap`}>
       <div className="flex items-center gap-3">
-        <AuthSourceIcon providerId={source.providerId} />
+        {AUTH_SOURCE_GLYPHS.get(source.providerId) ??
+          FALLBACK_AUTH_SOURCE_GLYPH}
         <div className="min-w-0 flex flex-col gap-1">
           <div>
             <p className="text-s font-medium fg-primary">{source.label}</p>

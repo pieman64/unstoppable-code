@@ -57,26 +57,18 @@ const RUNTIME_LABEL: Record<EnvironmentRuntime, string> = {
   pipeline: 'Workflow',
 };
 
-function RuntimeKindIcon({
-  runtime,
-}: {
-  runtime: EnvironmentRuntime;
-}): JSX.Element {
-  if (runtime === 'canopy') {
-    return (
-      <BrandLogo
-        width={14}
-        height={14}
-        className="shrink-0 fg-secondary"
-        aria-hidden={true}
-      />
-    );
-  }
-  if (runtime === 'agent') {
-    return <AgentIcon className="shrink-0 fg-secondary" />;
-  }
-  return <PipelineIcon className="shrink-0 fg-secondary" />;
-}
+const RUNTIME_GLYPHS: Readonly<Record<EnvironmentRuntime, JSX.Element>> = {
+  canopy: (
+    <BrandLogo
+      width={14}
+      height={14}
+      className="shrink-0 fg-secondary"
+      aria-hidden={true}
+    />
+  ),
+  agent: <AgentIcon className="shrink-0 fg-secondary" />,
+  pipeline: <PipelineIcon className="shrink-0 fg-secondary" />,
+};
 
 interface RuntimeRow {
   kind: 'runtime';
@@ -249,7 +241,7 @@ function renderRow(row: UsageRow, callbacks: RowCallbacks): ReactNode {
           {row.scope}
         </span>
         <span className="fg-secondary">·</span>
-        <RuntimeKindIcon runtime={row.runtime} />
+        {RUNTIME_GLYPHS[row.runtime]}
         <span className="truncate" title={runtimeLabel}>
           {runtimeLabel}
         </span>

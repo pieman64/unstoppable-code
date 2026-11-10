@@ -53,12 +53,12 @@ import {
   THINKING_LEVELS,
   isChatAttachmentPromptKind,
 } from '../types';
-import { isShareablePluginRef } from '../plugin-refs';
+import { isShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import {
   automationPipelineTargetError,
   resolveAutomationPipelineTarget,
 } from './automation-pipeline-target';
-import { isChatTabPluginSelections } from './plugin-selections-normalization';
+import { isChatTabPluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { brandEnvCandidates } from '@canopy/execution-engine/brand/env';
 import { isApprovalMode } from './approval-engine';
 import {

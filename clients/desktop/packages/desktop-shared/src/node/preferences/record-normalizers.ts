@@ -10,7 +10,7 @@ import {
   isChatDetail,
   type ChatDetail,
 } from '@canopy/protocol/chat-detail';
-import { mcpHttpAuthTargetKey } from '../../lib/mcp-http-auth';
+import { mcpHttpAuthTargetKey } from '@canopy/execution-engine/lib/mcp-http-auth';
 import { normalizeAccountProxyUrl } from '../../lib/account-proxy';
 import type {
   AccountProxyConnection,

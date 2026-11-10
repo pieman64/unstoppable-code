@@ -8,7 +8,10 @@ import {
   type InternalRootExternalSnapshot,
   type InternalRootJournal,
 } from './internal-root-migration';
-import type { InternalRootRepairPlan } from './internal-root-repairs';
+import type {
+  InternalRootLifecycleJournalEvidence,
+  InternalRootRepairPlan,
+} from './internal-root-repairs';
 import type {
   RelocationAuthority,
   RelocationTransition,
@@ -44,6 +47,102 @@ function isDigest(value: unknown): value is string {
 }
 function isNonnegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** An advisory report is not transaction evidence and cannot authorize startup. */
+export const internalRootCleanupCategories = [
+  'unindexed-workspace',
+  'unrecognized-w5-file',
+  'os-metadata',
+  'prunable-git-worktree',
+  'inert-archive-staging',
+  'orphaned-worktree-data',
+  'unrecognized-workspace-file',
+] as const;
+/** Only durableJson's lowercase UUID-v4 advisory staging names are recognized. */
+export function isInternalRootCleanupStagingName(name: string): boolean {
+  return /^cleanup-candidates\.json\.[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.tmp(?![\s\S])/.test(
+    name,
+  );
+}
+function isCleanupCategory(value: unknown): boolean {
+  return internalRootCleanupCategories.some((category) => category === value);
+}
+function isCleanupCandidate(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(
+      value,
+      [
+        'path',
+        'bytes',
+        'category',
+        'disposition',
+        'reason',
+        'copy',
+        'restoreSource',
+      ],
+      ['worktreePath'],
+    ) &&
+    isString(value.path) &&
+    isAbsolute(value.path) &&
+    isNonnegativeInteger(value.bytes) &&
+    isCleanupCategory(value.category) &&
+    isString(value.reason) &&
+    (value.disposition === 'safe to drop' ||
+      value.disposition === 'review before deleting') &&
+    (value.copy === 'old-root' ||
+      value.copy === 'new-root' ||
+      value.copy === 'external') &&
+    isString(value.restoreSource) &&
+    isAbsolute(value.restoreSource) &&
+    (value.worktreePath === undefined ||
+      (isString(value.worktreePath) && isAbsolute(value.worktreePath)))
+  );
+}
+export function isInternalRootCleanupReport(
+  value: unknown,
+  path: string,
+): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      'version',
+      'title',
+      'reportPath',
+      'notice',
+      'restoreSource',
+      'entries',
+      'totals',
+      'reclaimableBytes',
+      'warnings',
+    ]) &&
+    value.version === 1 &&
+    value.title === 'Cleanup candidates' &&
+    value.reportPath === path &&
+    typeof value.notice === 'string' &&
+    isRecord(value.restoreSource) &&
+    hasOnlyKeys(value.restoreSource, ['path', 'bytes']) &&
+    typeof value.restoreSource.path === 'string' &&
+    isAbsolute(value.restoreSource.path) &&
+    (value.restoreSource.bytes === null ||
+      isNonnegativeInteger(value.restoreSource.bytes)) &&
+    Array.isArray(value.entries) &&
+    value.entries.every(isCleanupCandidate) &&
+    Array.isArray(value.totals) &&
+    value.totals.length === internalRootCleanupCategories.length &&
+    value.totals.every(
+      (total: unknown) =>
+        isRecord(total) &&
+        hasOnlyKeys(total, ['category', 'entries', 'bytes']) &&
+        isCleanupCategory(total.category) &&
+        isNonnegativeInteger(total.entries) &&
+        isNonnegativeInteger(total.bytes),
+    ) &&
+    isNonnegativeInteger(value.reclaimableBytes) &&
+    Array.isArray(value.warnings) &&
+    value.warnings.every(isString)
+  );
 }
 function isArrayOf<T>(
   value: unknown,
@@ -169,14 +268,40 @@ function isWorkspace(value: unknown): value is RelocationWorkspaceEvidence {
     (value.ownedPaths === undefined || isArrayOf(value.ownedPaths, isString))
   );
 }
+function isNullableString(value: unknown): value is string | null {
+  return value === null || isString(value);
+}
+function isLifecycleJournalEvidence(
+  value: unknown,
+): value is InternalRootLifecycleJournalEvidence {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      'name',
+      'raw',
+      'workspaceIdentity',
+      'ownedIdentities',
+    ]) &&
+    isString(value.name) &&
+    isString(value.raw) &&
+    isNullableString(value.workspaceIdentity) &&
+    isArrayOf(value.ownedIdentities, isNullableString)
+  );
+}
 function isRepairPlan(value: unknown): value is InternalRootRepairPlan {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ['transition', 'gitPlan', 'ownedPaths', 'workspaces']) &&
+    hasOnlyKeys(
+      value,
+      ['transition', 'gitPlan', 'ownedPaths', 'workspaces'],
+      ['lifecycleJournals'],
+    ) &&
     isTransition(value.transition) &&
     isGitPlan(value.gitPlan) &&
     isArrayOf(value.ownedPaths, isString) &&
-    isArrayOf(value.workspaces, isWorkspace)
+    isArrayOf(value.workspaces, isWorkspace) &&
+    (value.lifecycleJournals === undefined ||
+      isArrayOf(value.lifecycleJournals, isLifecycleJournalEvidence))
   );
 }
 function isSnapshot(value: unknown): value is InternalRootExternalSnapshot {

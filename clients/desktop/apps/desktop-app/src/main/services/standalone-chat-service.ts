@@ -16,7 +16,7 @@ import { isCopilotRuntimeAvailable } from '../copilot/runtime-availability';
 import { randomUUID } from 'node:crypto';
 import { inputDeliveryViews } from '@canopy/desktop-shared/chat-input-delivery';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { getChatQueueService } from './chat-queue-service';
 import type { BrowserWindow } from 'electron';
 import {
@@ -59,6 +59,7 @@ import {
   type ChatCommandExecutionOptions,
 } from '@canopy/desktop-shared/types';
 import type {
+  PortalChatScheduledMessages,
   PortalStandaloneChatCreatePayload,
   PortalStandaloneChatCreateResult,
 } from '@canopy/protocol/portal';
@@ -80,6 +81,7 @@ import {
   resolveWorkEntryForChat,
   type WorkEntryChatSummaryListItem,
 } from '../lib/cowork-work-entries';
+import { sidebarItemGroupsService } from './sidebar-item-groups-service';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import { buildProjectedModelCatalog } from '../portal/model-catalog-projection';
@@ -149,6 +151,11 @@ import {
 import { resolvePersistedApprovalMode } from '../lib/approval-mode-resolution';
 import { enqueueChatTabMutation } from '../lib/chat-tab-mutation-queue';
 import { clampToLiveApprovalMode } from '../approvals/live-approval-modes';
+import { hasPendingApprovalForChat } from '../approvals/pending-approvals';
+import {
+  getAutomationsService,
+  scheduledMessageChatKey,
+} from '../automations/service';
 import {
   capturePersistedUsageLimitBannerSnapshot,
   clearPersistedUsageLimitBanner,
@@ -181,6 +188,20 @@ async function assertCursorRuntimeForCowork(): Promise<void> {
 export interface StandaloneChatServiceOptions {
   executionContext?: string;
   getWindow?: () => BrowserWindow | null;
+  /**
+   * Checked right before a send saves or queues its prompt, so a Portal
+   * pairing revoked while the send was being prepared stops it.
+   */
+  canCommitSend?: () => boolean;
+}
+
+function assertCanCommitSend(options: StandaloneChatServiceOptions): void {
+  if (options.canCommitSend?.() === false) {
+    throw new PortalServiceError(
+      'invalid_target',
+      'The paired session is no longer authorized.',
+    );
+  }
 }
 
 type StandaloneChatSendRequest = Omit<
@@ -212,6 +233,20 @@ type StandaloneChatSendRequest = Omit<
    */
   agentSent?: AgentSentInfo;
 };
+
+type StandaloneChatSendResult = {
+  ok: true;
+  chatId: string;
+  userMessageId: string;
+  workEntryId?: string;
+  /** Whether the message started its turn or waits behind the running one. */
+  delivery: 'accepted' | 'queued';
+};
+
+const standaloneChatSendInFlight = new Map<
+  string,
+  Promise<StandaloneChatSendResult>
+>();
 
 function getNullWindow(): BrowserWindow | null {
   return null;
@@ -284,6 +319,8 @@ async function upsertStandaloneMessages(input: {
   approvalMode?: ApprovalMode;
   sessionApprovalRules?: ApprovalRule[];
   onTabObserved?: (existed: boolean) => void;
+  /** Checked inside the queued mutation, right before the prompt is written. */
+  canCommitSend?: () => boolean;
 }): Promise<PersistedChatTab> {
   return enqueueChatTabMutation(input.workspaceId, input.entryId, async () => {
     const tabsFile = await readChatTabsFile(input.workspaceId, input.entryId, {
@@ -402,6 +439,12 @@ async function upsertStandaloneMessages(input: {
       delete tab.newChatStartedWatcherPending;
       tab.newChatStartedWatcherFiredAt = input.newChatStartedWatcherFiredAt;
     }
+    if (input.canCommitSend?.() === false) {
+      throw new PortalServiceError(
+        'invalid_target',
+        'The paired session is no longer authorized.',
+      );
+    }
     await writeChatTabsFile(input.workspaceId, input.entryId, {
       ...tabsFile,
       tabs: existing
@@ -470,6 +513,16 @@ export async function createStandaloneChatTab(
 ): Promise<PortalStandaloneChatCreateResult> {
   validateStandaloneProjectId(request.projectLocalId);
   validateId(request.chatId, 'chatId');
+  if (request.workEntryId !== undefined) {
+    try {
+      validateId(request.workEntryId, 'workEntryId');
+    } catch {
+      throw new PortalServiceError(
+        'invalid_payload',
+        'Invalid standalone chat create payload.',
+      );
+    }
+  }
   const assertAuthorized = (): void => {
     if (!options.canCreate()) {
       throw new PortalServiceError(
@@ -482,13 +535,13 @@ export async function createStandaloneChatTab(
   const resolved = await resolveStandaloneChatTarget(request);
   if (resolved.isArchived) {
     throw new PortalServiceError(
-      'invalid_target',
+      request.workEntryId === undefined ? 'invalid_target' : 'not_found',
       'Archived chats must be restored before they can be used.',
     );
   }
   const workspaceId = resolved.workspaceId;
   await assertCoworkWorkspaceRootPresent(workspaceId);
-  const entryId = resolved.entryId ?? request.chatId;
+  const entryId = resolved.entryId ?? request.workEntryId ?? request.chatId;
   return getChatStateService().runWithScopeActivity(
     { projectId: workspaceId, worktreeId: entryId },
     async () => {
@@ -504,7 +557,19 @@ export async function createStandaloneChatTab(
         workspaceId,
         request.chatId,
       );
-      if (
+      const entryIds = await listWorkEntryIds(workspaceId);
+      if (request.workEntryId !== undefined) {
+        if (
+          !entryIds.includes(request.workEntryId) ||
+          current.archivedInEntryId !== null ||
+          (current.entryId !== null && current.entryId !== request.workEntryId)
+        ) {
+          throw new PortalServiceError(
+            'not_found',
+            'The selected Work Entry is no longer available.',
+          );
+        }
+      } else if (
         current.archivedInEntryId !== null ||
         (current.entryId !== null && current.entryId !== entryId)
       ) {
@@ -513,10 +578,12 @@ export async function createStandaloneChatTab(
           'The selected chat target changed.',
         );
       }
-      const registered = (await listWorkEntryIds(workspaceId)).includes(
-        entryId,
-      );
-      if (registered && current.entryId === null) {
+      const registered = entryIds.includes(entryId);
+      if (
+        registered &&
+        current.entryId === null &&
+        request.workEntryId === undefined
+      ) {
         const file = await readChatTabsFile(workspaceId, entryId);
         if (file.tabs.length > 0) {
           throw new PortalServiceError(
@@ -526,16 +593,51 @@ export async function createStandaloneChatTab(
         }
       }
       assertAuthorized();
+      let groupError: string | undefined;
       if (!registered) {
         await createWorkEntry(workspaceId, {
           id: entryId,
-          ...(request.sidebarItemGroupId
+          ...(request.sidebarItemGroupName === undefined &&
+          request.sidebarItemGroupId !== undefined
             ? { sidebarItemGroupId: request.sidebarItemGroupId }
             : {}),
           assertCanCommit: assertAuthorized,
         });
+        if (request.sidebarItemGroupName !== undefined) {
+          assertAuthorized();
+          try {
+            await sidebarItemGroupsService.assignItemToNamedGroup({
+              scope: { workspaceLocalId: workspaceId },
+              itemId: entryId,
+              name: request.sidebarItemGroupName.name,
+              ...(request.sidebarItemGroupName.color === undefined
+                ? {}
+                : { color: request.sidebarItemGroupName.color }),
+            });
+          } catch {
+            groupError = 'Work Entry was created without the requested group.';
+          }
+        }
       }
       assertAuthorized();
+      if (request.workEntryId !== undefined) {
+        const latest = await resolveWorkEntryForChat(
+          workspaceId,
+          request.chatId,
+        );
+        if (
+          !(await listWorkEntryIds(workspaceId)).includes(
+            request.workEntryId,
+          ) ||
+          latest.archivedInEntryId !== null ||
+          (latest.entryId !== null && latest.entryId !== request.workEntryId)
+        ) {
+          throw new PortalServiceError(
+            'not_found',
+            'The selected Work Entry is no longer available.',
+          );
+        }
+      }
       const result = await options.dispatchCommand(
         {
           schemaVersion: 1,
@@ -569,6 +671,7 @@ export async function createStandaloneChatTab(
         projectId: workspaceId,
         worktreeId: entryId,
         workEntryId: entryId,
+        ...(groupError === undefined ? {} : { groupError }),
       };
     },
   );
@@ -706,6 +809,9 @@ function buildStandaloneChatSummary(
   projectName: string,
   tab: PersistedChatTab,
   options?: {
+    scheduledMessagesIndex:
+      | ReadonlyMap<string, PortalChatScheduledMessages>
+      | undefined;
     hasActiveChat?: boolean;
     deferredToolsAllowed?: boolean;
     includeDelivery?: boolean;
@@ -827,8 +933,25 @@ function buildStandaloneChatSummary(
     // here so the wire shape stays deterministic.
     archived: false,
     ...(hasActiveChat !== undefined ? { hasActiveChat } : {}),
-    ...(canonicalTurn
+    ...(canonicalTurn && workEntryId !== undefined
       ? {
+          awaitingApproval: hasPendingApprovalForChat({
+            projectId,
+            worktreeId: workEntryId,
+            chatId: tab.id,
+          }),
+          // Omitted when the index is unknown, rather than reported as 0.
+          ...(options?.scheduledMessagesIndex
+            ? {
+                scheduledMessages: options.scheduledMessagesIndex.get(
+                  scheduledMessageChatKey({
+                    workspaceId: projectId,
+                    worktreeId: workEntryId,
+                    chatId: tab.id,
+                  }),
+                ) ?? { count: 0 },
+              }
+            : {}),
           backgroundTasks: backgroundTaskCount(
             canonicalTurn.background.managed,
             canonicalTurn.background.native,
@@ -897,6 +1020,9 @@ function buildCompactStandaloneChatSummary(
   chat: CoworkWorkEntryChatSummary,
   owner: WorkOwner | undefined,
   agentDefaultModel: string | undefined,
+  scheduledMessagesIndex:
+    | ReadonlyMap<string, PortalChatScheduledMessages>
+    | undefined,
 ): PortalStandaloneChatSummary {
   const { pluginSelectionsDetail, ...summary } = buildStandaloneChatSummary(
     projectId,
@@ -922,6 +1048,7 @@ function buildCompactStandaloneChatSummary(
       lastMessageAt: chat.lastMessageAt,
       workEntry: entry,
       includeDelivery: false,
+      scheduledMessagesIndex,
       owner,
       agentDefaultModel,
     },
@@ -979,7 +1106,10 @@ export async function listStandaloneChats(options?: {
     options?.strict,
     options?.sidebarSnapshot,
   );
+  if (projects.length === 0) return [];
   const summaries: PortalStandaloneChatSummary[] = [];
+  const scheduledMessagesIndex =
+    await getAutomationsService().getScheduledMessagesIndex();
   const resolveOwner = createAiCreditsScopeOwnerResolver(
     options?.ownerEvidence,
   );
@@ -1007,6 +1137,7 @@ export async function listStandaloneChats(options?: {
               chat,
               owner,
               agentDefaultModel,
+              scheduledMessagesIndex,
             ),
           ),
         );
@@ -1051,6 +1182,12 @@ export function projectStandaloneChatSnapshot(
     ...(chat.backgroundTasks === undefined
       ? {}
       : { backgroundTasks: chat.backgroundTasks }),
+    ...(chat.awaitingApproval === undefined
+      ? {}
+      : { awaitingApproval: chat.awaitingApproval }),
+    ...(chat.scheduledMessages === undefined
+      ? {}
+      : { scheduledMessages: chat.scheduledMessages }),
     hasUnread: chat.hasUnread,
     providerType: chat.providerType,
     executionHarness: chat.executionHarness,
@@ -1154,12 +1291,15 @@ export async function emitStandaloneChatSummary(
     const deferredToolsAllowed = await resolveStandaloneDeferredToolsAllowed(
       tab.deferredToolsAllowed,
     );
+    const scheduledMessagesIndex =
+      await getAutomationsService().getScheduledMessagesIndex();
     const summary = buildStandaloneChatSummary(
       workspaceId,
       project?.name ?? tab.title,
       tab,
       {
         hasActiveChat: getActiveChatIds(workspaceId, entryId).includes(chatId),
+        scheduledMessagesIndex,
         deferredToolsAllowed,
         workEntry: entry,
         owner,
@@ -1194,11 +1334,14 @@ export async function emitStandaloneChatSummaryForTab(
     const deferredToolsAllowed = await resolveStandaloneDeferredToolsAllowed(
       tab.deferredToolsAllowed,
     );
+    const scheduledMessagesIndex =
+      await getAutomationsService().getScheduledMessagesIndex();
     const active =
       hasActiveChat || getActiveChatIds(workspaceId, entryId).includes(tab.id);
     await emitStandaloneChatSummaryEntity(
       buildStandaloneChatSummary(workspaceId, tab.title, tab, {
         hasActiveChat: active,
+        scheduledMessagesIndex,
         deferredToolsAllowed,
         workEntry: entry,
         owner,
@@ -1251,6 +1394,8 @@ export async function emitStandaloneWorkEntrySummaryStrict(
   if (!entry) return;
   const resolveOwner = createAiCreditsScopeOwnerResolver();
   const agentDefaultModel = await catalogAgentDefaultModel(workspaceId);
+  const scheduledMessagesIndex =
+    await getAutomationsService().getScheduledMessagesIndex();
   for (const chat of entry.chats) {
     const owner = await resolveOwner(
       standaloneSummaryOwnerScope(workspaceId, entryId, chat.id),
@@ -1268,6 +1413,7 @@ export async function emitStandaloneWorkEntrySummaryStrict(
               tab.id,
             ),
             deferredToolsAllowed,
+            scheduledMessagesIndex,
             workEntry: entry,
             owner,
             agentDefaultModel,
@@ -1280,6 +1426,7 @@ export async function emitStandaloneWorkEntrySummaryStrict(
             chat,
             owner,
             agentDefaultModel,
+            scheduledMessagesIndex,
           ),
     );
   }
@@ -1298,6 +1445,8 @@ export async function emitStandaloneWorkspaceWorkEntrySummaries(
   try {
     const resolveOwner = createAiCreditsScopeOwnerResolver();
     const agentDefaultModel = await catalogAgentDefaultModel(workspaceId);
+    const scheduledMessagesIndex =
+      await getAutomationsService().getScheduledMessagesIndex();
     for (const entry of await listWorkEntryChatSummaries(workspaceId)) {
       for (const chat of entry.chats) {
         const owner = await resolveOwner(
@@ -1311,6 +1460,7 @@ export async function emitStandaloneWorkspaceWorkEntrySummaries(
             chat,
             owner,
             agentDefaultModel,
+            scheduledMessagesIndex,
           ),
         );
       }
@@ -1735,21 +1885,152 @@ export async function resolveStandaloneChatPolicyModels(input: {
 export async function sendStandaloneChatMessage(
   request: StandaloneChatSendRequest,
   options: StandaloneChatServiceOptions = {},
-): Promise<{
-  ok: true;
+): Promise<StandaloneChatSendResult> {
+  if (request.userMessageId === undefined) {
+    return sendStandaloneChatMessageOnce(request, options);
+  }
+  validateId(request.chatId, 'chatId');
+  validateId(request.userMessageId, 'userMessageId');
+  if (request.workEntryId !== undefined) {
+    validateId(request.workEntryId, 'workEntryId');
+  }
+  const resolved = await resolveStandaloneChatTarget(request);
+  if (resolved.isArchived) {
+    throw new Error(
+      'Archived standalone chats are read-only. Restore the chat before sending a message.',
+    );
+  }
+  if (
+    request.workEntryId !== undefined &&
+    resolved.entryId !== null &&
+    resolved.entryId !== request.workEntryId
+  ) {
+    throw new Error('That chat belongs to a different work entry.');
+  }
+  if (
+    request.workEntryId !== undefined &&
+    resolved.entryId === null &&
+    !(await listWorkEntryIds(resolved.workspaceId)).includes(
+      request.workEntryId,
+    )
+  ) {
+    throw new Error(
+      'The selected work entry is no longer available. Choose another work entry and try again.',
+    );
+  }
+  const key = JSON.stringify([
+    resolved.workspaceId,
+    request.chatId,
+    request.userMessageId,
+  ]);
+  const inFlight = standaloneChatSendInFlight.get(key);
+  if (inFlight) return inFlight;
+  const pending = sendStandaloneChatMessageOnce(request, options, resolved);
+  standaloneChatSendInFlight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (standaloneChatSendInFlight.get(key) === pending) {
+      standaloneChatSendInFlight.delete(key);
+    }
+  }
+}
+
+async function readExistingStandaloneSendDelivery(input: {
+  workspaceId: string;
+  entryId: string;
   chatId: string;
   userMessageId: string;
-  workEntryId?: string;
-  /** Whether the message started its turn or waits behind the running one. */
-  delivery: 'accepted' | 'queued';
-}> {
+}): Promise<'accepted' | 'queued' | undefined> {
+  const target = {
+    projectId: input.workspaceId,
+    worktreeId: input.entryId,
+    chatId: input.chatId,
+  };
+  const [tabsFile, hasTranscriptMessage] = await Promise.all([
+    readChatTabsFile(input.workspaceId, input.entryId, {
+      chatIds: [input.chatId],
+    }),
+    getChatStateService().hasTranscriptMessage(
+      { projectId: input.workspaceId, worktreeId: input.entryId },
+      input.chatId,
+      input.userMessageId,
+    ),
+  ]);
+  const delivery = inputDeliveryViews(
+    tabsFile.tabs.find((tab) => tab.id === input.chatId)?.inputDelivery,
+  ).find((row) => row.id === input.userMessageId);
+  const queue = getChatQueueService();
+  const heldByQueue = queue.holdsUserMessage(target, input.userMessageId);
+  if (!hasTranscriptMessage && delivery === undefined && !heldByQueue) {
+    return undefined;
+  }
+  const isQueued =
+    delivery?.state === 'queued' ||
+    (heldByQueue &&
+      queue.runningTurnUserMessageId(target) !== input.userMessageId &&
+      queue.dispatchingUserMessageId(target) !== input.userMessageId);
+  return isQueued ? 'queued' : 'accepted';
+}
+
+async function sendStandaloneChatMessageOnce(
+  request: StandaloneChatSendRequest,
+  options: StandaloneChatServiceOptions,
+  initialResolved?: ResolvedStandaloneChatTarget,
+): Promise<StandaloneChatSendResult> {
   const turnDispatchTiming = new TurnDispatchTiming();
   const requestedWorkspaceId = request.projectLocalId ?? request.projectId;
   if (requestedWorkspaceId)
     await assertCoworkWorkspaceRootPresent(requestedWorkspaceId);
   validateId(request.chatId, 'chatId');
+  if (request.userMessageId !== undefined) {
+    validateId(request.userMessageId, 'userMessageId');
+  }
   if (request.workEntryId !== undefined) {
     validateId(request.workEntryId, 'workEntryId');
+  }
+  if (request.userMessageId !== undefined) {
+    const resolved =
+      initialResolved ?? (await resolveStandaloneChatTarget(request));
+    if (resolved.isArchived) {
+      throw new Error(
+        'Archived standalone chats are read-only. Restore the chat before sending a message.',
+      );
+    }
+    if (
+      request.workEntryId !== undefined &&
+      resolved.entryId !== null &&
+      resolved.entryId !== request.workEntryId
+    ) {
+      throw new Error('That chat belongs to a different work entry.');
+    }
+    const entryId = resolved.entryId ?? request.workEntryId ?? request.chatId;
+    if (
+      request.workEntryId !== undefined &&
+      resolved.entryId === null &&
+      !(await listWorkEntryIds(resolved.workspaceId)).includes(
+        request.workEntryId,
+      )
+    ) {
+      throw new Error(
+        'The selected work entry is no longer available. Choose another work entry and try again.',
+      );
+    }
+    const duplicateDelivery = await readExistingStandaloneSendDelivery({
+      workspaceId: resolved.workspaceId,
+      entryId,
+      chatId: request.chatId,
+      userMessageId: request.userMessageId,
+    });
+    if (duplicateDelivery !== undefined) {
+      return {
+        ok: true,
+        chatId: request.chatId,
+        userMessageId: request.userMessageId,
+        workEntryId: entryId,
+        delivery: duplicateDelivery,
+      };
+    }
   }
   if (
     request.providerType === 'cursor' ||
@@ -1800,7 +2081,8 @@ export async function sendStandaloneChatMessage(
   } else {
     cancelTransientRetriesForChatId(request.chatId, 'manual-send');
   }
-  const resolved = await resolveStandaloneChatTarget(request);
+  const resolved =
+    initialResolved ?? (await resolveStandaloneChatTarget(request));
   if (resolved.isArchived) {
     throw new Error(
       'Archived standalone chats are read-only. Restore the chat before sending a message.',
@@ -1827,7 +2109,7 @@ export async function sendStandaloneChatMessage(
   return getChatStateService()
     .runWithScopeActivity(
       { projectId: workspaceId, worktreeId: entryId },
-      async () => {
+      async (): Promise<StandaloneChatSendResult> => {
         // Target resolution is the address-discovery read needed to identify the
         // lifecycle scope. Revalidate an existing target after admission so a
         // deletion that completed during discovery cannot be resurrected.
@@ -2101,7 +2383,7 @@ export async function sendStandaloneChatMessage(
             existingTab.transcript?.committedMessageCount ??
             existingTab.messages.length) === 0;
         const newChatStartedAt = new Date().toISOString();
-        const userMessageId = randomUUID();
+        const userMessageId = request.userMessageId ?? randomUUID();
         const queueTarget = {
           projectId: workspaceId,
           worktreeId: entryId,
@@ -2121,6 +2403,7 @@ export async function sendStandaloneChatMessage(
           ? undefined
           : await queue.admitDirectDispatch(queueTarget, userMessageId);
         if (!admission) {
+          assertCanCommitSend(options);
           await queue.submit(
             {
               ...queueTarget,
@@ -2159,16 +2442,18 @@ export async function sendStandaloneChatMessage(
             'portal',
           );
           return {
-            ok: true as const,
+            ok: true,
             chatId: request.chatId,
             userMessageId,
             workEntryId: entryId,
-            delivery: 'queued' as const,
+            delivery: 'queued',
           };
         }
         let dispatchStarted = false;
         try {
           await assertCoworkWorkspaceRootPresent(workspaceId);
+          // After the guard's wait, and again inside the tab write's queue.
+          assertCanCommitSend(options);
           const now = Date.now();
           const userMessage: PersistedChatMessage = {
             id: userMessageId,
@@ -2188,9 +2473,9 @@ export async function sendStandaloneChatMessage(
             inputMode: request.inputMode ?? 'typed',
             ...(request.agentSent ? { agentSent: request.agentSent } : {}),
           };
-          // No history lookup: `userMessageId` was minted above, so no existing
-          // banner can match it, and `existingTab` is a metadata-only read whose
-          // `messages` throws because this chat's transcript was not selected.
+          // Explicit message identities were checked against durable delivery
+          // above; ordinary sends mint a fresh identity. This metadata-only tab
+          // does not select transcript messages for another history lookup.
           const automationInfoMessage = buildAutomationInfoMessage(
             request,
             userMessageId,
@@ -2203,6 +2488,9 @@ export async function sendStandaloneChatMessage(
                 onTabObserved: (existed) => {
                   tabExisted ||= existed;
                 },
+                ...(options.canCommitSend === undefined
+                  ? {}
+                  : { canCommitSend: options.canCommitSend }),
                 workspaceId,
                 entryId,
                 chatId: request.chatId,
@@ -2526,11 +2814,11 @@ export async function sendStandaloneChatMessage(
             throw error;
           }
           return {
-            ok: true as const,
+            ok: true,
             chatId: request.chatId,
             userMessageId,
             workEntryId: entryId,
-            delivery: 'accepted' as const,
+            delivery: 'accepted',
           };
         } finally {
           if (!dispatchStarted) admission.release();

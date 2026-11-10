@@ -1376,7 +1376,7 @@ export function ArchivedContainerView({
                   data-testid={`archived-plan-row-${plan.id}`}
                   onClick={() => selectPlan(plan.id)}
                   selected={isSelected}
-                  icon={<PlanSourceMark source={plan.source} size={14} />}
+                  icon={<PlanSourceMark source={plan.source} />}
                 >
                   <Markdown options={INLINE_PLAN_MARKDOWN_OPTIONS}>
                     {plan.title}

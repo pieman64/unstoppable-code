@@ -83,7 +83,7 @@ import {
   CURATED_PLUGIN_MARKETPLACE_ID,
   type MarketplaceInfo,
   type PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type {
   McpServerIndexEntry,
   ProviderConnectorListResult,

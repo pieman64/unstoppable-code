@@ -28,3 +28,45 @@ export function isAskUserDismissal(error: unknown): boolean {
     (error instanceof Error && ASK_USER_DISMISSAL_MESSAGES.has(error.message))
   );
 }
+
+/** One question's answers, with each answer's provenance. */
+export type RequestPersonAnswers = (
+  questions: Array<{
+    question: string;
+    options: string[];
+    multiSelect?: boolean;
+    allowOther?: boolean;
+  }>,
+) => Promise<
+  Array<{ selectedOptions: string[]; answeredBy?: 'person' | 'agent' }>
+>;
+
+/**
+ * Asks a person to confirm before an agent acts. Only a person's answer
+ * choosing `confirm` confirms; a dismissal or any other option declines, and
+ * no one to ask, an agent's answer or one of unknown origin never confirms.
+ */
+export async function askPersonToConfirm(
+  requestAnswers: RequestPersonAnswers,
+  question: string,
+  options: { confirm: string; decline: string },
+): Promise<'confirmed' | 'declined' | 'no_person'> {
+  let answers: Awaited<ReturnType<RequestPersonAnswers>>;
+  try {
+    answers = await requestAnswers([
+      {
+        question,
+        options: [options.confirm, options.decline],
+        multiSelect: false,
+        allowOther: false,
+      },
+    ]);
+  } catch (error) {
+    return isAskUserDismissal(error) ? 'declined' : 'no_person';
+  }
+  const answer = answers[0];
+  if (answer?.answeredBy !== 'person') return 'no_person';
+  return answer.selectedOptions.includes(options.confirm)
+    ? 'confirmed'
+    : 'declined';
+}

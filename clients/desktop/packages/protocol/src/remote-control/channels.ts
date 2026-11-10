@@ -128,10 +128,10 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  * conditional branch. Operations the web keeps on web-side clients (billing,
  * external agents, account and organization operations, install-update
  * emails) and every capability the web leaves off (terminals, file writes,
- * item grouping, delegation lifetime, script actions, Mods, tips,
- * suggestions, journals, discard, provider quotas, shared multi-repo) add
- * nothing. The web golden keeps this list equal to that derivation and drives
- * the composite with a transport that refuses anything else.
+ * item grouping, delegation lifetime, Mods, tips, suggestions, journals,
+ * discard, provider quotas, shared multi-repo) add nothing. The web golden
+ * keeps this list equal to that derivation and drives the composite with a
+ * transport that refuses anything else.
  *
  * Reviewed by effect, like the mobile list:
  * - Reads: session snapshot and its stale push, chat events and transcript
@@ -191,6 +191,13 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  *     (`app-advisor:settings-patch`, the patch Portal's settings save
  *     applies, including the Orchestrator's project access, which the
  *     browser user could already change through Portal).
+ * - Script review (CAN-6038): the snapshot and the post-add receipt (reads),
+ *   `script-actions:rescan` (a detection scan; it runs nothing),
+ *   `script-actions:review` (approve, dismiss or reset entries, human-only),
+ *   the shortcut, pin and shell-alias-consent writes the desktop's own review
+ *   dialog makes, and the `script-actions:changed` push the snapshot
+ *   refreshes on. `script-actions:found` is not listed: notices poll the
+ *   receipt as Portal does. No terminal channel is added.
  * - Terminals: none. Remote Control on the web is terminal-free.
  */
 export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
@@ -251,6 +258,14 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'projects:load',
   'projects:save',
   'repo:default-clone-dir',
+  'script-actions:changed',
+  'script-actions:enable-shell-alias-scan',
+  'script-actions:list',
+  'script-actions:receipt',
+  'script-actions:rescan',
+  'script-actions:review',
+  'script-actions:set-pinned',
+  'script-actions:set-shortcut',
   'script:complete',
   'script:read-run-log',
   'script:run',

@@ -12,7 +12,7 @@ import {
 } from '../shared/PluginSelector';
 import { RecommendedPluginsSettingsPanel } from '../worktree/RecommendedPluginsSettingsPanel';
 import { mergeChatPluginSelections } from '@/lib/chatPluginSelections';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { subtractPluginSelections } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { Button } from '@canopy/ui-shared/components';
 

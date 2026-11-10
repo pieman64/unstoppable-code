@@ -15,11 +15,11 @@ import {
   type ThinkingLevel,
   type ThinkingUiLevel,
 } from '@canopy/desktop-shared/types';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   getShareablePluginRefKey,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import type { PipelineInputDef } from '@canopy/execution-engine/types/pipeline';
 import type {
   EditableHookAction,

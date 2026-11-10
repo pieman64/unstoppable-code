@@ -13,7 +13,7 @@ import {
   subtractPluginSelections,
   unionPluginSelections,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   chatStorageScopeIds,
   readChatStorageDiscoveryIndex,

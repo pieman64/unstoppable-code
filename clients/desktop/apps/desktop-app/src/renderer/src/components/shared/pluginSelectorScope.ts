@@ -1,4 +1,4 @@
-import type { PluginProviderSupport } from '@canopy/desktop-shared/types/plugins';
+import type { PluginProviderSupport } from '@canopy/execution-engine/types/plugins';
 
 /**
  * Provider scope for a plugin picker.

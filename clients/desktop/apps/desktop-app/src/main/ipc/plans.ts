@@ -83,6 +83,22 @@ export async function importTrackedPlanFromFile(
   });
 }
 
+/** The window's tracked plan share, which App Advisor's plan.share shares (CAN-6003). */
+export async function shareTrackedPlanForWindow(
+  request: ShareTrackedPlanRequest,
+): Promise<ShareOperationResult<TrackedPlanData | null>> {
+  validateId(request.projectId, 'projectId');
+  validateId(request.worktreeId, 'worktreeId');
+  validateId(request.planId, 'planId');
+  if (request.teamId !== undefined) {
+    validateId(request.teamId, 'teamId');
+  }
+  if (request.organizationId !== undefined) {
+    validateId(request.organizationId, 'organizationId');
+  }
+  return toShareOperationResult(() => shareTrackedPlanData(request));
+}
+
 export function registerPlansHandlers(
   getWindow: () => BrowserWindow | null,
 ): void {
@@ -171,18 +187,9 @@ export function registerPlansHandlers(
   registerIpcHandler<
     [ShareTrackedPlanRequest],
     ShareOperationResult<TrackedPlanData | null>
-  >(IPC_CHANNELS.trackedPlansShare, async (_event, request) => {
-    validateId(request.projectId, 'projectId');
-    validateId(request.worktreeId, 'worktreeId');
-    validateId(request.planId, 'planId');
-    if (request.teamId !== undefined) {
-      validateId(request.teamId, 'teamId');
-    }
-    if (request.organizationId !== undefined) {
-      validateId(request.organizationId, 'organizationId');
-    }
-    return toShareOperationResult(() => shareTrackedPlanData(request));
-  });
+  >(IPC_CHANNELS.trackedPlansShare, (_event, request) =>
+    shareTrackedPlanForWindow(request),
+  );
 
   registerIpcHandler<[ImportTrackedPlanRequest], ImportTrackedPlanResponse>(
     IPC_CHANNELS.trackedPlansImport,

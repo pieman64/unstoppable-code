@@ -9,7 +9,7 @@ import {
   SlashCommandAvailabilityTag,
   SlashCommandAvailableDivider,
   SlashCommandGroupHeading,
-  SlashCommandLoadingIcon,
+  SlashCommandPendingSpinner,
   SkillUpdateNotice,
   SkillUpdateStatus,
   SmoothStreamingProvider,
@@ -446,9 +446,9 @@ function SlashCommandSection(): JSX.Element {
         <SpecimenCell label="availability tag">
           <SlashCommandAvailabilityTag />
         </SpecimenCell>
-        <SpecimenCell label="loading icon">
+        <SpecimenCell label="loading spinner">
           <span className="fg-secondary">
-            <SlashCommandLoadingIcon />
+            <SlashCommandPendingSpinner />
           </span>
         </SpecimenCell>
         <SpecimenCell label="group heading, default">

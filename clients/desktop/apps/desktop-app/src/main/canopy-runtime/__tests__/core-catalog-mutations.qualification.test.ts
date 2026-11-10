@@ -27,7 +27,7 @@ import type {
   MarketplaceProviderStatus,
   PluginInfo,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { cloneRepo } from '../../lib/git';
 import {
   resetPluginMutationQueueForTests,

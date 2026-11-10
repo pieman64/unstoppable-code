@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
-import { AgentIcon } from '../../../../icons/AgentIcon';
-import type { AppIconProps } from '../../../../icons/AppIcons';
+import { AgentIcon } from './AgentIcon';
+import type { AppIconProps } from './AppIcons';
 
 export interface SubagentIconProps {
   /** A step of the icon scale. Defaults to `sm`. */

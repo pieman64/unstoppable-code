@@ -90,11 +90,13 @@ function NoticeStateGalleryContent(): JSX.Element {
   return (
     // The page sits inside `<main>`, which already scrolls; one constrained
     // scroller owns the overflow, as on the other state galleries.
-    <div
-      className="flex h-full flex-col bg-base fg-primary"
+    <Surface
+      variant="pane"
+      extent="parent"
+      className="flex flex-col"
       data-testid="page-notice-states"
     >
-      <header className="flex flex-col gap-1 px-8 pt-8 pb-4">
+      <header className="flex flex-col gap-1 px-8 pt-8 pb-4 fg-primary">
         <Heading level={1} variant="page">
           Notices — all states
         </Heading>
@@ -107,7 +109,7 @@ function NoticeStateGalleryContent(): JSX.Element {
         </p>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-12 overflow-y-auto px-8 pb-24 [&>*]:shrink-0">
+      <div className="flex min-h-0 flex-1 flex-col gap-12 overflow-y-auto px-8 pb-24 fg-primary [&>*]:shrink-0">
         <ToastTestBench />
 
         <NoticeComposerPreview
@@ -202,6 +204,6 @@ function NoticeStateGalleryContent(): JSX.Element {
           </section>
         ))}
       </div>
-    </div>
+    </Surface>
   );
 }

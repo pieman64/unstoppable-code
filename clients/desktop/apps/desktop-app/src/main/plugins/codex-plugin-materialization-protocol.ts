@@ -1,4 +1,4 @@
-import type { PluginDetails } from '@canopy/desktop-shared/types/plugins';
+import type { PluginDetails } from '@canopy/execution-engine/types/plugins';
 
 export interface CodexPluginMaterializationPlugin {
   pluginName: string;

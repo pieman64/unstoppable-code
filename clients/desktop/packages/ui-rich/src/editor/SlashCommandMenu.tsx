@@ -3,7 +3,7 @@ import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import {
   Button,
   SlashCommandAvailabilityTag,
-  SlashCommandLoadingIcon,
+  SlashCommandPendingSpinner,
 } from '@canopy/ui-shared';
 import type { SlashCommandOption } from '../types';
 
@@ -82,7 +82,7 @@ export function SlashCommandMenu<
     options[selectedIndex]?.scrollIntoView({ block: 'nearest' });
   }, [selectedIndex]);
 
-  const spinner = loadingIcon ?? <SlashCommandLoadingIcon />;
+  const spinner = loadingIcon ?? <SlashCommandPendingSpinner />;
   const refresh = refreshIcon ?? <RefreshIcon size="xs" />;
   const showAllVisible = hiddenCount > 0 && onShowAll !== undefined;
 

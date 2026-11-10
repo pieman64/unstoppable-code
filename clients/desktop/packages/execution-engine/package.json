@@ -10,9 +10,12 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
     "@canopy/agent-transcript": "workspace:*",
+    "@canopy/copilot-recipient": "workspace:*",
     "@canopy/core-platform": "workspace:*",
     "@canopy/core-runtime": "workspace:*",
     "@canopy/pipeline-interop": "workspace:*",
-    "@canopy/protocol": "workspace:*"
+    "@canopy/plugin-interop": "workspace:*",
+    "@canopy/protocol": "workspace:*",
+    "zod": "4.3.6"
   }
 }

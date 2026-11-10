@@ -4,12 +4,12 @@ import {
   isCuratedPluginMarketplaceId,
   type MarketplaceInfo,
   type PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import {
   computePluginShareableRef,
   getShareablePluginRefKey,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import {
   shareTargetFromEnableRef,
   type ShareTarget,

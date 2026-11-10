@@ -10,13 +10,21 @@ import {
 import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
-import { W5_COMMIT_LOG_SCHEMA_VERSION } from '@canopy/desktop-shared/node/w5-commit-log';
+import {
+  W5_COMMIT_LOG_SCHEMA_VERSION,
+  openW5CommitLogDatabase,
+} from '@canopy/desktop-shared/node/w5-commit-log';
 import { readW5FileBytes, validateW5Document } from './w5-backup';
 import { isErrnoException, isRecord } from './type-guards';
 import { validateId } from './validation';
 
 export interface W5FileIssue {
   readonly path: string;
+  /** Observed opaque artifacts, distinct from unknown owned-state evidence. */
+  readonly artifactKind?:
+    | 'unrecognized-workspace-file'
+    | 'unindexed-workspace-directory'
+    | 'unrecognized-w5-file';
   readonly reason:
     | 'corrupt-file'
     | 'missing-file'
@@ -33,6 +41,8 @@ export interface W5Diagnosis {
   /** Filename-matching regular files, not operations; null if inspection is unavailable. */
   readonly destructiveJournalArtifactCount: number | null;
   readonly logIssue: 'unavailable' | 'incompatible-schema' | null;
+  /** Proven by running the existing schema upgrader on a disposable copy only. */
+  readonly schemaUpgrade?: { readonly from: number; readonly to: number };
   /** Commits not yet applied, oldest first. */
   readonly commits: readonly {
     readonly commitId: number;
@@ -62,6 +72,7 @@ function validId(id: string): boolean {
 
 interface DiagnosticCopy {
   readonly db: DatabaseSync;
+  readonly schemaUpgrade?: W5Diagnosis['schemaUpgrade'];
   close(): Promise<void>;
 }
 
@@ -119,14 +130,17 @@ async function reportQuarantinedJournals(
   }
 }
 
-async function copyLogForDiagnosis(logPath: string): Promise<DiagnosticCopy> {
+async function copyLogForDiagnosis(
+  logPath: string,
+  upgradeSchemaCopy: boolean,
+): Promise<DiagnosticCopy> {
   // SQLite readOnly can create/change source WAL/SHM files. Inspect a private
   // copy, including WAL, so even interrupted decisions are visible without
   // touching source bytes. Never copy the SHM index; SQLite rebuilds it here.
   const temporary = await mkdtemp(join(tmpdir(), 'canopy-w5-diagnose-'));
   try {
     const copied = new Map<string, Buffer>();
-    for (const suffix of ['', '-wal']) {
+    for (const suffix of ['', '-wal', '-journal']) {
       try {
         const bytes = await readFile(`${logPath}${suffix}`);
         copied.set(suffix, bytes);
@@ -136,7 +150,7 @@ async function copyLogForDiagnosis(logPath: string): Promise<DiagnosticCopy> {
         });
       } catch (error) {
         if (
-          suffix !== '-wal' ||
+          suffix === '' ||
           !isErrnoException(error) ||
           error.code !== 'ENOENT'
         )
@@ -146,19 +160,40 @@ async function copyLogForDiagnosis(logPath: string): Promise<DiagnosticCopy> {
     for (const [suffix, bytes] of Array.from(copied))
       if (!(await readFile(`${logPath}${suffix}`)).equals(bytes))
         throw new Error('Log changed during inspection');
-    if (!copied.has('-wal')) {
+    for (const suffix of ['-wal', '-journal']) {
+      if (copied.has(suffix)) continue;
       try {
-        await lstat(`${logPath}-wal`);
-        throw new Error('WAL appeared during inspection');
+        await lstat(`${logPath}${suffix}`);
+        throw new Error('SQLite sidecar appeared during inspection');
       } catch (error) {
         if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
       }
     }
-    const db = new DatabaseSync(join(temporary, 'commit-log.sqlite'), {
-      readOnly: true,
-    });
+    const copiedPath = join(temporary, 'commit-log.sqlite');
+    let db = new DatabaseSync(copiedPath, { readOnly: true });
+    let schemaUpgrade: W5Diagnosis['schemaUpgrade'];
+    try {
+      const version = db
+        .prepare("SELECT value FROM w5_meta WHERE key = 'schema_version'")
+        .get()?.value;
+      if (
+        upgradeSchemaCopy &&
+        (version === '1' || version === '2' || version === '3')
+      ) {
+        db.close();
+        db = openW5CommitLogDatabase(copiedPath);
+        schemaUpgrade = {
+          from: Number(version),
+          to: W5_COMMIT_LOG_SCHEMA_VERSION,
+        };
+      }
+    } catch (error) {
+      if (db.isOpen) db.close();
+      throw error;
+    }
     return {
       db,
+      ...(schemaUpgrade ? { schemaUpgrade } : {}),
       close: async (): Promise<void> => {
         try {
           db.close();
@@ -175,12 +210,14 @@ async function copyLogForDiagnosis(logPath: string): Promise<DiagnosticCopy> {
 
 /**
  * Offline-only reader: does not open W5CommitLog or its auto-recovering host.
- * No migration, recovery, compensation, reservation transition or file write.
+ * No source migration, recovery, compensation, reservation transition or write.
+ * Internal-root callers may prove schema upgrades on the disposable copy.
  * Kept outside the running desktop graph; production exposure remains blocked.
  */
 export async function diagnoseW5State(
   dataRoot: string,
   scope: W5DiagnosisScope = 'all-artifacts',
+  upgradeSchemaCopy = false,
 ): Promise<W5Diagnosis> {
   const root = join(dataRoot, 'workspaces');
   const issues: W5FileIssue[] = [];
@@ -216,7 +253,11 @@ export async function diagnoseW5State(
       if (entry.isDirectory() && validId(entry.name)) {
         ids.add(entry.name);
         if (!workspaceTypes.has(entry.name))
-          issues.push({ path: entry.name, reason: 'unknown-artifact' });
+          issues.push({
+            path: entry.name,
+            reason: 'unknown-artifact',
+            artifactKind: 'unindexed-workspace-directory',
+          });
         // Workspace payloads are cloned, not owned or interpreted by W5.
         if (scope === 'all-artifacts')
           for (const child of await readdir(join(root, entry.name), {
@@ -234,7 +275,15 @@ export async function diagnoseW5State(
         entry.name !== 'index.json' &&
         entry.name !== 'index.json.bak'
       ) {
-        issues.push({ path: entry.name, reason: 'unknown-artifact' });
+        issues.push({
+          path: entry.name,
+          reason: 'unknown-artifact',
+          ...(entry.isDirectory()
+            ? { artifactKind: 'unindexed-workspace-directory' as const }
+            : entry.isFile()
+              ? { artifactKind: 'unrecognized-workspace-file' as const }
+              : {}),
+        });
       }
     }
   } catch {
@@ -265,6 +314,7 @@ export async function diagnoseW5State(
       'commit-log.sqlite',
       'commit-log.sqlite-wal',
       'commit-log.sqlite-shm',
+      'commit-log.sqlite-journal',
       'backups',
       'restore-evidence',
     ]);
@@ -282,9 +332,20 @@ export async function diagnoseW5State(
         !recognizedLogArtifacts.has(entry.name) ||
         entry.isSymbolicLink()
       )
-        issues.push({ path: `w5/${entry.name}`, reason: 'unknown-artifact' });
+        issues.push({
+          path: `w5/${entry.name}`,
+          reason: 'unknown-artifact',
+          ...(!recognizedLogArtifacts.has(entry.name) && entry.isFile()
+            ? { artifactKind: 'unrecognized-w5-file' as const }
+            : {}),
+        });
     const logPath = join(dataRoot, 'w5/commit-log.sqlite');
-    for (const path of [logPath, `${logPath}-wal`, `${logPath}-shm`]) {
+    for (const path of [
+      logPath,
+      `${logPath}-wal`,
+      `${logPath}-shm`,
+      `${logPath}-journal`,
+    ]) {
       try {
         const stat = await lstat(path);
         if (!stat.isFile() || stat.isSymbolicLink())
@@ -298,7 +359,7 @@ export async function diagnoseW5State(
           throw error;
       }
     }
-    copy = await copyLogForDiagnosis(logPath);
+    copy = await copyLogForDiagnosis(logPath, upgradeSchemaCopy);
     const { db } = copy;
     db.exec('PRAGMA query_only = ON; BEGIN');
     const version = db
@@ -409,6 +470,7 @@ export async function diagnoseW5State(
         a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason),
     ),
     logIssue,
+    ...(copy?.schemaUpgrade ? { schemaUpgrade: copy.schemaUpgrade } : {}),
     destructiveJournalArtifactCount,
     commits,
     reservations,

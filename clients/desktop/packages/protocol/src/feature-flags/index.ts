@@ -157,13 +157,6 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Obsolete daemon workflows Labs selector. Retained only for wire compatibility.',
   },
-  canopyDesktopLabsChatAutomationPipelines: {
-    key: 'canopy-desktop-labs-chat-automation-pipelines',
-    // Off until opted in: an edited chat automation saves as a pipeline.
-    launchDarklyDisabledDefaultValue: 'offered',
-    launchDarklyEnabledUnavailableValue: 'offered',
-    description: 'Availability of the chat automation pipelines experiment.',
-  },
   canopyDesktopLabsOverviewPage: {
     key: 'canopy-desktop-labs-overview-page',
     launchDarklyDisabledDefaultValue: 'offered',
@@ -710,8 +703,6 @@ export type ClientFeatureFlagValues = {
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines
     .key]: LabsExperimentAvailability;
-  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
-    .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage
@@ -848,9 +839,6 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines
-        .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key]:
-      CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
@@ -1073,9 +1061,6 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines
         .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key]:
-      CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
-        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
         .launchDarklyEnabledUnavailableValue,
@@ -1264,7 +1249,6 @@ export const LABS_EXPERIMENT_FLAG_KEYS: ReadonlySet<string> = new Set([
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key,
-  CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsStatisticsPage.key,

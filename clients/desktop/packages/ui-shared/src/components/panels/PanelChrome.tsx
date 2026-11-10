@@ -27,7 +27,7 @@ import {
   PanelFullScreenIcon,
   PanelNewWindowIcon,
   PanelSplitDirectionIcon,
-} from './panel-menu-icons';
+} from '../../icons/PanelMenuIcons';
 import { PanelLayoutIcon, type AppIcon } from '../../icons/AppIcons';
 import type {
   PanelCollapseEdge,

@@ -56,17 +56,20 @@ export function ApprovalContentModal({
       trapFocus
       restoreFocusRef={restoreFocusRef}
     >
+      {/* The flush body's own inset: 16px below the header, 24px elsewhere. */}
       {content.kind === 'text' ? (
-        <pre
-          data-testid="tool-approval-content-modal-body"
-          className={`${REPLAY_BLOCK_CLASS} m-6 mt-4 select-text whitespace-pre-wrap break-all rounded-md bg-fg-primary/[0.06] px-3 py-2.5 font-mono text-xs fg-primary/90`}
-        >
-          {content.text}
-        </pre>
+        <div className="px-6 pb-6 pt-4">
+          <pre
+            data-testid="tool-approval-content-modal-body"
+            className={`${REPLAY_BLOCK_CLASS} select-text whitespace-pre-wrap break-all rounded-md bg-fg-primary/[0.06] px-3 py-2.5 font-mono text-xs fg-primary/90`}
+          >
+            {content.text}
+          </pre>
+        </div>
       ) : (
         <div
           data-testid="tool-approval-content-modal-body"
-          className={`${REPLAY_BLOCK_CLASS} m-6 mt-4 select-text`}
+          className={`${REPLAY_BLOCK_CLASS} select-text px-6 pb-6 pt-4`}
         >
           <ApprovalFileChangePreview change={content.change} mode="expanded" />
         </div>

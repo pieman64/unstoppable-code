@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { sanitizeEnvVars } from '@canopy/desktop-shared/lib/mcp-security';
+import { sanitizeEnvVars } from '@canopy/execution-engine/lib/mcp-security';
 import { getLinuxProbeEnv } from '@canopy/desktop-shared/pipelines/config-paths';
 import {
   GIT_BRANCH_LIST_REF_ARGS,
@@ -679,10 +679,14 @@ describe('environments', () => {
     expect(linuxProbeEnvironment(blocked)).toEqual(desktop);
   });
 
-  /** String literals of the first `[...]` after `anchor` in a desktop-shared source. */
-  function desktopKeys(file: string, anchor: string): string[] {
+  /** String literals of the first `[...]` after `anchor` in a desktop package source. */
+  function desktopKeys(
+    file: string,
+    anchor: string,
+    pkg = 'desktop-shared',
+  ): string[] {
     const source = readFileSync(
-      join(__dirname, '../../../desktop-shared/src', file),
+      join(__dirname, '../../..', pkg, 'src', file),
       'utf8',
     );
     const open = source.indexOf('[', source.indexOf(anchor));
@@ -692,7 +696,11 @@ describe('environments', () => {
 
   // A key desktop adds to either list must fail here until it is mirrored.
   it('drops every key desktop drops, read from desktop source', () => {
-    const blocked = desktopKeys('lib/mcp-security.ts', 'BLOCKED_ENV_KEYS =');
+    const blocked = desktopKeys(
+      'lib/mcp-security.ts',
+      'BLOCKED_ENV_KEYS =',
+      'execution-engine',
+    );
     const startup = desktopKeys(
       'pipelines/config-paths.ts',
       "startsWith('BASH_FUNC_')",

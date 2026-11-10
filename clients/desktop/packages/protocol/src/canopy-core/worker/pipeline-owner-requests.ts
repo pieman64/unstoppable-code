@@ -36,6 +36,7 @@ export const WORKER_PIPELINE_OWNER_ACTIONS = [
   'owner.ledger.codexToolExecute',
   'owner.ledger.codexToolsDispose',
   'owner.claude.modAdmission',
+  'owner.model.agentAlias',
 ] as const;
 export type WorkerPipelineOwnerAction =
   (typeof WORKER_PIPELINE_OWNER_ACTIONS)[number];
@@ -80,6 +81,16 @@ const ClaudeModAdmissionContextSchema = z.strictObject({
   ),
   sessionModIds: modList(modPluginId).optional(),
 });
+
+/** An Agent model id, as a workflow model alias names it (CAN-5832). */
+const agentModelId = z
+  .string()
+  .min(1)
+  .max(512)
+  .refine((value) => value.startsWith('agent_model_'));
+
+/** At most this much plugin selection JSON crosses for one Agent (CAN-5832). */
+export const WORKER_PIPELINE_OWNER_AGENT_PLUGINS_MAX_BYTES = 65_536;
 
 const routingContext = {
   allowNoNativeAuthFallback: z.boolean().optional(),
@@ -183,6 +194,10 @@ export const WORKER_PIPELINE_OWNER_REQUEST_MEMBERS = [
     settingSources: z.array(z.enum(['user', 'project', 'local'])).max(3),
     claudeConfigDir: hostPath.optional(),
   }),
+  z.strictObject({
+    action: z.literal('owner.model.agentAlias'),
+    agentId: agentModelId,
+  }),
 ] as const;
 
 /** What core answers an owner request with, apart from host-local values. */
@@ -257,6 +272,22 @@ export const WorkerPipelineOwnerResultSchema = z.discriminatedUnion('kind', [
     /** Null while Claude Mod admission is off for this app. */
     context: ClaudeModAdmissionContextSchema.nullable(),
   }),
+  z.strictObject({
+    kind: z.literal('model.agentAlias'),
+    /** Null when the Agent is not available locally (CAN-5832). */
+    alias: z
+      .strictObject({
+        agentId: agentModelId,
+        name: text(4096),
+        base: model,
+        instructions: text(65_536).optional(),
+        /** The Agent's plugin selections, as data; no secret crosses. */
+        pluginSelections: canopyJsonValueSchemaWithin(
+          WORKER_PIPELINE_OWNER_AGENT_PLUGINS_MAX_BYTES,
+        ).optional(),
+      })
+      .nullable(),
+  }),
 ]);
 export type WorkerPipelineOwnerResult = z.output<
   typeof WorkerPipelineOwnerResultSchema
@@ -282,6 +313,7 @@ export const WORKER_PIPELINE_OWNER_RESULT_KIND: Readonly<
   'owner.ledger.codexToolExecute': 'ledger.codexToolExecute',
   'owner.ledger.codexToolsDispose': 'ledger.codexToolsDispose',
   'owner.claude.modAdmission': 'claude.modAdmission',
+  'owner.model.agentAlias': 'model.agentAlias',
 });
 
 const OWNER_ACTIONS: ReadonlySet<string> = new Set(

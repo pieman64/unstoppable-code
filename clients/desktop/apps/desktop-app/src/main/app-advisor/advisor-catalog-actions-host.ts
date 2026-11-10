@@ -1,6 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import { CanopyOperationError } from '@canopy/core-runtime';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   pluginEntryId,
   type CanopyCallerDescriptor,
@@ -11,7 +11,10 @@ import {
 } from '@canopy/protocol/plugins/catalog';
 import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
-import { isAskUserDismissal } from '../lib/ask-user-outcomes';
+import {
+  askPersonToConfirm,
+  type RequestPersonAnswers,
+} from '../lib/ask-user-outcomes';
 import { getWorkspaceScopingContext } from '../lib/workspace-context-service';
 import { validateAgentModelId } from '../lib/validation';
 import type {
@@ -36,16 +39,7 @@ export function mainAdvisorCatalogActionHost(options: {
   getWindow: () => BrowserWindow | null;
   refreshWaitMs?: number;
   /** This chat's AskUserQuestion, with each answer's provenance. */
-  requestUserAnswers: (
-    questions: Array<{
-      question: string;
-      options: string[];
-      multiSelect?: boolean;
-      allowOther?: boolean;
-    }>,
-  ) => Promise<
-    Array<{ selectedOptions: string[]; answeredBy?: 'person' | 'agent' }>
-  >;
+  requestUserAnswers: RequestPersonAnswers;
 }): AdvisorCatalogActionHost {
   const caller = (
     grant: CanopyCallerDescriptor['grants'][number],
@@ -194,29 +188,12 @@ export function mainAdvisorCatalogActionHost(options: {
         throw error;
       }
     },
-    confirmMarketplaceRemoval: async (marketplace) => {
-      let answers: Awaited<ReturnType<typeof options.requestUserAnswers>>;
-      try {
-        answers = await options.requestUserAnswers([
-          {
-            question: `Remove the plugin marketplace ${marketplace.name}? Plugins installed from it are removed too.`,
-            options: [REMOVE_MARKETPLACE, KEEP_MARKETPLACE],
-            multiSelect: false,
-            allowOther: false,
-          },
-        ]);
-      } catch (error) {
-        // A dismissal declines; any failure to ask someone fails closed.
-        return isAskUserDismissal(error) ? 'declined' : 'no_person';
-      }
-      const answer = answers[0];
-      // Only a person's answer confirms; an agent's or one of unknown
-      // origin never removes a marketplace.
-      if (answer?.answeredBy !== 'person') return 'no_person';
-      return answer.selectedOptions.includes(REMOVE_MARKETPLACE)
-        ? 'confirmed'
-        : 'declined';
-    },
+    confirmMarketplaceRemoval: (marketplace) =>
+      askPersonToConfirm(
+        options.requestUserAnswers,
+        `Remove the plugin marketplace ${marketplace.name}? Plugins installed from it are removed too.`,
+        { confirm: REMOVE_MARKETPLACE, decline: KEEP_MARKETPLACE },
+      ),
     listMarketplaceSkills: async () => {
       const { listDesktopPublisherSkills } =
         await import('../skills/publisher-marketplace');

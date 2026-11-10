@@ -6,6 +6,7 @@ import {
   type StoreBadgeActivation,
 } from './StoreBadgeLink';
 import { Heading } from './Heading';
+import { Stack } from './Stack';
 
 /**
  * Presentation of a mobile-app promotion.
@@ -85,31 +86,37 @@ export function MobileAppPromo({
           </Button>
         </span>
       )}
-      <Heading level={2} variant={isSection ? 'page' : 'title'}>
-        {resolvedHeading}
-      </Heading>
-      <p
-        className={
-          isSection
-            ? 'mx-auto mt-2 max-w-xl text-s fg-secondary'
-            : 'mt-1 text-xs fg-secondary'
-        }
-      >
-        {description ?? DEFAULT_MOBILE_APP_PROMO_DESCRIPTION}
-      </p>
-      <div
-        className={`flex flex-wrap items-center gap-3 ${
-          isSection ? 'mt-5 justify-center' : 'mt-3'
-        }`}
-      >
-        {links.map((link) => (
-          <StoreBadgeLink
-            key={link.store}
-            link={link}
-            activation={activation}
-          />
-        ))}
-      </div>
+      <Stack gap={isSection ? 'block' : 'item'}>
+        <Stack gap={isSection ? 'inline' : 'tight'}>
+          <Heading level={2} variant={isSection ? 'page' : 'title'}>
+            {resolvedHeading}
+          </Heading>
+          {/* `w-full` keeps the centered column at its block width; auto
+              margins on a flex item would otherwise shrink it to its text. */}
+          <p
+            className={
+              isSection
+                ? 'mx-auto w-full max-w-xl text-s fg-secondary'
+                : 'text-xs fg-secondary'
+            }
+          >
+            {description ?? DEFAULT_MOBILE_APP_PROMO_DESCRIPTION}
+          </p>
+        </Stack>
+        <div
+          className={`flex flex-wrap items-center gap-3 ${
+            isSection ? 'justify-center' : ''
+          }`}
+        >
+          {links.map((link) => (
+            <StoreBadgeLink
+              key={link.store}
+              link={link}
+              activation={activation}
+            />
+          ))}
+        </div>
+      </Stack>
       <p className="sr-only">{`${brandDisplayName} mobile apps`}</p>
     </section>
   );

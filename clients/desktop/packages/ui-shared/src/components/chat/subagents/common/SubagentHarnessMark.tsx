@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { ModelProviderIcon } from '../../../ModelProviderIcon';
+import { ModelProviderIcon } from '../../../../icons/ModelProviderIcon';
 
 export interface SubagentHarnessMarkProps {
   /** The harness that runs the subagent, such as `claude` or `codex`. */

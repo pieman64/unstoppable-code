@@ -2162,25 +2162,27 @@ export function CustomSkillEditor({
           {fields}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
-          <Button
-            size="compact"
-            onClick={onClose}
-            disabled={saving}
-            data-testid="skill-editor-cancel"
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            size="compact"
-            onClick={() => void handleSave()}
-            disabled={saveDisabled}
-            data-testid="skill-editor-save"
-          >
-            {saveLabel}
-          </Button>
-        </div>
+        <Surface variant="section" boundary="top">
+          <div className="flex items-center justify-end gap-2 px-6 py-3">
+            <Button
+              size="compact"
+              onClick={onClose}
+              disabled={saving}
+              data-testid="skill-editor-cancel"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="compact"
+              onClick={() => void handleSave()}
+              disabled={saveDisabled}
+              data-testid="skill-editor-save"
+            >
+              {saveLabel}
+            </Button>
+          </div>
+        </Surface>
       </div>
     </DialogModal>
   );
@@ -2863,19 +2865,21 @@ export function SharedSkillDetailModal({
       </div>
       {/* View mode has no footer: a Close would duplicate the X. */}
       {presentation === 'modal' && isEdit && (
-        <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
-          <Button size="compact" onClick={onClose} disabled={saving}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            size="compact"
-            onClick={() => void handleSave()}
-            disabled={loading || saving}
-          >
-            {saving ? 'Saving…' : 'Save changes'}
-          </Button>
-        </div>
+        <Surface variant="section" boundary="top">
+          <div className="flex items-center justify-end gap-2 px-6 py-3">
+            <Button size="compact" onClick={onClose} disabled={saving}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="compact"
+              onClick={() => void handleSave()}
+              disabled={loading || saving}
+            >
+              {saving ? 'Saving…' : 'Save changes'}
+            </Button>
+          </div>
+        </Surface>
       )}
     </div>
   );

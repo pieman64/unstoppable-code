@@ -2,7 +2,7 @@ import { Stack } from './Stack';
 import type { JSX, ReactNode } from 'react';
 import { DialogModal } from './DialogModal';
 import { HeaderActionButton } from './HeaderActionButton';
-import { ArchivedStateIcon } from './ArchivedStateIcon';
+import { ArchivedStateIcon } from '../icons/ArchivedStateIcon';
 import { TrashPermanentlyIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 

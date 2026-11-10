@@ -115,6 +115,8 @@ export function PortalDirectoryPicker({
             disabled={disabled}
             onClick={(): void => setOpen((prev) => !prev)}
             className="max-w-full"
+            // Compact drops the folder glyph, so the name leads the capsule.
+            textLead={compact}
             textTrail
             aria-label={`Select working directory, current ${currentName}`}
             aria-haspopup="listbox"

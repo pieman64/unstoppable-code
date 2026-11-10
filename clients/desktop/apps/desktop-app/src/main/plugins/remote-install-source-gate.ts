@@ -1,5 +1,5 @@
 import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
-import type { PluginInfo } from '@canopy/desktop-shared/types/plugins';
+import type { PluginInfo } from '@canopy/execution-engine/types/plugins';
 import {
   assertSafeExternalPluginCloneUrl,
   UnsafeExternalPluginUrlError,

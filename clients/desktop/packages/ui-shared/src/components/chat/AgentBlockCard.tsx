@@ -6,6 +6,7 @@ import {
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import { AgentIcon, MinusIcon, PlusIcon } from '../../icons';
 import { useCleanChatLook } from '../chat-look';
+import { Inline } from '../Stack';
 import { StepRow } from './StepRow';
 import { formatDuration, formatTokenCount } from '../../lib/format-usage';
 import { AgentCardOpenChatAction } from './AgentCardOpenChatAction';
@@ -296,36 +297,38 @@ export function AgentBlockCard({
         </span>
       </span>
       {headerStatus}
-      <span className="min-w-0 truncate">
-        Agent
-        {shouldShowSubagentType ? <> &middot; {subagentType}</> : ' '}
-        {runInBackground && (
-          <span className="inline-flex pl-1.5 align-middle">
-            <Badge data-testid="agent-block-background-badge">background</Badge>
-          </span>
+      <Inline as="span" gap="item" className="min-w-0">
+        <span className="min-w-0 truncate">
+          Agent
+          {shouldShowSubagentType ? <> &middot; {subagentType}</> : ' '}
+          {runInBackground && (
+            <span className="inline-flex pl-1.5 align-middle">
+              <Badge data-testid="agent-block-background-badge">
+                background
+              </Badge>
+            </span>
+          )}
+          {(!isExpanded || !prompt) && preview && (
+            <span className="ml-2 text-2xs fg-secondary">{preview}</span>
+          )}
+        </span>
+        {isRunning && pendingSpinner != null && (
+          <span className="flex-shrink-0 fg-accent">{pendingSpinner}</span>
         )}
-        {(!isExpanded || !prompt) && preview && (
-          <span className="ml-2 text-2xs fg-secondary">{preview}</span>
-        )}
-      </span>
-      {isRunning && pendingSpinner != null && (
-        <span className="ml-1 flex-shrink-0 fg-accent">{pendingSpinner}</span>
-      )}
-      {isError && (
-        <span className="ml-1 text-3xs fg-destructive/80">error</span>
-      )}
+        {isError && <span className="text-3xs fg-destructive/80">error</span>}
+      </Inline>
       {headerTrailing}
     </button>
   );
 
   return (
     <div
-      className={clean ? undefined : 'border-l-2 border-line-accent/30 pl-2'}
+      className={`flex flex-col items-start gap-1${clean ? '' : ' border-l-2 border-line-accent/30 pl-2'}`}
       data-testid={dataTestId}
       data-tool-use-id={toolUseId}
     >
       {headerAction != null ? (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 self-stretch">
           {header}
           <span className="flex shrink-0 items-center">{headerAction}</span>
         </div>
@@ -334,86 +337,88 @@ export function AgentBlockCard({
       )}
 
       {isExpanded && (
-        <div
-          className={
-            clean
-              ? 'ml-5.5 mt-1 overflow-hidden rounded-md bg-fg-primary/[0.03] text-s'
-              : 'ml-5.5 mt-1 overflow-hidden rounded border bg-fg-primary/[0.02]'
-          }
-        >
-          {onOpenChat ? (
-            <div className="border-b px-2.5 py-2">
-              <AgentCardOpenChatAction onOpenChat={onOpenChat} />
-            </div>
-          ) : null}
-          {metadata}
-          {(model || reasoningEffort) && (
-            <div
-              data-testid="agent-block-configuration"
-              className="flex flex-wrap gap-x-3 gap-y-0.5 border-b px-2.5 py-1.5 text-3xs fg-secondary"
-            >
-              {model && <span>Model: {model}</span>}
-              {reasoningEffort && (
-                <span>Effort: {formatReasoningEffort(reasoningEffort)}</span>
-              )}
-            </div>
-          )}
-          {usageCells && (
-            <div
-              data-testid="agent-block-usage-grid"
-              className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b px-2.5 py-1.5 text-3xs fg-secondary"
-            >
-              {usageCells}
-            </div>
-          )}
-
-          {subBlocks != null ? (
-            <div className="grid grid-cols-1 content-start max-h-125 overflow-auto px-2.5 py-2 gap-1">
-              {subBlocks}
-            </div>
-          ) : isRunning && description ? (
-            <div className="px-2.5 py-2 text-xs fg-secondary">
-              {description}
-            </div>
-          ) : null}
-
-          {result && (
-            <>
-              <button
-                type="button"
-                onClick={(): void => setShowResult((prev) => !prev)}
-                className="w-full border-t px-2.5 py-1 text-left text-3xs font-medium fg-secondary hover:fg-secondary"
+        <div className="self-stretch pl-5.5">
+          <div
+            className={
+              clean
+                ? 'overflow-hidden rounded-md bg-fg-primary/[0.03] text-s'
+                : 'overflow-hidden rounded border bg-fg-primary/[0.02]'
+            }
+          >
+            {onOpenChat ? (
+              <div className="border-b px-2.5 py-2">
+                <AgentCardOpenChatAction onOpenChat={onOpenChat} />
+              </div>
+            ) : null}
+            {metadata}
+            {(model || reasoningEffort) && (
+              <div
+                data-testid="agent-block-configuration"
+                className="flex flex-wrap gap-x-3 gap-y-0.5 border-b px-2.5 py-1.5 text-3xs fg-secondary"
               >
-                {showResult ? 'Hide result' : 'Show result'}
-              </button>
-              {showResult && (
-                <pre
-                  className={`max-h-75 overflow-auto whitespace-pre-wrap break-all border-t px-2.5 py-2 text-xs ${
-                    isError ? 'fg-destructive/80' : 'fg-secondary'
-                  }`}
+                {model && <span>Model: {model}</span>}
+                {reasoningEffort && (
+                  <span>Effort: {formatReasoningEffort(reasoningEffort)}</span>
+                )}
+              </div>
+            )}
+            {usageCells && (
+              <div
+                data-testid="agent-block-usage-grid"
+                className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b px-2.5 py-1.5 text-3xs fg-secondary"
+              >
+                {usageCells}
+              </div>
+            )}
+
+            {subBlocks != null ? (
+              <div className="grid grid-cols-1 content-start max-h-125 overflow-auto px-2.5 py-2 gap-1">
+                {subBlocks}
+              </div>
+            ) : isRunning && description ? (
+              <div className="px-2.5 py-2 text-xs fg-secondary">
+                {description}
+              </div>
+            ) : null}
+
+            {result && (
+              <>
+                <button
+                  type="button"
+                  onClick={(): void => setShowResult((prev) => !prev)}
+                  className="w-full border-t px-2.5 py-1 text-left text-3xs font-medium fg-secondary hover:fg-secondary"
                 >
-                  {displayResult?.content}
-                </pre>
-              )}
-            </>
-          )}
+                  {showResult ? 'Hide result' : 'Show result'}
+                </button>
+                {showResult && (
+                  <pre
+                    className={`max-h-75 overflow-auto whitespace-pre-wrap break-all border-t px-2.5 py-2 text-xs ${
+                      isError ? 'fg-destructive/80' : 'fg-secondary'
+                    }`}
+                  >
+                    {displayResult?.content}
+                  </pre>
+                )}
+              </>
+            )}
 
-          {prompt && (
-            <>
-              <button
-                type="button"
-                onClick={(): void => setShowPrompt((prev) => !prev)}
-                className="w-full border-t px-2.5 py-1 text-left text-3xs font-medium fg-secondary hover:fg-secondary"
-              >
-                {showPrompt ? 'Hide prompt' : 'Show prompt'}
-              </button>
-              {showPrompt && (
-                <pre className="max-h-50 overflow-auto whitespace-pre-wrap break-all border-t px-2.5 py-2 text-xs fg-secondary">
-                  {prompt}
-                </pre>
-              )}
-            </>
-          )}
+            {prompt && (
+              <>
+                <button
+                  type="button"
+                  onClick={(): void => setShowPrompt((prev) => !prev)}
+                  className="w-full border-t px-2.5 py-1 text-left text-3xs font-medium fg-secondary hover:fg-secondary"
+                >
+                  {showPrompt ? 'Hide prompt' : 'Show prompt'}
+                </button>
+                {showPrompt && (
+                  <pre className="max-h-50 overflow-auto whitespace-pre-wrap break-all border-t px-2.5 py-2 text-xs fg-secondary">
+                    {prompt}
+                  </pre>
+                )}
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

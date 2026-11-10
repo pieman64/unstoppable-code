@@ -64,22 +64,14 @@ const MODE_ORDER: readonly FindSurfaceMode[] = [
   'terminal',
 ];
 
-function ModeIcon({ mode }: { mode: FindSurfaceMode }): JSX.Element {
-  switch (mode) {
-    case 'chat':
-      return <ChatIcon size={16} ariaHidden />;
-    case 'browser':
-      return <GlobeIcon size={16} ariaHidden />;
-    case 'file':
-      return <FileIcon size={16} ariaHidden />;
-    case 'plan':
-      return <PlanModeIcon size={16} ariaHidden />;
-    case 'diagram':
-      return <ChangeDiagramIcon size={16} ariaHidden />;
-    case 'terminal':
-      return <TerminalIcon size={16} ariaHidden />;
-  }
-}
+const MODE_GLYPHS: Readonly<Record<FindSurfaceMode, JSX.Element>> = {
+  chat: <ChatIcon size="sm" ariaHidden />,
+  browser: <GlobeIcon size="sm" ariaHidden />,
+  file: <FileIcon size="sm" ariaHidden />,
+  plan: <PlanModeIcon size="sm" ariaHidden />,
+  diagram: <ChangeDiagramIcon size="sm" ariaHidden />,
+  terminal: <TerminalIcon size="sm" ariaHidden />,
+};
 
 export interface FindInSurfaceBarError {
   message: string;
@@ -183,7 +175,7 @@ function ScopeToggle({
         data-testid={`surface-find-scope-${mode}-${option.key}`}
         onClick={(): void => onPick(option.key)}
       >
-        <ModeIcon mode={mode} />
+        {MODE_GLYPHS[mode]}
         <span className="text-xs tabular-nums">{index}</span>
       </HeaderActionButton>
     </>
@@ -271,7 +263,7 @@ export function FindInSurfaceBar({
                     data-testid={`surface-find-mode-${entry}`}
                     onClick={() => onModeChange(entry)}
                   >
-                    <ModeIcon mode={entry} />
+                    {MODE_GLYPHS[entry]}
                   </HeaderActionButton>
                 ),
               )}

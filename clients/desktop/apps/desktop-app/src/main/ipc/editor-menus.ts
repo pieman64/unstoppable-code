@@ -24,7 +24,7 @@ import {
   type PortalPluginCatalog,
 } from '@canopy/desktop-shared/types';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { appendEnableRef } from '@canopy/desktop-shared/lib/slash-invocable-inventory';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { validateId } from '../lib/validation';

@@ -11,7 +11,7 @@ import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import type {
   PluginInfo,
   PluginProviderSupport,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { isCuratedPluginMarketplaceId } from '@canopy/protocol/plugins';
 import type { CollectionIndexEntry } from '@canopy/desktop-shared/types/collections';
 import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
@@ -33,7 +33,7 @@ import {
   computePluginShareableRef,
   normalizeGitHubRepoRef,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import { brandText } from '@/lib/brand';
 import type { InstalledItemRef } from '@canopy/protocol/installed-items';
 import { installedSelectionIsDisabled } from '@canopy/ui-shared';

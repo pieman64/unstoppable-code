@@ -18,12 +18,13 @@ import type { Pipeline, Step } from '@canopy/execution-engine/types/pipeline';
 import type { Selection } from '../../../hooks/usePipelineEditor';
 import {
   Surface,
-  Badge,
   Button,
   EmptyState,
   Heading,
 } from '@canopy/ui-shared/components';
+import { PipelineStepRow } from '@canopy/ui-app';
 import { JobCard } from './JobCard';
+import { stepKind, stepSummary } from './stepDisplay';
 
 interface JobListProps {
   pipeline: Pipeline;
@@ -229,13 +230,14 @@ export function JobList({
 
             <DragOverlay>
               {activeStep ? (
-                <div className="card-surface flex items-center gap-3 px-3 py-2.5 opacity-80">
-                  <span className="text-s font-medium fg-primary truncate">
-                    {activeStep.name ?? activeStep.id ?? 'Step'}
-                  </span>
-                  {activeStep.uses && (
-                    <Badge className="shrink-0">{activeStep.uses}</Badge>
-                  )}
+                <div className="opacity-80">
+                  <Surface variant="raised" size="small">
+                    <PipelineStepRow
+                      name={activeStep.name ?? activeStep.id ?? 'Step'}
+                      kind={stepKind(activeStep)}
+                      summary={stepSummary(activeStep)}
+                    />
+                  </Surface>
                 </div>
               ) : null}
             </DragOverlay>

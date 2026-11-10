@@ -4,7 +4,7 @@ import {
   shareInstallTurnOnInChatFailureCopy,
 } from '@canopy/ui-app/sharing/share-install-copy';
 import { unionPluginSelections } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   CHAT_PLUGINS_BUSY_MESSAGE,
   editChatPlugins,

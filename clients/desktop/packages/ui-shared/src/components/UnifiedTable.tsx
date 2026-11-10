@@ -44,6 +44,7 @@ import {
 import { Button } from './Button';
 import { Checkbox, ChoiceField } from './Choice';
 import { Disclosure } from './Disclosure';
+import { Stack } from './Stack';
 import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
 import { SearchField } from './SearchField';
 import { FloatingMenu } from './FloatingMenu';
@@ -148,29 +149,21 @@ export interface UnifiedTableProps {
   selectionCopy?: SelectionTableCopy;
 }
 
-function SourceOptionIcon({
-  icon,
-  renderAppLogo,
-}: {
-  icon: UnifiedTableSourceOption['icon'];
-  renderAppLogo?: () => ReactNode;
-}): JSX.Element {
-  if (icon === 'repo') return <RepoIcon size="sm" />;
-  if (icon === 'marketplace') return <StorefrontIcon size="sm" />;
-  if (icon === 'codex') return <CodexLogo width={12} height={12} />;
-  if (icon === 'mixed') {
-    return (
-      <span className="inline-flex gap-0.5">
-        <ClaudeLogo width={10} height={10} />
-        <CodexLogo width={10} height={10} />
-      </span>
-    );
-  }
-  if (icon === 'app') {
-    return <>{renderAppLogo?.() ?? <StorefrontIcon size="sm" />}</>;
-  }
-  return <ClaudeLogo width={12} height={12} />;
-}
+/** The source filter's glyphs; an app's logo comes from the host. */
+const SOURCE_OPTION_GLYPHS: Readonly<
+  Record<Exclude<UnifiedTableSourceIcon, 'none' | 'app'>, JSX.Element>
+> = {
+  repo: <RepoIcon size="sm" />,
+  marketplace: <StorefrontIcon size="sm" />,
+  claude: <ClaudeLogo width={12} height={12} />,
+  codex: <CodexLogo width={12} height={12} />,
+  mixed: (
+    <span className="inline-flex gap-0.5">
+      <ClaudeLogo width={10} height={10} />
+      <CodexLogo width={10} height={10} />
+    </span>
+  ),
+};
 
 function SourceMultiSelect({
   options,
@@ -267,10 +260,9 @@ function SourceMultiSelect({
                 label={
                   <span className="flex min-w-0 items-center gap-2">
                     <span className="shrink-0 fg-secondary">
-                      <SourceOptionIcon
-                        icon={option.icon}
-                        renderAppLogo={renderAppLogo}
-                      />
+                      {option.icon === 'app'
+                        ? (renderAppLogo?.() ?? <StorefrontIcon size="sm" />)
+                        : SOURCE_OPTION_GLYPHS[option.icon]}
                     </span>
                     <span className="min-w-0">
                       <span className="block truncate text-xs fg-primary">
@@ -304,62 +296,36 @@ function SourceMultiSelect({
   );
 }
 
-function KindIcon({
-  row,
-  renderMcpLogo,
-}: {
-  row: UnifiedTableRow;
-  renderMcpLogo?: (row: UnifiedTableRow) => ReactNode;
-}): JSX.Element {
-  if (row.kind === 'skill') return <SkillIcon size="sm" />;
-  if (row.kind === 'plugin') return <PluginsIcon size="sm" />;
-  if (row.kind === 'collection') return <BundleIcon size={14} />;
-  if (row.kind === 'mcp' && renderMcpLogo) return <>{renderMcpLogo(row)}</>;
-  return (
-    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-subtle text-3xs font-medium fg-secondary">
-      {row.name.trim().charAt(0).toUpperCase() || '•'}
-    </span>
-  );
-}
+/** A row's kind glyph; an MCP server's logo comes from the host. */
+const KIND_GLYPHS: Readonly<Partial<Record<UnifiedTableKind, JSX.Element>>> = {
+  skill: <SkillIcon size="sm" />,
+  plugin: <PluginsIcon size="sm" />,
+  collection: <BundleIcon size="sm" />,
+};
 
-function SourceIcon({
-  icon,
-  renderAppLogo,
-}: {
-  icon: UnifiedTableSourceIcon;
-  renderAppLogo?: () => ReactNode;
-}): JSX.Element | null {
-  if (icon === 'none') return null;
-  if (icon === 'mixed') {
-    return (
-      <span className="inline-flex gap-0.5" data-testid="source-icon-mixed">
-        <ClaudeLogo
-          width={10}
-          height={10}
-          data-testid="source-icon-mixed-claude"
-        />
-        <CodexLogo
-          width={10}
-          height={10}
-          data-testid="source-icon-mixed-codex"
-        />
-      </span>
-    );
-  }
-  const testId = `source-icon-${icon}`;
-  if (icon === 'repo') return <RepoIcon size="sm" data-testid={testId} />;
-  if (icon === 'marketplace')
-    return <StorefrontIcon size="sm" data-testid={testId} />;
-  if (icon === 'claude')
-    return <ClaudeLogo width={12} height={12} data-testid={testId} />;
-  if (icon === 'codex')
-    return <CodexLogo width={12} height={12} data-testid={testId} />;
-  return (
-    <span data-testid={testId}>
-      {renderAppLogo?.() ?? <StorefrontIcon size="sm" />}
+/** A row's source glyph; an app's logo comes from the host. */
+const SOURCE_GLYPHS: Readonly<
+  Record<Exclude<UnifiedTableSourceIcon, 'none' | 'app'>, JSX.Element>
+> = {
+  repo: <RepoIcon size="sm" data-testid="source-icon-repo" />,
+  marketplace: (
+    <StorefrontIcon size="sm" data-testid="source-icon-marketplace" />
+  ),
+  claude: (
+    <ClaudeLogo width={12} height={12} data-testid="source-icon-claude" />
+  ),
+  codex: <CodexLogo width={12} height={12} data-testid="source-icon-codex" />,
+  mixed: (
+    <span className="inline-flex gap-0.5" data-testid="source-icon-mixed">
+      <ClaudeLogo
+        width={10}
+        height={10}
+        data-testid="source-icon-mixed-claude"
+      />
+      <CodexLogo width={10} height={10} data-testid="source-icon-mixed-codex" />
     </span>
-  );
-}
+  ),
+};
 
 const COLUMN_COUNT = 5;
 const VIRTUALIZED_ROW_THRESHOLD = 120;
@@ -433,100 +399,120 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
         )}
       </DataTableCell>
       <DataTableCell overflow="wrap">
-        <button
-          type="button"
-          onClick={handleToggle}
-          disabled={disabled}
-          className={`flex w-full min-w-0 items-center gap-2 text-left ${disabled ? 'cursor-not-allowed' : ''} ${toggleMode === 'unsupported' ? 'opacity-70' : ''}`}
-        >
-          <span className="shrink-0 fg-secondary">
-            <KindIcon row={row} renderMcpLogo={renderMcpLogo} />
-          </span>
-          <span className="min-w-0 flex-1">
-            {row.badges && row.badges.length > 0 && (
-              <span className="mb-1 flex flex-wrap gap-1">
-                {row.badges.map((badge, index) => (
-                  <Badge
-                    key={`${badge.label}-${String(index)}`}
-                    tone={badge.tone}
-                  >
-                    {badge.label}
-                  </Badge>
-                ))}
-              </span>
-            )}
-            <span className="flex min-w-0 items-center gap-1.5">
-              <span
-                className="block min-w-0 truncate text-s font-medium fg-primary"
-                title={row.name}
-              >
-                {row.name}
-              </span>
-              {row.kind === 'plugin' && row.providerSupport && (
-                <ProviderSupportIcons
-                  support={row.providerSupport}
-                  codexCompatDisabled={row.codexCompatDisabled}
-                  scope={providerIconScope}
-                  size={12}
-                  className="shrink-0"
-                />
-              )}
-            </span>
-            {row.description && (
-              <span
-                className="block truncate text-xs fg-secondary"
-                title={row.description}
-              >
-                {row.description}
-              </span>
-            )}
-          </span>
-        </button>
-        {row.members && row.members.length > 0 && (
-          <Disclosure
-            className="mt-2"
-            label={
-              expanded
-                ? 'Hide capabilities'
-                : `${row.members.length} capabilities`
-            }
-            open={expanded}
-            onOpenChange={() => onExpand(row.key)}
-            dataTestId="plugin-members"
-            toggleTestId="plugin-members-toggle"
-          >
-            <ul
-              className="flex flex-col gap-2 border-l pl-3"
-              aria-label={`${row.name} capabilities`}
+        <Stack gap="tight">
+          <Stack gap="inline">
+            <button
+              type="button"
+              onClick={handleToggle}
+              disabled={disabled}
+              className={`flex w-full min-w-0 items-center gap-2 text-left ${disabled ? 'cursor-not-allowed' : ''} ${toggleMode === 'unsupported' ? 'opacity-70' : ''}`}
             >
-              {row.members.map((member, index) => (
-                <li
-                  key={`${member.kind}:${member.name}:${index}`}
-                  className="text-xs"
+              <span className="shrink-0 fg-secondary">
+                {KIND_GLYPHS[row.kind] ??
+                  (row.kind === 'mcp' && renderMcpLogo ? (
+                    renderMcpLogo(row)
+                  ) : (
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-subtle text-3xs font-medium fg-secondary">
+                      {row.name.trim().charAt(0).toUpperCase() || '•'}
+                    </span>
+                  ))}
+              </span>
+              <Stack as="span" gap="tight" className="min-w-0 flex-1">
+                {row.badges && row.badges.length > 0 && (
+                  <span className="flex flex-wrap gap-1">
+                    {row.badges.map((badge, index) => (
+                      <Badge
+                        key={`${badge.label}-${String(index)}`}
+                        tone={badge.tone}
+                      >
+                        {badge.label}
+                      </Badge>
+                    ))}
+                  </span>
+                )}
+                <span className="block">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span
+                      className="block min-w-0 truncate text-s font-medium fg-primary"
+                      title={row.name}
+                    >
+                      {row.name}
+                    </span>
+                    {row.kind === 'plugin' && row.providerSupport && (
+                      <ProviderSupportIcons
+                        support={row.providerSupport}
+                        codexCompatDisabled={row.codexCompatDisabled}
+                        scope={providerIconScope}
+                        size={12}
+                        className="shrink-0"
+                      />
+                    )}
+                  </span>
+                  {row.description && (
+                    <span
+                      className="block truncate text-xs fg-secondary"
+                      title={row.description}
+                    >
+                      {row.description}
+                    </span>
+                  )}
+                </span>
+              </Stack>
+            </button>
+            {row.members && row.members.length > 0 && (
+              <Disclosure
+                label={
+                  expanded
+                    ? 'Hide capabilities'
+                    : `${row.members.length} capabilities`
+                }
+                open={expanded}
+                onOpenChange={() => onExpand(row.key)}
+                dataTestId="plugin-members"
+                toggleTestId="plugin-members-toggle"
+              >
+                <ul
+                  className="flex flex-col gap-2 border-l pl-3"
+                  aria-label={`${row.name} capabilities`}
                 >
-                  <span className="font-medium fg-primary">{member.name}</span>
-                  <span className="ml-2 fg-secondary">{member.kind}</span>
-                  <p className="whitespace-normal break-words fg-secondary">
-                    {member.description}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          </Disclosure>
-        )}
-        {row.members && (
-          <p className="mt-1 text-xs fg-secondary">
-            {row.toggleReason ??
-              selectionCopy.rowStateText?.(checked) ??
-              (checked ? 'Selected' : 'Available to enable')}
-          </p>
-        )}
+                  {row.members.map((member, index) => (
+                    <li
+                      key={`${member.kind}:${member.name}:${index}`}
+                      className="text-xs"
+                    >
+                      <span className="font-medium fg-primary">
+                        {member.name}
+                      </span>
+                      <span className="ml-2 fg-secondary">{member.kind}</span>
+                      <p className="whitespace-normal break-words fg-secondary">
+                        {member.description}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              </Disclosure>
+            )}
+          </Stack>
+          {row.members && (
+            <p className="text-xs fg-secondary">
+              {row.toggleReason ??
+                selectionCopy.rowStateText?.(checked) ??
+                (checked ? 'Selected' : 'Available to enable')}
+            </p>
+          )}
+        </Stack>
       </DataTableCell>
       <DataTableCell overflow="wrap">
         {row.source ? (
           <span className="flex items-start gap-1.5">
             <span className="mt-0.5 shrink-0 fg-secondary">
-              <SourceIcon icon={row.sourceIcon} renderAppLogo={renderAppLogo} />
+              {row.sourceIcon === 'none' ? null : row.sourceIcon === 'app' ? (
+                <span data-testid="source-icon-app">
+                  {renderAppLogo?.() ?? <StorefrontIcon size="sm" />}
+                </span>
+              ) : (
+                SOURCE_GLYPHS[row.sourceIcon]
+              )}
             </span>
             <span className="min-w-0">
               <span className="block truncate text-s fg-primary">

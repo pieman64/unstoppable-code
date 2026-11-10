@@ -130,8 +130,9 @@ function notificationForwarder(
 /**
  * The model ports of an owner-bound launch (CAN-5095 D2): Claude steps run
  * their action subprocess, Codex steps the shared runner on the host's own
- * runtime. Terminal workers, Cursor, Copilot, OpenCode, Agent models and
- * plugin collections stay absent, so such a step fails closed.
+ * runtime; Agent model aliases resolve through the owner (CAN-5832).
+ * Terminal workers, Cursor, Copilot, OpenCode and plugin collections stay
+ * absent, so such a step fails closed.
  */
 function ownerModelPorts(
   owner: DaemonPipelineOwnerPorts,

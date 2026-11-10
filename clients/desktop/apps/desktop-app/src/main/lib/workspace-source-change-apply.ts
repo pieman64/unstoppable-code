@@ -17,7 +17,7 @@ import {
 import {
   getShareablePluginRefKey,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import type {
   CanopyJsonFile,
   CanopyJsonRepoEntry,

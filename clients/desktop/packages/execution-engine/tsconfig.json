@@ -21,6 +21,9 @@
       "path": "../agent-transcript"
     },
     {
+      "path": "../copilot-recipient"
+    },
+    {
       "path": "../core-platform"
     },
     {
@@ -28,6 +31,9 @@
     },
     {
       "path": "../pipeline-interop"
+    },
+    {
+      "path": "../plugin-interop"
     },
     {
       "path": "../protocol"

@@ -3,7 +3,7 @@ import {
   getShareablePluginRefKey,
   normalizeGitHubRepoRef,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import {
   WORKSPACE_ROOT_REPO_ID,
   type ApplyRecommendedPluginsRequest,
@@ -24,7 +24,7 @@ import type { CollectionConfigFile } from '@canopy/desktop-shared/types/collecti
 import type {
   MarketplaceInfo,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { parseGitHubSource } from '../skills/source-parser';
 import { installSkills } from '../skills/skill-service';
 import { getCanopyJsonPath, readCanopyJson } from './canopy-json';

@@ -4,7 +4,7 @@ import type {
   DesktopBlueprintCatalogEntry,
 } from '@canopy/desktop-shared/types';
 import { resolveBlueprintsForSeeding } from '../blueprints/blueprint-catalog';
-import { getShareablePluginRefKey } from '@canopy/desktop-shared/plugin-refs';
+import { getShareablePluginRefKey } from '@canopy/execution-engine/plugin-refs';
 import { getObservabilityService } from '../observability';
 import { resolveDesktopWorkspaceTemplate } from '../plugins/workspace-template-import';
 

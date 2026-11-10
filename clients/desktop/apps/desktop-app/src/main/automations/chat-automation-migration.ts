@@ -6,17 +6,14 @@
  * state and agent author stay, so it behaves the same to the person.
  *
  * Shipped dark: it runs only once {@link CHAT_AUTOMATION_MIGRATION_RELEASED}
- * is set and the chat automation pipelines experiment is on, so a migrated
- * automation isn't converted back by the next save. Release it only once the
- * preconditions in docs/planning/2026-10-29-can-4530-5c-and-7/deferred.md,
- * item 1, hold.
+ * is set. Release it only once the preconditions in
+ * docs/planning/2026-10-29-can-4530-5c-and-7/deferred.md, item 1, hold.
  *
  * Shared, public and curated installs convert too: conversion keeps the
  * automation, and with it the install's context and receipt checks. An
  * automation that can't convert, or whose conversion fails, keeps running
  * natively; the next startup tries it again.
  */
-import type { LabsExperimentsSnapshot } from '@canopy/desktop-shared/lib/labs-experiments';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import {
   logMainProcessError,
@@ -26,10 +23,6 @@ import {
   convertsToOwnedChatPipeline,
   saveOwnedChatPipeline,
 } from './chat-automation-conversion';
-import {
-  chatAutomationPipelinesEnabled,
-  chatAutomationPipelinesEnabledIn,
-} from './chat-automation-experiment';
 import type { AutomationsService } from './service';
 
 /** The release lever; off until deferred.md's preconditions hold. */
@@ -51,15 +44,14 @@ const NOT_MIGRATED = 'This automation is no longer migrated.';
 
 /**
  * Converts every automation {@link migratesChatAutomation} accepts, one queued
- * write each. The experiment and the automation are checked again inside the
- * write, so an edit or a switch-off since the list wins. A run in progress
- * refuses its conversion, which the next startup retries.
+ * write each. The automation is checked again inside the write, so an edit
+ * since the list wins. A run in progress refuses its conversion, which the
+ * next startup retries.
  */
 export async function migrateChatAutomations(
   service: AutomationsService,
 ): Promise<ChatAutomationMigrationResult> {
   const result: ChatAutomationMigrationResult = { converted: [], failed: [] };
-  if (!(await chatAutomationPipelinesEnabled())) return result;
   const candidates = (
     await service.listActivitiesForChatAutomationMigration()
   ).filter(migratesChatAutomation);
@@ -67,11 +59,7 @@ export async function migrateChatAutomations(
     const converted = await service.replaceWithOwnedPipeline(
       id,
       async (fresh) => {
-        if (
-          !migratesChatAutomation(fresh) ||
-          !(await chatAutomationPipelinesEnabled())
-        )
-          throw new Error(NOT_MIGRATED);
+        if (!migratesChatAutomation(fresh)) throw new Error(NOT_MIGRATED);
         return saveOwnedChatPipeline(fresh);
       },
     );
@@ -87,57 +75,22 @@ export async function migrateChatAutomations(
   return result;
 }
 
-/** The Labs evaluation the trigger watches. */
-export interface ChatAutomationMigrationLabs {
-  getSnapshot(): Pick<LabsExperimentsSnapshot, 'ready' | 'experiments'>;
-  onSnapshotChanged(
-    listener: (
-      snapshot: Pick<LabsExperimentsSnapshot, 'ready' | 'experiments'>,
-    ) => void,
-  ): () => void;
-}
-
 export interface ChatAutomationMigrationTrigger {
   service: AutomationsService;
-  labs: ChatAutomationMigrationLabs;
   released?: boolean;
   migrate?: (
     service: AutomationsService,
   ) => Promise<ChatAutomationMigrationResult>;
 }
 
-/**
- * Runs the migration once this process sees the experiment on: at once when
- * it already is, else on the first Labs evaluation that turns it on (Labs is
- * often unready at startup). Returns a stop for shutdown.
- */
+/** Runs the migration once, in the background, when it is released. */
 export function startChatAutomationMigration({
   service,
-  labs,
   released = CHAT_AUTOMATION_MIGRATION_RELEASED,
   migrate = migrateChatAutomations,
-}: ChatAutomationMigrationTrigger): () => void {
-  if (!released) return () => undefined;
-  let started = false;
-  let unsubscribe: (() => void) | undefined;
-  const run = (): void => {
-    if (started) return;
-    started = true;
-    unsubscribe?.();
-    unsubscribe = undefined;
-    void migrate(service).catch((error: unknown) =>
-      logMainProcessError('Failed to migrate chat automations', error),
-    );
-  };
-  if (chatAutomationPipelinesEnabledIn(labs.getSnapshot())) {
-    run();
-    return () => undefined;
-  }
-  unsubscribe = labs.onSnapshotChanged((snapshot) => {
-    if (chatAutomationPipelinesEnabledIn(snapshot)) run();
-  });
-  return () => {
-    unsubscribe?.();
-    unsubscribe = undefined;
-  };
+}: ChatAutomationMigrationTrigger): void {
+  if (!released) return;
+  void migrate(service).catch((error: unknown) =>
+    logMainProcessError('Failed to migrate chat automations', error),
+  );
 }

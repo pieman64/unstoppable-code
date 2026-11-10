@@ -49,7 +49,7 @@ import {
 import {
   parsePullRequestReference,
   type ParsedPullRequestReference,
-} from '@canopy/desktop-shared/lib/create-from-reference';
+} from '@canopy/protocol/portable-tasks/pull-request-reference';
 import {
   normalizePullRequestTitleQuery,
   PR_TITLE_SEARCH_MAX_INPUT_LENGTH,

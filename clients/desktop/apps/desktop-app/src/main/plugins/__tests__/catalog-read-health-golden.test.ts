@@ -4,16 +4,16 @@ import * as path from 'node:path';
 import {
   readPluginCatalog,
   readPluginCacheIndex,
-} from '@canopy/desktop-shared/node/plugins/catalog-read-health';
+} from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import * as scanner from '../plugin-scanner';
-import * as readHealth from '@canopy/desktop-shared/node/plugins/catalog-read-health';
+import * as readHealth from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import type * as ConfigPaths from '../../pipelines/config-paths';
 import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
 import { resolvePlugins } from '@canopy/desktop-shared/node/plugins/plugin-resolver';
 import type {
   PluginsCache,
   PluginsCacheV1,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import {
   addMarketplace,
   installPlugin,

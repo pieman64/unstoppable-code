@@ -7,14 +7,14 @@
 // boundary without behavioural drift.
 // ---------------------------------------------------------------------------
 
-import type { ChatTabPluginSelections } from '../types';
+import type { ChatTabPluginSelections } from '../execution-types';
 import type {
   McpHttpAuthHandler,
   McpHttpAuthPreference,
   McpHttpAuthTarget,
   McpServerDefinitionData,
   McpServerIndexEntry,
-} from '@canopy/execution-engine/types/mcp-servers';
+} from '../types/mcp-servers';
 
 /** Every handler the protocol defines; leaving one out fails to compile. */
 const MCP_HTTP_AUTH_HANDLERS: Readonly<Record<McpHttpAuthHandler, true>> = {

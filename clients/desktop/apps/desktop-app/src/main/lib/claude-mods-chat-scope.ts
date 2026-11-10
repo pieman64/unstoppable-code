@@ -5,7 +5,7 @@ import {
   type ClaudeModsChatContext,
 } from '@canopy/protocol/claude-mods';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
-import { findClaudeProjectGitRoot } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+import { findClaudeProjectGitRoot } from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import {
   validateOptionalRepoId,

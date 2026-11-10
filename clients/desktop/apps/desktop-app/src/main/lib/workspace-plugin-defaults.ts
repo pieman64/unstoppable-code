@@ -4,7 +4,7 @@ import {
   type InstalledItemRef,
 } from '@canopy/protocol/installed-items';
 import { pruneInstalledItemRefs } from '../installed-items/installed-item-ref-prune';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { detachedWorkCallback } from '@canopy/desktop-shared/node/lib/detached-work';
 import type { W5Resource } from '@canopy/desktop-shared/node/w5-commit-log';
 import type {

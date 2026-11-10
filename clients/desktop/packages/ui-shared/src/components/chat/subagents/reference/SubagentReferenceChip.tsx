@@ -3,7 +3,7 @@ import {
   SUBAGENT_REFERENCE_PREFIX,
   SUBAGENT_UNTITLED_LABEL,
 } from '../subagent-copy';
-import { SubagentIcon } from '../common/SubagentIcon';
+import { SubagentIcon } from '../../../../icons/SubagentIcon';
 
 export interface SubagentReferenceChipProps {
   readonly title: string;

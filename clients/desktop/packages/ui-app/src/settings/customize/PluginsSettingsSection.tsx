@@ -22,6 +22,7 @@ function summaryStateFor(
       return {
         kind: 'ready',
         counts: countActiveInstalledItems(state.snapshot),
+        ...(state.syncedAt !== undefined ? { syncedAt: state.syncedAt } : {}),
       };
     case 'loading':
       return { kind: 'loading' };

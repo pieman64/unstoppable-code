@@ -27,6 +27,7 @@ import {
   ChatComposerToolbarChip,
   ChoiceField,
   SettingsSelect,
+  Surface,
 } from '@canopy/ui-shared/components';
 import {
   THINKING_LEVELS as CANONICAL_THINKING_LEVELS,
@@ -621,357 +622,370 @@ export function ComposerStatusLabPage(): JSX.Element {
   );
 
   return (
-    <div className="flex h-screen flex-col bg-base fg-primary">
-      <div className="flex flex-wrap items-center gap-4 border-b px-4 py-3">
-        <span className="text-s">Chat composer lab</span>
-        <LabField label="Version">
-          <SettingsSelect
-            aria-label="Version"
-            data-testid="lab-iteration"
-            width="fit"
-            value={String(iteration)}
-            options={LAB_ITERATIONS.map((option) => ({
-              value: String(option.id),
-              label: option.label,
-            }))}
-            onValueChange={(value): void => {
-              const next =
-                LAB_ITERATIONS.find((option) => option.id === Number(value))
-                  ?.id ?? 1;
-              setIteration(next);
-              const url = new URL(window.location.href);
-              url.searchParams.set('iteration', String(next));
-              window.history.replaceState(null, '', url);
-            }}
-          />
-        </LabField>
-        <ChoiceField
-          label="Dark"
-          checked={dark}
-          onChange={(event): void => {
-            setDark(event.target.checked);
-            applyTheme('default', event.target.checked ? 'dark' : 'light');
-          }}
-        />
-        <ChoiceField
-          label="Full-width chat"
-          // The app's Settings option: the transcript and composer fill the
-          // panel instead of capping at the reading width.
-          onChange={(event): void =>
-            applyChatWidth(event.target.checked ? 'full' : 'default')
-          }
-        />
-        <LabField label={`Chat panel ${width}px`}>
-          <LabSlider
-            aria-label="Chat panel width"
-            min={PANEL_MIN_WIDTH}
-            max={PANEL_MAX_WIDTH}
-            ref={widthSliderRef}
-            defaultValue={width}
-            // Long enough that a trackpad moves about 2px of panel per pixel
-            // instead of skipping values.
-            className="w-80"
-            onInput={(event): void =>
-              resizePanel(Number(event.currentTarget.value))
-            }
-            // Settle the thumb on the width the panel actually took.
-            onPointerUp={(event): void => {
-              event.currentTarget.value = String(pendingWidthRef.current);
-            }}
-          />
-        </LabField>
-        <LabField label={`Context ${contextPercent}%`}>
-          <LabSlider
-            aria-label="Context"
-            min={0}
-            max={100}
-            value={contextPercent}
-            onChange={(event): void =>
-              setContextPercent(Number(event.target.value))
-            }
-          />
-        </LabField>
-        <LabField label={`5-hour ${fiveHourPercent}%`}>
-          <LabSlider
-            aria-label="5-hour limit"
-            min={0}
-            max={100}
-            value={fiveHourPercent}
-            onChange={(event): void =>
-              setFiveHourPercent(Number(event.target.value))
-            }
-          />
-        </LabField>
-        <LabField label={`Weekly ${weeklyPercent}%`}>
-          <LabSlider
-            aria-label="Weekly limit"
-            min={0}
-            max={100}
-            value={weeklyPercent}
-            onChange={(event): void =>
-              setWeeklyPercent(Number(event.target.value))
-            }
-          />
-        </LabField>
-        <ChoiceField
-          label="Fast mode (GPT models)"
-          checked={fastOffered}
-          onChange={(event): void => setFastOffered(event.target.checked)}
-        />
-        <ChoiceField
-          label="Agent running"
-          checked={streaming}
-          onChange={(event): void => setStreaming(event.target.checked)}
-        />
-        <ChoiceField
-          label="Voice options"
-          checked={showVoiceOptions}
-          onChange={(event): void => setShowVoiceOptions(event.target.checked)}
-        />
-        <ChoiceField
-          label="Plan limits"
-          checked={showLimits}
-          onChange={(event): void => setShowLimits(event.target.checked)}
-        />
-      </div>
+    <Surface variant="pane" extent="viewport">
+      <div className="flex h-full flex-col fg-primary">
+        <Surface variant="section" boundary="bottom">
+          <div className="flex flex-wrap items-center gap-4 px-4 py-3">
+            <span className="text-s">Chat composer lab</span>
+            <LabField label="Version">
+              <SettingsSelect
+                aria-label="Version"
+                data-testid="lab-iteration"
+                width="fit"
+                value={String(iteration)}
+                options={LAB_ITERATIONS.map((option) => ({
+                  value: String(option.id),
+                  label: option.label,
+                }))}
+                onValueChange={(value): void => {
+                  const next =
+                    LAB_ITERATIONS.find((option) => option.id === Number(value))
+                      ?.id ?? 1;
+                  setIteration(next);
+                  const url = new URL(window.location.href);
+                  url.searchParams.set('iteration', String(next));
+                  window.history.replaceState(null, '', url);
+                }}
+              />
+            </LabField>
+            <ChoiceField
+              label="Dark"
+              checked={dark}
+              onChange={(event): void => {
+                setDark(event.target.checked);
+                applyTheme('default', event.target.checked ? 'dark' : 'light');
+              }}
+            />
+            <ChoiceField
+              label="Full-width chat"
+              // The app's Settings option: the transcript and composer fill the
+              // panel instead of capping at the reading width.
+              onChange={(event): void =>
+                applyChatWidth(event.target.checked ? 'full' : 'default')
+              }
+            />
+            <LabField label={`Chat panel ${width}px`}>
+              <LabSlider
+                aria-label="Chat panel width"
+                min={PANEL_MIN_WIDTH}
+                max={PANEL_MAX_WIDTH}
+                ref={widthSliderRef}
+                defaultValue={width}
+                // Long enough that a trackpad moves about 2px of panel per pixel
+                // instead of skipping values.
+                className="w-80"
+                onInput={(event): void =>
+                  resizePanel(Number(event.currentTarget.value))
+                }
+                // Settle the thumb on the width the panel actually took.
+                onPointerUp={(event): void => {
+                  event.currentTarget.value = String(pendingWidthRef.current);
+                }}
+              />
+            </LabField>
+            <LabField label={`Context ${contextPercent}%`}>
+              <LabSlider
+                aria-label="Context"
+                min={0}
+                max={100}
+                value={contextPercent}
+                onChange={(event): void =>
+                  setContextPercent(Number(event.target.value))
+                }
+              />
+            </LabField>
+            <LabField label={`5-hour ${fiveHourPercent}%`}>
+              <LabSlider
+                aria-label="5-hour limit"
+                min={0}
+                max={100}
+                value={fiveHourPercent}
+                onChange={(event): void =>
+                  setFiveHourPercent(Number(event.target.value))
+                }
+              />
+            </LabField>
+            <LabField label={`Weekly ${weeklyPercent}%`}>
+              <LabSlider
+                aria-label="Weekly limit"
+                min={0}
+                max={100}
+                value={weeklyPercent}
+                onChange={(event): void =>
+                  setWeeklyPercent(Number(event.target.value))
+                }
+              />
+            </LabField>
+            <ChoiceField
+              label="Fast mode (GPT models)"
+              checked={fastOffered}
+              onChange={(event): void => setFastOffered(event.target.checked)}
+            />
+            <ChoiceField
+              label="Agent running"
+              checked={streaming}
+              onChange={(event): void => setStreaming(event.target.checked)}
+            />
+            <ChoiceField
+              label="Voice options"
+              checked={showVoiceOptions}
+              onChange={(event): void =>
+                setShowVoiceOptions(event.target.checked)
+              }
+            />
+            <ChoiceField
+              label="Plan limits"
+              checked={showLimits}
+              onChange={(event): void => setShowLimits(event.target.checked)}
+            />
+          </div>
+        </Surface>
 
-      {/* The chats screen: a chat panel with its transcript, and the small
+        {/* The chats screen: a chat panel with its transcript, and the small
           composer docked at the bottom, not the New task composer. */}
-      {showVoiceOptions ? (
-        <ComposerVoiceOptionsLab width={width} />
-      ) : (
-        <>
-          {/* Centered in the page; the edge handle grows it on both sides. */}
-          <div className="relative flex min-h-0 flex-1 justify-center bg-secondary p-3">
-            <section
-              ref={panelRef}
-              data-testid="panel-content-chat"
-              className="relative flex min-h-0 w-full flex-col overflow-hidden rounded-lg bg-base"
-              style={{ maxWidth: panelWidth }}
+        {showVoiceOptions ? (
+          <ComposerVoiceOptionsLab width={width} />
+        ) : (
+          <>
+            {/* Centered in the page; the edge handle grows it on both sides. */}
+            <Surface
+              variant="well"
+              padding="compact"
+              className="relative flex min-h-0 flex-1 justify-center"
             >
-              <PanelResizeHandle panelRef={panelRef} onResize={resizePanel} />
-              <div className="flex h-9 shrink-0 items-center gap-2 px-3 text-xs fg-secondary">
-                <span className="fg-primary">Fix the flaky upload test</span>
-              </div>
-              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-                <div className="mx-auto flex w-full max-w-[var(--chat-reading-width)] flex-col gap-4 px-4 py-6 text-s">
-                  <div
-                    className={`${BUBBLE_SURFACE_CLASS} self-end fg-primary`}
-                  >
-                    The upload test fails about one run in five. Can you find
-                    out why?
-                  </div>
-                  <p className="fg-primary">
-                    The test waits a fixed 200 ms for the upload to finish, but
-                    the mock server sometimes takes longer under load. I
-                    replaced the timeout with a wait on the upload&apos;s
-                    completion event and ran the suite 50 times without a
-                    failure.
-                  </p>
-                </div>
-              </div>
-              <div
-                data-chat-composer-root
-                className="relative mx-auto w-full max-w-[var(--chat-composer-shell-width)] shrink-0 px-4 pb-2 pt-2"
+              <section
+                ref={panelRef}
+                data-testid="panel-content-chat"
+                className="relative flex min-h-0 w-full flex-col overflow-hidden rounded-lg bg-base"
+                style={{ maxWidth: panelWidth }}
               >
+                <PanelResizeHandle panelRef={panelRef} onResize={resizePanel} />
+                <div className="flex h-9 shrink-0 items-center gap-2 px-3 text-xs fg-secondary">
+                  <span className="fg-primary">Fix the flaky upload test</span>
+                </div>
+                <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                  <div className="mx-auto flex w-full max-w-[var(--chat-reading-width)] flex-col gap-4 px-4 py-6 text-s">
+                    <div
+                      className={`${BUBBLE_SURFACE_CLASS} self-end fg-primary`}
+                    >
+                      The upload test fails about one run in five. Can you find
+                      out why?
+                    </div>
+                    <p className="fg-primary">
+                      The test waits a fixed 200 ms for the upload to finish,
+                      but the mock server sometimes takes longer under load. I
+                      replaced the timeout with a wait on the upload&apos;s
+                      completion event and ran the suite 50 times without a
+                      failure.
+                    </p>
+                  </div>
+                </div>
                 <div
-                  ref={boxRef}
-                  style={inline ? ONE_LINE_COMPOSER_BOX_STYLE : undefined}
-                  className={
-                    inline
-                      ? `${CHAT_COMPOSER_SHELL_CLASS} ${ONE_LINE_COMPOSER_CLASS_NAMES.box}`
-                      : `${CHAT_COMPOSER_SHELL_CLASS} ${ONE_LINE_COMPOSER_CLASS_NAMES.expandedBox}`
-                  }
+                  data-chat-composer-root
+                  className="relative mx-auto w-full max-w-[var(--chat-composer-shell-width)] shrink-0 px-4 pb-2 pt-2"
                 >
-                  <span
-                    ref={composerMenu.anchorRef}
-                    aria-hidden
-                    className="pointer-events-none absolute inset-0"
-                  />
-                  <ComposerEditor
-                    editor={editor}
-                    value={draftValue}
-                    onChange={setDraftValue}
-                    onSelectionChange={(): void =>
-                      setSelectionRevision((revision) => revision + 1)
-                    }
-                    onKeyDown={(event): void => {
-                      if (composerMenu.handleKeyDown(event)) return;
-                      if (
-                        event.key === 'Enter' &&
-                        !event.shiftKey &&
-                        hasDraftText
-                      ) {
-                        event.preventDefault();
-                        setDraftValue(buildEditorValueFromMessage('', []));
-                        setStreaming(true);
-                      }
-                    }}
-                    placeholder={
-                      voiceRecording
-                        ? 'Start talking…'
-                        : defaultChatPlaceholder(true, true)
-                    }
-                    density="minimal"
+                  <div
+                    ref={boxRef}
+                    style={inline ? ONE_LINE_COMPOSER_BOX_STYLE : undefined}
                     className={
-                      inline ? ONE_LINE_COMPOSER_CLASS_NAMES.editor : undefined
-                    }
-                    containerClassName={
                       inline
-                        ? ONE_LINE_COMPOSER_CLASS_NAMES.editorContainer
-                        : `${expandedComposerEditorContainerClassName(
-                            'comfortable',
-                          )}${voiceRecording ? ` ${VOICE_TAKE_EDITOR_CONTAINER_CLASS}` : ''}`
+                        ? `${CHAT_COMPOSER_SHELL_CLASS} ${ONE_LINE_COMPOSER_CLASS_NAMES.box}`
+                        : `${CHAT_COMPOSER_SHELL_CLASS} ${ONE_LINE_COMPOSER_CLASS_NAMES.expandedBox}`
                     }
-                  />
-                  {voiceRecording ? (
-                    <VoiceRecordingRow
-                      readLevel={readFakeLevel}
-                      listeningSince={voice.listeningSince}
-                      onCancel={(): void => void voice.cancel()}
-                      onStop={(): void => void voice.stop()}
-                      onSend={(): void => {
-                        void voice.stop().then((): void => {
+                  >
+                    <span
+                      ref={composerMenu.anchorRef}
+                      aria-hidden
+                      className="pointer-events-none absolute inset-0"
+                    />
+                    <ComposerEditor
+                      editor={editor}
+                      value={draftValue}
+                      onChange={setDraftValue}
+                      onSelectionChange={(): void =>
+                        setSelectionRevision((revision) => revision + 1)
+                      }
+                      onKeyDown={(event): void => {
+                        if (composerMenu.handleKeyDown(event)) return;
+                        if (
+                          event.key === 'Enter' &&
+                          !event.shiftKey &&
+                          hasDraftText
+                        ) {
+                          event.preventDefault();
                           setDraftValue(buildEditorValueFromMessage('', []));
                           setStreaming(true);
-                        });
+                        }
                       }}
-                    />
-                  ) : (
-                    <ChatComposerToolbar
-                      capsuleLayout
-                      compact={compact}
-                      inline={inline}
-                      leadingSlot={
-                        <div
-                          className={
-                            inline
-                              ? `relative shrink-0 ${ONE_LINE_COMPOSER_CLASS_NAMES.leading}`
-                              : 'relative shrink-0'
-                          }
-                        >
-                          <ComposerPlusMenu
-                            dataTestIdPrefix="chat-input"
-                            gap={FLOATING_PICKER_GAP}
-                            capsuleTrigger
-                            controller={composerMenu}
-                            searchFiles={(query) =>
-                              searchFileMentions(query, LAB_FILE_REPOS, 50)
-                            }
-                            onSelectFile={(file) =>
-                              composerMenu.insertFile(
-                                file,
-                                LAB_FILE_REPOS.length,
-                              )
-                            }
-                            commands={composerCommands}
-                            onSelectCommand={handleSelectCommand}
-                            providerScope="mixed"
-                            onPickAttachment={(): void => {}}
-                            additionalItems={buildChatComposerPlusItems({
-                              onOpenPlugins: (): void => {},
-                              hasPluginSelections: false,
-                              plan: {
-                                on: planMode,
-                                readOnly: false,
-                                disabled: false,
-                                onToggle: (): void => setPlanMode((on) => !on),
-                              },
-                              onSchedule: (): void => {},
-                            })}
-                          />
-                        </div>
+                      placeholder={
+                        voiceRecording
+                          ? 'Start talking…'
+                          : defaultChatPlaceholder(true, true)
                       }
-                      planMode={
-                        planMode
-                          ? buildPlanModeChip({
-                              readOnly: false,
-                              disabled: false,
-                              onDisable: (): void => setPlanMode(false),
-                            })
+                      density="minimal"
+                      className={
+                        inline
+                          ? ONE_LINE_COMPOSER_CLASS_NAMES.editor
                           : undefined
                       }
-                      trailingSlot={
-                        streaming ? (
-                          <>
-                            {voiceButton(false)}
-                            <ComposerSendButton
-                              kind="stop"
-                              onStop={(): void => setStreaming(false)}
-                              pending={false}
-                              armed={false}
-                              shortcutReady
-                              dataTestId="chat-stop-generation"
-                            />
-                          </>
-                        ) : hasDraftText ? (
-                          <>
-                            {voiceButton(false)}
-                            <ComposerSendButton
-                              kind="send"
-                              onSend={(): void => {
-                                setDraftValue(
-                                  buildEditorValueFromMessage('', []),
-                                );
-                                setStreaming(true);
-                              }}
-                              disabled={false}
-                              pending={false}
-                            />
-                          </>
-                        ) : (
-                          voiceButton(true)
-                        )
+                      containerClassName={
+                        inline
+                          ? ONE_LINE_COMPOSER_CLASS_NAMES.editorContainer
+                          : `${expandedComposerEditorContainerClassName(
+                              'comfortable',
+                            )}${voiceRecording ? ` ${VOICE_TAKE_EDITOR_CONTAINER_CLASS}` : ''}`
                       }
                     />
-                  )}
-                </div>
-
-                <ComposerStatusRow
-                  rowRef={statusRowRef}
-                  {...(modelFirst
-                    ? {
-                        fill: 'start' as const,
-                        start: (
-                          <>
-                            {modelPicker}
-                            {effortPicker}
-                          </>
-                        ),
-                        end: (
-                          <>
-                            {approvalPicker}
-                            {usageIndicator}
-                          </>
-                        ),
-                      }
-                    : {
-                        start: approvalPicker,
-                        end: (
-                          <>
-                            {modelPicker}
-                            {effortPicker}
-                            {fastAvailable && iteration < 2 && (
-                              <ChatComposerToolbarChip
-                                {...buildFastModeChip({
-                                  on: fastMode,
+                    {voiceRecording ? (
+                      <VoiceRecordingRow
+                        readLevel={readFakeLevel}
+                        listeningSince={voice.listeningSince}
+                        onCancel={(): void => void voice.cancel()}
+                        onStop={(): void => void voice.stop()}
+                        onSend={(): void => {
+                          void voice.stop().then((): void => {
+                            setDraftValue(buildEditorValueFromMessage('', []));
+                            setStreaming(true);
+                          });
+                        }}
+                      />
+                    ) : (
+                      <ChatComposerToolbar
+                        capsuleLayout
+                        compact={compact}
+                        inline={inline}
+                        leadingSlot={
+                          <div
+                            className={
+                              inline
+                                ? `relative shrink-0 ${ONE_LINE_COMPOSER_CLASS_NAMES.leading}`
+                                : 'relative shrink-0'
+                            }
+                          >
+                            <ComposerPlusMenu
+                              dataTestIdPrefix="chat-input"
+                              gap={FLOATING_PICKER_GAP}
+                              capsuleTrigger
+                              controller={composerMenu}
+                              searchFiles={(query) =>
+                                searchFileMentions(query, LAB_FILE_REPOS, 50)
+                              }
+                              onSelectFile={(file) =>
+                                composerMenu.insertFile(
+                                  file,
+                                  LAB_FILE_REPOS.length,
+                                )
+                              }
+                              commands={composerCommands}
+                              onSelectCommand={handleSelectCommand}
+                              providerScope="mixed"
+                              onPickAttachment={(): void => {}}
+                              additionalItems={buildChatComposerPlusItems({
+                                onOpenPlugins: (): void => {},
+                                hasPluginSelections: false,
+                                plan: {
+                                  on: planMode,
+                                  readOnly: false,
                                   disabled: false,
-                                  compact: rowCompact,
                                   onToggle: (): void =>
-                                    setFastMode((on) => !on),
-                                })}
+                                    setPlanMode((on) => !on),
+                                },
+                                onSchedule: (): void => {},
+                              })}
+                            />
+                          </div>
+                        }
+                        planMode={
+                          planMode
+                            ? buildPlanModeChip({
+                                readOnly: false,
+                                disabled: false,
+                                onDisable: (): void => setPlanMode(false),
+                              })
+                            : undefined
+                        }
+                        trailingSlot={
+                          streaming ? (
+                            <>
+                              {voiceButton(false)}
+                              <ComposerSendButton
+                                kind="stop"
+                                onStop={(): void => setStreaming(false)}
+                                pending={false}
+                                armed={false}
+                                shortcutReady
+                                dataTestId="chat-stop-generation"
                               />
-                            )}
-                            {usageIndicator}
-                          </>
-                        ),
-                      })}
-                />
-              </div>
-            </section>
-          </div>
-        </>
-      )}
-    </div>
+                            </>
+                          ) : hasDraftText ? (
+                            <>
+                              {voiceButton(false)}
+                              <ComposerSendButton
+                                kind="send"
+                                onSend={(): void => {
+                                  setDraftValue(
+                                    buildEditorValueFromMessage('', []),
+                                  );
+                                  setStreaming(true);
+                                }}
+                                disabled={false}
+                                pending={false}
+                              />
+                            </>
+                          ) : (
+                            voiceButton(true)
+                          )
+                        }
+                      />
+                    )}
+                  </div>
+
+                  <ComposerStatusRow
+                    rowRef={statusRowRef}
+                    {...(modelFirst
+                      ? {
+                          fill: 'start' as const,
+                          start: (
+                            <>
+                              {modelPicker}
+                              {effortPicker}
+                            </>
+                          ),
+                          end: (
+                            <>
+                              {approvalPicker}
+                              {usageIndicator}
+                            </>
+                          ),
+                        }
+                      : {
+                          start: approvalPicker,
+                          end: (
+                            <>
+                              {modelPicker}
+                              {effortPicker}
+                              {fastAvailable && iteration < 2 && (
+                                <ChatComposerToolbarChip
+                                  {...buildFastModeChip({
+                                    on: fastMode,
+                                    disabled: false,
+                                    compact: rowCompact,
+                                    onToggle: (): void =>
+                                      setFastMode((on) => !on),
+                                  })}
+                                />
+                              )}
+                              {usageIndicator}
+                            </>
+                          ),
+                        })}
+                  />
+                </div>
+              </section>
+            </Surface>
+          </>
+        )}
+      </div>
+    </Surface>
   );
 }

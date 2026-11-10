@@ -15,6 +15,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -42,6 +43,7 @@ import {
   initModelHarnessAssignments,
   initOllamaModels,
 } from '@canopy/desktop-shared/types';
+import { serializePipelinePreferenceLocator } from '../../../../pipelines/plugin-collections';
 import { loadExecutionState } from '../../executor/execution-state';
 import { buildModelRegistrySnapshot } from '../../executor/model-registry-snapshot';
 import {
@@ -73,6 +75,7 @@ const BUILT_ACTIONS = join(
 );
 const SCENARIO = 'mock-5095';
 const OLLAMA = 'ollama-qwen3-coder';
+const NO_PLUGINS = { collectionIds: [], skillRefs: [], pluginRefs: [] };
 const REPLY = 'daemon-model-reply';
 
 class MemoryChannel
@@ -613,6 +616,336 @@ describe('daemon pipeline host model steps (CAN-5095)', () => {
     // Ollama routes carry no Ledger tools, in process as here.
     expect(ownerSaw).not.toContain('owner.ledger.open');
     expect(ownerSaw).not.toContain('owner.ledger.codexTools');
+  });
+
+  it('inline and Agent alias steps run on the model their alias names', async () => {
+    // CAN-5832: the launch carries the run's merged alias preferences and
+    // what each alias names; an Agent alias asks the owner at its step.
+    const asked: string[] = [];
+    // The Agent store gives every Agent plugin selections, empty when it
+    // adds none (CAN-5832 review).
+    let agentSelections: CanopyJsonValue = NO_PLUGINS;
+    owner = (raised): OwnerAnswer => {
+      const body = raised.request;
+      if (body.action === 'owner.model.agentAlias')
+        return {
+          value: {
+            kind: 'model.agentAlias',
+            alias: {
+              agentId: body.agentId,
+              name: 'Reviewer',
+              base: DEFAULT_CLAUDE_MODEL,
+              instructions: 'Review carefully.',
+              pluginSelections: agentSelections,
+            },
+          },
+        };
+      if (
+        body.action === 'owner.model.invocation' ||
+        body.action === 'owner.model.routing'
+      )
+        asked.push(body.model ?? '');
+      if (body.action === 'owner.model.routing')
+        return {
+          value: {
+            kind: 'model.routing',
+            override: {
+              provider: 'claude',
+              model: body.model ?? DEFAULT_CLAUDE_MODEL,
+              modelGatewayRouted: false,
+              accountProxyRouted: false,
+            },
+          },
+          values: { env: claudeRouteEnv() },
+        };
+      return defaultOwner(raised);
+    };
+    const aliasLaunch = (executionId: string): PipelineHostLaunch => {
+      const launch = launchOf(
+        executionId,
+        [
+          { ...agentPrompt({ model: 'fast' }), id: 'inline' },
+          { ...agentPrompt({ model: 'reviewer' }), id: 'agent' },
+        ],
+        {
+          modelAliasPreferences: {
+            fast: { mode: 'inline', base: DEFAULT_CLAUDE_MODEL },
+          },
+          modelAliasResolutions: {
+            fast: { base: DEFAULT_CLAUDE_MODEL, plugins: false },
+            reviewer: { base: DEFAULT_CLAUDE_MODEL, plugins: false },
+          },
+        },
+      );
+      return {
+        ...launch,
+        launch: {
+          ...launch.launch,
+          pipeline: {
+            ...launch.launch.pipeline,
+            model_aliases: [
+              { id: 'fast', name: 'Fast', defaults: { base: 'unset-model' } },
+              {
+                id: 'reviewer',
+                name: 'Reviewer',
+                defaults: { agent_id: 'agent_model_reviewer' },
+              },
+            ],
+          },
+        },
+      };
+    };
+    expect(
+      await request({ op: 'start', start: aliasLaunch('run-1') }),
+    ).toMatchObject({ ok: true });
+    await executionIn('run-1', ['success', 'failure']);
+    for (const stepId of ['inline', 'agent'])
+      expect((await storedStep('run-1', stepId)).status).toBe('success');
+    expect(stepLogs('run-1')).toContain(REPLY);
+    // The run preference, not the workflow default, named the inline base.
+    expect(asked).not.toContain('unset-model');
+    expect(new Set(asked)).toEqual(new Set([DEFAULT_CLAUDE_MODEL]));
+    expect(ownerSaw).toContain('owner.model.agentAlias');
+
+    // An Agent that adds plugins after the launch fails its step closed.
+    agentSelections = {
+      ...NO_PLUGINS,
+      pluginRefs: [{ marketplaceId: 'market', pluginName: 'reviewer' }],
+    };
+    expect(
+      await request({ op: 'start', start: aliasLaunch('run-2') }),
+    ).toMatchObject({ ok: true });
+    await executionIn('run-2', ['success', 'failure']);
+    expect((await storedStep('run-2', 'inline')).status).toBe('success');
+    const agent = await storedStep('run-2', 'agent');
+    expect(agent.status).toBe('failure');
+    expect(agent.error).toContain(
+      "This Agent's plugins don't run in the background service.",
+    );
+  });
+
+  it("a run's reset of an alias overrides its stored preference, as in process", async () => {
+    // CAN-5832 review: the launch carries the run's merged preferences,
+    // reset entries included, so the stored one never wins in the host.
+    const locator = { type: 'file', value: join(worktree, 'workflow.yml') };
+    writeFileSync(
+      join(dataRoot, 'pipeline-plugin-preferences.json'),
+      JSON.stringify({
+        version: 2,
+        entries: {
+          [serializePipelinePreferenceLocator({
+            type: 'file',
+            value: locator.value,
+          })]: {
+            model_aliases: { fast: { mode: 'inline', base: 'stored-model' } },
+          },
+        },
+      }),
+    );
+    const asked: string[] = [];
+    owner = (raised): OwnerAnswer => {
+      const body = raised.request;
+      if (body.action === 'owner.model.routing') {
+        asked.push(body.model ?? '');
+        return {
+          value: {
+            kind: 'model.routing',
+            override: {
+              provider: 'claude',
+              model: body.model ?? DEFAULT_CLAUDE_MODEL,
+              modelGatewayRouted: false,
+              accountProxyRouted: false,
+            },
+          },
+          values: { env: claudeRouteEnv() },
+        };
+      }
+      return defaultOwner(raised);
+    };
+    const launch = launchOf('run-1', [agentPrompt({ model: 'fast' })], {
+      pipelinePreferenceLocator: locator,
+      modelAliasPreferences: { fast: { mode: 'reset' } },
+      modelAliasResolutions: {
+        fast: { base: DEFAULT_CLAUDE_MODEL, plugins: false },
+      },
+    });
+    expect(
+      await request({
+        op: 'start',
+        start: {
+          ...launch,
+          launch: {
+            ...launch.launch,
+            pipeline: {
+              ...launch.launch.pipeline,
+              model_aliases: [
+                {
+                  id: 'fast',
+                  name: 'Fast',
+                  defaults: { base: DEFAULT_CLAUDE_MODEL },
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ).toMatchObject({ ok: true });
+    await executionIn('run-1', ['success', 'failure']);
+    expect((await storedStep('run-1', 'ask')).status).toBe('success');
+    expect(asked).not.toContain('stored-model');
+    expect(
+      (await loadExecutionState('run-1', join(dataRoot, 'pipeline-executions')))
+        ?.model_alias_preferences,
+    ).toEqual({ fast: { mode: 'reset' } });
+  });
+
+  it('a Codex Agent alias that adds no plugins runs on the host runtime', async () => {
+    owner = (raised): OwnerAnswer => {
+      const body = raised.request;
+      if (body.action === 'owner.model.agentAlias')
+        return {
+          value: {
+            kind: 'model.agentAlias',
+            alias: {
+              agentId: body.agentId,
+              name: 'Coder',
+              base: DEFAULT_CODEX_MODEL,
+              pluginSelections: NO_PLUGINS,
+            },
+          },
+        };
+      if (body.action === 'owner.model.invocation')
+        return {
+          value: {
+            kind: 'model.invocation',
+            source: 'codex-managed',
+            harness: 'codex',
+            runtimeModel: DEFAULT_CODEX_MODEL,
+            aiCreditsRouted: false,
+            modelGatewayRouted: false,
+            accountProxyRouted: false,
+          },
+          values: { codexConfig: codexConfig() },
+        };
+      return defaultOwner(raised);
+    };
+    const launch = launchOf(
+      'run-1',
+      [agentPrompt({ model: 'coder', permission_preset: 'read_only' })],
+      {
+        codexEnvironment: {
+          environment: { CANOPY_MOCK_API_KEY: SCENARIO },
+          logicalWorkspaceEnvironmentId: 'test',
+        },
+        modelAliasResolutions: {
+          coder: { base: DEFAULT_CODEX_MODEL, plugins: false },
+        },
+      },
+    );
+    expect(
+      await request({
+        op: 'start',
+        start: {
+          ...launch,
+          launch: {
+            ...launch.launch,
+            pipeline: {
+              ...launch.launch.pipeline,
+              model_aliases: [
+                {
+                  id: 'coder',
+                  name: 'Coder',
+                  defaults: { agent_id: 'agent_model_coder' },
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ).toMatchObject({ ok: true });
+    await executionIn('run-1', ['success', 'failure']);
+    const step = await storedStep('run-1', 'ask');
+    expect({ status: step.status, error: step.error }).toEqual({
+      status: 'success',
+      error: undefined,
+    });
+    expect(stepLogs('run-1')).toContain(REPLY);
+  });
+
+  it('an Agent that moves to Codex after the launch runs its step on Codex', async () => {
+    // CAN-5832 review: the Agent resolved to Claude at launch and resolves to
+    // Codex at its step, as it would in process; the launch carries the
+    // run's Codex environment for that.
+    owner = (raised): OwnerAnswer => {
+      const body = raised.request;
+      if (body.action === 'owner.model.agentAlias')
+        return {
+          value: {
+            kind: 'model.agentAlias',
+            alias: {
+              agentId: body.agentId,
+              name: 'Coder',
+              base: DEFAULT_CODEX_MODEL,
+              pluginSelections: NO_PLUGINS,
+            },
+          },
+        };
+      if (body.action === 'owner.model.invocation')
+        return {
+          value: {
+            kind: 'model.invocation',
+            source: 'codex-managed',
+            harness: 'codex',
+            runtimeModel: DEFAULT_CODEX_MODEL,
+            aiCreditsRouted: false,
+            modelGatewayRouted: false,
+            accountProxyRouted: false,
+          },
+          values: { codexConfig: codexConfig() },
+        };
+      return defaultOwner(raised);
+    };
+    const launch = launchOf(
+      'run-1',
+      [agentPrompt({ model: 'coder', permission_preset: 'read_only' })],
+      {
+        codexEnvironment: {
+          environment: { CANOPY_MOCK_API_KEY: SCENARIO },
+          logicalWorkspaceEnvironmentId: 'test',
+        },
+        modelAliasResolutions: {
+          coder: { base: DEFAULT_CLAUDE_MODEL, plugins: false },
+        },
+      },
+    );
+    expect(
+      await request({
+        op: 'start',
+        start: {
+          ...launch,
+          launch: {
+            ...launch.launch,
+            pipeline: {
+              ...launch.launch.pipeline,
+              model_aliases: [
+                {
+                  id: 'coder',
+                  name: 'Coder',
+                  defaults: { agent_id: 'agent_model_coder' },
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ).toMatchObject({ ok: true });
+    await executionIn('run-1', ['success', 'failure']);
+    const step = await storedStep('run-1', 'ask');
+    expect({ status: step.status, error: step.error }).toEqual({
+      status: 'success',
+      error: undefined,
+    });
+    expect(stepLogs('run-1')).toContain(REPLY);
   });
 
   it('a refused policy fails the step before any provider starts', async () => {

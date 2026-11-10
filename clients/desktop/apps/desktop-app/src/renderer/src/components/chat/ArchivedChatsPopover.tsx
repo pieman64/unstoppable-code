@@ -242,7 +242,7 @@ export function ArchivedChatsPopover({
           className="w-full"
         />
       ) : (
-        <div className="overflow-hidden rounded-lg border bg-popover p-1 shadow-lg">
+        <div className="overflow-hidden rounded-lg bg-popover p-1 shadow-xl">
           <p className="px-3 py-1.5 text-3xs font-semibold fg-secondary">
             Archived chats
           </p>

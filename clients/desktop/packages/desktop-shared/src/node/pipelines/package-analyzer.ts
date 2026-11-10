@@ -19,7 +19,7 @@ import type {
 import type {
   InvocableInventoryCache,
   InvocableInventoryEntry,
-} from '../../types/invocable-inventory';
+} from '@canopy/execution-engine/types/invocable-inventory';
 import type {
   PipelineAssetInstallMode,
   PipelinePackageFileEntry,
@@ -46,7 +46,7 @@ import {
   collectPipelineCapabilityRefs,
   getPipelinePluginDefaultRef,
 } from '../../pipelines/plugin-collections';
-import { getShareablePluginRefKey } from '../../plugin-refs';
+import { getShareablePluginRefKey } from '@canopy/execution-engine/plugin-refs';
 import {
   containsSecretMaterial,
   SECRET_ASSIGNMENT_KEYS_SOURCE,

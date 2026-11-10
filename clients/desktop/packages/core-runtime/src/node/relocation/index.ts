@@ -7,11 +7,14 @@ export * from './recovery';
 export * from './owned-paths';
 
 import type { RelocationTransition } from './transition';
-import { relocationTransition } from './transition';
+import { movedOwnedPath, relocationTransition } from './transition';
 import type { RelocationGitPlan } from './git';
 import { repairRelocationGit } from './git';
 import { discardRelocatedRuntime } from './runtime';
-import { assertRelocationOwnedPathsSafe } from './owned-paths';
+import {
+  assertRelocationOwnedPathsSafe,
+  repairRelocationCarriedLinks,
+} from './owned-paths';
 import { assertRelocationWorkingRoot } from './working-root';
 
 /** B's transaction supplies stopped-host proof, journal durability and W5 ownership. */
@@ -21,8 +24,10 @@ export interface RelocationRepairContext {
   readonly workingRoot: string;
   readonly gitPlan: RelocationGitPlan;
   readonly replaceBacklink?: Parameters<typeof repairRelocationGit>[3];
-  /** Complete frozen worker inventory of owned paths, including links and their targets. */
+  /** Frozen owner paths; whole-root copies additionally inspect all carried link objects. */
   readonly ownedPaths: readonly string[];
+  /** Offline whole-root copies carry payload links and project source-root absolute targets. */
+  readonly carryPayloadLinks?: boolean;
   /** Verifies the frozen ownership inventory and external-effect recovery plan. */
   admit(): Promise<void>;
   /** Persist and compare the exact mapping; may not accept another installation's mapping. */
@@ -39,17 +44,28 @@ export function createRelocationRepairStep(): (
     const transition = relocationTransition(context.transition);
     await context.admit();
     await assertRelocationWorkingRoot(transition, context.workingRoot);
-    await assertRelocationOwnedPathsSafe(
-      transition,
-      [
-        ...context.ownedPaths,
-        ...context.gitPlan.checkouts.flatMap((row) => [
-          row.path,
-          row.commonDirectory,
-        ]),
-      ],
-      context.workingRoot,
-    );
+    const paths = [
+      ...context.ownedPaths,
+      ...context.gitPlan.checkouts.flatMap((row) => [
+        row.path,
+        row.commonDirectory,
+      ]),
+    ];
+    if (context.carryPayloadLinks)
+      await repairRelocationCarriedLinks(
+        transition,
+        paths,
+        context.workingRoot,
+        context.gitPlan.checkouts.map((row) =>
+          movedOwnedPath(transition, row.path),
+        ),
+      );
+    else
+      await assertRelocationOwnedPathsSafe(
+        transition,
+        paths,
+        context.workingRoot,
+      );
     await context.recordAuthority(transition);
     await repairRelocationGit(
       transition,

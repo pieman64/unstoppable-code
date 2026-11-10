@@ -42,7 +42,7 @@ import {
   isRetiredPlanChatScope,
   RETIRED_PLAN_CHAT_MESSAGE,
 } from '@canopy/desktop-shared/lib/retired-chat-scopes';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import {
   PortalChatAttachmentError,
@@ -1772,7 +1772,7 @@ function toRevisionedCommand(
  * the running one, for remote writers to report. The message is already
  * committed, so a failed queue lookup only omits `delivery`.
  */
-async function sendReceiptFields(
+export async function sendReceiptFields(
   target: { projectId: string; worktreeId: string; chatId: string },
   userMessageId: string | undefined,
 ): Promise<{ userMessageId?: string; delivery?: 'accepted' | 'queued' }> {

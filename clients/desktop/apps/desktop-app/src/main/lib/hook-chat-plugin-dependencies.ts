@@ -2,7 +2,7 @@ import {
   buildShareablePluginDisplay,
   getShareablePluginRefKey,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import {
   SUPPORTED_HOOK_TRIGGERS,
   type ChatHookAction,

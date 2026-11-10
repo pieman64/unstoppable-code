@@ -888,73 +888,79 @@ function ChoiceMatrix(): JSX.Element {
       <Heading level={2} variant="title">
         Radio and checkbox
       </Heading>
-      <div
-        className="grid gap-px rounded-lg bg-secondary"
-        style={{
-          gridTemplateColumns: `200px repeat(${CHOICE_MATRIX_COLUMNS.length}, 120px)`,
-          width: 'max-content',
-        }}
-      >
-        <div className="bg-base p-2 text-xs font-medium fg-tertiary">Mark</div>
-        {CHOICE_MATRIX_COLUMNS.map((column) => (
-          <div
-            key={column}
-            className="bg-base p-2 text-xs font-medium fg-tertiary"
-          >
-            {column}
-          </div>
-        ))}
-        {CHOICE_MATRIX_ROWS.map((row) => (
-          <Fragment key={row.id}>
-            <div className="flex flex-col items-start gap-1 bg-base p-2 text-xs">
-              <span>{row.name}</span>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setFocusRow(row.id)}
-              >
-                Focus
-              </Button>
-            </div>
-            {CHOICE_MATRIX_COLUMNS.map((column) => {
-              const props = {
-                'aria-label': `${row.name}, ${column}`,
-                checked: row.checked,
-                readOnly: true,
-                disabled: column === 'Disabled',
-                forceState:
-                  column === 'Hover'
-                    ? ('hover' as const)
-                    : column === 'Pressed'
-                      ? ('pressed' as const)
-                      : undefined,
-              };
-              const mark =
-                row.kind === 'radio' ? (
-                  <Radio {...props} />
-                ) : (
-                  <Checkbox {...props} indeterminate={row.mixed} />
-                );
-              return (
-                <div
-                  key={column}
-                  className="flex min-h-12 items-center justify-center bg-base"
-                  data-row={row.id}
-                  data-state={column}
-                >
-                  {column === 'Focused' ? (
-                    <Drive active={focusRow === row.id} action="focus">
-                      {mark}
-                    </Drive>
-                  ) : (
-                    mark
-                  )}
+      <Surface variant="group" className="w-max">
+        <div
+          className="grid gap-px"
+          style={{
+            gridTemplateColumns: `200px repeat(${CHOICE_MATRIX_COLUMNS.length}, 120px)`,
+            width: 'max-content',
+          }}
+        >
+          <Surface variant="pane" padding="tight">
+            <span className="text-xs font-medium fg-tertiary">Mark</span>
+          </Surface>
+          {CHOICE_MATRIX_COLUMNS.map((column) => (
+            <Surface key={column} variant="pane" padding="tight">
+              <span className="text-xs font-medium fg-tertiary">{column}</span>
+            </Surface>
+          ))}
+          {CHOICE_MATRIX_ROWS.map((row) => (
+            <Fragment key={row.id}>
+              <Surface variant="pane" padding="tight">
+                <div className="flex flex-col items-start gap-1 text-xs">
+                  <span>{row.name}</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setFocusRow(row.id)}
+                  >
+                    Focus
+                  </Button>
                 </div>
-              );
-            })}
-          </Fragment>
-        ))}
-      </div>
+              </Surface>
+              {CHOICE_MATRIX_COLUMNS.map((column) => {
+                const props = {
+                  'aria-label': `${row.name}, ${column}`,
+                  checked: row.checked,
+                  readOnly: true,
+                  disabled: column === 'Disabled',
+                  forceState:
+                    column === 'Hover'
+                      ? ('hover' as const)
+                      : column === 'Pressed'
+                        ? ('pressed' as const)
+                        : undefined,
+                };
+                const mark =
+                  row.kind === 'radio' ? (
+                    <Radio {...props} />
+                  ) : (
+                    <Checkbox {...props} indeterminate={row.mixed} />
+                  );
+                return (
+                  <Surface
+                    key={column}
+                    variant="pane"
+                    className="flex flex-col justify-center"
+                    data-row={row.id}
+                    data-state={column}
+                  >
+                    <div className="flex min-h-12 items-center justify-center">
+                      {column === 'Focused' ? (
+                        <Drive active={focusRow === row.id} action="focus">
+                          {mark}
+                        </Drive>
+                      ) : (
+                        mark
+                      )}
+                    </div>
+                  </Surface>
+                );
+              })}
+            </Fragment>
+          ))}
+        </div>
+      </Surface>
     </div>
   );
 }
@@ -994,37 +1000,40 @@ function StatesView({
       </div>
       <ChoiceMatrix />
       <div className="overflow-x-auto">
-        <div
-          className="grid gap-px rounded-lg bg-secondary"
-          style={{
-            gridTemplateColumns: `200px repeat(${STATE_COLUMNS.length + 1}, 260px)`,
-            width: 'max-content',
-          }}
-        >
-          <div className="bg-base p-2 text-xs font-medium fg-tertiary">
-            Component
+        <Surface variant="group" className="w-max">
+          <div
+            className="grid gap-px"
+            style={{
+              gridTemplateColumns: `200px repeat(${STATE_COLUMNS.length + 1}, 260px)`,
+              width: 'max-content',
+            }}
+          >
+            <Surface variant="pane" padding="tight">
+              <span className="text-xs font-medium fg-tertiary">Component</span>
+            </Surface>
+            {STATE_COLUMNS.map((column) => (
+              <Surface key={column} variant="pane" padding="tight">
+                <span className="text-xs font-medium fg-tertiary">
+                  {column}
+                </span>
+              </Surface>
+            ))}
+            <Surface variant="pane" padding="tight">
+              <span className="text-xs font-medium fg-tertiary">
+                Opened (menu)
+              </span>
+            </Surface>
+            {rows.map((row) => (
+              <RowCells
+                key={row.id}
+                row={row}
+                focused={focusRow === row.id}
+                onFocusRow={() => setFocusRow(row.id)}
+                openMenu={openMenu}
+              />
+            ))}
           </div>
-          {STATE_COLUMNS.map((column) => (
-            <div
-              key={column}
-              className="bg-base p-2 text-xs font-medium fg-tertiary"
-            >
-              {column}
-            </div>
-          ))}
-          <div className="bg-base p-2 text-xs font-medium fg-tertiary">
-            Opened (menu)
-          </div>
-          {rows.map((row) => (
-            <RowCells
-              key={row.id}
-              row={row}
-              focused={focusRow === row.id}
-              onFocusRow={() => setFocusRow(row.id)}
-              openMenu={openMenu}
-            />
-          ))}
-        </div>
+        </Surface>
       </div>
     </div>
   );
@@ -1078,23 +1087,35 @@ function RowCells({
     );
   return (
     <>
-      <div className="flex flex-col items-start gap-1 bg-base p-2 text-xs fg-primary">
-        <span>{row.name}</span>
-        <Button size="sm" variant="ghost" onClick={onFocusRow}>
-          Focus
-        </Button>
-      </div>
+      <Surface variant="pane" padding="tight">
+        <div className="flex flex-col items-start gap-1 text-xs fg-primary">
+          <span>{row.name}</span>
+          <Button size="sm" variant="ghost" onClick={onFocusRow}>
+            Focus
+          </Button>
+        </div>
+      </Surface>
       {STATE_COLUMNS.map((column) => (
-        <div
+        <Surface
           key={column}
-          className="flex min-h-16 items-center bg-base p-3"
+          variant="pane"
+          padding="compact"
+          className="flex flex-col justify-center"
           data-state={column}
           data-row={row.id}
         >
-          <div className="w-full">{row.cell(column, focused)}</div>
-        </div>
+          <div className="flex min-h-10 items-center">
+            <div className="w-full">{row.cell(column, focused)}</div>
+          </div>
+        </Surface>
       ))}
-      <div className="flex min-h-16 items-center bg-base p-3">{opened}</div>
+      <Surface
+        variant="pane"
+        padding="compact"
+        className="flex flex-col justify-center"
+      >
+        <div className="flex min-h-10 items-center">{opened}</div>
+      </Surface>
     </>
   );
 }
@@ -1628,79 +1649,91 @@ export function FieldsLabPage(): JSX.Element {
 
   return (
     <LabFlagsContext.Provider value={{ allDisabled, allInvalid }}>
-      <div className="min-h-screen bg-base fg-primary" data-testid="fields-lab">
-        <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-base px-6 py-3">
-          <div className="flex flex-wrap items-center gap-4">
-            <Heading level={1} variant="title">
-              Fields lab
-            </Heading>
-            <SegmentedControl
-              label="View"
-              value={view}
-              width="content"
-              onChange={setView}
-              options={[
-                { value: 'playground', label: 'Playground' },
-                { value: 'states', label: 'States' },
-              ]}
-            />
-            <SegmentedControl
-              label="Color mode"
-              value={colorMode}
-              width="content"
-              onChange={setColorMode}
-              options={[
-                { value: 'light', label: 'Light' },
-                { value: 'dark', label: 'Dark' },
-              ]}
-            />
-            <div className="flex items-center gap-2 text-xs">
-              <ToggleSwitch
-                label="All disabled"
-                checked={allDisabled}
-                onChange={setAllDisabled}
-              />
-              All disabled
+      <Surface variant="pane" data-testid="fields-lab">
+        <div className="min-h-screen fg-primary">
+          <Surface
+            as="header"
+            variant="pane"
+            boundary="bottom"
+            className="sticky top-0 z-10"
+          >
+            <div className="flex flex-col gap-2 px-6 py-3">
+              <div className="flex flex-wrap items-center gap-4">
+                <Heading level={1} variant="title">
+                  Fields lab
+                </Heading>
+                <SegmentedControl
+                  label="View"
+                  value={view}
+                  width="content"
+                  onChange={setView}
+                  options={[
+                    { value: 'playground', label: 'Playground' },
+                    { value: 'states', label: 'States' },
+                  ]}
+                />
+                <SegmentedControl
+                  label="Color mode"
+                  value={colorMode}
+                  width="content"
+                  onChange={setColorMode}
+                  options={[
+                    { value: 'light', label: 'Light' },
+                    { value: 'dark', label: 'Dark' },
+                  ]}
+                />
+                <div className="flex items-center gap-2 text-xs">
+                  <ToggleSwitch
+                    label="All disabled"
+                    checked={allDisabled}
+                    onChange={setAllDisabled}
+                  />
+                  All disabled
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <ToggleSwitch
+                    label="All invalid"
+                    checked={allInvalid}
+                    onChange={setAllInvalid}
+                  />
+                  All invalid
+                </div>
+                {view === 'states' ? (
+                  <SegmentedControl
+                    label="Open menu"
+                    value={openMenu}
+                    width="content"
+                    onChange={setOpenMenu}
+                    options={[
+                      { value: 'none', label: 'No menu' },
+                      { value: 'select', label: 'Open Select' },
+                      {
+                        value: 'settings-select',
+                        label: 'Open SettingsSelect',
+                      },
+                    ]}
+                  />
+                ) : null}
+              </div>
+              <p className="text-xs fg-tertiary">
+                Real shared components only. Hover and pressed can only be
+                judged live with the pointer (the radio and checkbox matrix
+                forces them); checkbox, radio and button focus rings show after
+                a key press; focus is real browser focus, one element at a time.
+                All disabled and All invalid apply to the playground and the
+                states grid&apos;s first three columns.
+              </p>
             </div>
-            <div className="flex items-center gap-2 text-xs">
-              <ToggleSwitch
-                label="All invalid"
-                checked={allInvalid}
-                onChange={setAllInvalid}
-              />
-              All invalid
-            </div>
+          </Surface>
+          <main className="p-6">
             {view === 'states' ? (
-              <SegmentedControl
-                label="Open menu"
-                value={openMenu}
-                width="content"
-                onChange={setOpenMenu}
-                options={[
-                  { value: 'none', label: 'No menu' },
-                  { value: 'select', label: 'Open Select' },
-                  { value: 'settings-select', label: 'Open SettingsSelect' },
-                ]}
-              />
-            ) : null}
-          </div>
-          <p className="text-xs fg-tertiary">
-            Real shared components only. Hover and pressed can only be judged
-            live with the pointer (the radio and checkbox matrix forces them);
-            checkbox, radio and button focus rings show after a key press; focus
-            is real browser focus, one element at a time. All disabled and All
-            invalid apply to the playground and the states grid&apos;s first
-            three columns.
-          </p>
-        </header>
-        <main className="p-6">
-          {view === 'states' ? (
-            <StatesView openMenu={openMenu} />
-          ) : (
-            <PlaygroundView />
-          )}
-        </main>
-      </div>
+              <StatesView openMenu={openMenu} />
+            ) : (
+              <PlaygroundView />
+            )}
+          </main>
+        </div>
+      </Surface>
     </LabFlagsContext.Provider>
   );
 }

@@ -47,7 +47,7 @@ import { BRAND } from '@canopy/brand/current';
 import type {
   MarketplaceManifest,
   MarketplacePluginEntry,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import {
   isCuratedCatalogKey,

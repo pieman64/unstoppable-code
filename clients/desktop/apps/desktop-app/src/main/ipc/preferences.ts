@@ -23,6 +23,7 @@ import {
 } from '../lib/data-sharing-opt-in-authority';
 import { broadcastPreferencesChanged } from '../lib/preferences-broadcast';
 import { notifyManagedDelegationLifetimePreferencesChanged } from '../agents/delegation/lifetime-status';
+import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
 import { personalCatalogPreferenceChanged } from '../services/personal-catalog-sync-host';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -836,6 +837,9 @@ export function registerPreferenceHandlers(): void {
         // their next send; new sends and terminals resolve against the
         // updated global defaults when they start.
         bumpGlobalPluginDefaultsRevision();
+        // The installed-item statuses derive from these selections, so the
+        // synced snapshot the web settings read must follow (CAN-6037).
+        notifyDesktopInventoryChanged(['installed_items']);
       }
       recordOnboardingProfileTelemetry({
         previous: committedPrevious,

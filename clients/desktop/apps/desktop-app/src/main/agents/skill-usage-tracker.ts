@@ -3,7 +3,7 @@ import {
   shareTargetKey,
   type SkillShareNudgeOrigin,
 } from '@canopy/desktop-shared/lib/skill-share-nudge';
-import type { InvocableInventoryEntry } from '@canopy/desktop-shared/types/invocable-inventory';
+import type { InvocableInventoryEntry } from '@canopy/execution-engine/types/invocable-inventory';
 import { matchInvocationEntry } from '../plugins/invocation-prefix-normalizer';
 import {
   skillShareNudgeState,

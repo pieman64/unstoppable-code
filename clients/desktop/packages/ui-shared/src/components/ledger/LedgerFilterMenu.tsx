@@ -37,7 +37,7 @@ import {
 } from '../PickerMenu';
 import { FilterMenuButton, pageFilter } from '../PageSearchRow';
 import { RailIconButton } from '../RailIconButton';
-import { LedgerEntryTypeIcon } from './LedgerEntryTypeLabel';
+import { LedgerEntryTypeIcon } from '../../icons/LedgerEntryTypeIcon';
 
 const TYPE_OPTIONS: readonly LedgerEntryType[] = [
   'TASK',

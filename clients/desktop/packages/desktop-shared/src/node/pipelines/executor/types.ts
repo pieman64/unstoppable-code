@@ -70,7 +70,7 @@ import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import type { PermissionPreset } from '@canopy/desktop-shared/builtin-actions/agent-prompt/logic';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import type { JsonValue } from '../../codex-runtime/generated/serde_json/JsonValue';
-import type { ClaudeModAdmissionInput } from '../../plugins/claude-mod-admission';
+import type { ClaudeModAdmissionInput } from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 
 /** Host-resolved policy and ambient inputs; step-selected roots are added later. */
 export type ClaudeModAdmissionContext = Omit<

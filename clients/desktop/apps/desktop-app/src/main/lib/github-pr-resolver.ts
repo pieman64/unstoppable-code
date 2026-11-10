@@ -1,4 +1,4 @@
-import { parsePullRequestReference } from '@canopy/desktop-shared/lib/create-from-reference';
+import { parsePullRequestReference } from '@canopy/protocol/portable-tasks/pull-request-reference';
 import type { ResolvePullRequestResponse } from '@canopy/desktop-shared/types';
 import { getRemoteUrl } from './git';
 import { parseGitHubRemote } from './github-pr';

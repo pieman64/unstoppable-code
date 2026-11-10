@@ -79,7 +79,7 @@ export function TerminalSelectionMenu({
 
   return (
     <div
-      className="absolute z-20 flex gap-0.5 overflow-hidden rounded-md bg-card/95 p-0.5 fg-primary shadow-md backdrop-blur"
+      className="absolute z-20 flex gap-0.5 overflow-hidden rounded-md bg-card/95 p-0.5 fg-primary shadow-xl backdrop-blur"
       style={{ top, left }}
     >
       <Tooltip label={copied ? 'Copied' : 'Copy the selected terminal text'}>

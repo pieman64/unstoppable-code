@@ -2,8 +2,13 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 export class RelocationRefusedError extends Error {
   override readonly name = 'RelocationRefusedError';
-  constructor(readonly reason: string) {
-    super(`Installation relocation refused: ${reason}`);
+  constructor(
+    readonly reason: string,
+    detail?: string,
+  ) {
+    super(
+      `Installation relocation refused: ${reason}${detail ? ` (${detail})` : ''}`,
+    );
   }
 }
 

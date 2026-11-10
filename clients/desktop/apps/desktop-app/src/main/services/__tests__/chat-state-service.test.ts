@@ -79,7 +79,7 @@ import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
 import { RETIRED_PLAN_CHAT_MESSAGE } from '@canopy/desktop-shared/lib/retired-chat-scopes';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   isInputLedger,
   inputRequestMatchesSettings as inputRequestMatchesTurnSettings,

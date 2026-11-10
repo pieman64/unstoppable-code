@@ -5,6 +5,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { registerIpcHandler } from './register';
 import { OPENCODE_CONNECTION_TIMEOUT_MS } from '@canopy/desktop-shared/types/opencode-connection';
+import type { OpenCodeModelEntry } from '@canopy/execution-engine/types/opencode-models';
 import { validateId } from '../lib/validation';
 import { sendToWebContents } from '../lib/web-contents-send';
 import { peekOpenCodeRuntimeAvailability } from '../opencode/runtime-availability';
@@ -20,14 +21,21 @@ const operations = new Set<{
 }>();
 let shuttingDown = false;
 
-function assertOwner(event: IpcMainInvokeEvent): void {
+type OpenCodeOwner = IpcMainInvokeEvent['sender'];
+
+function assertOwnerContents(owner: OpenCodeOwner): void {
   if (
     shuttingDown ||
-    event.sender.isDestroyed() ||
-    event.senderFrame !== event.sender.mainFrame ||
-    !BrowserWindow.fromWebContents(event.sender)
+    owner.isDestroyed() ||
+    !BrowserWindow.fromWebContents(owner)
   )
     throw new Error('OpenCode setup window is unavailable.');
+}
+
+function assertOwner(event: IpcMainInvokeEvent): void {
+  if (event.senderFrame !== event.sender.mainFrame)
+    throw new Error('OpenCode setup window is unavailable.');
+  assertOwnerContents(event.sender);
 }
 
 async function owned<T>(
@@ -40,11 +48,27 @@ async function owned<T>(
   operationId?: string,
 ): Promise<T> {
   assertOwner(event);
+  return ownedBy(event.sender, mutation, run, operationId);
+}
+
+async function ownedBy<T>(
+  owner: OpenCodeOwner,
+  mutation: boolean,
+  run: (
+    signal: AbortSignal,
+    progress: (status: OpenCodeConnectionStatus) => void,
+  ) => Promise<T>,
+  operationId?: string,
+  callerSignal?: AbortSignal,
+): Promise<T> {
+  assertOwnerContents(owner);
+  // A Stop before this call started is never replayed to a listener.
+  callerSignal?.throwIfAborted();
   if (Array.from(operations).some((operation) => operation.mutation))
     throw new Error('OpenCode setup is already running.');
   const controller = new AbortController();
   const stop = (): void => controller.abort();
-  const owner = event.sender;
+  callerSignal?.addEventListener('abort', stop, { once: true });
   owner.once('destroyed', stop);
   owner.once('render-process-gone', stop);
   owner.once('did-start-navigation', stop);
@@ -52,11 +76,13 @@ async function owned<T>(
   const done = Promise.resolve().then(async () => {
     for (const operation of previous) operation.controller.abort();
     await Promise.allSettled(previous.map((operation) => operation.done));
-    assertOwner(event);
+    assertOwnerContents(owner);
     controller.signal.throwIfAborted();
+    callerSignal?.throwIfAborted();
     return run(
       AbortSignal.any([
         controller.signal,
+        ...(callerSignal ? [callerSignal] : []),
         AbortSignal.timeout(mutation ? OPENCODE_CONNECTION_TIMEOUT_MS : 60_000),
       ]),
       (status) => {
@@ -81,6 +107,7 @@ async function owned<T>(
     return await done;
   } finally {
     operations.delete(operation);
+    callerSignal?.removeEventListener('abort', stop);
     owner.off('destroyed', stop);
     owner.off('render-process-gone', stop);
     owner.off('did-start-navigation', stop);
@@ -109,62 +136,101 @@ export async function shutdownOpenCodeConnections(): Promise<void> {
   ]);
 }
 
+async function readStatus(): Promise<OpenCodeConnectionStatus> {
+  const before = peekOpenCodeRuntimeAvailability();
+  const { opencodeConnectionStatus } = await import('../opencode/connection');
+  const status = await opencodeConnectionStatus();
+  if (before !== peekOpenCodeRuntimeAvailability()) publish();
+  return status;
+}
+
+async function listModels(signal: AbortSignal): Promise<OpenCodeModelEntry[]> {
+  const { listOpenCodeModels } = await import('../opencode/connection');
+  const models = await listOpenCodeModels(signal);
+  publish();
+  return models;
+}
+
+async function connect(
+  signal: AbortSignal,
+  progress: (status: OpenCodeConnectionStatus) => void,
+): Promise<OpenCodeConnectionStatus> {
+  const { connectOpenCode } = await import('../opencode/connection');
+  try {
+    // Connect discovers the catalog and publishes it after durable enablement.
+    return await connectOpenCode(signal, progress);
+  } finally {
+    publish();
+  }
+}
+
+async function disconnect(): Promise<void> {
+  const { disconnectOpenCode } = await import('../opencode/connection');
+  await disconnectOpenCode();
+  publish();
+}
+
+async function cancelOwned(
+  owner: OpenCodeOwner,
+  operationId: string | undefined,
+): Promise<void> {
+  const pending = Array.from(operations).filter(
+    (operation) =>
+      operation.owner === owner.id &&
+      (operationId === undefined || operation.operationId === operationId),
+  );
+  for (const operation of pending) operation.controller.abort();
+  await Promise.allSettled(pending.map((operation) => operation.done));
+}
+
+/**
+ * The Settings OpenCode operations, owned by the given window as its own IPC
+ * calls are (CAN-6008). An abort of `signal` cancels this call's operation.
+ */
+export async function runOpenCodeConnectionForWindow(
+  window: BrowserWindow,
+  operation: 'status' | 'models' | 'connect' | 'cancel' | 'disconnect',
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const owner = window.webContents;
+  assertOwnerContents(owner);
+  switch (operation) {
+    case 'status':
+      return readStatus();
+    case 'models':
+      return ownedBy(owner, false, listModels, undefined, signal);
+    case 'connect':
+      return ownedBy(owner, true, connect, undefined, signal);
+    case 'cancel':
+      return cancelOwned(owner, undefined);
+    case 'disconnect':
+      return ownedBy(owner, true, disconnect, undefined, signal);
+  }
+}
+
 export function registerOpenCodeConnectionHandlers(): void {
-  registerIpcHandler(IPC_CHANNELS.opencodeConnectionStatus, async (event) => {
+  registerIpcHandler(IPC_CHANNELS.opencodeConnectionStatus, (event) => {
     assertOwner(event);
-    const before = peekOpenCodeRuntimeAvailability();
-    const { opencodeConnectionStatus } = await import('../opencode/connection');
-    const status = await opencodeConnectionStatus();
-    if (before !== peekOpenCodeRuntimeAvailability()) publish();
-    return status;
+    return readStatus();
   });
   registerIpcHandler(IPC_CHANNELS.opencodeConnectionModels, (event) =>
-    owned(event, false, async (signal) => {
-      const { listOpenCodeModels } = await import('../opencode/connection');
-      const models = await listOpenCodeModels(signal);
-      publish();
-      return models;
-    }),
+    owned(event, false, listModels),
   );
   registerIpcHandler(
     IPC_CHANNELS.opencodeConnectionConnect,
     (event, operationId?: unknown) => {
       const id = parseOperationId(operationId);
-      return owned(
-        event,
-        true,
-        async (signal, progress) => {
-          const { connectOpenCode } = await import('../opencode/connection');
-          try {
-            // Connect discovers the catalog and publishes it after durable enablement.
-            return await connectOpenCode(signal, progress);
-          } finally {
-            publish();
-          }
-        },
-        id,
-      );
+      return owned(event, true, connect, id);
     },
   );
   registerIpcHandler(
     IPC_CHANNELS.opencodeConnectionCancel,
     async (event, operationId?: unknown) => {
       assertOwner(event);
-      const id = parseOperationId(operationId);
-      const pending = Array.from(operations).filter(
-        (operation) =>
-          operation.owner === event.sender.id &&
-          (id === undefined || operation.operationId === id),
-      );
-      for (const operation of pending) operation.controller.abort();
-      await Promise.allSettled(pending.map((operation) => operation.done));
+      await cancelOwned(event.sender, parseOperationId(operationId));
     },
   );
   registerIpcHandler(IPC_CHANNELS.opencodeConnectionDisconnect, (event) =>
-    owned(event, true, async () => {
-      const { disconnectOpenCode } = await import('../opencode/connection');
-      await disconnectOpenCode();
-      publish();
-    }),
+    owned(event, true, disconnect),
   );
 }

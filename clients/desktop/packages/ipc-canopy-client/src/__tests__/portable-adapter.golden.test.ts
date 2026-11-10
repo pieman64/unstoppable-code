@@ -3117,6 +3117,37 @@ const COMMAND_SCENARIOS: CommandScenarios = {
           workspaceId: 'new-workspace',
         }),
     },
+    {
+      name: 'returns the post-add script scan operation',
+      args: { kind: 'remote-clone', remoteUrl: 'https://example.com/r.git' },
+      replies: {
+        [C.workspaceAddFromRemote]: () => ({
+          id: 'new-workspace',
+          scriptActionsOperationId: 'op-1',
+        }),
+      },
+      result: (value) =>
+        expect(value).toEqual({
+          status: 'completed',
+          workspaceId: 'new-workspace',
+          scriptActionsOperationId: 'op-1',
+        }),
+    },
+    {
+      name: 'omits an empty script scan operation',
+      args: { kind: 'remote-clone', remoteUrl: 'https://example.com/r.git' },
+      replies: {
+        [C.workspaceAddFromRemote]: () => ({
+          id: 'new-workspace',
+          scriptActionsOperationId: '',
+        }),
+      },
+      result: (value) =>
+        expect(value).toEqual({
+          status: 'completed',
+          workspaceId: 'new-workspace',
+        }),
+    },
   ],
   'workspace.update': [
     {

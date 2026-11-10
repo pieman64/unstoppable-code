@@ -3,7 +3,7 @@
 import type {
   PluginProviderSupport,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type {
   AgentProviderType,
   ChatTabPluginSelections,

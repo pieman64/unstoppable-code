@@ -399,7 +399,7 @@ it.each(['root', 'source'] as const)(
 );
 
 it.each([canopy, unstoppable])(
-  '$id validates every internal startup outcome through B journal evidence',
+  '$id validates every internal startup outcome through B journal evidence and cleanup report staging',
   async (brand) => {
     const source = join(home, `.${brand.id}`);
     const destination = join(home, `.${brand.id}-internal`);
@@ -460,6 +460,50 @@ it.each([canopy, unstoppable])(
       expect(startup).toThrow('required');
       expect(await readFile(path, 'utf8')).toBe('lock-only evidence');
     }
+    const staging = join(
+      coordination,
+      'cleanup-candidates.json.12345678-1234-4234-8234-123456789abc.tmp',
+    );
+    await writeFile(staging, '{"version":', { mode: 0o600 });
+    expect(stableStartup).not.toThrow();
+    expect(startup).toThrow('required');
+    if (process.platform !== 'win32') {
+      expect(
+        readInternalRootStartup({
+          home,
+          identity,
+          observation: {
+            os: hostPlatformOperatingSystem(),
+            // Directory ownership passes; the staging file's owner must also match.
+            getuid: jest
+              .fn<number | undefined, []>()
+              .mockReturnValueOnce(process.getuid?.())
+              .mockReturnValue((process.getuid?.() ?? 0) + 1),
+            readWindowsAcl: () => {
+              throw new Error('Not a Windows node');
+            },
+          },
+        }),
+      ).toBe('unsupported');
+      await fsPromises.chmod(staging, 0o644);
+      expect(stableStartup).toThrow('unsupported');
+      await fsPromises.chmod(staging, 0o600);
+    }
+    const alias = join(home, 'staging-hardlink');
+    await fsPromises.link(staging, alias);
+    expect(stableStartup).toThrow('unsupported');
+    await rm(alias);
+    await fsPromises.truncate(staging, 16 * 1024 * 1024 + 1);
+    expect(stableStartup).toThrow('unsupported');
+    await fsPromises.truncate(staging, 16 * 1024 * 1024);
+    expect(stableStartup).not.toThrow();
+    expect(startup).toThrow('required');
+    await fsPromises.truncate(staging, 0);
+    expect(stableStartup).not.toThrow();
+    const invalidStaging = `${staging}.other`;
+    await rename(staging, invalidStaging);
+    expect(stableStartup).toThrow('unsupported');
+    await rm(invalidStaging);
     const unexpected = join(coordination, 'unexpected');
     await writeFile(unexpected, 'preserve unknown evidence', { mode: 0o600 });
     expect(startup).toThrow('unsupported');

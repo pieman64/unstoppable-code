@@ -11,10 +11,14 @@ import type {
   ReactNode,
 } from 'react';
 import {
+  cloneElement,
   createContext,
   forwardRef,
+  isValidElement,
   memo,
   useContext,
+  useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -41,6 +45,7 @@ import { SidebarPinnedBadge } from './SidebarPinnedBadge';
 import { SidebarRowAge } from './SidebarRowAge';
 import { formatCompactAge } from '../lib/format-relative-time';
 import { useMinuteClock } from '../lib/useMinuteClock';
+import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
 import { CometSpinner } from './CometSpinner';
 import { RunSpinner } from './RunSpinner';
 import { ThinkingSpinner } from './ThinkingSpinner';
@@ -561,6 +566,23 @@ export interface WorktreeRowProps {
  * and keeps the trailing group's spacing.
  */
 const BRANCH_GLYPH_SIZE_PX = 14;
+const CLASSIC_LEADING_GLYPH_CLASS =
+  'relative inline-flex h-6 w-6 items-center justify-center rounded-sm';
+const CLASSIC_TRAILING_DOT_CLASS =
+  'relative inline-flex h-5 w-6 shrink-0 items-center justify-center rounded-sm';
+/**
+ * Grows a warning button to a 24px-tall touch target on coarse pointers. It
+ * grows only into the gap beside it: a taller area would cover the title line
+ * above and send taps meant for the row to the warning.
+ */
+const HEALTH_WARNING_COARSE_HIT_AREA =
+  "relative before:absolute before:inset-0 before:content-[''] pointer-coarse:before:-inset-x-1.5 pointer-coarse:before:-inset-y-1";
+/**
+ * Grows a 12px subtitle badge's hover and click target to 16x20 without moving
+ * its neighbours; the badges' 6px gap keeps the grown areas apart.
+ */
+const SUBTITLE_BADGE_HIT_AREA =
+  "relative before:absolute before:-inset-x-0.5 before:-inset-y-1 before:content-['']";
 const TRAILING_GLYPH_SLOT_CLASS =
   'inline-flex h-4 w-4 shrink-0 items-center justify-center box-content';
 
@@ -842,45 +864,30 @@ interface OperationalStatusDotProps {
   label: string;
   colorClass: string;
   testId?: string;
-  onMouseEnter?: (event: MouseEvent<HTMLSpanElement>) => void;
-  onMouseLeave?: (event: MouseEvent<HTMLSpanElement>) => void;
-  onFocus?: (event: FocusEvent<HTMLSpanElement>) => void;
-  onBlur?: (event: FocusEvent<HTMLSpanElement>) => void;
-  onKeyDown?: (event: KeyboardEvent<HTMLSpanElement>) => void;
+  host?: RowStatusBadgeHostHandlers;
+  describedBy?: string;
 }
 
 function OperationalStatusDot({
   label,
   colorClass,
   testId,
-  onMouseEnter,
-  onMouseLeave,
-  onFocus,
-  onBlur,
-  onKeyDown,
+  host,
+  describedBy,
 }: OperationalStatusDotProps): JSX.Element {
-  // Hosts with a hover popover (desktop `on*IconMouseEnter`) render the bare
-  // dot; everywhere else the rich tooltip carries the label.
-  return withBadgeTooltip(
-    onMouseEnter !== undefined,
-    label,
-    <span
-      className={`focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md outline-none ${colorClass}`}
-      role="img"
-      aria-label={label}
-      tabIndex={0}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      onFocus={onFocus}
-      onBlur={onBlur}
-      onKeyDown={onKeyDown}
-      data-testid={testId}
+  return (
+    <RowStatusBadge
+      label={label}
+      className={`inline-flex h-6 w-6 items-center justify-center rounded-md ${colorClass}`}
+      testId={testId}
+      host={host}
+      describedBy={describedBy}
     >
       <span
         className="h-1.5 w-1.5 rounded-full bg-current"
         aria-hidden="true"
       />
-    </span>,
+    </RowStatusBadge>
   );
 }
 
@@ -906,38 +913,25 @@ function OperationalStatusLoader({
 
 interface WatcherStatusIndicatorProps {
   testIdSuffix?: string;
-  onMouseEnter?: (event: MouseEvent<HTMLSpanElement>) => void;
-  onMouseLeave?: (event: MouseEvent<HTMLSpanElement>) => void;
-  onFocus?: (event: FocusEvent<HTMLSpanElement>) => void;
-  onBlur?: (event: FocusEvent<HTMLSpanElement>) => void;
-  onKeyDown?: (event: KeyboardEvent<HTMLSpanElement>) => void;
+  host?: RowStatusBadgeHostHandlers;
+  describedBy?: string;
 }
 
 function WatcherStatusIndicator({
   testIdSuffix,
-  onMouseEnter,
-  onMouseLeave,
-  onFocus,
-  onBlur,
-  onKeyDown,
+  host,
+  describedBy,
 }: WatcherStatusIndicatorProps): JSX.Element {
-  return withBadgeTooltip(
-    onMouseEnter !== undefined,
-    'Chats with watchers',
-    <span
-      className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-blue outline-none"
-      role="img"
-      aria-label="Chats with watchers"
-      tabIndex={0}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      onFocus={onFocus}
-      onBlur={onBlur}
-      onKeyDown={onKeyDown}
-      data-testid={withTestIdSuffix('worktree-row-watchers', testIdSuffix)}
+  return (
+    <RowStatusBadge
+      label="Chats with watchers"
+      className="inline-flex h-6 w-6 items-center justify-center rounded-md fg-blue"
+      testId={withTestIdSuffix('worktree-row-watchers', testIdSuffix)}
+      host={host}
+      describedBy={describedBy}
     >
       <AppAdvisorWatcherIcon size="sm" />
-    </span>,
+    </RowStatusBadge>
   );
 }
 
@@ -1510,23 +1504,6 @@ export function WorktreeRowActionChip({
 }
 
 /**
- * Wrap a meta-row badge in a shared hover tooltip when the host did not wire
- * its own hover popover. Desktop mounts rich popovers through the
- * `on*IconMouseEnter` + `*PopoverSlot` props and renders the bare badge; hosts
- * without that plumbing (the web portal) fall back to a styled tooltip showing
- * the badge's accessible label, so every badge explains itself on hover on
- * every surface.
- */
-function withBadgeTooltip(
-  hasHostPopover: boolean,
-  label: string,
-  badge: JSX.Element,
-): JSX.Element {
-  if (hasHostPopover) return badge;
-  return withStatusTooltip(label, badge);
-}
-
-/**
  * Wrap a status indicator in the shared rich hover tooltip carrying its
  * accessible label. Status glyphs used to rely on a native `title`, which
  * lags noticeably on macOS (CAN-2799); the rich tooltip opens on
@@ -1547,6 +1524,139 @@ function withStatusTooltip(
     </RichHoverTooltip>
   );
 }
+
+/** A host's hover, focus, and key handlers for a badge's own popover. */
+interface RowStatusBadgeHostHandlers {
+  onMouseEnter?: (event: MouseEvent<HTMLSpanElement>) => void;
+  onMouseLeave?: (event: MouseEvent<HTMLSpanElement>) => void;
+  onFocus?: (event: FocusEvent<HTMLSpanElement>) => void;
+  onBlur?: (event: FocusEvent<HTMLSpanElement>) => void;
+  onKeyDown?: (event: KeyboardEvent<HTMLSpanElement>) => void;
+  onClick?: (event: MouseEvent<HTMLSpanElement>) => void;
+}
+
+type RowStatusBadgeData = Readonly<
+  Record<`data-${string}`, string | number | undefined>
+>;
+
+interface RowStatusBadgeProps {
+  label: string;
+  className: string;
+  testId?: string;
+  data?: RowStatusBadgeData;
+  /**
+   * Supplying `onMouseEnter` declares that the host owns the badge's hover
+   * surface, so the badge renders bare and always takes focus.
+   */
+  host?: RowStatusBadgeHostHandlers;
+  /** The open host popover's id: it describes the badge while it shows. */
+  describedBy?: string;
+  /**
+   * The pipeline badge is a real disclosure: Enter toggles its popover and
+   * ArrowDown moves into the list it controls.
+   */
+  disclosure?: { readonly expanded: boolean; readonly listId?: string };
+  /**
+   * Whether a badge with only a tooltip takes focus. Loaders pass false: they
+   * only report progress, so there is nothing to read or open.
+   */
+  tooltipFocusable?: boolean;
+  /** Rich tooltip content; the label alone by default. */
+  tooltip?: ReactNode;
+  children: ReactNode;
+}
+
+/**
+ * Every row status badge: a labelled glyph that either hosts its own popover
+ * (desktop wires `on*IconMouseEnter` + `*PopoverSlot`) or explains itself in a
+ * shared tooltip.
+ */
+function RowStatusBadge({
+  label,
+  className,
+  testId,
+  data,
+  host,
+  describedBy,
+  disclosure,
+  tooltipFocusable = true,
+  tooltip,
+  children,
+}: RowStatusBadgeProps): JSX.Element {
+  const hostOwnsSurface = host?.onMouseEnter !== undefined;
+  const badge = (
+    <span
+      className={`focus-ring outline-none ${className}`}
+      role={disclosure ? 'button' : 'img'}
+      aria-label={label}
+      aria-describedby={describedBy}
+      aria-expanded={disclosure?.expanded}
+      aria-controls={disclosure?.expanded ? disclosure.listId : undefined}
+      tabIndex={
+        disclosure !== undefined || hostOwnsSurface || tooltipFocusable
+          ? 0
+          : undefined
+      }
+      // A press must not focus a disclosure: focus would pin its popover open.
+      onMouseDown={
+        disclosure ? (event): void => event.preventDefault() : undefined
+      }
+      {...host}
+      data-testid={testId}
+      {...data}
+    >
+      {children}
+    </span>
+  );
+  if (hostOwnsSurface) return badge;
+  if (tooltip === undefined) return withStatusTooltip(label, badge);
+  return (
+    <RichHoverTooltip
+      content={tooltip}
+      surfaceClassName="min-w-40 max-w-65"
+      surfacePadding="card"
+    >
+      {badge}
+    </RichHoverTooltip>
+  );
+}
+
+/** Gives a host popover the id its badge names in `aria-describedby`. */
+function withPopoverId(slot: ReactNode, id: string): ReactNode {
+  return isValidElement<{ id?: string }>(slot)
+    ? cloneElement(slot, { id })
+    : slot;
+}
+
+function SplitStatusTooltip({
+  status,
+  message,
+  textScale,
+}: {
+  status: WorktreeSplitStatus;
+  message?: string;
+  textScale: 'default' | 'sidebar';
+}): JSX.Element {
+  return (
+    <div className="flex flex-col gap-1">
+      <div
+        className={`${textScale === 'sidebar' ? 'text-xs font-normal' : 'text-3xs font-semibold'} fg-secondary`}
+      >
+        Split PR {splitStatusHeaderLabel(status)}
+      </div>
+      {message && (
+        <div className="flex items-center gap-1.5 text-xs">
+          <Dot tone={splitStatusDotTone(status)} />
+          <span className="fg-primary">{message}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const GRAPH_TOOLTIP = (
+  <div className="text-xs fg-primary">Updating project graph…</div>
+);
 
 export function buildDepthBadgeAriaLabel(badge: WorktreeRowDepthBadge): string {
   return `Depth ${badge.depth} under top-most parent ${badge.topMost.branchName}`;
@@ -1851,13 +1961,128 @@ function WorktreeRowImpl(
     onPipelineIconClick !== undefined ||
     onPipelineIconKeyDown !== undefined ||
     pipelinePopoverSlot !== undefined;
+  const pipelineDisclosure = pipelineDisclosureEnabled
+    ? {
+        expanded: Boolean(pipelinePopoverSlot),
+        listId: pipelinePopoverListId,
+      }
+    : undefined;
+  // A badge names its host popover while it shows; `popoverSlots` gives each
+  // popover the matching id.
+  const popoverIdBase = useId();
+  const popoverId = (kind: string): string => `${popoverIdBase}${kind}`;
+  const describedByPopover = (
+    slot: ReactNode,
+    kind: string,
+  ): string | undefined => (isValidElement(slot) ? popoverId(kind) : undefined);
+  const popoverSlots = (
+    <>
+      {pipelinePopoverSlot}
+      {withPopoverId(terminalPopoverSlot, popoverId('terminal'))}
+      {withPopoverId(scriptPopoverSlot, popoverId('script'))}
+      {withPopoverId(hookPopoverSlot, popoverId('hook'))}
+      {withPopoverId(approvalPopoverSlot, popoverId('approval'))}
+      {withPopoverId(unreadPopoverSlot, popoverId('unread'))}
+      {withPopoverId(toolApprovalPopoverSlot, popoverId('tool-approval'))}
+      {withPopoverId(watcherPopoverSlot, popoverId('watcher'))}
+      {withPopoverId(scheduledMessagesPopoverSlot, popoverId('scheduled'))}
+    </>
+  );
+  const pipelineHost: RowStatusBadgeHostHandlers = {
+    onMouseEnter: onPipelineIconMouseEnter,
+    onMouseLeave: onPipelineIconMouseLeave,
+    onFocus: onPipelineIconFocus,
+    onBlur: onPipelineIconBlur,
+    onClick: onPipelineIconClick,
+    onKeyDown: onPipelineIconKeyDown,
+  };
+  const terminalBadge = {
+    host: {
+      onMouseEnter: onTerminalIconMouseEnter,
+      onMouseLeave: onTerminalIconMouseLeave,
+      onFocus: onTerminalIconFocus,
+      onBlur: onTerminalIconBlur,
+      onKeyDown: onTerminalIconKeyDown,
+    },
+    describedBy: describedByPopover(terminalPopoverSlot, 'terminal'),
+  };
+  const scriptBadge = {
+    host: {
+      onMouseEnter: onScriptIconMouseEnter,
+      onMouseLeave: onScriptIconMouseLeave,
+      onFocus: onScriptIconFocus,
+      onBlur: onScriptIconBlur,
+      onKeyDown: onScriptIconKeyDown,
+    },
+    describedBy: describedByPopover(scriptPopoverSlot, 'script'),
+  };
+  const hookBadge = {
+    host: {
+      onMouseEnter: onHookIconMouseEnter,
+      onMouseLeave: onHookIconMouseLeave,
+      onFocus: onHookIconFocus,
+      onBlur: onHookIconBlur,
+      onKeyDown: onHookIconKeyDown,
+    },
+    describedBy: describedByPopover(hookPopoverSlot, 'hook'),
+  };
+  const approvalBadge = {
+    host: {
+      onMouseEnter: onApprovalIconMouseEnter,
+      onMouseLeave: onApprovalIconMouseLeave,
+      onFocus: onApprovalIconFocus,
+      onBlur: onApprovalIconBlur,
+      onKeyDown: onApprovalIconKeyDown,
+    },
+    describedBy: describedByPopover(approvalPopoverSlot, 'approval'),
+  };
+  const toolApprovalBadge = {
+    host: {
+      onMouseEnter: onToolApprovalIconMouseEnter,
+      onMouseLeave: onToolApprovalIconMouseLeave,
+      onFocus: onToolApprovalIconFocus,
+      onBlur: onToolApprovalIconBlur,
+      onKeyDown: onToolApprovalIconKeyDown,
+    },
+    describedBy: describedByPopover(toolApprovalPopoverSlot, 'tool-approval'),
+  };
+  const unreadBadge = {
+    host: {
+      onMouseEnter: onUnreadIconMouseEnter,
+      onMouseLeave: onUnreadIconMouseLeave,
+      onFocus: onUnreadIconFocus,
+      onBlur: onUnreadIconBlur,
+      onKeyDown: onUnreadIconKeyDown,
+    },
+    describedBy: describedByPopover(unreadPopoverSlot, 'unread'),
+  };
+  const watcherBadge = {
+    host: {
+      onMouseEnter: onWatcherIconMouseEnter,
+      onMouseLeave: onWatcherIconMouseLeave,
+      onFocus: onWatcherIconFocus,
+      onBlur: onWatcherIconBlur,
+      onKeyDown: onWatcherIconKeyDown,
+    },
+    describedBy: describedByPopover(watcherPopoverSlot, 'watcher'),
+  };
+  const scheduledBadge = {
+    host: {
+      onMouseEnter: onScheduledMessagesIconMouseEnter,
+      onMouseLeave: onScheduledMessagesIconMouseLeave,
+      onFocus: onScheduledMessagesIconFocus,
+      onBlur: onScheduledMessagesIconBlur,
+      onKeyDown: onScheduledMessagesIconKeyDown,
+    },
+    describedBy: describedByPopover(scheduledMessagesPopoverSlot, 'scheduled'),
+  };
   const leadingMetadataIndicator = showHealthWarning ? (
     withStatusTooltip(
       healthIssue?.reason ?? 'Worktree issue',
       <button
         type="button"
         onClick={onWarningClick}
-        className="focus-ring inline-flex h-4 w-4 shrink-0 items-center justify-center rounded fg-warning"
+        className={`focus-ring inline-flex h-4 w-4 shrink-0 items-center justify-center rounded fg-warning ${HEALTH_WARNING_COARSE_HIT_AREA}`}
         aria-label="Worktree issue - click for details"
       >
         <WarningIcon size="xs" />
@@ -1865,165 +2090,83 @@ function WorktreeRowImpl(
     )
   ) : showPrBadge ? (
     <span
-      className={`focus-ring shrink-0 rounded-sm outline-none ${prColorClass}`}
+      className={`shrink-0 rounded-sm ${prColorClass}`}
       role="img"
       aria-label={prStatusAriaLabel(lastKnownPrStatus)}
-      tabIndex={0}
       data-testid={withTestIdSuffix('worktree-row-pr-icon', testIdSuffix)}
       data-pr-icon={prIconKind}
     >
       <PrStatusIcon size={16} />
     </span>
   ) : pipelineStatus ? (
-    withBadgeTooltip(
-      onPipelineIconMouseEnter !== undefined,
-      pipelineStatusAriaLabel(pipelineStatus),
-      <span
-        className="focus-ring shrink-0 rounded-sm outline-none"
-        role={pipelineDisclosureEnabled ? 'button' : 'img'}
-        aria-label={pipelineStatusAriaLabel(pipelineStatus)}
-        aria-controls={
-          pipelineDisclosureEnabled && pipelinePopoverSlot
-            ? pipelinePopoverListId
-            : undefined
-        }
-        aria-expanded={
-          pipelineDisclosureEnabled ? Boolean(pipelinePopoverSlot) : undefined
-        }
-        tabIndex={pipelineDisclosureEnabled ? 0 : undefined}
-        onMouseDown={
-          pipelineDisclosureEnabled
-            ? (event): void => event.preventDefault()
-            : undefined
-        }
-        onMouseEnter={onPipelineIconMouseEnter}
-        onMouseLeave={onPipelineIconMouseLeave}
-        onFocus={onPipelineIconFocus}
-        onBlur={onPipelineIconBlur}
-        onClick={onPipelineIconClick}
-        onKeyDown={onPipelineIconKeyDown}
-        data-testid={withTestIdSuffix(
-          'worktree-row-pipeline-badge',
-          testIdSuffix,
-        )}
-      >
-        <PipelineIcon size={16} />
-      </span>,
-    )
+    <RowStatusBadge
+      label={pipelineStatusAriaLabel(pipelineStatus)}
+      className="shrink-0 rounded-sm"
+      testId={withTestIdSuffix('worktree-row-pipeline-badge', testIdSuffix)}
+      host={pipelineHost}
+      disclosure={pipelineDisclosure}
+    >
+      <PipelineIcon size={16} />
+    </RowStatusBadge>
   ) : terminalStatus ? (
-    withBadgeTooltip(
-      onTerminalIconMouseEnter !== undefined,
-      terminalStatusAriaLabel(terminalStatus),
-      <span
-        className="focus-ring shrink-0 rounded-sm outline-none"
-        role="img"
-        aria-label={terminalStatusAriaLabel(terminalStatus)}
-        tabIndex={0}
-        onMouseEnter={onTerminalIconMouseEnter}
-        onMouseLeave={onTerminalIconMouseLeave}
-        onFocus={onTerminalIconFocus}
-        onBlur={onTerminalIconBlur}
-        onKeyDown={onTerminalIconKeyDown}
-        data-testid={withTestIdSuffix(
-          'worktree-row-terminal-badge',
-          testIdSuffix,
-        )}
-      >
-        <TerminalIcon size={16} />
-      </span>,
-    )
+    <RowStatusBadge
+      label={terminalStatusAriaLabel(terminalStatus)}
+      className="shrink-0 rounded-sm"
+      testId={withTestIdSuffix('worktree-row-terminal-badge', testIdSuffix)}
+      {...terminalBadge}
+    >
+      <TerminalIcon size={16} />
+    </RowStatusBadge>
   ) : scriptStatus ? (
-    withBadgeTooltip(
-      onScriptIconMouseEnter !== undefined,
-      scriptStatusAriaLabel(),
-      <span
-        className="focus-ring shrink-0 rounded-sm outline-none"
-        role="img"
-        aria-label={scriptStatusAriaLabel()}
-        tabIndex={0}
-        onMouseEnter={onScriptIconMouseEnter}
-        onMouseLeave={onScriptIconMouseLeave}
-        onFocus={onScriptIconFocus}
-        onBlur={onScriptIconBlur}
-        onKeyDown={onScriptIconKeyDown}
-        data-testid={withTestIdSuffix(
-          'worktree-row-script-badge',
-          testIdSuffix,
-        )}
-      >
-        <RocketLaunchIcon size={16} />
-      </span>,
-    )
+    <RowStatusBadge
+      label={scriptStatusAriaLabel()}
+      className="shrink-0 rounded-sm"
+      testId={withTestIdSuffix('worktree-row-script-badge', testIdSuffix)}
+      {...scriptBadge}
+    >
+      <RocketLaunchIcon size={16} />
+    </RowStatusBadge>
   ) : hookStatus ? (
-    withBadgeTooltip(
-      onHookIconMouseEnter !== undefined,
-      hookStatusAriaLabel(),
-      <span
-        className="focus-ring shrink-0 rounded-sm outline-none"
-        role="img"
-        aria-label={hookStatusAriaLabel()}
-        tabIndex={0}
-        onMouseEnter={onHookIconMouseEnter}
-        onMouseLeave={onHookIconMouseLeave}
-        onFocus={onHookIconFocus}
-        onBlur={onHookIconBlur}
-        onKeyDown={onHookIconKeyDown}
-        data-testid={withTestIdSuffix('worktree-row-hook-badge', testIdSuffix)}
-      >
-        <HookIcon size={16} />
-      </span>,
-    )
+    <RowStatusBadge
+      label={hookStatusAriaLabel()}
+      className="shrink-0 rounded-sm"
+      testId={withTestIdSuffix('worktree-row-hook-badge', testIdSuffix)}
+      {...hookBadge}
+    >
+      <HookIcon size={16} />
+    </RowStatusBadge>
   ) : splitStatus ? (
-    <RichHoverTooltip
-      content={
-        <div className="flex flex-col gap-1">
-          <div
-            className={`${textScale === 'sidebar' ? 'text-xs font-normal' : 'text-3xs font-semibold'} fg-secondary`}
-          >
-            Split PR {splitStatusHeaderLabel(splitStatus)}
-          </div>
-          {splitStatusMessage && (
-            <div className="flex items-center gap-1.5 text-xs">
-              <Dot tone={splitStatusDotTone(splitStatus)} />
-              <span className="fg-primary">{splitStatusMessage}</span>
-            </div>
-          )}
-        </div>
+    <RowStatusBadge
+      label={splitStatusAriaLabel(splitStatus)}
+      className="shrink-0 rounded-sm"
+      testId={withTestIdSuffix('worktree-row-split-badge', testIdSuffix)}
+      data={{ 'data-split-status': splitStatus }}
+      tooltip={
+        <SplitStatusTooltip
+          status={splitStatus}
+          message={splitStatusMessage}
+          textScale={textScale}
+        />
       }
-      surfaceClassName="min-w-40 max-w-65"
-      surfacePadding="card"
     >
-      <span
-        className="focus-ring shrink-0 rounded-sm outline-none"
-        role="img"
-        aria-label={splitStatusAriaLabel(splitStatus)}
-        tabIndex={0}
-        data-testid={withTestIdSuffix('worktree-row-split-badge', testIdSuffix)}
-        data-split-status={splitStatus}
-      >
-        <SplitPrIcon size={16} />
-      </span>
-    </RichHoverTooltip>
+      <SplitPrIcon size={16} />
+    </RowStatusBadge>
   ) : graphBuildStatus === 'building' ? (
-    <RichHoverTooltip
-      content={
-        <div className="text-xs fg-primary">Updating project graph…</div>
-      }
-      surfaceClassName="min-w-40 max-w-65"
-      surfacePadding="card"
+    <RowStatusBadge
+      label="Updating project graph…"
+      className="shrink-0 rounded-sm"
+      testId={withTestIdSuffix('worktree-row-graph-badge', testIdSuffix)}
+      tooltip={GRAPH_TOOLTIP}
     >
-      <span
-        role="img"
-        aria-label="Updating project graph…"
-        tabIndex={0}
-        className="focus-ring shrink-0 rounded-sm outline-none"
-        data-testid={withTestIdSuffix('worktree-row-graph-badge', testIdSuffix)}
-      >
-        <GraphIcon size={16} />
-      </span>
-    </RichHoverTooltip>
+      <GraphIcon size={16} />
+    </RowStatusBadge>
   ) : null;
 
+  const prNeedsAttention =
+    showPrBadge &&
+    (lastKnownPrStatus?.checkStatus === 'failing' ||
+      lastKnownPrStatus?.reviewStatus === 'changes_requested' ||
+      lastKnownPrStatus?.hasConflicts === true);
   const rightStatusIndicator =
     hasPendingQuestion && !isDone ? (
       // A pending question outranks the streaming loader: question chats are
@@ -2033,11 +2176,7 @@ function WorktreeRowImpl(
         label="Question waiting"
         colorClass={SIDEBAR_INDICATOR_COLORS.warning}
         testId="worktree-row-question"
-        onMouseEnter={onUnreadIconMouseEnter}
-        onMouseLeave={onUnreadIconMouseLeave}
-        onFocus={onUnreadIconFocus}
-        onBlur={onUnreadIconBlur}
-        onKeyDown={onUnreadIconKeyDown}
+        {...unreadBadge}
       />
     ) : hasPendingToolApproval && !isDone ? (
       // Same reasoning as the question above: an approval-blocked chat is
@@ -2046,6 +2185,7 @@ function WorktreeRowImpl(
         label="Approval needed"
         colorClass={SIDEBAR_INDICATOR_COLORS.warning}
         testId="worktree-row-tool-approval"
+        {...toolApprovalBadge}
       />
     ) : isStreaming ? (
       <OperationalStatusLoader label="Working">
@@ -2094,42 +2234,23 @@ function WorktreeRowImpl(
         label="Review plan"
         colorClass={SIDEBAR_INDICATOR_COLORS.blue}
         testId="worktree-row-awaiting-approval"
-        onMouseEnter={onApprovalIconMouseEnter}
-        onMouseLeave={onApprovalIconMouseLeave}
-        onFocus={onApprovalIconFocus}
-        onBlur={onApprovalIconBlur}
-        onKeyDown={onApprovalIconKeyDown}
+        {...approvalBadge}
       />
     ) : hasUnread && !isDone ? (
       <OperationalStatusDot
         label="Unread messages"
         colorClass={SIDEBAR_INDICATOR_COLORS.blue}
         testId="worktree-row-unread"
-        onMouseEnter={onUnreadIconMouseEnter}
-        onMouseLeave={onUnreadIconMouseLeave}
-        onFocus={onUnreadIconFocus}
-        onBlur={onUnreadIconBlur}
-        onKeyDown={onUnreadIconKeyDown}
+        {...unreadBadge}
       />
     ) : hasIdleWatcherChats && !isDone ? (
-      <WatcherStatusIndicator
-        testIdSuffix={testIdSuffix}
-        onMouseEnter={onWatcherIconMouseEnter}
-        onMouseLeave={onWatcherIconMouseLeave}
-        onFocus={onWatcherIconFocus}
-        onBlur={onWatcherIconBlur}
-        onKeyDown={onWatcherIconKeyDown}
-      />
+      <WatcherStatusIndicator testIdSuffix={testIdSuffix} {...watcherBadge} />
     ) : hasScheduledMessages && !isDone ? (
       <OperationalStatusDot
         label="Scheduled messages"
         colorClass={SIDEBAR_INDICATOR_COLORS.blue}
         testId="worktree-row-scheduled-messages"
-        onMouseEnter={onScheduledMessagesIconMouseEnter}
-        onMouseLeave={onScheduledMessagesIconMouseLeave}
-        onFocus={onScheduledMessagesIconFocus}
-        onBlur={onScheduledMessagesIconBlur}
-        onKeyDown={onScheduledMessagesIconKeyDown}
+        {...scheduledBadge}
       />
     ) : showHealthWarning ? (
       <OperationalStatusDot
@@ -2166,10 +2287,7 @@ function WorktreeRowImpl(
         label={splitStatusAriaLabel(splitStatus)}
         colorClass={SIDEBAR_INDICATOR_COLORS.blue}
       />
-    ) : showPrBadge &&
-      (lastKnownPrStatus?.checkStatus === 'failing' ||
-        lastKnownPrStatus?.reviewStatus === 'changes_requested' ||
-        lastKnownPrStatus?.hasConflicts === true) ? (
+    ) : prNeedsAttention ? (
       <OperationalStatusDot
         label="Pull request needs attention"
         colorClass={SIDEBAR_INDICATOR_COLORS.destructive}
@@ -2193,72 +2311,52 @@ function WorktreeRowImpl(
   const renderRightStatusIndicator =
     hasRightStatusIndicator && !hasAlwaysVisibleActionChip;
 
-  const specialStatusLabel = isTearingDown
-    ? isArchiving
-      ? 'Archiving'
-      : 'Running teardown'
-    : isRunningSetup
-      ? 'Running setup'
-      : isPendingGitSetup
-        ? 'Setting up'
-        : isStreaming
-          ? 'Working'
-          : isRunningRun
-            ? 'Running'
-            : prMergingSlot !== undefined && showPrBadge
-              ? 'Merging PR'
-              : isCreatingPr
-                ? 'Creating PR'
-                : showHealthWarning
-                  ? (healthIssue?.reason ?? 'Worktree issue')
-                  : pipelineStatus
-                    ? pipelineStatusAriaLabel(pipelineStatus)
-                    : terminalStatus
-                      ? terminalStatusAriaLabel(terminalStatus)
-                      : scriptStatus
-                        ? scriptStatusAriaLabel()
-                        : hookStatus
-                          ? hookStatusAriaLabel()
-                          : graphBuildStatus === 'building'
-                            ? 'Updating project graph'
-                            : splitStatus
-                              ? (splitStatusMessage ??
-                                splitStatusAriaLabel(splitStatus))
-                              : awaitingApproval && !isDone
-                                ? 'Awaiting approval'
-                                : hasPendingQuestion && !isDone
-                                  ? 'Question waiting'
-                                  : hasPendingToolApproval && !isDone
-                                    ? 'Approval needed'
-                                    : hasUnread && !isDone
-                                      ? 'Unread'
-                                      : hasIdleWatcherChats && !isDone
-                                        ? 'Watchers'
-                                        : hasScheduledMessages && !isDone
-                                          ? 'Scheduled'
-                                          : isDiscovering
-                                            ? 'Discovering'
-                                            : isDone
-                                              ? doneLabel
-                                              : showPrBadge &&
-                                                  (lastKnownPrStatus?.checkStatus ===
-                                                    'failing' ||
-                                                    lastKnownPrStatus?.reviewStatus ===
-                                                      'changes_requested' ||
-                                                    lastKnownPrStatus?.hasConflicts ===
-                                                      true)
-                                                ? 'Needs attention'
-                                                : showPrBadge && isPrApproved
-                                                  ? 'Approved'
-                                                  : showPrBadge &&
-                                                      lastKnownPrStatus?.ciStatus ===
-                                                        'pending'
-                                                    ? 'Checks running'
-                                                    : uiStatus !== 'idle'
-                                                      ? statusDotTokens(
-                                                          uiStatus,
-                                                        ).label
-                                                      : undefined;
+  // First match wins. Lifecycle phases come first; then a question or tool
+  // approval, which outrank work in progress exactly as the status rail's
+  // dot does, so the label never names a different state than the dot.
+  const specialStatusLabel = (
+    [
+      [isTearingDown, isArchiving ? 'Archiving' : 'Running teardown'],
+      [isRunningSetup, 'Running setup'],
+      [isPendingGitSetup, 'Setting up'],
+      [hasPendingQuestion && !isDone, 'Question waiting'],
+      [hasPendingToolApproval && !isDone, 'Approval needed'],
+      [isStreaming, 'Working'],
+      [isRunningRun, 'Running'],
+      [prMergingSlot !== undefined && showPrBadge, 'Merging PR'],
+      [isCreatingPr, 'Creating PR'],
+      [showHealthWarning, healthIssue?.reason ?? 'Worktree issue'],
+      [
+        pipelineStatus !== undefined,
+        pipelineStatus && pipelineStatusAriaLabel(pipelineStatus),
+      ],
+      [
+        terminalStatus !== undefined,
+        terminalStatus && terminalStatusAriaLabel(terminalStatus),
+      ],
+      [scriptStatus !== undefined, scriptStatusAriaLabel()],
+      [hookStatus !== undefined, hookStatusAriaLabel()],
+      [graphBuildStatus === 'building', 'Updating project graph'],
+      [
+        splitStatus !== undefined,
+        splitStatusMessage ??
+          (splitStatus && splitStatusAriaLabel(splitStatus)),
+      ],
+      [awaitingApproval && !isDone, 'Awaiting approval'],
+      [hasUnread && !isDone, 'Unread'],
+      [hasIdleWatcherChats && !isDone, 'Watchers'],
+      [hasScheduledMessages && !isDone, 'Scheduled'],
+      [isDiscovering, 'Discovering'],
+      [isDone, doneLabel],
+      [prNeedsAttention, 'Needs attention'],
+      [showPrBadge && isPrApproved, 'Approved'],
+      [
+        showPrBadge && lastKnownPrStatus?.ciStatus === 'pending',
+        'Checks running',
+      ],
+      [uiStatus !== 'idle', statusDotTokens(uiStatus).label],
+    ] satisfies ReadonlyArray<readonly [boolean, string | undefined]>
+  ).find(([applies]) => applies)?.[1];
   const inlineDepthBadge =
     depthBadge &&
     nestedChildDepth === undefined &&
@@ -2721,116 +2819,57 @@ function WorktreeRowImpl(
                 </span>
               </span>,
             )}
-          {classicQuestionDot &&
-            withBadgeTooltip(
-              onUnreadIconMouseEnter !== undefined,
-              'Question waiting',
-              <span
-                className="focus-ring relative inline-flex h-5 w-6 shrink-0 items-center justify-center rounded-sm outline-none"
-                role="img"
-                aria-label="Question waiting"
-                tabIndex={0}
-                onMouseEnter={onUnreadIconMouseEnter}
-                onMouseLeave={onUnreadIconMouseLeave}
-                onFocus={onUnreadIconFocus}
-                onBlur={onUnreadIconBlur}
-                onKeyDown={onUnreadIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-question',
-                  testIdSuffix,
-                )}
-              >
-                <Dot tone="attention" />
-              </span>,
-            )}
-          {classicToolApprovalDot &&
-            withBadgeTooltip(
-              onToolApprovalIconMouseEnter !== undefined,
-              'Approval needed',
-              <span
-                className="focus-ring relative inline-flex h-5 w-6 shrink-0 items-center justify-center rounded-sm outline-none"
-                role="img"
-                aria-label="Approval needed"
-                tabIndex={0}
-                onMouseEnter={onToolApprovalIconMouseEnter}
-                onMouseLeave={onToolApprovalIconMouseLeave}
-                onFocus={onToolApprovalIconFocus}
-                onBlur={onToolApprovalIconBlur}
-                onKeyDown={onToolApprovalIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-tool-approval',
-                  testIdSuffix,
-                )}
-              >
-                <Dot tone="attention" />
-              </span>,
-            )}
-          {classicUnreadPreviewDot &&
-            withBadgeTooltip(
-              onUnreadIconMouseEnter !== undefined,
-              'Unread messages',
-              <span
-                className="focus-ring relative inline-flex h-5 w-6 shrink-0 items-center justify-center rounded-sm outline-none"
-                role="img"
-                aria-label="Unread messages"
-                tabIndex={0}
-                onMouseEnter={onUnreadIconMouseEnter}
-                onMouseLeave={onUnreadIconMouseLeave}
-                onFocus={onUnreadIconFocus}
-                onBlur={onUnreadIconBlur}
-                onKeyDown={onUnreadIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-unread',
-                  testIdSuffix,
-                )}
-              >
-                <Dot tone="unread" />
-              </span>,
-            )}
-          {classicPipelineAttentionDot &&
-            withBadgeTooltip(
-              onPipelineIconMouseEnter !== undefined,
-              pipelineStatusAriaLabel(pipelineStatus ?? 'unseen'),
-              <span
-                className="focus-ring relative inline-flex h-5 w-6 shrink-0 items-center justify-center rounded-sm outline-none"
-                role={pipelineDisclosureEnabled ? 'button' : 'img'}
-                aria-label={pipelineStatusAriaLabel(pipelineStatus ?? 'unseen')}
-                aria-controls={
-                  pipelineDisclosureEnabled && pipelinePopoverSlot
-                    ? pipelinePopoverListId
-                    : undefined
-                }
-                aria-expanded={
-                  pipelineDisclosureEnabled
-                    ? Boolean(pipelinePopoverSlot)
-                    : undefined
-                }
-                tabIndex={pipelineDisclosureEnabled ? 0 : undefined}
-                onMouseDown={
-                  pipelineDisclosureEnabled
-                    ? (event): void => event.preventDefault()
-                    : undefined
-                }
-                onMouseEnter={onPipelineIconMouseEnter}
-                onMouseLeave={onPipelineIconMouseLeave}
-                onFocus={onPipelineIconFocus}
-                onBlur={onPipelineIconBlur}
-                onClick={onPipelineIconClick}
-                onKeyDown={onPipelineIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-pipeline-attention',
-                  testIdSuffix,
-                )}
-              >
-                {/* Failure paints destructive (matching the leading glyph);
+          {classicQuestionDot && (
+            <RowStatusBadge
+              label="Question waiting"
+              className={CLASSIC_TRAILING_DOT_CLASS}
+              testId={withTestIdSuffix('worktree-row-question', testIdSuffix)}
+              {...unreadBadge}
+            >
+              <Dot tone="attention" />
+            </RowStatusBadge>
+          )}
+          {classicToolApprovalDot && (
+            <RowStatusBadge
+              label="Approval needed"
+              className={CLASSIC_TRAILING_DOT_CLASS}
+              testId={withTestIdSuffix(
+                'worktree-row-tool-approval',
+                testIdSuffix,
+              )}
+              {...toolApprovalBadge}
+            >
+              <Dot tone="attention" />
+            </RowStatusBadge>
+          )}
+          {classicUnreadPreviewDot && (
+            <RowStatusBadge
+              label="Unread messages"
+              className={CLASSIC_TRAILING_DOT_CLASS}
+              testId={withTestIdSuffix('worktree-row-unread', testIdSuffix)}
+              {...unreadBadge}
+            >
+              <Dot tone="unread" />
+            </RowStatusBadge>
+          )}
+          {classicPipelineAttentionDot && (
+            <RowStatusBadge
+              label={pipelineStatusAriaLabel(pipelineStatus ?? 'unseen')}
+              className={CLASSIC_TRAILING_DOT_CLASS}
+              testId={withTestIdSuffix(
+                'worktree-row-pipeline-attention',
+                testIdSuffix,
+              )}
+              host={pipelineHost}
+              disclosure={pipelineDisclosure}
+            >
+              {/* Failure paints destructive (matching the leading glyph);
                   a successful unseen run keeps the calm blue. */}
-                <Dot
-                  tone={
-                    pipelineStatus === 'unseen-failure' ? 'danger' : 'unread'
-                  }
-                />
-              </span>,
-            )}
+              <Dot
+                tone={pipelineStatus === 'unseen-failure' ? 'danger' : 'unread'}
+              />
+            </RowStatusBadge>
+          )}
         </>
       ) : null;
     const classicTrailingStatus =
@@ -2908,52 +2947,31 @@ function WorktreeRowImpl(
         focusedNeedsInput === 'Workflow paused') ||
       focusedRowStatus === 'failed' ||
       (focusedRowStatus === 'unread' && !hasUnread);
-    const focusedHandlers =
+    const focusedBadge: {
+      host?: RowStatusBadgeHostHandlers;
+      describedBy?: string;
+      tooltipFocusable?: boolean;
+    } =
       focusedRowStatus === 'needs-input' &&
       focusedNeedsInput === 'Question waiting'
-        ? {
-            onMouseEnter: onUnreadIconMouseEnter,
-            onMouseLeave: onUnreadIconMouseLeave,
-            onFocus: onUnreadIconFocus,
-            onBlur: onUnreadIconBlur,
-            onKeyDown: onUnreadIconKeyDown,
-          }
+        ? unreadBadge
         : focusedRowStatus === 'needs-input' &&
             focusedNeedsInput === 'Approval needed'
-          ? {
-              onMouseEnter: onToolApprovalIconMouseEnter,
-              onMouseLeave: onToolApprovalIconMouseLeave,
-              onFocus: onToolApprovalIconFocus,
-              onBlur: onToolApprovalIconBlur,
-              onKeyDown: onToolApprovalIconKeyDown,
-            }
+          ? toolApprovalBadge
           : focusedRowStatus === 'needs-input' &&
               focusedNeedsInput === 'Review plan'
-            ? {
-                onMouseEnter: onApprovalIconMouseEnter,
-                onMouseLeave: onApprovalIconMouseLeave,
-                onFocus: onApprovalIconFocus,
-                onBlur: onApprovalIconBlur,
-                onKeyDown: onApprovalIconKeyDown,
-              }
+            ? approvalBadge
             : focusedPipelineTarget
-              ? {
-                  onMouseEnter: onPipelineIconMouseEnter,
-                  onMouseLeave: onPipelineIconMouseLeave,
-                  onFocus: onPipelineIconFocus,
-                  onBlur: onPipelineIconBlur,
-                  onKeyDown: onPipelineIconKeyDown,
-                  onClick: onPipelineIconClick,
-                }
+              ? { host: pipelineHost }
               : focusedRowStatus === 'unread'
-                ? {
-                    onMouseEnter: onUnreadIconMouseEnter,
-                    onMouseLeave: onUnreadIconMouseLeave,
-                    onFocus: onUnreadIconFocus,
-                    onBlur: onUnreadIconBlur,
-                    onKeyDown: onUnreadIconKeyDown,
-                  }
-                : {};
+                ? unreadBadge
+                : {
+                    // A loader only reports progress; there is nothing to
+                    // open, so it never takes a Tab stop.
+                    tooltipFocusable:
+                      focusedRowStatus !== 'working' &&
+                      focusedRowStatus !== 'background',
+                  };
     const focusedLabel =
       focusedRowStatus === 'needs-input'
         ? focusedNeedsInput
@@ -2977,54 +2995,46 @@ function WorktreeRowImpl(
           : focusedRowStatus === 'unread'
             ? 'bg-fg-blue'
             : 'bg-fg-quaternary/50';
-    const focusedIndicatorBody =
-      focusedRowStatus === null ? null : (
+    const focusedGlyph =
+      focusedRowStatus === 'working' || focusedRowStatus === 'background' ? (
+        // Follows Labs → Comet spinners; the comet keeps its 12px slot.
+        <ThinkingSpinner
+          tone={focusedRowStatus === 'working' ? 'accent' : 'tertiary'}
+          sizePx={12}
+        />
+      ) : (
         <span
-          className="focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none"
-          role={
-            focusedRowStatus === 'idle'
-              ? undefined
-              : focusedPipelineTarget && pipelineDisclosureEnabled
-                ? 'button'
-                : 'img'
-          }
-          aria-label={focusedLabel ?? undefined}
-          aria-hidden={focusedRowStatus === 'idle' ? 'true' : undefined}
-          tabIndex={
-            focusedRowStatus === 'idle' ||
-            focusedRowStatus === 'working' ||
-            focusedRowStatus === 'background'
-              ? undefined
-              : 0
-          }
-          {...focusedHandlers}
+          className={`rounded-full h-1.5 w-1.5 ${focusedDotClassName}`}
+          aria-hidden="true"
+        />
+      );
+    const focusedIndicatorClassName =
+      'relative inline-flex h-6 w-6 items-center justify-center rounded-sm';
+    const focusedIndicator =
+      focusedRowStatus === null ? null : focusedRowStatus === 'idle' ||
+        focusedLabel === null ? (
+        <span
+          className={focusedIndicatorClassName}
+          aria-hidden="true"
           data-testid={withTestIdSuffix('worktree-row-status', testIdSuffix)}
           data-row-status={focusedRowStatus}
         >
-          {focusedRowStatus === 'working' ||
-          focusedRowStatus === 'background' ? (
-            // Follows Labs → Comet spinners; the comet keeps its 12px slot.
-            <ThinkingSpinner
-              tone={focusedRowStatus === 'working' ? 'accent' : 'tertiary'}
-              sizePx={12}
-            />
-          ) : (
-            <span
-              className={`rounded-full h-1.5 w-1.5 ${focusedDotClassName}`}
-              aria-hidden="true"
-            />
-          )}
+          {focusedGlyph}
           {classicDragOverlay}
         </span>
+      ) : (
+        <RowStatusBadge
+          label={focusedLabel}
+          className={focusedIndicatorClassName}
+          testId={withTestIdSuffix('worktree-row-status', testIdSuffix)}
+          data={{ 'data-row-status': focusedRowStatus }}
+          disclosure={focusedPipelineTarget ? pipelineDisclosure : undefined}
+          {...focusedBadge}
+        >
+          {focusedGlyph}
+          {classicDragOverlay}
+        </RowStatusBadge>
       );
-    const focusedIndicator =
-      focusedIndicatorBody === null || focusedLabel === null
-        ? focusedIndicatorBody
-        : withBadgeTooltip(
-            focusedHandlers.onMouseEnter !== undefined,
-            focusedLabel,
-            focusedIndicatorBody,
-          );
     // Quiet cloud rows hide their identity subtitle. Retain the second line
     // only when it carries actual metadata, and keep popovers mounted below.
     const classicHasSubtitle = Boolean(
@@ -3134,7 +3144,7 @@ function WorktreeRowImpl(
         {...intentHandlers}
         onContextMenu={onContextMenu}
         onPointerDown={onDragPointerDown}
-        className={`group group/sidebar-item relative w-full min-w-0 ${showsDragCursor ? (rowIsDragging ? 'pointer-fine:cursor-grabbing' : 'cursor-default pointer-fine:hover:cursor-grab') : onDragPointerDown ? 'cursor-default touch-none select-none' : nonSortableInteraction ? 'cursor-default select-none' : onClick ? 'cursor-pointer' : 'cursor-default'} rounded-row transition-colors duration-0 ${
+        className={`group group/sidebar-item relative w-full min-w-0 ${showsDragCursor ? (rowIsDragging ? 'pointer-fine:cursor-grabbing' : 'cursor-default pointer-fine:hover:cursor-grab') : onDragPointerDown ? 'cursor-default touch-none select-none' : nonSortableInteraction ? 'cursor-default select-none' : onClick ? 'cursor-pointer' : 'cursor-default'} rounded-row ${
           nested ? 'py-1.5 pl-4.5 pr-1.5' : 'px-1.5 py-1.5'
         } flex items-center gap-1.5 ${touchTarget ? 'min-h-11' : classicSingleLine ? 'min-h-9 pointer-coarse:min-h-11' : ''} ${rowIsDragging ? 'opacity-60' : ''} ${isTearingDownVisual ? 'pointer-events-none' : ''} ${highlightClassName ?? 'fg-secondary hover:bg-subtle has-[[data-row-menu-open]]:bg-subtle'}`}
       >
@@ -3158,352 +3168,202 @@ function WorktreeRowImpl(
           ) : focusedIndicator !== null ? (
             focusedIndicator
           ) : classicPausedPipelineShield || classicPipelineAttentionGlyph ? (
-            withBadgeTooltip(
-              onPipelineIconMouseEnter !== undefined,
-              pipelineStatusAriaLabel(pipelineStatus ?? 'paused'),
+            <RowStatusBadge
+              label={pipelineStatusAriaLabel(pipelineStatus ?? 'paused')}
+              className={CLASSIC_LEADING_GLYPH_CLASS}
+              testId={
+                classicPausedPipelineShield
+                  ? 'worktree-row-paused-pipeline'
+                  : 'worktree-row-pipeline-glyph'
+              }
+              host={pipelineHost}
+              disclosure={pipelineDisclosure}
+            >
+              {/* The pipeline glyph carries its state in its color — paused
+                  orange (waiting on input), completed green, failed red.
+                  Pipeline states outrank the question/plan glyphs in the
+                  finalized chain. This glyph also hosts the pipeline
+                  popover, which stays mouse-reachable (the leading slot
+                  does not hide on hover). */}
               <span
-                className="focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none"
-                role={pipelineDisclosureEnabled ? 'button' : 'img'}
-                aria-label={pipelineStatusAriaLabel(pipelineStatus ?? 'paused')}
-                aria-controls={
-                  pipelineDisclosureEnabled && pipelinePopoverSlot
-                    ? pipelinePopoverListId
-                    : undefined
-                }
-                aria-expanded={
-                  pipelineDisclosureEnabled
-                    ? Boolean(pipelinePopoverSlot)
-                    : undefined
-                }
-                tabIndex={pipelineDisclosureEnabled ? 0 : undefined}
-                onMouseDown={
-                  pipelineDisclosureEnabled
-                    ? (event): void => event.preventDefault()
-                    : undefined
-                }
-                onMouseEnter={onPipelineIconMouseEnter}
-                onMouseLeave={onPipelineIconMouseLeave}
-                onFocus={onPipelineIconFocus}
-                onBlur={onPipelineIconBlur}
-                onClick={onPipelineIconClick}
-                onKeyDown={onPipelineIconKeyDown}
-                data-testid={
-                  classicPausedPipelineShield
-                    ? 'worktree-row-paused-pipeline'
-                    : 'worktree-row-pipeline-glyph'
-                }
+                className={`inline-flex h-4 w-4 items-center justify-center ${pipelineGlyphColorClass(pipelineStatus ?? 'paused')}`}
               >
-                {/* The pipeline glyph carries its state in its color — paused
-                    orange (waiting on input), completed green, failed red.
-                    Pipeline states outrank the question/plan glyphs in the
-                    finalized chain. This glyph also hosts the pipeline
-                    popover, which stays mouse-reachable (the leading slot
-                    does not hide on hover). */}
-                <span
-                  className={`inline-flex h-4 w-4 items-center justify-center ${pipelineGlyphColorClass(pipelineStatus ?? 'paused')}`}
-                >
-                  <PipelineIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
-              </span>,
-            )
+                <PipelineIcon size="sm" aria-hidden="true" />
+              </span>
+              {classicDragOverlay}
+            </RowStatusBadge>
           ) : classicWorkingPipeline ? (
-            withBadgeTooltip(
-              onPipelineIconMouseEnter !== undefined,
-              'Workflow running',
+            <RowStatusBadge
+              label="Workflow running"
+              className={CLASSIC_LEADING_GLYPH_CLASS}
+              host={pipelineHost}
+              disclosure={pipelineDisclosure}
+            >
+              {/* Explicit glyph: dot-bearing uiStatuses resolve the shared
+                  indicator to the idle placeholder now. */}
               <span
-                className="focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none"
-                role={pipelineDisclosureEnabled ? 'button' : 'img'}
-                aria-label="Workflow running"
-                aria-controls={
-                  pipelineDisclosureEnabled && pipelinePopoverSlot
-                    ? pipelinePopoverListId
-                    : undefined
-                }
-                aria-expanded={
-                  pipelineDisclosureEnabled
-                    ? Boolean(pipelinePopoverSlot)
-                    : undefined
-                }
-                tabIndex={pipelineDisclosureEnabled ? 0 : undefined}
-                onMouseDown={
-                  pipelineDisclosureEnabled
-                    ? (event): void => event.preventDefault()
-                    : undefined
-                }
-                onMouseEnter={onPipelineIconMouseEnter}
-                onMouseLeave={onPipelineIconMouseLeave}
-                onFocus={onPipelineIconFocus}
-                onBlur={onPipelineIconBlur}
-                onClick={onPipelineIconClick}
-                onKeyDown={onPipelineIconKeyDown}
+                // fg-secondary: the pipeline glyph keeps the neutral
+                // sidebar-icon grey in classic rows; the running state
+                // itself carries the activity signal.
+                className="inline-flex h-4 w-4 items-center justify-center fg-secondary"
+                data-testid={withTestIdSuffix(
+                  'worktree-row-working-pipeline',
+                  testIdSuffix,
+                )}
               >
-                {/* Explicit glyph: dot-bearing uiStatuses resolve the shared
-                    indicator to the idle placeholder now. */}
-                <span
-                  // fg-secondary: the pipeline glyph keeps the neutral
-                  // sidebar-icon grey in classic rows; the running state
-                  // itself carries the activity signal.
-                  className="inline-flex h-4 w-4 items-center justify-center fg-secondary"
-                  data-testid={withTestIdSuffix(
-                    'worktree-row-working-pipeline',
-                    testIdSuffix,
-                  )}
-                >
-                  <PipelineIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
-              </span>,
-            )
+                <PipelineIcon size="sm" aria-hidden="true" />
+              </span>
+              {classicDragOverlay}
+            </RowStatusBadge>
           ) : classicQuestionGlyph ? (
-            withBadgeTooltip(
-              onUnreadIconMouseEnter !== undefined,
-              'Question waiting',
-              <span
-                className="focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none"
-                role="img"
-                aria-label="Question waiting"
-                tabIndex={0}
-                onMouseEnter={onUnreadIconMouseEnter}
-                onMouseLeave={onUnreadIconMouseLeave}
-                onFocus={onUnreadIconFocus}
-                onBlur={onUnreadIconBlur}
-                onKeyDown={onUnreadIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-question-glyph',
-                  testIdSuffix,
-                )}
-              >
-                {/* Needs-input orange, matching the plan shield and the
-                    trailing question dot. Hosts the chat-preview popover,
-                    which stays mouse-reachable (the leading slot does not
-                    hide on hover). */}
-                <span className="inline-flex h-4 w-4 items-center justify-center fg-warning">
-                  <QuestionMarkIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
-              </span>,
-            )
+            <RowStatusBadge
+              label="Question waiting"
+              className={CLASSIC_LEADING_GLYPH_CLASS}
+              testId={withTestIdSuffix(
+                'worktree-row-question-glyph',
+                testIdSuffix,
+              )}
+              {...unreadBadge}
+            >
+              {/* Needs-input orange, matching the plan shield and the
+                  trailing question dot. Hosts the chat-preview popover,
+                  which stays mouse-reachable (the leading slot does not
+                  hide on hover). */}
+              <span className="inline-flex h-4 w-4 items-center justify-center fg-warning">
+                <QuestionMarkIcon size="sm" aria-hidden="true" />
+              </span>
+              {classicDragOverlay}
+            </RowStatusBadge>
           ) : classicApprovalShield ? (
-            withBadgeTooltip(
-              onApprovalIconMouseEnter !== undefined,
-              'Review plan',
-              <span
-                className="focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none"
-                role="img"
-                aria-label="Review plan"
-                tabIndex={0}
-                onMouseEnter={onApprovalIconMouseEnter}
-                onMouseLeave={onApprovalIconMouseLeave}
-                onFocus={onApprovalIconFocus}
-                onBlur={onApprovalIconBlur}
-                onKeyDown={onApprovalIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-awaiting-approval',
-                  testIdSuffix,
-                )}
-              >
-                {/* Explicit shield: uiStatus may have been won by unread /
-                    working, so the shared indicator cannot be reused here. */}
-                <span className="inline-flex h-4 w-4 items-center justify-center fg-warning">
-                  <PlanMapIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
-              </span>,
-            )
+            <RowStatusBadge
+              label="Review plan"
+              className={CLASSIC_LEADING_GLYPH_CLASS}
+              testId={withTestIdSuffix(
+                'worktree-row-awaiting-approval',
+                testIdSuffix,
+              )}
+              {...approvalBadge}
+            >
+              {/* Explicit shield: uiStatus may have been won by unread /
+                  working, so the shared indicator cannot be reused here. */}
+              <span className="inline-flex h-4 w-4 items-center justify-center fg-warning">
+                <PlanMapIcon size="sm" aria-hidden="true" />
+              </span>
+              {classicDragOverlay}
+            </RowStatusBadge>
           ) : classicLeadingFallback === 'split' ? (
-            <RichHoverTooltip
-              content={
-                <div className="flex flex-col gap-1">
-                  <div className="text-3xs font-semibold fg-secondary">
-                    Split PR {splitStatusHeaderLabel(splitStatus ?? 'active')}
-                  </div>
-                  {splitStatusMessage && (
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <Dot tone={splitStatusDotTone(splitStatus ?? 'active')} />
-                      <span className="fg-primary">{splitStatusMessage}</span>
-                    </div>
-                  )}
-                </div>
+            <RowStatusBadge
+              label={splitStatusAriaLabel(splitStatus ?? 'active')}
+              className={`${CLASSIC_LEADING_GLYPH_CLASS} ${splitStatusColorClass(splitStatus ?? 'active')}`}
+              testId={withTestIdSuffix(
+                'worktree-row-split-badge',
+                testIdSuffix,
+              )}
+              data={{ 'data-split-status': splitStatus }}
+              tooltip={
+                <SplitStatusTooltip
+                  status={splitStatus ?? 'active'}
+                  message={splitStatusMessage}
+                  textScale={textScale}
+                />
               }
-              surfaceClassName="min-w-40 max-w-65"
-              surfacePadding="card"
             >
-              <span
-                className={`focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none ${splitStatusColorClass(splitStatus ?? 'active')}`}
-                role="img"
-                aria-label={splitStatusAriaLabel(splitStatus ?? 'active')}
-                tabIndex={0}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-split-badge',
-                  testIdSuffix,
-                )}
-                data-split-status={splitStatus}
-              >
-                <span className="inline-flex h-4 w-4 items-center justify-center">
-                  <SplitPrIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
+              <span className="inline-flex h-4 w-4 items-center justify-center">
+                <SplitPrIcon size="sm" aria-hidden="true" />
               </span>
-            </RichHoverTooltip>
+              {classicDragOverlay}
+            </RowStatusBadge>
           ) : classicLeadingFallback === 'watchers' ? (
-            withBadgeTooltip(
-              onWatcherIconMouseEnter !== undefined,
-              'Chats with watchers',
-              <span
-                className="focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none"
-                role="img"
-                aria-label="Chats with watchers"
-                tabIndex={0}
-                onMouseEnter={onWatcherIconMouseEnter}
-                onMouseLeave={onWatcherIconMouseLeave}
-                onFocus={onWatcherIconFocus}
-                onBlur={onWatcherIconBlur}
-                onKeyDown={onWatcherIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-watchers',
-                  testIdSuffix,
-                )}
-              >
-                <span className="inline-flex h-4 w-4 items-center justify-center fg-secondary">
-                  <AppAdvisorWatcherIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
-              </span>,
-            )
+            <RowStatusBadge
+              label="Chats with watchers"
+              className={CLASSIC_LEADING_GLYPH_CLASS}
+              testId={withTestIdSuffix('worktree-row-watchers', testIdSuffix)}
+              {...watcherBadge}
+            >
+              <span className="inline-flex h-4 w-4 items-center justify-center fg-secondary">
+                <AppAdvisorWatcherIcon size="sm" aria-hidden="true" />
+              </span>
+              {classicDragOverlay}
+            </RowStatusBadge>
           ) : classicLeadingFallback === 'scheduled' ? (
-            withBadgeTooltip(
-              onScheduledMessagesIconMouseEnter !== undefined,
-              'Scheduled messages',
-              <span
-                className="focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none"
-                role="img"
-                aria-label="Scheduled messages"
-                tabIndex={0}
-                onMouseEnter={onScheduledMessagesIconMouseEnter}
-                onMouseLeave={onScheduledMessagesIconMouseLeave}
-                onFocus={onScheduledMessagesIconFocus}
-                onBlur={onScheduledMessagesIconBlur}
-                onKeyDown={onScheduledMessagesIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-scheduled-messages',
-                  testIdSuffix,
-                )}
-              >
-                <span className="inline-flex h-4 w-4 items-center justify-center fg-secondary">
-                  <TimeFliesIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
-              </span>,
-            )
+            <RowStatusBadge
+              label="Scheduled messages"
+              className={CLASSIC_LEADING_GLYPH_CLASS}
+              testId={withTestIdSuffix(
+                'worktree-row-scheduled-messages',
+                testIdSuffix,
+              )}
+              {...scheduledBadge}
+            >
+              <span className="inline-flex h-4 w-4 items-center justify-center fg-secondary">
+                <TimeFliesIcon size="sm" aria-hidden="true" />
+              </span>
+              {classicDragOverlay}
+            </RowStatusBadge>
           ) : classicLeadingFallback === 'script' ? (
-            withBadgeTooltip(
-              onScriptIconMouseEnter !== undefined,
-              scriptStatusAriaLabel(),
-              <span
-                className="focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none"
-                role="img"
-                aria-label={scriptStatusAriaLabel()}
-                tabIndex={0}
-                onMouseEnter={onScriptIconMouseEnter}
-                onMouseLeave={onScriptIconMouseLeave}
-                onFocus={onScriptIconFocus}
-                onBlur={onScriptIconBlur}
-                onKeyDown={onScriptIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-script-badge',
-                  testIdSuffix,
-                )}
-              >
-                <span
-                  className={`inline-flex h-4 w-4 items-center justify-center ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
-                >
-                  <RocketLaunchIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
-              </span>,
-            )
-          ) : classicLeadingFallback === 'hook' ? (
-            withBadgeTooltip(
-              onHookIconMouseEnter !== undefined,
-              hookStatusAriaLabel(),
-              <span
-                className="focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none"
-                role="img"
-                aria-label={hookStatusAriaLabel()}
-                tabIndex={0}
-                onMouseEnter={onHookIconMouseEnter}
-                onMouseLeave={onHookIconMouseLeave}
-                onFocus={onHookIconFocus}
-                onBlur={onHookIconBlur}
-                onKeyDown={onHookIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-hook-badge',
-                  testIdSuffix,
-                )}
-              >
-                <span
-                  className={`inline-flex h-4 w-4 items-center justify-center ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
-                >
-                  <HookIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
-              </span>,
-            )
-          ) : classicLeadingFallback === 'terminal' ? (
-            withBadgeTooltip(
-              onTerminalIconMouseEnter !== undefined,
-              terminalStatusAriaLabel(terminalStatus ?? 'running'),
-              <span
-                className={`focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none ${terminalStatusColorClass(terminalStatus ?? 'running')}`}
-                role="img"
-                aria-label={terminalStatusAriaLabel(
-                  terminalStatus ?? 'running',
-                )}
-                tabIndex={0}
-                onMouseEnter={onTerminalIconMouseEnter}
-                onMouseLeave={onTerminalIconMouseLeave}
-                onFocus={onTerminalIconFocus}
-                onBlur={onTerminalIconBlur}
-                onKeyDown={onTerminalIconKeyDown}
-                data-testid={withTestIdSuffix(
-                  'worktree-row-terminal-badge',
-                  testIdSuffix,
-                )}
-                data-terminal-status={terminalStatus}
-              >
-                <span className="inline-flex h-4 w-4 items-center justify-center">
-                  <TerminalIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
-              </span>,
-            )
-          ) : classicLeadingFallback === 'graph' ? (
-            <RichHoverTooltip
-              content={
-                <div className="text-xs fg-primary">
-                  Updating project graph…
-                </div>
-              }
-              surfaceClassName="min-w-40 max-w-65"
-              surfacePadding="card"
+            <RowStatusBadge
+              label={scriptStatusAriaLabel()}
+              className={CLASSIC_LEADING_GLYPH_CLASS}
+              testId={withTestIdSuffix(
+                'worktree-row-script-badge',
+                testIdSuffix,
+              )}
+              {...scriptBadge}
             >
               <span
-                role="img"
-                aria-label="Updating project graph…"
-                tabIndex={0}
-                className="focus-ring relative inline-flex h-6 w-6 animate-pulse items-center justify-center rounded-sm outline-none"
-                data-testid={withTestIdSuffix(
-                  'worktree-row-graph-badge',
-                  testIdSuffix,
-                )}
+                className={`inline-flex h-4 w-4 items-center justify-center ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
               >
-                <span className="inline-flex h-4 w-4 items-center justify-center">
-                  <GraphIcon size="sm" aria-hidden="true" />
-                </span>
-                {classicDragOverlay}
+                <RocketLaunchIcon size="sm" aria-hidden="true" />
               </span>
-            </RichHoverTooltip>
+              {classicDragOverlay}
+            </RowStatusBadge>
+          ) : classicLeadingFallback === 'hook' ? (
+            <RowStatusBadge
+              label={hookStatusAriaLabel()}
+              className={CLASSIC_LEADING_GLYPH_CLASS}
+              testId={withTestIdSuffix('worktree-row-hook-badge', testIdSuffix)}
+              {...hookBadge}
+            >
+              <span
+                className={`inline-flex h-4 w-4 items-center justify-center ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
+              >
+                <HookIcon size="sm" aria-hidden="true" />
+              </span>
+              {classicDragOverlay}
+            </RowStatusBadge>
+          ) : classicLeadingFallback === 'terminal' ? (
+            <RowStatusBadge
+              label={terminalStatusAriaLabel(terminalStatus ?? 'running')}
+              className={`${CLASSIC_LEADING_GLYPH_CLASS} ${terminalStatusColorClass(terminalStatus ?? 'running')}`}
+              testId={withTestIdSuffix(
+                'worktree-row-terminal-badge',
+                testIdSuffix,
+              )}
+              data={{ 'data-terminal-status': terminalStatus }}
+              {...terminalBadge}
+            >
+              <span className="inline-flex h-4 w-4 items-center justify-center">
+                <TerminalIcon size="sm" aria-hidden="true" />
+              </span>
+              {classicDragOverlay}
+            </RowStatusBadge>
+          ) : classicLeadingFallback === 'graph' ? (
+            <RowStatusBadge
+              label="Updating project graph…"
+              className={CLASSIC_LEADING_GLYPH_CLASS}
+              testId={withTestIdSuffix(
+                'worktree-row-graph-badge',
+                testIdSuffix,
+              )}
+              tooltip={GRAPH_TOOLTIP}
+            >
+              {/* Still: the glyph only shows while the graph builds, and a
+                  pulse in a list of rows is noise. */}
+              <span className="inline-flex h-4 w-4 items-center justify-center">
+                <GraphIcon size="sm" aria-hidden="true" />
+              </span>
+              {classicDragOverlay}
+            </RowStatusBadge>
           ) : (
             <span className="relative inline-flex items-center justify-center">
               {classicIndicator}
@@ -3750,11 +3610,9 @@ function WorktreeRowImpl(
               'worktree-row-subtitle',
               testIdSuffix,
             )}
-            className={
-              classicSingleLine
-                ? 'hidden'
-                : 'relative mt-0.5 flex h-4 min-w-0 items-center gap-1.5 text-2xs font-normal leading-4 fg-tertiary'
-            }
+            // Hidden through the root's single-line mark, like the action
+            // chip's placement.
+            className="relative mt-0.5 flex h-4 min-w-0 items-center gap-1.5 text-2xs font-normal leading-4 fg-tertiary group-data-[worktree-single-line=true]:hidden"
           >
             {/* No overflow-hidden here: the text child truncates on its own,
                 and clipping would cut the warning button's hover background
@@ -3771,7 +3629,7 @@ function WorktreeRowImpl(
                     // -m-0.5 cancels the click padding visually, so the glyph
                     // sits exactly in the shared subtitle icon column with the
                     // plain-span badges (terminal, script, hook, …).
-                    className="focus-ring -m-0.5 p-0.5 shrink-0 rounded transition-colors fg-warning hover:bg-subtle hover:fg-primary"
+                    className={`focus-ring -m-0.5 p-0.5 shrink-0 rounded transition-colors fg-warning hover:bg-subtle hover:fg-primary ${HEALTH_WARNING_COARSE_HIT_AREA}`}
                     aria-label="Worktree issue - click for details"
                   >
                     <WarningIcon size="xs" />
@@ -3783,189 +3641,114 @@ function WorktreeRowImpl(
                   Badges co-exist so overlapping subjects all stay visible;
                   hover popovers / tooltips enumerate the per-run detail.
                   Pipeline state stays in the leading slot + trailing dot. */}
-              {terminalStatus &&
-                classicLeadingFallback !== 'terminal' &&
-                withBadgeTooltip(
-                  onTerminalIconMouseEnter !== undefined,
-                  terminalStatusAriaLabel(terminalStatus),
-                  <span
-                    className={`focus-ring shrink-0 rounded-sm outline-none ${terminalStatusColorClass(terminalStatus)}`}
-                    role="img"
-                    aria-label={terminalStatusAriaLabel(terminalStatus)}
-                    tabIndex={0}
-                    onMouseEnter={onTerminalIconMouseEnter}
-                    onMouseLeave={onTerminalIconMouseLeave}
-                    onFocus={onTerminalIconFocus}
-                    onBlur={onTerminalIconBlur}
-                    onKeyDown={onTerminalIconKeyDown}
-                    data-testid={withTestIdSuffix(
-                      'worktree-row-terminal-badge',
-                      testIdSuffix,
-                    )}
-                    data-terminal-status={terminalStatus}
-                  >
-                    <TerminalIcon size={12} />
-                  </span>,
-                )}
+              {terminalStatus && classicLeadingFallback !== 'terminal' && (
+                <RowStatusBadge
+                  label={terminalStatusAriaLabel(terminalStatus)}
+                  className={`shrink-0 rounded-sm ${SUBTITLE_BADGE_HIT_AREA} ${terminalStatusColorClass(terminalStatus)}`}
+                  testId={withTestIdSuffix(
+                    'worktree-row-terminal-badge',
+                    testIdSuffix,
+                  )}
+                  data={{ 'data-terminal-status': terminalStatus }}
+                  {...terminalBadge}
+                >
+                  <TerminalIcon size={12} />
+                </RowStatusBadge>
+              )}
 
-              {scriptStatus &&
-                classicLeadingFallback !== 'script' &&
-                withBadgeTooltip(
-                  onScriptIconMouseEnter !== undefined,
-                  scriptStatusAriaLabel(),
-                  <span
-                    className={`focus-ring shrink-0 rounded-sm outline-none ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
-                    role="img"
-                    aria-label={scriptStatusAriaLabel()}
-                    tabIndex={0}
-                    onMouseEnter={onScriptIconMouseEnter}
-                    onMouseLeave={onScriptIconMouseLeave}
-                    onFocus={onScriptIconFocus}
-                    onBlur={onScriptIconBlur}
-                    onKeyDown={onScriptIconKeyDown}
-                    data-testid={withTestIdSuffix(
-                      'worktree-row-script-badge',
-                      testIdSuffix,
-                    )}
-                  >
-                    <RocketLaunchIcon size={12} />
-                  </span>,
-                )}
+              {scriptStatus && classicLeadingFallback !== 'script' && (
+                <RowStatusBadge
+                  label={scriptStatusAriaLabel()}
+                  className={`shrink-0 rounded-sm ${SUBTITLE_BADGE_HIT_AREA} ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
+                  testId={withTestIdSuffix(
+                    'worktree-row-script-badge',
+                    testIdSuffix,
+                  )}
+                  {...scriptBadge}
+                >
+                  <RocketLaunchIcon size={12} />
+                </RowStatusBadge>
+              )}
 
-              {hookStatus &&
-                classicLeadingFallback !== 'hook' &&
-                withBadgeTooltip(
-                  onHookIconMouseEnter !== undefined,
-                  hookStatusAriaLabel(),
-                  <span
-                    className={`focus-ring shrink-0 rounded-sm outline-none ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
-                    role="img"
-                    aria-label={hookStatusAriaLabel()}
-                    tabIndex={0}
-                    onMouseEnter={onHookIconMouseEnter}
-                    onMouseLeave={onHookIconMouseLeave}
-                    onFocus={onHookIconFocus}
-                    onBlur={onHookIconBlur}
-                    onKeyDown={onHookIconKeyDown}
-                    data-testid={withTestIdSuffix(
-                      'worktree-row-hook-badge',
-                      testIdSuffix,
-                    )}
-                  >
-                    <HookIcon size={12} />
-                  </span>,
-                )}
+              {hookStatus && classicLeadingFallback !== 'hook' && (
+                <RowStatusBadge
+                  label={hookStatusAriaLabel()}
+                  className={`shrink-0 rounded-sm ${SUBTITLE_BADGE_HIT_AREA} ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
+                  testId={withTestIdSuffix(
+                    'worktree-row-hook-badge',
+                    testIdSuffix,
+                  )}
+                  {...hookBadge}
+                >
+                  <HookIcon size={12} />
+                </RowStatusBadge>
+              )}
 
               {splitStatus &&
                 classicLeadingFallback !== 'split' &&
                 !focusedStatus && (
-                  <RichHoverTooltip
-                    content={
-                      <div className="flex flex-col gap-1">
-                        <div className="text-3xs font-semibold fg-secondary">
-                          Split PR {splitStatusHeaderLabel(splitStatus)}
-                        </div>
-                        {splitStatusMessage && (
-                          <div className="flex items-center gap-1.5 text-xs">
-                            <Dot tone={splitStatusDotTone(splitStatus)} />
-                            <span className="fg-primary">
-                              {splitStatusMessage}
-                            </span>
-                          </div>
-                        )}
-                      </div>
+                  <RowStatusBadge
+                    label={splitStatusAriaLabel(splitStatus)}
+                    className={`shrink-0 rounded-sm ${SUBTITLE_BADGE_HIT_AREA} ${splitStatusColorClass(splitStatus)}`}
+                    testId={withTestIdSuffix(
+                      'worktree-row-split-badge',
+                      testIdSuffix,
+                    )}
+                    data={{ 'data-split-status': splitStatus }}
+                    tooltip={
+                      <SplitStatusTooltip
+                        status={splitStatus}
+                        message={splitStatusMessage}
+                        textScale={textScale}
+                      />
                     }
-                    surfaceClassName="min-w-40 max-w-65"
-                    surfacePadding="card"
                   >
-                    <span
-                      className={`focus-ring shrink-0 rounded-sm outline-none ${splitStatusColorClass(splitStatus)}`}
-                      role="img"
-                      aria-label={splitStatusAriaLabel(splitStatus)}
-                      tabIndex={0}
-                      data-testid={withTestIdSuffix(
-                        'worktree-row-split-badge',
-                        testIdSuffix,
-                      )}
-                      data-split-status={splitStatus}
-                    >
-                      <SplitPrIcon size={12} />
-                    </span>
-                  </RichHoverTooltip>
+                    <SplitPrIcon size={12} />
+                  </RowStatusBadge>
                 )}
 
               {graphBuildStatus === 'building' &&
                 classicLeadingFallback !== 'graph' && (
-                  <RichHoverTooltip
-                    content={
-                      <div className="text-xs fg-primary">
-                        Updating project graph…
-                      </div>
-                    }
-                    surfaceClassName="min-w-40 max-w-65"
-                    surfacePadding="card"
+                  <RowStatusBadge
+                    label="Updating project graph…"
+                    className={`shrink-0 rounded-sm ${SUBTITLE_BADGE_HIT_AREA}`}
+                    testId={withTestIdSuffix(
+                      'worktree-row-graph-badge',
+                      testIdSuffix,
+                    )}
+                    tooltip={GRAPH_TOOLTIP}
                   >
-                    <span
-                      role="img"
-                      aria-label="Updating project graph…"
-                      tabIndex={0}
-                      className="focus-ring shrink-0 animate-pulse rounded-sm outline-none"
-                      data-testid={withTestIdSuffix(
-                        'worktree-row-graph-badge',
-                        testIdSuffix,
-                      )}
-                    >
-                      <GraphIcon size={12} />
-                    </span>
-                  </RichHoverTooltip>
+                    <GraphIcon size={12} />
+                  </RowStatusBadge>
                 )}
 
               {!focusedStatus && runStatusSlot}
-              {hasIdleWatcherChats &&
-                classicLeadingFallback !== 'watchers' &&
-                withBadgeTooltip(
-                  onWatcherIconMouseEnter !== undefined,
-                  'Chats with watchers',
-                  <span
-                    className="focus-ring shrink-0 rounded-sm outline-none"
-                    role="img"
-                    aria-label="Chats with watchers"
-                    tabIndex={0}
-                    onMouseEnter={onWatcherIconMouseEnter}
-                    onMouseLeave={onWatcherIconMouseLeave}
-                    onFocus={onWatcherIconFocus}
-                    onBlur={onWatcherIconBlur}
-                    onKeyDown={onWatcherIconKeyDown}
-                    data-testid={withTestIdSuffix(
-                      'worktree-row-watchers',
-                      testIdSuffix,
-                    )}
-                  >
-                    <AppAdvisorWatcherIcon size="sm" />
-                  </span>,
-                )}
+              {hasIdleWatcherChats && classicLeadingFallback !== 'watchers' && (
+                <RowStatusBadge
+                  label="Chats with watchers"
+                  className={`shrink-0 rounded-sm ${SUBTITLE_BADGE_HIT_AREA}`}
+                  testId={withTestIdSuffix(
+                    'worktree-row-watchers',
+                    testIdSuffix,
+                  )}
+                  {...watcherBadge}
+                >
+                  <AppAdvisorWatcherIcon size="sm" />
+                </RowStatusBadge>
+              )}
               {hasScheduledMessages &&
-                classicLeadingFallback !== 'scheduled' &&
-                withBadgeTooltip(
-                  onScheduledMessagesIconMouseEnter !== undefined,
-                  'Scheduled messages',
-                  <span
-                    className="focus-ring shrink-0 rounded-sm outline-none"
-                    role="img"
-                    aria-label="Scheduled messages"
-                    tabIndex={0}
-                    onMouseEnter={onScheduledMessagesIconMouseEnter}
-                    onMouseLeave={onScheduledMessagesIconMouseLeave}
-                    onFocus={onScheduledMessagesIconFocus}
-                    onBlur={onScheduledMessagesIconBlur}
-                    onKeyDown={onScheduledMessagesIconKeyDown}
-                    data-testid={withTestIdSuffix(
+                classicLeadingFallback !== 'scheduled' && (
+                  <RowStatusBadge
+                    label="Scheduled messages"
+                    className={`shrink-0 rounded-sm ${SUBTITLE_BADGE_HIT_AREA}`}
+                    testId={withTestIdSuffix(
                       'worktree-row-scheduled-messages',
                       testIdSuffix,
                     )}
+                    {...scheduledBadge}
                   >
                     <TimeFliesIcon size={12} />
-                  </span>,
+                  </RowStatusBadge>
                 )}
               {isDiscovering &&
                 withStatusTooltip(
@@ -4156,15 +3939,7 @@ function WorktreeRowImpl(
 
             {!focusedStatus && trailingDiffMetadata}
           </div>
-          {pipelinePopoverSlot}
-          {terminalPopoverSlot}
-          {scriptPopoverSlot}
-          {hookPopoverSlot}
-          {approvalPopoverSlot}
-          {unreadPopoverSlot}
-          {toolApprovalPopoverSlot}
-          {watcherPopoverSlot}
-          {scheduledMessagesPopoverSlot}
+          {popoverSlots}
         </div>
 
         {actionChipSlot}
@@ -4187,7 +3962,7 @@ function WorktreeRowImpl(
       {...intentHandlers}
       onContextMenu={onContextMenu}
       onPointerDown={onDragPointerDown}
-      className={`group group/sidebar-item relative ${showsDragCursor ? (rowIsDragging ? 'pointer-fine:cursor-grabbing' : 'cursor-default pointer-fine:hover:cursor-grab') : onDragPointerDown ? 'cursor-default touch-none select-none' : nonSortableInteraction ? 'cursor-default select-none' : onClick ? 'cursor-pointer' : 'cursor-default'} ${textScale === 'sidebar' ? 'rounded-row duration-0' : 'rounded-md'} transition-colors ${
+      className={`group group/sidebar-item relative ${showsDragCursor ? (rowIsDragging ? 'pointer-fine:cursor-grabbing' : 'cursor-default pointer-fine:hover:cursor-grab') : onDragPointerDown ? 'cursor-default touch-none select-none' : nonSortableInteraction ? 'cursor-default select-none' : onClick ? 'cursor-pointer' : 'cursor-default'} ${textScale === 'sidebar' ? 'rounded-row' : 'rounded-md transition-colors'} ${
         textScale === 'sidebar'
           ? nested
             ? 'py-1.5 pl-4.5 pr-1.5'
@@ -4260,13 +4035,23 @@ function WorktreeRowImpl(
                   ? isDone
                     ? 'font-normal opacity-70'
                     : 'font-normal'
-                  : selected
-                    ? 'font-medium fg-primary'
-                    : isDone
-                      ? 'font-medium fg-primary/80 opacity-70'
-                      : hasUnread || awaitingApproval
-                        ? 'font-semibold fg-primary'
-                        : 'font-normal fg-primary/80'
+                  : // Selection changes ink, never weight: weight would
+                    // re-wrap the title (DESIGN typography).
+                    `${
+                      isDone
+                        ? 'font-medium'
+                        : hasUnread || awaitingApproval
+                          ? 'font-semibold'
+                          : 'font-normal'
+                    } ${
+                      selected
+                        ? 'fg-primary'
+                        : isDone
+                          ? 'fg-primary/80 opacity-70'
+                          : hasUnread || awaitingApproval
+                            ? 'fg-primary'
+                            : 'fg-primary/80'
+                    }`
               }`}
             >
               {branchLabel}
@@ -4309,15 +4094,7 @@ function WorktreeRowImpl(
               )}
             </span>
             {trailingDiffMetadata}
-            {pipelinePopoverSlot}
-            {terminalPopoverSlot}
-            {scriptPopoverSlot}
-            {hookPopoverSlot}
-            {approvalPopoverSlot}
-            {unreadPopoverSlot}
-            {toolApprovalPopoverSlot}
-            {watcherPopoverSlot}
-            {scheduledMessagesPopoverSlot}
+            {popoverSlots}
           </div>
         </div>
       </div>
@@ -4628,7 +4405,7 @@ function WorktreeRowPreviewCard({
           )}
         </span>
         {lastActivityAt !== undefined && (
-          <span className="inline-flex h-4.5 shrink-0 items-center fg-tertiary">
+          <span className="inline-flex h-4.5 shrink-0 items-center tabular-nums fg-tertiary">
             {formatCompactAge(lastActivityAt, now)}
           </span>
         )}
@@ -4679,7 +4456,7 @@ function WorktreeRowPreviewCard({
               }
             >
               {prChecksPassing ? (
-                <CircleCheckIcon size={16} />
+                <CircleCheckIcon size={14} />
               ) : (
                 <PrIcon size={14} />
               )}
@@ -4755,7 +4532,53 @@ function WorktreeRowWithPreview(
     });
     return (): void => observer.disconnect();
   }, [hasPreview]);
+  // Hosts may make the row's `SidebarRowFrame` focusable, outside the card's
+  // own trigger, so keyboard focus on that frame opens the card after the
+  // hover delay. Only a focusable frame receives `focus`, so a frame that
+  // gains or loses its tabIndex after mount (web, during removal) needs no
+  // re-wiring.
+  const [frameFocused, setFrameFocused] = useState(false);
+  useEffect(() => {
+    const frame = wrapperRef.current?.closest<HTMLElement>(
+      '[data-sidebar-row-frame]',
+    );
+    if (!hasPreview || !frame) return undefined;
+    trackInputModality(frame.ownerDocument);
+    const view = frame.ownerDocument.defaultView ?? window;
+    let timer: number | undefined;
+    const handleFocus = (): void => {
+      if (!wasFocusVisible(frame)) return;
+      timer = view.setTimeout(
+        (): void => setFrameFocused(true),
+        ITEM_PREVIEW_OPEN_DELAY_MS,
+      );
+    };
+    const handleBlur = (): void => {
+      view.clearTimeout(timer);
+      setFrameFocused(false);
+    };
+    frame.addEventListener('focus', handleFocus);
+    frame.addEventListener('blur', handleBlur);
+    return (): void => {
+      view.clearTimeout(timer);
+      frame.removeEventListener('focus', handleFocus);
+      frame.removeEventListener('blur', handleBlur);
+    };
+  }, [hasPreview]);
   if (!hoverPreview) return <WorktreeRowBase {...props} ref={ref} />;
+  // A status badge's own popover replaces the card: hosts mount a slot only
+  // while its popover is open (web renders null while closed).
+  const badgePopoverOpen = [
+    props.pipelinePopoverSlot,
+    props.terminalPopoverSlot,
+    props.scriptPopoverSlot,
+    props.hookPopoverSlot,
+    props.approvalPopoverSlot,
+    props.unreadPopoverSlot,
+    props.toolApprovalPopoverSlot,
+    props.watcherPopoverSlot,
+    props.scheduledMessagesPopoverSlot,
+  ].some((slot) => slot != null);
   return (
     <RichHoverTooltip
       content={
@@ -4774,7 +4597,12 @@ function WorktreeRowWithPreview(
       }
       dataTestId="worktree-row-preview"
       openDelay={ITEM_PREVIEW_OPEN_DELAY_MS}
-      suppressed={pressed || menuActive}
+      open={frameFocused ? true : undefined}
+      onOpenChange={(open): void => {
+        if (!open) setFrameFocused(false);
+      }}
+      dismissOnEscape
+      suppressed={pressed || menuActive || badgePopoverOpen}
       preferRightPlacement
       rightPlacementAlign="start"
       // The pointer can move onto the card to select and copy its text;

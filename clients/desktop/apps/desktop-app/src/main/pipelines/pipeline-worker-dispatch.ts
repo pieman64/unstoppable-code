@@ -103,10 +103,9 @@ export async function startPipelineThroughLocalWorker(
   );
   // CAN-5086: only a start the `pipelines:execute` handler routed may go to the daemon.
   const built = claimDaemonPipelineRoute()
-    ? (await import('./daemon-pipeline-route')).buildDaemonPipelineLaunch(
-        pipeline,
-        options,
-      )
+    ? await (
+        await import('./daemon-pipeline-route')
+      ).buildDaemonPipelineLaunch(pipeline, options)
     : null;
   const staged = stagePipelineLaunch(executionId, {
     pipeline,

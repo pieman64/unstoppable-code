@@ -52,7 +52,9 @@ export function failServiceError(
 ): void {
   const missing = readCoworkFolderMissing(error);
   if (missing) {
-    context.fail(command, missing.code, missing.message, false, missing);
+    context.fail(command, missing.code, missing.message, false, {
+      coworkFolderMissing: missing,
+    });
     return;
   }
   if (error instanceof Error) {

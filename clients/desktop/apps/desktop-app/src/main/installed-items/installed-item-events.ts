@@ -1,6 +1,7 @@
 import { bumpGlobalPluginDefaultsRevision } from '../plugins/plugin-defaults-revision';
 import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inventory-service';
 import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
+import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
 import { broadcastPreferencesChanged } from '../lib/preferences-broadcast';
 import { sendToAllWindows } from '../lib/window-send';
 
@@ -10,5 +11,6 @@ export function notifyInstalledItemsChanged(): void {
   refreshInvocableInventoryAfterMutation('installed-items');
   broadcastPreferencesChanged();
   notifyPortalStructureChanged();
+  notifyDesktopInventoryChanged(['installed_items']);
   sendToAllWindows(INSTALLED_ITEMS_CHANGED_CHANNEL);
 }

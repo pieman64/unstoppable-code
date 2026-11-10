@@ -187,6 +187,21 @@ export function registerModelRegistryHandlers(
   );
 }
 
+/** The Settings Ollama install, shared with App Advisor (CAN-6008). */
+export async function installOllamaForWindow(
+  getWindow: () => BrowserWindow | null,
+): Promise<OllamaState> {
+  const ollamaService = getOllamaService();
+  const before = await ollamaService.getState();
+  const state = await ollamaService.install((progress) =>
+    broadcastOllamaInstallProgress(getWindow, progress),
+  );
+  if (state.installation.path !== before.installation.path) {
+    await destroySessionsByProvider('ollama');
+  }
+  return state;
+}
+
 export function registerOllamaHandlers(
   getWindow: () => BrowserWindow | null,
 ): void {
@@ -310,14 +325,7 @@ export function registerOllamaHandlers(
     return state;
   });
 
-  registerIpcHandler(IPC_CHANNELS.ollamaInstall, async () => {
-    const before = await ollamaService.getState();
-    const state = await ollamaService.install((progress) =>
-      broadcastOllamaInstallProgress(getWindow, progress),
-    );
-    if (state.installation.path !== before.installation.path) {
-      await destroySessionsByProvider('ollama');
-    }
-    return state;
-  });
+  registerIpcHandler(IPC_CHANNELS.ollamaInstall, () =>
+    installOllamaForWindow(getWindow),
+  );
 }

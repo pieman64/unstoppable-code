@@ -29,14 +29,15 @@ const GROUP_CLASSNAME: Record<ComposerHeroFrameRhythm, string> = {
   compact: 'absolute inset-x-0 top-1/2 w-full',
 };
 
+// The rows own the gap from `hanging` to the `below` rows.
 const ROWS_CLASSNAME: Record<ComposerHeroFrameRhythm, string> = {
-  spacious: 'absolute inset-x-0 top-full flex flex-col pb-6',
-  compact: 'absolute inset-x-0 top-full flex flex-col',
+  spacious: 'absolute inset-x-0 top-full flex flex-col gap-16 pb-6',
+  compact: 'absolute inset-x-0 top-full flex flex-col gap-5 sm:gap-6',
 };
 
 const BELOW_CLASSNAME: Record<ComposerHeroFrameRhythm, string> = {
-  spacious: 'mt-16 flex w-full flex-col gap-12',
-  compact: 'mt-5 flex w-full flex-col gap-10 sm:mt-6',
+  spacious: 'flex w-full flex-col gap-12',
+  compact: 'flex w-full flex-col gap-10',
 };
 
 export interface ComposerHeroFrameProps {

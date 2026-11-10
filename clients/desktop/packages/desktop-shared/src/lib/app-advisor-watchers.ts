@@ -37,8 +37,10 @@ import {
 } from '../hooks';
 import {
   isGitHubPullRequestUrl,
-  MAX_GITHUB_PULL_REQUEST_WATCH_ITEMS,
   normalizeGitHubPullRequestNumber,
+} from '@canopy/protocol/portable-tasks/pull-request-reference';
+import {
+  MAX_GITHUB_PULL_REQUEST_WATCH_ITEMS,
   normalizeGitHubPullRequestTargets,
 } from './github-pull-request-references';
 import { normalizeGitHubRepositoryReference } from './github-workflow-run-references';

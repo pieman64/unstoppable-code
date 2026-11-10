@@ -10,7 +10,7 @@ import type { SharedAgentSummary } from '@canopy/execution-engine/types/agent-mo
 import type { DeepLinkShareOpenEvent } from '@canopy/desktop-shared/types';
 import type { SharedPluginSummary } from '@canopy/protocol/plugins';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol/workspace-templates';
-import { shareablePluginSourceLabel } from '@canopy/desktop-shared/plugin-refs';
+import { shareablePluginSourceLabel } from '@canopy/execution-engine/plugin-refs';
 import {
   DetailPageActions,
   ExecutionActionButton,

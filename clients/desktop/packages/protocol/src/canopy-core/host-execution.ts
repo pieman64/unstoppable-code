@@ -282,6 +282,23 @@ export const WorkerPipelineHostLaunchSchema = z.strictObject({
       logicalWorkspaceEnvironmentId: z.string().min(1).max(512),
     })
     .optional(),
+  /** The run's model alias preferences, stored and draft merged as its core's executor merges them (CAN-5832). */
+  modelAliasPreferences: CanopyJsonValueSchema.optional(),
+  /**
+   * What each of the pipeline's model aliases names for this run, as its core
+   * resolved it at launch: the base model, and whether the alias adds plugins.
+   * The host classifies with it; each step still resolves its alias (CAN-5832).
+   */
+  modelAliasResolutions: z
+    .record(
+      z.string().min(1).max(256),
+      z.strictObject({
+        base: z.string().min(1).max(512),
+        plugins: z.boolean(),
+      }),
+    )
+    .refine((aliases) => Object.keys(aliases).length <= 256)
+    .optional(),
 });
 export type WorkerPipelineHostLaunch = z.output<
   typeof WorkerPipelineHostLaunchSchema

@@ -19,14 +19,14 @@ import type {
   MarketplaceInfo,
   PluginInfo,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import {
   isBuiltInPluginMarketplaceId,
   isCuratedPluginMarketplaceId,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { ShareablePluginRef } from '@canopy/protocol';
 import { normalizeGitHubRepoRef } from '@canopy/protocol/plugins';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 
 /** Codex's locally bundled catalog, available even without Canopy Cloud. */
 const CODEX_BUNDLED_MARKETPLACE_ID = 'openai-curated';

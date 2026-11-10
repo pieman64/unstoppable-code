@@ -21,8 +21,8 @@ import {
   type ClaudeModAdmissionLaunch,
   type ClaudeModPluginInput,
   type ClaudeModLaunchPlugin,
-} from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
-import { projectClaudePluginForLaunch } from '@canopy/desktop-shared/node/plugins/claude-mod-projection';
+} from '@canopy/execution-engine/node/plugins/claude-mod-admission';
+import { projectClaudePluginForLaunch } from '@canopy/execution-engine/node/plugins/claude-mod-projection';
 import {
   getEnhancedEnv,
   setClaudeModAdmissionEnabled,
@@ -32,8 +32,8 @@ import {
   isClaudeModPluginId,
   isSkippedClaudeMod,
   type SkippedClaudeMod,
-} from '@canopy/desktop-shared/types/claude-mod-admission';
-import type { ClaudeModAdmission } from '@canopy/desktop-shared/types/claude-mod-admission';
+} from '@canopy/execution-engine/types/claude-mod-admission';
+import type { ClaudeModAdmission } from '@canopy/execution-engine/types/claude-mod-admission';
 import { resolveAmbientClaudePluginIds } from './delegation/claude-settings';
 import { getFeatureFlagService } from '../feature-flags';
 import { readClaudeEnabledPlugins } from '../plugins/claude-enabled-plugins';

@@ -6,8 +6,8 @@ import {
   ExternalIcon,
   ForwardIcon,
   MaximizeIcon,
-} from '../../icons/AppIcons';
-import type { PanelSplitDirection } from '../../panels/registry-types';
+} from './AppIcons';
+import type { PanelSplitDirection } from '../panels/registry-types';
 
 /**
  * Leading icons for the panel menus (a tab's right-click menu and a group's

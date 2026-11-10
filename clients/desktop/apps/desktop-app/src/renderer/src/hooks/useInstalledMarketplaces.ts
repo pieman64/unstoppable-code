@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { MarketplaceInfo } from '@canopy/desktop-shared/types/plugins';
+import type { MarketplaceInfo } from '@canopy/execution-engine/types/plugins';
 
 /**
  * Read-only marketplace snapshot for related-item computation (CAN-2382).

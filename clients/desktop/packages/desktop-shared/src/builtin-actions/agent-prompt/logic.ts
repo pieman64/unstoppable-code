@@ -18,7 +18,7 @@ import {
   type ThinkingLevel,
   type OllamaModelEntry,
 } from '@canopy/desktop-shared/types';
-import { buildRtkClaudeHooks } from '@canopy/desktop-shared/node/rtk/claude-hooks';
+import { buildRtkClaudeHooks } from '@canopy/execution-engine/node/rtk/claude-hooks';
 import {
   mapThinkingToReasoningEffort,
   type CodexThreadOptions,
@@ -48,7 +48,7 @@ import {
   mergeClaudeModAdmissionSettings,
   readClaudeModAdmissionEnvelope,
   type ClaudeModAdmissionLaunch,
-} from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+} from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 import { hydrateModelRegistryFromEnv } from '@canopy/execution-engine/builtin-actions/_lib/model-registry';
 import { parseThinkingLevelInput } from '@canopy/execution-engine/builtin-actions/_lib/thinking';
 

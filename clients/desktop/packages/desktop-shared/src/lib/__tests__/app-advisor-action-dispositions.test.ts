@@ -60,12 +60,12 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
       legacyWrites: count((d) => d.kind === 'legacy' && d.access === 'write'),
       legacyReads: count((d) => d.kind === 'legacy' && d.access === 'read'),
     }).toEqual({
-      coreWrites: 128,
-      coreReads: 99,
+      coreWrites: 152,
+      coreReads: 102,
       hostPresentation: 3,
-      presentation: 85,
-      legacyWrites: 92,
-      legacyReads: 25,
+      presentation: 87,
+      legacyWrites: 66,
+      legacyReads: 22,
     });
   });
 
@@ -116,10 +116,14 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
       'mcp.account_promote',
       'mcp.account_edit',
     ] as const)
+      // CAN-6008 B1: main hands them to the surface, keyed, with the lease bound.
       expect(APP_ADVISOR_ACTION_DISPOSITIONS[type]).toEqual({
-        kind: 'legacy',
+        kind: 'core',
         access: 'write',
+        executor: 'settings-surface',
         grants: ['core.integration.write'],
+        revision: 'none',
+        requiresInterface: true,
       });
   });
 

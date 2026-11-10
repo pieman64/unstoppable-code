@@ -7,7 +7,7 @@ import type {
 import type {
   MarketplaceInfo,
   PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { DialogModal } from '@/components/shared/DialogModal';
 import {
   Button,

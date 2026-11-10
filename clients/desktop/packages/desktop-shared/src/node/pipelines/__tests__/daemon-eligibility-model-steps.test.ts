@@ -2,6 +2,8 @@
 // daemon's pipeline host runs, behind an option, and refuses every other
 // model step with a reason that names why. Runs over the real bundled action
 // manifests. CAN-5831: Ollama models on the agent actions are admitted too.
+// CAN-5832: model alias steps are admitted by what their alias names for the
+// run.
 import {
   mkdirSync,
   mkdtempSync,
@@ -246,7 +248,74 @@ describe('classifyDaemonPipeline with model steps', () => {
     }
   });
 
-  it('refuses expression models, aliases and plugin collections', () => {
+  it('admits model alias steps by what their alias names for the run', () => {
+    // CAN-5832: the run's core resolves each alias at launch.
+    const model_aliases = [
+      { id: 'fast', name: 'Fast', defaults: { base: DEFAULT_CLAUDE_MODEL } },
+      { id: 'agent', name: 'Agent', defaults: { agent_id: 'agent_model_1' } },
+    ];
+    const resolved = (
+      modelAliases: DaemonPipelineClassifierContext['modelAliases'],
+    ): DaemonPipelineClassifierContext => ({ ...context, modelAliases });
+    // A pipeline that declares aliases and uses none is eligible.
+    expect(
+      classifyDaemonPipeline(
+        oneStep(agentPrompt(), { model_aliases }),
+        context,
+        ADMIT,
+      ),
+    ).toEqual({ eligible: true, modelSteps: 1, modelHarnesses: ['claude'] });
+    expect(
+      classifyDaemonPipeline(
+        oneStep(agentPrompt('fast'), { model_aliases }),
+        resolved({ fast: { base: DEFAULT_CLAUDE_MODEL, plugins: false } }),
+        ADMIT,
+      ),
+    ).toEqual({ eligible: true, modelSteps: 1, modelHarnesses: ['claude'] });
+    expect(
+      classifyDaemonPipeline(
+        oneStep(agentPrompt('agent'), { model_aliases }),
+        resolved({ agent: { base: DEFAULT_CODEX_MODEL, plugins: false } }),
+        ADMIT,
+      ),
+    ).toEqual({ eligible: true, modelSteps: 1, modelHarnesses: ['codex'] });
+    // An alias the core could not resolve, one on an action that does not
+    // resolve aliases, one naming a provider the daemon does not run, and
+    // one that adds plugins stay in process.
+    expect(
+      classifyDaemonPipeline(
+        oneStep(agentPrompt('fast'), { model_aliases }),
+        context,
+        ADMIT,
+      ),
+    ).toMatchObject({ eligible: false, reason: 'model_alias' });
+    expect(
+      classifyDaemonPipeline(
+        oneStep(
+          { uses: 'builtin/router', with: { model: 'fast' } },
+          { model_aliases },
+        ),
+        resolved({ fast: { base: DEFAULT_CLAUDE_MODEL, plugins: false } }),
+        ADMIT,
+      ),
+    ).toMatchObject({ eligible: false, reason: 'model_alias' });
+    expect(
+      classifyDaemonPipeline(
+        oneStep(agentPrompt('fast'), { model_aliases }),
+        resolved({ fast: { base: CURSOR_MODELS[0] ?? '', plugins: false } }),
+        ADMIT,
+      ),
+    ).toMatchObject({ eligible: false, reason: 'model_provider' });
+    expect(
+      classifyDaemonPipeline(
+        oneStep(agentPrompt('agent'), { model_aliases }),
+        resolved({ agent: { base: DEFAULT_CLAUDE_MODEL, plugins: true } }),
+        ADMIT,
+      ),
+    ).toMatchObject({ eligible: false, reason: 'plugin_collections' });
+  });
+
+  it('refuses expression models and plugin collections', () => {
     expect(
       classifyDaemonPipeline(
         oneStep(agentPrompt('${{ inputs.model }}')),
@@ -257,13 +326,6 @@ describe('classifyDaemonPipeline with model steps', () => {
     const model_aliases = [
       { id: 'fast', name: 'Fast', defaults: { base: DEFAULT_CLAUDE_MODEL } },
     ];
-    expect(
-      classifyDaemonPipeline(
-        oneStep(agentPrompt(), { model_aliases }),
-        context,
-        ADMIT,
-      ),
-    ).toMatchObject({ eligible: false, reason: 'model_alias' });
     expect(
       classifyDaemonPipeline(
         oneStep(agentPrompt(), {

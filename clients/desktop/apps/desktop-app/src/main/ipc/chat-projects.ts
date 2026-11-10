@@ -14,7 +14,7 @@ import {
   withShareStage,
 } from '../sharing/share-operation-result';
 import { randomUUID } from 'node:crypto';
-import { isChatTabPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { isChatTabPluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   IPC_CHANNELS,
   type ChatProjectClaudeMdRequest,

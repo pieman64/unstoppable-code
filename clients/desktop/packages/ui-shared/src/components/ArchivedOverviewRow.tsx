@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX, ReactNode } from 'react';
-import { ArchivedStateIcon } from './ArchivedStateIcon';
+import { ArchivedStateIcon } from '../icons/ArchivedStateIcon';
 import { LoadingSpinner } from './LoadingSpinner';
 import { RichHoverTooltip } from './RichHoverTooltip';
 import {

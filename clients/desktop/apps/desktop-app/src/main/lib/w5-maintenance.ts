@@ -118,6 +118,11 @@ export interface W5MaintenanceContext extends W5BackupContext {
   readonly offlineMigration?: () => Promise<void>;
   /** Internal-root settlement checks W5 ownership, not unrelated app payloads. */
   readonly diagnosisScope?: W5DiagnosisScope;
+  /** Trusted internal-root composition; runs before writer shutdown under exclusion. */
+  readonly adoptInternalRootMetadata?: (
+    diagnosis: W5Diagnosis,
+    assertHeld: () => Promise<void>,
+  ) => Promise<void>;
   readonly platform: Pick<
     PlatformServices,
     'supervision' | 'secureFiles' | 'endpoints'
@@ -432,13 +437,34 @@ export async function runW5Maintenance(
     if (!(await isW5MaintenanceHeld(exclusive, dataRoot))) refuse('claim-lost');
     // Local import keeps SQLite and offline scans off the desktop startup graph.
     const { diagnoseW5State } = await import('./w5-maintenance-diagnosis');
-    const diagnosis = await diagnoseW5State(dataRoot, context.diagnosisScope);
+    const diagnosis = await diagnoseW5State(
+      dataRoot,
+      context.diagnosisScope,
+      // Internal-root settlement proves upgrades on a copy before opening the worker.
+      request.mode === 'reopen' &&
+        context.adoptInternalRootMetadata !== undefined,
+    );
     signal?.throwIfAborted();
     if (!(await isW5MaintenanceHeld(exclusive, dataRoot))) refuse('claim-lost');
     if (request.mode === 'diagnose') return { mode: 'diagnose', diagnosis };
     if (request.mode === 'reopen') {
       if (diagnosis.logIssue) refuse('log-unavailable');
       await context.host.recoveryReport();
+      if (context.adoptInternalRootMetadata) {
+        const requireHeld = async (): Promise<void> => {
+          signal?.throwIfAborted();
+          if (!(await isW5MaintenanceHeld(exclusive, dataRoot)))
+            refuse('claim-lost');
+        };
+        await requireHeld();
+        const recovered = await diagnoseW5State(
+          dataRoot,
+          context.diagnosisScope,
+        );
+        await requireHeld();
+        await context.adoptInternalRootMetadata(recovered, requireHeld);
+        await requireHeld();
+      }
       await stopWriter();
       if (!(await isW5MaintenanceHeld(exclusive, dataRoot)))
         refuse('claim-lost');

@@ -76,7 +76,11 @@ import {
 } from '@canopy/desktop-shared/pipelines/scope';
 import { normalizePipelinePluginCollectionPreferences } from '../plugin-collection-store';
 import { loadPipelinePluginCollectionPreferences } from '../plugin-collection-store';
-import { loadPipelineModelAliasPreferences } from '../plugin-collection-store';
+import {
+  filterModelAliasPreferencesToPipeline,
+  normalizeExecutionModelAliasPreferences,
+  resolveExecutionModelAliasPreferences,
+} from './model-alias-preferences';
 import { resolvePipelinePluginCollections } from '../plugin-collection-resolver';
 import {
   buildPipelinePackageOverlay,
@@ -1212,125 +1216,6 @@ async function resolveExecutionPluginCollections(
     preferences,
     snapshots: resolution.snapshots,
   };
-}
-
-function normalizeExecutionModelAliasPreferences(
-  preferences: unknown,
-): Record<string, PipelineModelAliasPreference> {
-  if (
-    !preferences ||
-    typeof preferences !== 'object' ||
-    Array.isArray(preferences)
-  ) {
-    return {};
-  }
-
-  const normalized: Record<string, PipelineModelAliasPreference> = {};
-  const preferenceEntries = Object.entries(
-    preferences as Record<string, unknown>,
-  );
-  for (const [aliasId, rawPreference] of preferenceEntries) {
-    const trimmedAliasId = aliasId.trim();
-    if (!trimmedAliasId) continue;
-    if (
-      !rawPreference ||
-      typeof rawPreference !== 'object' ||
-      Array.isArray(rawPreference)
-    ) {
-      continue;
-    }
-    const rawRecord = rawPreference as Record<string, unknown>;
-    const mode = rawRecord.mode;
-    if (typeof mode !== 'string') {
-      continue;
-    }
-    if (mode === 'reset') {
-      normalized[trimmedAliasId] = { mode: 'reset' };
-      continue;
-    }
-    if (mode === 'agent') {
-      const rawAgentId = rawRecord.agent_id;
-      const agentId = typeof rawAgentId === 'string' ? rawAgentId.trim() : '';
-      if (agentId.startsWith('agent_model_')) {
-        normalized[trimmedAliasId] = { mode: 'agent', agent_id: agentId };
-      }
-      continue;
-    }
-    if (mode === 'inline') {
-      const rawBase = rawRecord.base;
-      const base = typeof rawBase === 'string' ? rawBase.trim() : '';
-      if (!base) continue;
-      const rawInstructions = rawRecord.instructions;
-      if (
-        rawInstructions !== undefined &&
-        typeof rawInstructions !== 'string'
-      ) {
-        continue;
-      }
-      const rawPluginCollectionId = rawRecord.plugin_collection_id;
-      const pluginCollectionId =
-        rawPluginCollectionId === undefined
-          ? undefined
-          : typeof rawPluginCollectionId === 'string'
-            ? rawPluginCollectionId.trim()
-            : '';
-      if (rawPluginCollectionId !== undefined && !pluginCollectionId) {
-        continue;
-      }
-      normalized[trimmedAliasId] = {
-        mode: 'inline',
-        base,
-        ...(rawInstructions !== undefined
-          ? { instructions: rawInstructions }
-          : {}),
-        ...(pluginCollectionId
-          ? { plugin_collection_id: pluginCollectionId }
-          : {}),
-      };
-    }
-  }
-  return normalized;
-}
-
-function filterModelAliasPreferencesToPipeline(
-  normalizedPipeline: NormalizedPipeline,
-  preferences: Record<string, PipelineModelAliasPreference>,
-): Record<string, PipelineModelAliasPreference> | undefined {
-  const aliasIds = new Set(
-    (normalizedPipeline.model_aliases ?? []).map((alias) => alias.id),
-  );
-  if (aliasIds.size === 0) {
-    return undefined;
-  }
-  const filtered: Record<string, PipelineModelAliasPreference> = {};
-  for (const [aliasId, preference] of Object.entries(preferences)) {
-    if (aliasIds.has(aliasId)) {
-      filtered[aliasId] = preference;
-    }
-  }
-  return Object.keys(filtered).length > 0 ? filtered : undefined;
-}
-
-function resolveExecutionModelAliasPreferences(
-  normalizedPipeline: NormalizedPipeline,
-  options: Pick<
-    ExecutionOptions,
-    'pipelinePreferenceLocator' | 'modelAliasPreferences'
-  >,
-): Record<string, PipelineModelAliasPreference> | undefined {
-  if (!normalizedPipeline.model_aliases) {
-    return undefined;
-  }
-  const storedPreferences = options.pipelinePreferenceLocator
-    ? loadPipelineModelAliasPreferences(options.pipelinePreferenceLocator)
-    : {};
-  const draftPreferences = normalizeExecutionModelAliasPreferences(
-    options.modelAliasPreferences,
-  );
-  return filterModelAliasPreferencesToPipeline(normalizedPipeline, {
-    ...storedPreferences,
-    ...draftPreferences,
-  });
 }
 
 function overlayModelAliasPreferences(

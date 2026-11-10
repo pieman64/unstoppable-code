@@ -45,7 +45,7 @@ import {
   hasPendingSkillReplacement,
 } from './skill-replacement-state';
 import { writeFileAtomically, syncDirectory } from '../lib/atomic-file';
-import { normalizeGitHubRepoRef } from '@canopy/desktop-shared/plugin-refs';
+import { normalizeGitHubRepoRef } from '@canopy/execution-engine/plugin-refs';
 import {
   getCustomSkillNameValidationError,
   getSkillFilePathValidationError,

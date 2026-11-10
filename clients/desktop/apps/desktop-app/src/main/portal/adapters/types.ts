@@ -38,7 +38,11 @@ import type {
   PortalCommandEnvelope,
   PortalEventEnvelope,
 } from '@canopy/desktop-shared/types';
-import type { ExternalAgentSender } from '@canopy/protocol/portal';
+import type {
+  ExternalAgentSender,
+  PortalWorktreeCreateRefusal,
+  PortalWorktreeCreateRefusalReason,
+} from '@canopy/protocol/portal';
 
 /**
  * Stable error codes emitted by adapters via {@link PortalAdapterContext.fail}.
@@ -67,7 +71,8 @@ export type PortalAdapterFailureCode =
   | 'forbidden'
   | 'execution_failed'
   | 'github_not_connected'
-  | 'unsupported_command';
+  | 'unsupported_command'
+  | PortalWorktreeCreateRefusalReason;
 
 /**
  * Runtime context handed to every adapter by the dispatcher. Adapters
@@ -149,7 +154,10 @@ export interface PortalAdapterContext {
     code: string,
     message: string,
     retryable?: boolean,
-    coworkFolderMissing?: CoworkFolderMissing,
+    details?: {
+      refusal?: PortalWorktreeCreateRefusal;
+      coworkFolderMissing?: CoworkFolderMissing;
+    },
   ): void;
 }
 

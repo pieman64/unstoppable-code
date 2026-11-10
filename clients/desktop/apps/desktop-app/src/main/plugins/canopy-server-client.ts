@@ -14,7 +14,7 @@ import type {
   SharedPluginPublicShareInfo,
   SharedPluginSummary,
   SharedPluginUpdateRequest,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import {
   requestCanopyCloudJson as requestJson,
   requestCanopyCloudJsonConditional,

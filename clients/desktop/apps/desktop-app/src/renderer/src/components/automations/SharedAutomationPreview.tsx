@@ -16,7 +16,7 @@ import type {
   SharedAutomationTrigger,
 } from '@canopy/protocol/automations';
 import { getAutomationTriggerLabel } from '@canopy/desktop-shared/lib/automations';
-import { buildShareablePluginDisplay } from '@canopy/desktop-shared/plugin-refs';
+import { buildShareablePluginDisplay } from '@canopy/execution-engine/plugin-refs';
 import { DescriptionMarkdown } from '@canopy/ui-shared/components/DescriptionMarkdown';
 import { hasMarkdownDescriptionText } from '@canopy/ui-shared/lib/markdown-plain-text';
 import { capitalizeFirstLetter } from '@canopy/ui-shared/lib';

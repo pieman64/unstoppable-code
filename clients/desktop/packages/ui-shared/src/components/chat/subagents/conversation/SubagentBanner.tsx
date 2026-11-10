@@ -18,7 +18,7 @@ import {
 } from '../subagent-copy';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
 import { SubagentHarnessMark } from '../common/SubagentHarnessMark';
-import { SubagentIcon } from '../common/SubagentIcon';
+import { SubagentIcon } from '../../../../icons/SubagentIcon';
 import { SubagentWorkflowMark } from '../common/SubagentWorkflow';
 import {
   SubagentStatusGlyph,

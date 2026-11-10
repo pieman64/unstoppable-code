@@ -200,7 +200,7 @@ export * from './DiffLineCounts';
 export * from './FileChangeMetadata';
 export * from './FileRevertButton';
 export * from './SourceInfoButton';
-export * from './PauseResumeIcon';
+export * from '../icons/PauseResumeIcon';
 export * from './ExecutionActionButton';
 export * from './SkillUpdateNotice';
 export * from './DetailHeader';
@@ -296,7 +296,7 @@ export * from './LoadingIndicatorStyle';
 export * from './BusyLabel';
 export * from './context-menu-placement';
 export * from './tooltip-handoff';
-export * from './ModelProviderIcon';
+export * from '../icons/ModelProviderIcon';
 export * from './ModelPickerMenu';
 export * from './modelLibraryLock';
 export * from './modelPickerRowCue';
@@ -309,6 +309,7 @@ export * from './CreditsRecoveryNotice';
 export * from './guestModelGate';
 export * from './GuestModelGateContent';
 export * from './ThinkingLevelControl';
+export * from '../icons/ThinkingLevelIcon';
 // Phase 3 (part B) — diff viewer chrome.
 export * from './diff';
 // Phase 4 — chat block render primitives.
@@ -420,7 +421,7 @@ export * from './SharedContainerInvitationDialog';
 export * from './SharedContainerPastSharesList';
 export * from './ArchivedRowActionsMenu';
 export * from './ArchivedStateFilterDropdown';
-export * from './ArchivedStateIcon';
+export * from '../icons/ArchivedStateIcon';
 export * from './ledger';
 export * from './EmptyTrashDialog';
 export * from './sidebar-item-classes';
@@ -446,7 +447,7 @@ export * from './LoadingRegion';
 export * from './SlowLoadNote';
 
 export * from './UsageGroup';
-export * from './UsageResetIcon';
+export * from '../icons/UsageResetIcon';
 export * from './UsageLimitedSessionsControl';
 export {
   DeferredPluginsControl,

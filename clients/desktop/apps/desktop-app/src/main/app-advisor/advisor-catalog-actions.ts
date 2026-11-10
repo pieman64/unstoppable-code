@@ -9,7 +9,7 @@ import {
   emptyChatTabPluginSelections,
   pluginSelectionsResult,
 } from '@canopy/desktop-shared/lib/app-advisor-chat-reads';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type { SkillSuggestion } from '@canopy/desktop-shared/lib/skill-suggestions';
 import type {
   AppAdvisorAction,
@@ -22,7 +22,7 @@ import type {
   AgentModelDefinition,
   SaveAgentModelRequest,
 } from '@canopy/execution-engine/types/agent-models';
-import type { MarketplaceInfo } from '@canopy/desktop-shared/types/plugins';
+import type { MarketplaceInfo } from '@canopy/execution-engine/types/plugins';
 import type {
   CollectionConfig,
   CollectionIndexEntry,

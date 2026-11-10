@@ -79,7 +79,7 @@ import {
   stagedActionPipelineId,
 } from './packagedPipelineInstall';
 import { InlinePipelineYamlPreview } from './InlinePipelineYamlPreview';
-import { buildShareablePluginDisplay } from '@canopy/desktop-shared/plugin-refs';
+import { buildShareablePluginDisplay } from '@canopy/execution-engine/plugin-refs';
 import {
   useUnifiedTableData,
   type UnifiedTableRow,

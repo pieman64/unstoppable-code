@@ -28,6 +28,7 @@ import {
   StatusGlyph,
   StatusLabel,
   Heading,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { toAppError } from '@canopy/protocol/app-errors';
@@ -146,12 +147,11 @@ function StatusFooter({
 }): JSX.Element {
   if (provider === 'opencode')
     return (
-      <div
-        data-testid="auth-login-status"
-        className="px-6 py-3 border-t text-s fg-secondary"
-      >
-        Choose a provider and follow its sign-in instructions.
-      </div>
+      <Surface variant="section" boundary="top" data-testid="auth-login-status">
+        <div className="px-6 py-3 text-s fg-secondary">
+          Choose a provider and follow its sign-in instructions.
+        </div>
+      </Surface>
     );
   return (
     <div

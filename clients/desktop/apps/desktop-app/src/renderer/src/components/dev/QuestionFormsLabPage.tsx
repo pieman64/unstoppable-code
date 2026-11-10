@@ -12,6 +12,7 @@ import {
   Button,
   Heading,
   Markdown,
+  Surface,
   answersToDisplay,
   type AskUserQuestionCardProps,
 } from '@canopy/ui-shared/components';
@@ -159,211 +160,219 @@ export function QuestionFormsLabPage(): JSX.Element {
   };
 
   return (
-    <div
-      className="flex h-screen bg-base fg-primary"
-      data-testid="question-forms-lab"
-    >
-      <aside className="flex w-64 shrink-0 flex-col gap-5 overflow-y-auto border-r p-3">
-        <LabSection title="View">
-          <ToggleRow
-            value={view}
-            onChange={setView}
-            options={[
-              { value: 'card', label: 'Question card' },
-              { value: 'fields', label: 'Fields' },
-              { value: 'choices', label: 'Choices' },
-            ]}
-          />
-        </LabSection>
-        {view === 'card' && (
-          <>
-            <LabSection title="Preset">
-              <div className="flex flex-col">
-                {QUESTION_PRESETS.map((entry) => (
-                  <ListRow
-                    key={entry.id}
-                    data-testid={`question-forms-lab-preset-${entry.id}`}
-                    aria-pressed={entry.id === machine.presetId}
-                    selected={entry.id === machine.presetId}
-                    onClick={() => dispatch({ type: 'preset', id: entry.id })}
-                    description={entry.description}
-                  >
-                    {entry.title}
-                  </ListRow>
-                ))}
-              </div>
-            </LabSection>
-
-            <LabSection title="Request">
-              <div className="flex flex-wrap gap-1 px-1">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={!settling}
-                  onClick={() => dispatch({ type: 'resolve' })}
-                >
-                  Resolve
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={!settling}
-                  onClick={() => dispatch({ type: 'fail' })}
-                >
-                  Fail
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() =>
-                    dispatch({
-                      type:
-                        machine.phase === 'disconnected'
-                          ? 'reconnect'
-                          : 'disconnect',
-                    })
-                  }
-                >
-                  {machine.phase === 'disconnected'
-                    ? 'Reconnect'
-                    : 'Disconnect'}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => dispatch({ type: 'reset' })}
-                >
-                  Start again
-                </Button>
-              </div>
-              <div className="px-2">
-                <ChoiceField
-                  label="Resolve automatically"
-                  checked={autoResolve}
-                  onChange={(event) => setAutoResolve(event.target.checked)}
-                />
-              </div>
-            </LabSection>
-          </>
-        )}
-        <LabSection title="Appearance">
-          <ToggleRow
-            value={colorMode}
-            onChange={setColorMode}
-            options={[
-              { value: 'light', label: 'Light' },
-              { value: 'dark', label: 'Dark' },
-            ]}
-          />
-          <ToggleRow
-            value={width}
-            onChange={setWidth}
-            options={[
-              { value: 'normal', label: 'Normal' },
-              { value: 'compact', label: 'Narrow' },
-            ]}
-          />
-        </LabSection>
-
-        {view === 'card' && (
-          <LabSection title="Events">
-            <ol
-              className="flex flex-col gap-0.5 px-2 text-xs fg-secondary"
-              data-testid="question-forms-lab-events"
-            >
-              {machine.events.map((event, index) => (
-                <li key={`${index}-${event}`}>{event}</li>
-              ))}
-            </ol>
-          </LabSection>
-        )}
-      </aside>
-
-      {view !== 'card' ? (
-        <main className="h-full min-w-0 flex-1 overflow-y-auto">
-          {view === 'fields' ? <FieldOptionsLab /> : <ChoiceOptionsLab />}
-        </main>
-      ) : (
-        <main
-          className={`mx-auto flex h-full min-w-0 flex-1 flex-col ${
-            width === 'compact' ? 'max-w-90' : ''
-          }`}
+    <Surface variant="pane" extent="viewport" data-testid="question-forms-lab">
+      <div className="flex h-full fg-primary">
+        <Surface
+          as="aside"
+          variant="section"
+          boundary="right"
+          padding="compact"
+          gap="block"
+          className="w-64 shrink-0 overflow-y-auto"
         >
-          <div className="min-h-0 flex-1 overflow-y-auto py-6">
-            <div className="mx-auto flex w-full max-w-[var(--chat-composer-shell-width)] flex-col gap-4 px-4">
-              <div className="flex min-w-0 max-w-full justify-start px-3">
-                <div className="min-w-0 max-w-full text-s fg-primary">
-                  <Markdown>{preset.prompt}</Markdown>
+          <LabSection title="View">
+            <ToggleRow
+              value={view}
+              onChange={setView}
+              options={[
+                { value: 'card', label: 'Question card' },
+                { value: 'fields', label: 'Fields' },
+                { value: 'choices', label: 'Choices' },
+              ]}
+            />
+          </LabSection>
+          {view === 'card' && (
+            <>
+              <LabSection title="Preset">
+                <div className="flex flex-col">
+                  {QUESTION_PRESETS.map((entry) => (
+                    <ListRow
+                      key={entry.id}
+                      data-testid={`question-forms-lab-preset-${entry.id}`}
+                      aria-pressed={entry.id === machine.presetId}
+                      selected={entry.id === machine.presetId}
+                      onClick={() => dispatch({ type: 'preset', id: entry.id })}
+                      description={entry.description}
+                    >
+                      {entry.title}
+                    </ListRow>
+                  ))}
                 </div>
-              </div>
-              {machine.phase === 'answered' ? (
-                <div className="px-3">
-                  <AnsweredQuestionsBlock
-                    answers={answersToDisplay(
-                      machine.answers,
-                      preset.questions,
-                    )}
-                  />
-                </div>
-              ) : null}
-              {machine.phase === 'dismissed' ? (
-                <p className="px-3 text-xs fg-tertiary">Question dismissed.</p>
-              ) : null}
-            </div>
-          </div>
+              </LabSection>
 
-          <div className="relative mx-auto w-full max-w-[var(--chat-composer-shell-width)] shrink-0 px-4 pb-4 pt-2">
-            <div className={open ? 'rounded-2xl shadow-lg' : 'contents'}>
-              {open ? (
-                <section
-                  aria-label="Questions awaiting your reply"
-                  data-testid="chat-question-dock"
-                  className="max-h-[min(60vh,32rem)] divide-y overflow-y-auto overscroll-contain rounded-t-2xl bg-tertiary"
-                >
-                  <AskUserQuestionCard
-                    key={state.requestId}
-                    state={state}
-                    renderMarkdown={renderQuestionMarkdown}
-                    onSubmit={onSubmit}
-                    onDismiss={onDismiss}
-                    busy={
-                      machine.phase === 'submitting'
-                        ? 'answer'
-                        : machine.phase === 'dismissing'
-                          ? 'dismiss'
-                          : null
+              <LabSection title="Request">
+                <div className="flex flex-wrap gap-1 px-1">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!settling}
+                    onClick={() => dispatch({ type: 'resolve' })}
+                  >
+                    Resolve
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!settling}
+                    onClick={() => dispatch({ type: 'fail' })}
+                  >
+                    Fail
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() =>
+                      dispatch({
+                        type:
+                          machine.phase === 'disconnected'
+                            ? 'reconnect'
+                            : 'disconnect',
+                      })
                     }
-                    errorKind={
-                      machine.phase === 'error' ? machine.failedAction : null
-                    }
-                    disconnected={machine.phase === 'disconnected'}
-                    embedded
+                  >
+                    {machine.phase === 'disconnected'
+                      ? 'Reconnect'
+                      : 'Disconnect'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => dispatch({ type: 'reset' })}
+                  >
+                    Start again
+                  </Button>
+                </div>
+                <div className="px-2">
+                  <ChoiceField
+                    label="Resolve automatically"
+                    checked={autoResolve}
+                    onChange={(event) => setAutoResolve(event.target.checked)}
                   />
-                </section>
-              ) : null}
-              <div
-                className={
-                  open ? COMPACT_COMPOSER_CLASS : CHAT_COMPOSER_SHELL_CLASS
-                }
+                </div>
+              </LabSection>
+            </>
+          )}
+          <LabSection title="Appearance">
+            <ToggleRow
+              value={colorMode}
+              onChange={setColorMode}
+              options={[
+                { value: 'light', label: 'Light' },
+                { value: 'dark', label: 'Dark' },
+              ]}
+            />
+            <ToggleRow
+              value={width}
+              onChange={setWidth}
+              options={[
+                { value: 'normal', label: 'Normal' },
+                { value: 'compact', label: 'Narrow' },
+              ]}
+            />
+          </LabSection>
+
+          {view === 'card' && (
+            <LabSection title="Events">
+              <ol
+                className="flex flex-col gap-0.5 px-2 text-xs fg-secondary"
+                data-testid="question-forms-lab-events"
               >
+                {machine.events.map((event, index) => (
+                  <li key={`${index}-${event}`}>{event}</li>
+                ))}
+              </ol>
+            </LabSection>
+          )}
+        </Surface>
+
+        {view !== 'card' ? (
+          <main className="h-full min-w-0 flex-1 overflow-y-auto">
+            {view === 'fields' ? <FieldOptionsLab /> : <ChoiceOptionsLab />}
+          </main>
+        ) : (
+          <main
+            className={`mx-auto flex h-full min-w-0 flex-1 flex-col ${
+              width === 'compact' ? 'max-w-90' : ''
+            }`}
+          >
+            <div className="min-h-0 flex-1 overflow-y-auto py-6">
+              <div className="mx-auto flex w-full max-w-[var(--chat-composer-shell-width)] flex-col gap-4 px-4">
+                <div className="flex min-w-0 max-w-full justify-start px-3">
+                  <div className="min-w-0 max-w-full text-s fg-primary">
+                    <Markdown>{preset.prompt}</Markdown>
+                  </div>
+                </div>
+                {machine.phase === 'answered' ? (
+                  <div className="px-3">
+                    <AnsweredQuestionsBlock
+                      answers={answersToDisplay(
+                        machine.answers,
+                        preset.questions,
+                      )}
+                    />
+                  </div>
+                ) : null}
+                {machine.phase === 'dismissed' ? (
+                  <p className="px-3 text-xs fg-tertiary">
+                    Question dismissed.
+                  </p>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="relative mx-auto w-full max-w-[var(--chat-composer-shell-width)] shrink-0 px-4 pb-4 pt-2">
+              <div className={open ? 'rounded-2xl shadow-lg' : 'contents'}>
+                {open ? (
+                  <section
+                    aria-label="Questions awaiting your reply"
+                    data-testid="chat-question-dock"
+                    className="max-h-[min(60vh,32rem)] divide-y overflow-y-auto overscroll-contain rounded-t-2xl bg-tertiary"
+                  >
+                    <AskUserQuestionCard
+                      key={state.requestId}
+                      state={state}
+                      renderMarkdown={renderQuestionMarkdown}
+                      onSubmit={onSubmit}
+                      onDismiss={onDismiss}
+                      busy={
+                        machine.phase === 'submitting'
+                          ? 'answer'
+                          : machine.phase === 'dismissing'
+                            ? 'dismiss'
+                            : null
+                      }
+                      errorKind={
+                        machine.phase === 'error' ? machine.failedAction : null
+                      }
+                      disconnected={machine.phase === 'disconnected'}
+                      embedded
+                    />
+                  </section>
+                ) : null}
                 <div
                   className={
-                    open ? COMPACT_EDITOR_CLASS : 'min-h-22 px-4 pb-12 pt-3'
+                    open ? COMPACT_COMPOSER_CLASS : CHAT_COMPOSER_SHELL_CLASS
                   }
                 >
-                  <LabComposerReplicaInput
-                    aria-label="Message"
-                    value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                    placeholder="Send a message"
-                    className={COMPACT_EDITABLE_CLASS}
-                  />
+                  <div
+                    className={
+                      open ? COMPACT_EDITOR_CLASS : 'min-h-22 px-4 pb-12 pt-3'
+                    }
+                  >
+                    <LabComposerReplicaInput
+                      aria-label="Message"
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
+                      placeholder="Send a message"
+                      className={COMPACT_EDITABLE_CLASS}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        </main>
-      )}
-    </div>
+          </main>
+        )}
+      </div>
+    </Surface>
   );
 }

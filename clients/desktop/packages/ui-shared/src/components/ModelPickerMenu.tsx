@@ -77,23 +77,17 @@ import { Fact, FactList } from './FactList';
 import { RichHoverCard, RichHoverTooltip } from './RichHoverTooltip';
 import { SearchField } from './SearchField';
 import { Skeleton } from './Skeleton';
+import { Stack } from './Stack';
 import { AI_CREDITS_LABEL } from './aiCreditsLabel';
 import { EmptyState } from './StatusBlocks';
 import { IconToggleButton } from './IconToggleButton';
 import { Tooltip } from './Tooltip';
 import { CompactToggleIndicator } from './ToggleSwitch';
 import { SECONDARY_SURFACE_SHELL_CLASS } from '../lib/row-chips';
-import { ModelProviderIcon } from './ModelProviderIcon';
+import { ModelProviderIcon } from '../icons/ModelProviderIcon';
 
 const PICKER_CHROME_SLOT_PX = 36;
 const PICKER_CHROME_GAP_PX = 1;
-/**
- * Radius for controls inside a model row. The row is `rounded-md` and its
- * 28px controls sit 2px inside its 32px height, so their corners stay
- * concentric with the row's at the row radius minus that inset.
- */
-const MODEL_ROW_CONTROL_RADIUS_CLASS = 'rounded-[calc(var(--radius-md)-2px)]';
-
 /**
  * Picker glyph boxes, Lucide and provider marks alike, so each area reads at
  * one weight: rail tabs 18px; the Auto toggle and row glyphs (stars, provider
@@ -228,8 +222,7 @@ export interface ModelPickerAutoOption {
  * in the document and made each transcript insertion recalculate styles for
  * all of them.
  */
-const PICKER_GROUP_SPACING_CLASS =
-  '[[data-picker-gap="2"]+&]:mt-2 [[data-picker-gap="3"]+&]:mt-3';
+const PICKER_GROUP_SPACING_CLASS = '[[data-picker-gap="3"]+&]:mt-3';
 
 /** Group of connect rows for harnesses that are not connected yet. */
 const CONNECT_SECTION_LABEL = 'Bring your subscription';
@@ -626,14 +619,16 @@ function ModelRowDetail({
     rows.push({ label: 'Context', value: context });
   }
   return (
-    <div className="min-w-40">
-      <p className="text-xs font-medium">{option.label}</p>
-      {lockHint ? (
-        <p className="mt-0.5 w-0 min-w-full text-2xs leading-snug">
-          {lockHint}
-        </p>
-      ) : null}
-      <div role="separator" className="my-1.5 h-px bg-current/10" />
+    <div className="flex min-w-40 flex-col gap-1.5">
+      <div>
+        <p className="text-xs font-medium">{option.label}</p>
+        {lockHint ? (
+          <p className="mt-0.5 w-0 min-w-full text-2xs leading-snug">
+            {lockHint}
+          </p>
+        ) : null}
+      </div>
+      <div role="separator" className="h-px bg-current/10" />
       <FactList
         layout="spread"
         size="2xs"
@@ -660,7 +655,7 @@ function ModelRowDetail({
       (option.source === 'claude' ||
         (!option.source && option.provider === 'claude')) ? (
         <>
-          <div role="separator" className="my-1.5 h-px bg-current/10" />
+          <div role="separator" className="h-px bg-current/10" />
           <p className="w-0 min-w-full text-2xs leading-snug opacity-70">
             Depending on your Claude plan, this model may require extra usage
             credits.
@@ -2606,15 +2601,15 @@ export function ModelPickerMenu({
   };
 
   const renderAutoModeBlock = (option: ModelCatalogOption): JSX.Element => (
-    <div className="mb-2">
+    <Stack gap="tight" className="mb-2">
       {renderHarnessOption(option)}
       {/* Full width, edge to edge like the search row's line above it:
           `-mx-1` cancels the list's inset. */}
       <div
-        className="-mx-1 mt-1 border-b"
+        className="-mx-1 border-b"
         data-testid={`${testIdPrefix}-auto-divider`}
       />
-    </div>
+    </Stack>
   );
 
   const pickerChrome = harnessTabs?.chrome === 'picker';
@@ -4111,9 +4106,12 @@ function ModelPickerOption({
             </span>
           ) : null}
           {harnessTrigger ? (
-            <button
+            <Button
               ref={billingTriggerRef}
-              type="button"
+              variant="ghost-quiet"
+              size="sm"
+              iconOnly
+              touchArea="contained"
               hidden={hidden}
               aria-label={
                 settingsHarnesses?.length
@@ -4131,7 +4129,7 @@ function ModelPickerOption({
                 setFocusBillingOnOpen(event.detail === 0);
                 onBillingOpenChange?.(!billingOpen);
               }}
-              className={`focus-ring absolute z-1 ${leadingFavorite ? 'right-0.5' : 'right-7.5'} top-1/2 flex size-7 -translate-y-1/2 items-center justify-center ${MODEL_ROW_CONTROL_RADIUS_CLASS} fg-tertiary hover:bg-subtle hover:fg-primary`}
+              className={`absolute z-1 ${leadingFavorite ? 'right-0.5' : 'right-7.5'} top-1/2 -translate-y-1/2`}
             >
               <span
                 className={
@@ -4156,29 +4154,37 @@ function ModelPickerOption({
               >
                 <MoreHorizontalIcon size="sm" exactSize />
               </span>
-            </button>
+            </Button>
           ) : null}
           {hasSettings && !harnessTrigger && !state.disabled ? (
-            <button
-              ref={billingTriggerRef}
-              type="button"
-              aria-label={`${settingsHarnesses?.length ? 'Settings' : 'Billing'} for ${option.label}`}
-              aria-haspopup="menu"
-              aria-expanded={billingOpen}
-              hidden={hidden}
-              data-testid={`${testIdPrefix}-billing-${option.id}`}
-              data-billing-menu={offersBilling ? 'true' : undefined}
-              onMouseDown={(event): void => event.preventDefault()}
-              onClick={(event): void => {
-                event.preventDefault();
-                event.stopPropagation();
-                setFocusBillingOnOpen(event.detail === 0);
-                onBillingOpenChange?.(!billingOpen);
-              }}
-              className={`focus-ring absolute z-1 ${leadingFavorite && !harnessTrigger ? 'right-0.5' : 'right-7.5'} top-1/2 flex size-7 -translate-y-1/2 items-center justify-center ${MODEL_ROW_CONTROL_RADIUS_CLASS} fg-tertiary hover:bg-subtle hover:fg-primary group-hover/model-row:opacity-100 group-focus-within/model-row:opacity-100 [@media(hover:none)]:opacity-100 ${billingOpen || selected ? 'opacity-100' : 'opacity-0'}`}
+            // The wrapper places the trigger and reveals it with the row's
+            // hover or focus; the Button keeps its own paint.
+            <span
+              className={`absolute z-1 ${leadingFavorite && !harnessTrigger ? 'right-0.5' : 'right-7.5'} top-1/2 flex -translate-y-1/2 group-hover/model-row:opacity-100 group-focus-within/model-row:opacity-100 [@media(hover:none)]:opacity-100 ${billingOpen || selected ? 'opacity-100' : 'opacity-0'}`}
             >
-              <MoreHorizontalIcon size="sm" exactSize />
-            </button>
+              <Button
+                ref={billingTriggerRef}
+                variant="ghost-quiet"
+                size="sm"
+                iconOnly
+                touchArea="contained"
+                aria-label={`${settingsHarnesses?.length ? 'Settings' : 'Billing'} for ${option.label}`}
+                aria-haspopup="menu"
+                aria-expanded={billingOpen}
+                hidden={hidden}
+                data-testid={`${testIdPrefix}-billing-${option.id}`}
+                data-billing-menu={offersBilling ? 'true' : undefined}
+                onMouseDown={(event): void => event.preventDefault()}
+                onClick={(event): void => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setFocusBillingOnOpen(event.detail === 0);
+                  onBillingOpenChange?.(!billingOpen);
+                }}
+              >
+                <MoreHorizontalIcon size="sm" exactSize />
+              </Button>
+            </span>
           ) : null}
           {/* The star sits against the row's triggers, its label and the rows
               above and below, so its touch hit area stays its own box. */}
@@ -4335,32 +4341,36 @@ function ModelPickerOption({
           {/* Quieter lines dim the inverse ink, as ModelRowDetail does:
               fg-secondary is too faint on the inverse surface. */}
           {/* The row already describes itself with this hint. */}
-          {lock ? (
-            <div aria-hidden="true" className="text-xs leading-snug">
-              {lock.hint}
-            </div>
-          ) : null}
-          {hasExtraCharge ? (
-            <div className={`text-xs leading-snug${lock ? ' mt-1' : ''}`}>
-              <div>Extra charge only</div>
-              {option.extraChargeMessage ? (
-                <div className="mt-0.5 opacity-70">
-                  {option.extraChargeMessage}
+          {lock || hasExtraCharge || hasDescription ? (
+            <Stack gap="tight">
+              {lock ? (
+                <div aria-hidden="true" className="text-xs leading-snug">
+                  {lock.hint}
                 </div>
               ) : null}
-            </div>
-          ) : null}
-          {hasDescription ? (
-            <div
-              data-testid={
-                uniformTestIds
-                  ? `${testIdPrefix}-option-tooltip-description`
-                  : `${testIdPrefix}-option-tooltip-description-${option.id}`
-              }
-              className={`text-xs leading-snug${hasExtraCharge || lock ? ' mt-1 opacity-70' : ''}`}
-            >
-              {option.description}
-            </div>
+              {hasExtraCharge ? (
+                <div className="text-xs leading-snug">
+                  <div>Extra charge only</div>
+                  {option.extraChargeMessage ? (
+                    <div className="mt-0.5 opacity-70">
+                      {option.extraChargeMessage}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {hasDescription ? (
+                <div
+                  data-testid={
+                    uniformTestIds
+                      ? `${testIdPrefix}-option-tooltip-description`
+                      : `${testIdPrefix}-option-tooltip-description-${option.id}`
+                  }
+                  className={`text-xs leading-snug${hasExtraCharge || lock ? ' opacity-70' : ''}`}
+                >
+                  {option.description}
+                </div>
+              ) : null}
+            </Stack>
           ) : null}
           {contextWindowLabel ? (
             <div

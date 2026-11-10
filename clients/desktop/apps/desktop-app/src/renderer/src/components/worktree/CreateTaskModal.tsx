@@ -14,10 +14,8 @@ import type {
   LinearTicketSearchResult,
   ResolvePullRequestResponse,
 } from '@canopy/desktop-shared/types';
-import {
-  parsePullRequestReference,
-  type CreateFromMode,
-} from '@canopy/desktop-shared/lib/create-from-reference';
+import { parsePullRequestReference } from '@canopy/protocol/portable-tasks/pull-request-reference';
+import type { CreateFromMode } from '@canopy/desktop-shared/lib/create-from-reference';
 import {
   buildLinearTaskText,
   createOptionsForBranch,

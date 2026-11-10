@@ -1,6 +1,6 @@
 import { join } from 'path';
 import { BRAND } from '@canopy/brand/current';
-import { getSkillSourceDirectoryName } from '@canopy/desktop-shared/node/skills/paths';
+import { getSkillSourceDirectoryName } from '@canopy/execution-engine/node/skills/paths';
 import { getDataDir } from '../lib/paths';
 
 export const BUILTIN_SOURCE_ID = 'builtin:app';

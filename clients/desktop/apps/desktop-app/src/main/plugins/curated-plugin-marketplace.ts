@@ -38,7 +38,7 @@ import {
   type PluginInfo,
   type PluginProvider,
   type PluginProviderFacet,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { safeReadJson } from '../lib/fs-utils';
 import {
   getCuratedPluginsMarketplaceDir,

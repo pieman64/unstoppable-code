@@ -102,6 +102,19 @@ jest.mock('../../agents/claude-mod-admission-launch', () => ({
   resolveClaudeModAdmissionContext: (...args: unknown[]): Promise<unknown> =>
     mockModAdmission(...args),
 }));
+// CAN-5832: Agent model aliases resolve from the Agent store.
+const mockAgents = new Map<string, unknown>();
+const mockDestinationDefault = jest.fn<Promise<string>, unknown[]>(() =>
+  Promise.resolve('sonnet'),
+);
+jest.mock('../../agents/agent-model-store', () => ({
+  getAgentModel: (id: string): Promise<unknown> =>
+    Promise.resolve(mockAgents.get(id) ?? null),
+}));
+jest.mock('../../agents/agent-default-model', () => ({
+  resolveAgentDestinationDefaultModel: (...args: unknown[]): Promise<string> =>
+    mockDestinationDefault(...args),
+}));
 // CAN-5831: the local Ollama server's route on either harness; no key.
 jest.mock('../../ollama/claude-compatible', () => ({
   resolveClaudeCompatibleInvocation: (): Promise<unknown> =>
@@ -423,6 +436,53 @@ describe('PipelineOwnerRunContext', () => {
       status: 'failure',
       message: 'This workflow run has ended.',
     });
+  });
+
+  it("an Agent alias resolves as in process, with the run's own workspace", async () => {
+    mockAgents.set('agent_model_reviewer', {
+      id: 'agent_model_reviewer',
+      name: 'Reviewer',
+      baseModel: CODEX,
+      instructions: 'Review carefully.',
+      pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
+    });
+    mockAgents.set('agent_model_inherit', {
+      id: 'agent_model_inherit',
+      name: 'Inherit',
+      baseModel: 'default',
+      instructions: '',
+    });
+    const runtime = createElectronExecutionRuntime();
+    const context = new PipelineOwnerRunContext(run());
+    for (const agentId of ['agent_model_reviewer', 'agent_model_inherit']) {
+      const inProcess = await runtime.resolvePipelineAgentModelAlias?.(
+        agentId,
+        { projectId: 'workspace-1' },
+      );
+      // The request names another workspace; the run's own decides.
+      const settlement = await context.apply(
+        ownerRequest(
+          { action: 'owner.model.agentAlias', agentId },
+          { owner: 'org:another' },
+        ),
+        signal,
+      );
+      const value = ownerValue(settlement);
+      expect(value).toEqual({ kind: 'model.agentAlias', alias: inProcess });
+      expect(settlement.values).toBeUndefined();
+    }
+    expect(mockDestinationDefault).toHaveBeenCalledWith('workspace-1');
+    expect(
+      ownerValue(
+        await context.apply(
+          ownerRequest({
+            action: 'owner.model.agentAlias',
+            agentId: 'agent_model_missing',
+          }),
+          signal,
+        ),
+      ),
+    ).toEqual({ kind: 'model.agentAlias', alias: null });
   });
 
   it('the in-process runtime and the owner settlement resolve the same invocation', async () => {

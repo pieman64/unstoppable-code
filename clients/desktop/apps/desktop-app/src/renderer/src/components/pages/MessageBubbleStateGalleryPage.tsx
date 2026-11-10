@@ -193,15 +193,17 @@ function GallerySection({
 export function MessageBubbleStateGalleryPage(): JSX.Element {
   if (!isMessageBubbleStatesPageEnabled()) {
     return (
-      <div
-        className="flex h-full items-center justify-center bg-base"
+      <Surface
+        variant="pane"
+        extent="parent"
+        className="flex items-center justify-center"
         data-testid="message-bubble-states-page-disabled"
       >
         <p className="text-xs fg-secondary">
           This page is a development-only reference and is not enabled in this
           build.
         </p>
-      </div>
+      </Surface>
     );
   }
   return <MessageBubbleStateGalleryContent />;

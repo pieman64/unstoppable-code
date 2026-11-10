@@ -14,7 +14,7 @@ import {
   ensurePrivateLockDirectory,
   withOwnerLockFile,
 } from '@canopy/execution-engine/node/lib/owner-lock-file';
-import { normalizePluginSelections } from '../../lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type { ChatTabPluginSelections } from '../../types';
 import type {
   PipelineModelAliasPreference,

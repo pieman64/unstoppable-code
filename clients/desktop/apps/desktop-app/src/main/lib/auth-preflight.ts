@@ -51,7 +51,7 @@ import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/
 import {
   getMcpHttpAuthDefault,
   getMcpHttpAuthHandler,
-} from '@canopy/desktop-shared/lib/mcp-http-auth';
+} from '@canopy/execution-engine/lib/mcp-http-auth';
 import { toAuthDiagnosticDetail } from '@canopy/execution-engine/agent-failures/auth-diagnostic-detail';
 import { TurnAuthPreflightBlockedError } from './auth-preflight-error';
 import { safeReadJsonAsync } from './fs-utils';

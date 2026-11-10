@@ -86,6 +86,14 @@ jest.mock('../../lib/workspace-registry', (): object => ({
   isCoworkWorkspace: (projectId: string): boolean => projectId === 'cowork',
 }));
 
+// The advisor chat's canonical tab exists in the app; its question waits
+// commit their turn pause there (CAN-5827).
+jest.mock('../../services/chat-state-service', (): object => ({
+  getChatStateService: (): object => ({
+    commitTurnPause: (): Promise<void> => Promise.resolve(),
+  }),
+}));
+
 jest.mock('../presentation-tools', () => ({
   presentAppAdvisorAction: jest.fn(),
   boundAppAdvisorInterfaceTools: (): Promise<[]> => Promise.resolve([]),

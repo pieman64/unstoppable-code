@@ -24,25 +24,6 @@ interface AttachmentPillCarouselProps {
 /** Characters of a text file shown on its card: about its first lines. */
 const TEXT_SNIPPET_LENGTH = 400;
 
-function AttachmentIcon({
-  attachment,
-  size,
-}: {
-  readonly attachment: AttachmentMeta;
-  readonly size: number;
-}): JSX.Element {
-  return attachment.promptKind === 'linear-ticket' ? (
-    <LinearLogo width={size} height={size} className="shrink-0" />
-  ) : (
-    <FileTypeIcon
-      filename={attachment.filename}
-      size={size}
-      boxSize={size}
-      className="shrink-0"
-    />
-  );
-}
-
 /**
  * One attachment: an image as a square thumbnail, any other file as a card
  * with a glimpse of its content above its name.
@@ -91,11 +72,31 @@ function AttachmentTile({
           <AttachmentTextPreview text={snippet} />
         ) : state.status === 'loading' && previewable ? null : (
           <span className="fg-tertiary">
-            <AttachmentIcon attachment={attachment} size={28} />
+            {attachment.promptKind === 'linear-ticket' ? (
+              <LinearLogo width={28} height={28} className="shrink-0" />
+            ) : (
+              <FileTypeIcon
+                filename={attachment.filename}
+                size={28}
+                boxSize={28}
+                className="shrink-0"
+              />
+            )}
           </span>
         )
       }
-      icon={<AttachmentIcon attachment={attachment} size={16} />}
+      icon={
+        attachment.promptKind === 'linear-ticket' ? (
+          <LinearLogo width={16} height={16} className="shrink-0" />
+        ) : (
+          <FileTypeIcon
+            filename={attachment.filename}
+            size={16}
+            boxSize={16}
+            className="shrink-0"
+          />
+        )
+      }
       name={attachment.filename}
     />
   );

@@ -6,7 +6,7 @@ import type {
   MarketplaceOperationProgress,
   PluginsAPI,
   RemoveMarketplaceOptions,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 
 export type { PluginsAPI };
 

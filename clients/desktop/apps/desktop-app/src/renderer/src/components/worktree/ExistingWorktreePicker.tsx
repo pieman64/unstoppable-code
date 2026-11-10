@@ -13,7 +13,7 @@ import {
 import { ChevronDownIcon, ChevronRightIcon } from '@canopy/ui-shared/icons';
 import { useBranchDisplayStore } from '@/stores/branchDisplayStore';
 import { useProjectsStore } from '@/stores/projectsStore';
-import { WorkspaceBadgeIcon } from '../shared/WorkspaceBadgeIcon';
+import { ProjectIcon } from '../shared/ProjectIcon';
 import { describeWorkspaceSubtitle } from '@canopy/ui-app/code/shell/WorkspaceMultiSelectPicker';
 import { DiffBadge } from './DiffBadge';
 import { getWorktreeRecordKey } from './worktree-record-key';
@@ -206,11 +206,10 @@ export function ExistingWorktreePicker({
                     aria-expanded={!isCollapsed}
                     data-testid={`existing-worktree-picker-group-${group.workspaceId}`}
                     icon={
-                      <WorkspaceBadgeIcon
-                        isMultiRepo={group.isMultiRepo}
+                      <ProjectIcon
+                        kind={group.isMultiRepo ? 'multi-repo' : 'single-repo'}
                         temporary={group.temporary}
                         color={group.color}
-                        name={group.workspaceName}
                         repoPath={group.repoPath}
                       />
                     }

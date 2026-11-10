@@ -20,17 +20,17 @@ import {
   isClaudeModContentDigest,
   isClaudeModPluginId,
   type ClaudeModAdmission,
-} from '@canopy/desktop-shared/types/claude-mod-admission';
+} from '@canopy/execution-engine/types/claude-mod-admission';
 import {
   computeClaudePluginContentDigest,
   inspectClaudePluginHooks,
   listClaudeAutoLoadedPlugins,
   type ClaudeModAuthority,
-} from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+} from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 import type {
   MarketplaceInfo,
   PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import {
   readClaudePluginInstallPathsById,
   registeredClaudePluginId,

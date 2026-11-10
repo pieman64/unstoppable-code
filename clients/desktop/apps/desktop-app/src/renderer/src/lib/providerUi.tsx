@@ -1,4 +1,4 @@
-import type { JSX, SVGProps } from 'react';
+import type { JSX } from 'react';
 import {
   getProviderForModel,
   resolveAgentModelDefinition,
@@ -10,12 +10,7 @@ import type {
   UiTrackedPlanSource,
 } from '@/lib/providerLabels';
 import { ModelProviderIcon } from '@canopy/ui-shared';
-import {
-  ClaudeLogo,
-  CodexLogo,
-  OllamaLogo,
-  PipelineIcon,
-} from '@canopy/ui-shared/icons';
+import { PipelineIcon } from '@canopy/ui-shared/icons';
 import {
   FileDownIcon as AppCatalogFileDownIcon,
   DocumentSearchIcon as AppCatalogDocumentSearchIcon,
@@ -48,28 +43,17 @@ export function resolveChatTabProvider(
   return getProviderForModel(knownModel);
 }
 
-export function PlanSourceIcon({
-  source,
-  ...svgProps
-}: { source: UiTrackedPlanSource } & SVGProps<SVGSVGElement>): JSX.Element {
-  switch (source) {
-    case 'opencode':
-      return <ModelProviderIcon provider="opencode" {...svgProps} />;
-    case 'copilot':
-      return <ModelProviderIcon provider="copilot" {...svgProps} />;
-    case 'cursor':
-      return <ModelProviderIcon provider="cursor" {...svgProps} />;
-    case 'claude':
-      return <ClaudeLogo {...svgProps} />;
-    case 'codex':
-      return <CodexLogo {...svgProps} />;
-    case 'ollama':
-      return <OllamaLogo {...svgProps} />;
-    case 'pipeline':
-      return <PipelineIcon {...svgProps} />;
-    case 'imported':
-      return <AppCatalogFileDownIcon {...svgProps} />;
-    case 'detected':
-      return <AppCatalogDocumentSearchIcon {...svgProps} />;
-  }
-}
+/** A tracked plan's source glyph, drawn at the compact 14px step. */
+export const PLAN_SOURCE_GLYPHS: Readonly<
+  Record<UiTrackedPlanSource, JSX.Element>
+> = {
+  opencode: <ModelProviderIcon provider="opencode" size="sm" />,
+  copilot: <ModelProviderIcon provider="copilot" size="sm" />,
+  cursor: <ModelProviderIcon provider="cursor" size="sm" />,
+  claude: <ModelProviderIcon provider="claude" size="sm" />,
+  codex: <ModelProviderIcon provider="codex" size="sm" />,
+  ollama: <ModelProviderIcon provider="ollama" size="sm" />,
+  pipeline: <PipelineIcon size="sm" />,
+  imported: <AppCatalogFileDownIcon size="sm" />,
+  detected: <AppCatalogDocumentSearchIcon size="sm" />,
+};

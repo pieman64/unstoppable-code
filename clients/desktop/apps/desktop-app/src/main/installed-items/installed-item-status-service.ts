@@ -14,7 +14,7 @@ import {
   type InstalledItemStatus,
 } from '@canopy/protocol/installed-items';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 
 export type ParkedCodexPlugin = NonNullable<
   PreferencesData['parkedCodexPlugins']

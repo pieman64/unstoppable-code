@@ -1014,135 +1014,147 @@ export function AuditTrailPage(): JSX.Element {
             className="flex min-h-0 flex-1 flex-col"
             data-testid="audit-transcript-modal"
           >
-            <div className="flex flex-wrap items-center gap-3 border-b px-6 py-3">
-              <div className="text-s fg-secondary">
-                {transcriptResponse?.type === 'success' &&
-                transcriptResponse.truncation.truncated
-                  ? `Transcript truncated at ${transcriptResponse.truncation.maxBytes.toLocaleString()} bytes.`
-                  : 'View the captured raw sidecar or the reconstructed rich transcript.'}
+            <Surface variant="section" boundary="bottom">
+              <div className="flex flex-wrap items-center gap-3 px-6 py-3">
+                <div className="text-s fg-secondary">
+                  {transcriptResponse?.type === 'success' &&
+                  transcriptResponse.truncation.truncated
+                    ? `Transcript truncated at ${transcriptResponse.truncation.maxBytes.toLocaleString()} bytes.`
+                    : 'View the captured raw sidecar or the reconstructed rich transcript.'}
+                </div>
+                <SearchBar
+                  query={transcriptSearch.query}
+                  onQueryChange={transcriptSearch.setQuery}
+                  currentIndex={transcriptSearch.currentIndex}
+                  totalCount={transcriptSearch.totalCount}
+                  onNext={transcriptSearch.goToNext}
+                  onPrevious={transcriptSearch.goToPrevious}
+                  inputRef={transcriptSearchInputRef}
+                  className="ml-auto"
+                />
+                <SegmentedControl<'rich' | 'raw'>
+                  label="Transcript view"
+                  value={transcriptViewMode}
+                  width="content"
+                  shape="capsule"
+                  options={[
+                    {
+                      value: 'rich',
+                      label: 'Rich',
+                      dataTestId: 'audit-transcript-mode-rich',
+                    },
+                    {
+                      value: 'raw',
+                      label: 'Raw',
+                      dataTestId: 'audit-transcript-mode-raw',
+                    },
+                  ]}
+                  onChange={setTranscriptViewMode}
+                />
               </div>
-              <SearchBar
-                query={transcriptSearch.query}
-                onQueryChange={transcriptSearch.setQuery}
-                currentIndex={transcriptSearch.currentIndex}
-                totalCount={transcriptSearch.totalCount}
-                onNext={transcriptSearch.goToNext}
-                onPrevious={transcriptSearch.goToPrevious}
-                inputRef={transcriptSearchInputRef}
-                className="ml-auto"
-              />
-              <SegmentedControl<'rich' | 'raw'>
-                label="Transcript view"
-                value={transcriptViewMode}
-                width="content"
-                shape="capsule"
-                options={[
-                  {
-                    value: 'rich',
-                    label: 'Rich',
-                    dataTestId: 'audit-transcript-mode-rich',
-                  },
-                  {
-                    value: 'raw',
-                    label: 'Raw',
-                    dataTestId: 'audit-transcript-mode-raw',
-                  },
-                ]}
-                onChange={setTranscriptViewMode}
-              />
-            </div>
+            </Surface>
 
             <div
               className="min-h-0 flex-1 overflow-auto"
               data-transcript-scroll
             >
-              <div className="grid gap-3 border-b px-6 py-4 md:grid-cols-3">
-                <DurationRow label="Duration" entry={transcriptDisplayEntry} />
-                <IdentifierRow
-                  label="Project ID"
-                  value={transcriptDisplayEntry.projectId}
-                />
-                <IdentifierRow
-                  label={`${WORKTREE_UNIT_LABEL} ID`}
-                  value={transcriptDisplayEntry.worktreeId}
-                />
-                <IdentifierRow
-                  label={`${CHAT_UNIT_LABEL} ID`}
-                  value={transcriptDisplayEntry.chatId}
-                />
-                <IdentifierRow
-                  label="Session ID"
-                  value={transcriptDisplayEntry.sdkSessionId}
-                />
-                <IdentifierRow
-                  label="Repo ID"
-                  value={transcriptDisplayEntry.repoId}
-                />
-                <IdentifierRow
-                  label="Repo label"
-                  value={transcriptDisplayEntry.repoLabel}
-                />
-                <RequestedSpeedRow entry={transcriptDisplayEntry} />
-                <IdentifierRow
-                  label="Cost"
-                  value={
-                    formatAuditCostLabel(transcriptDisplayEntry) ?? undefined
-                  }
-                  testId="audit-transcript-cost"
-                  monospace={
-                    transcriptDisplayEntry.observedCost?.status !==
-                      'unpriced' &&
-                    transcriptDisplayEntry.observedCost?.status !==
-                      'partially_priced'
-                  }
-                />
-              </div>
+              <Surface variant="section" boundary="bottom">
+                <div className="grid gap-3 px-6 py-4 md:grid-cols-3">
+                  <DurationRow
+                    label="Duration"
+                    entry={transcriptDisplayEntry}
+                  />
+                  <IdentifierRow
+                    label="Project ID"
+                    value={transcriptDisplayEntry.projectId}
+                  />
+                  <IdentifierRow
+                    label={`${WORKTREE_UNIT_LABEL} ID`}
+                    value={transcriptDisplayEntry.worktreeId}
+                  />
+                  <IdentifierRow
+                    label={`${CHAT_UNIT_LABEL} ID`}
+                    value={transcriptDisplayEntry.chatId}
+                  />
+                  <IdentifierRow
+                    label="Session ID"
+                    value={transcriptDisplayEntry.sdkSessionId}
+                  />
+                  <IdentifierRow
+                    label="Repo ID"
+                    value={transcriptDisplayEntry.repoId}
+                  />
+                  <IdentifierRow
+                    label="Repo label"
+                    value={transcriptDisplayEntry.repoLabel}
+                  />
+                  <RequestedSpeedRow entry={transcriptDisplayEntry} />
+                  <IdentifierRow
+                    label="Cost"
+                    value={
+                      formatAuditCostLabel(transcriptDisplayEntry) ?? undefined
+                    }
+                    testId="audit-transcript-cost"
+                    monospace={
+                      transcriptDisplayEntry.observedCost?.status !==
+                        'unpriced' &&
+                      transcriptDisplayEntry.observedCost?.status !==
+                        'partially_priced'
+                    }
+                  />
+                </div>
+              </Surface>
 
               {transcriptResponse?.type === 'success' &&
                 transcriptResponse.injectedPrompts.length > 0 && (
-                  <div
-                    className="flex flex-col border-b px-6 py-4 gap-3"
+                  <Surface
+                    variant="section"
+                    boundary="bottom"
                     data-testid="audit-transcript-injected-prompts"
                   >
-                    <div>
-                      <Heading level={3} variant="title">
-                        Injected prompts
-                      </Heading>
-                      <p className="text-xs fg-secondary">
-                        Prompts {brandText.appName} injected outside the user's
-                        original text.
-                      </p>
+                    <div className="flex flex-col px-6 py-4 gap-3">
+                      <div>
+                        <Heading level={3} variant="title">
+                          Injected prompts
+                        </Heading>
+                        <p className="text-xs fg-secondary">
+                          Prompts {brandText.appName} injected outside the
+                          user's original text.
+                        </p>
+                      </div>
+                      {transcriptResponse.injectedPrompts.map(
+                        (prompt, index) => (
+                          <Surface
+                            key={`${prompt.kind}-${String(index)}`}
+                            variant="group"
+                            gap="item"
+                            padding="compact"
+                          >
+                            <Stack gap="tight">
+                              <p className="text-xs font-medium fg-primary">
+                                {prompt.kind === 'system_prompt_append'
+                                  ? 'System prompt'
+                                  : prompt.kind === 'org_memory'
+                                    ? 'Organization memory'
+                                    : 'Plan mode developer instructions'}
+                              </p>
+                              <p className="text-xs fg-secondary">
+                                {prompt.provider} ·{' '}
+                                {formatInjectedPromptCondition(
+                                  prompt.applicationCondition,
+                                )}
+                              </p>
+                            </Stack>
+                            <pre
+                              className={`${POSTHOG_REPLAY_BLOCK_CLASS} overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs fg-primary`}
+                            >
+                              {prompt.text}
+                            </pre>
+                          </Surface>
+                        ),
+                      )}
                     </div>
-                    {transcriptResponse.injectedPrompts.map((prompt, index) => (
-                      <Surface
-                        key={`${prompt.kind}-${String(index)}`}
-                        variant="group"
-                        gap="item"
-                        padding="compact"
-                      >
-                        <Stack gap="tight">
-                          <p className="text-xs font-medium fg-primary">
-                            {prompt.kind === 'system_prompt_append'
-                              ? 'System prompt'
-                              : prompt.kind === 'org_memory'
-                                ? 'Organization memory'
-                                : 'Plan mode developer instructions'}
-                          </p>
-                          <p className="text-xs fg-secondary">
-                            {prompt.provider} ·{' '}
-                            {formatInjectedPromptCondition(
-                              prompt.applicationCondition,
-                            )}
-                          </p>
-                        </Stack>
-                        <pre
-                          className={`${POSTHOG_REPLAY_BLOCK_CLASS} overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary/60 p-3 font-mono text-xs fg-primary`}
-                        >
-                          {prompt.text}
-                        </pre>
-                      </Surface>
-                    ))}
-                  </div>
+                  </Surface>
                 )}
 
               <div ref={transcriptContentRef} className="px-6 py-4">

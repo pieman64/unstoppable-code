@@ -680,16 +680,22 @@ export class ScriptRunLogStore {
         .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
         .map(async (entry) => {
           const metaPath = join(dirPath, entry.name);
-          const meta = await this.readMeta(metaPath);
-          if (!meta) {
+          const listed = await this.readMeta(metaPath);
+          if (!listed) {
             return null;
           }
 
           await this.runLogs.awaitPendingWrite(
             args.projectId,
             args.worktreeId,
-            meta.script.scriptKey,
+            listed.script.scriptKey,
           );
+          // The pending write may have completed the run (CAN-6057): read
+          // it again rather than report the run as it was before.
+          const meta = await this.readMeta(metaPath);
+          if (!meta) {
+            return null;
+          }
 
           const logPath = join(
             dirPath,

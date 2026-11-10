@@ -225,14 +225,20 @@ function applyDarkFloatingShadowPolicy(value) {
   return `${DARK_FLOATING_SHADOW_EDGE}${elevationLayers}`;
 }
 
+// Black drop layers vanish on dark fills, and the engine's warm-grey ring takes
+// on the tint of whatever sits behind it. Dark in-page surfaces (raised cards)
+// wear one neutral white ring instead, the same edge the floating policy uses.
+const DARK_IN_PAGE_SHADOW = 'inset 0 0 0 .5px #ffffff1a';
+
 function applyCanopyShadowPolicy(tokenName, value, mode) {
   if (!SURFACE_SHADOW_RING_TOKENS.has(tokenName)) return value;
   const halfPixelRings = value
     .replaceAll('inset 0px 0px 0px 1px', 'inset 0px 0px 0px 0.5px')
     .replaceAll('0px 0px 0px 1px', '0px 0px 0px 0.5px');
-  return mode === 'dark' && tokenName === DARK_FLOATING_SHADOW_TOKEN
+  if (mode !== 'dark') return halfPixelRings;
+  return tokenName === DARK_FLOATING_SHADOW_TOKEN
     ? applyDarkFloatingShadowPolicy(halfPixelRings)
-    : halfPixelRings;
+    : DARK_IN_PAGE_SHADOW;
 }
 
 function applyTooltipShadowPolicy(value, lineColor) {

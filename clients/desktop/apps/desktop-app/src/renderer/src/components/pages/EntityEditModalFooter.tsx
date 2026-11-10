@@ -1,4 +1,4 @@
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 import type { JSX, ReactNode } from 'react';
 import { ErrorBanner } from '../shared/StatusBlocks';
 import {
@@ -76,49 +76,51 @@ export function EntityEditModalFooter({
   notice,
 }: EntityEditModalFooterProps): JSX.Element {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t px-6 py-3">
-      <div>
-        {notice}
-        {!isCreate && !confirmDelete && (
-          <Button
-            variant="ghost-destructive"
-            size="compact"
-            onClick={onConfirmDeleteStart}
-            disabled={saving}
-          >
-            Delete
-          </Button>
-        )}
-        {!isCreate && confirmDelete && (
-          <span className="inline-flex items-center gap-2">
-            <span className="text-xs fg-secondary">Are you sure?</span>
+    <Surface variant="section" boundary="top">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-3">
+        <div>
+          {notice}
+          {!isCreate && !confirmDelete && (
             <Button
-              variant="destructive"
+              variant="ghost-destructive"
               size="compact"
-              onClick={onDelete}
+              onClick={onConfirmDeleteStart}
               disabled={saving}
             >
-              Confirm
+              Delete
             </Button>
-            <Button size="compact" onClick={onConfirmDeleteCancel}>
-              Cancel
-            </Button>
-          </span>
-        )}
+          )}
+          {!isCreate && confirmDelete && (
+            <span className="inline-flex items-center gap-2">
+              <span className="text-xs fg-secondary">Are you sure?</span>
+              <Button
+                variant="destructive"
+                size="compact"
+                onClick={onDelete}
+                disabled={saving}
+              >
+                Confirm
+              </Button>
+              <Button size="compact" onClick={onConfirmDeleteCancel}>
+                Cancel
+              </Button>
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="compact" onClick={onClose}>
+            {cancelLabel}
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
+            onClick={onSave}
+            disabled={!canSave}
+          >
+            {saving ? savingLabel : saveLabel}
+          </Button>
+        </div>
       </div>
-      <div className="flex items-center gap-2">
-        <Button size="compact" onClick={onClose}>
-          {cancelLabel}
-        </Button>
-        <Button
-          variant="primary"
-          size="compact"
-          onClick={onSave}
-          disabled={!canSave}
-        >
-          {saving ? savingLabel : saveLabel}
-        </Button>
-      </div>
-    </div>
+    </Surface>
   );
 }

@@ -1,12 +1,12 @@
 import { Button, DialogModal } from '@canopy/ui-shared/components';
 import { type JSX, useState } from 'react';
-import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
+import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import {
   countPluginSelections,
   emptyPluginSelections,
   normalizePluginSelections,
-} from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+} from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { ShareablePluginSelector } from '../shared/ShareablePluginSelector';
 import { PluginSelector } from '../shared/PluginSelector';
 

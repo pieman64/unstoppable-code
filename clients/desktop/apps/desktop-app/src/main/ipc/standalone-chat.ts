@@ -55,7 +55,7 @@ import {
   type AgentModelConfig,
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { getWorkspaceType } from '../lib/workspace-registry';
 import { enqueueWorkspaceLocalMemoryImportBatch } from '../memory/local/import/import-job';
 

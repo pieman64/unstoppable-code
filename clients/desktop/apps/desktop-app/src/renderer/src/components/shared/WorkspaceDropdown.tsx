@@ -359,6 +359,9 @@ export function WorkspaceDropdown({
         title={pending?.title}
         data-pending-workspace={pending ? 'true' : undefined}
         variant={capsule ? 'capsule' : 'field'}
+        // With no swatch or plus to lead, the placeholder starts the capsule,
+        // so it takes the text-first inset the composer's effort chip uses.
+        textLead={capsule && !selected && !pending}
         // Pointing at the clear control seated over the swatch keeps the
         // chip's hover surface.
         wrapperHover={clearable}

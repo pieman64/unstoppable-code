@@ -201,7 +201,6 @@ import {
   FILE_PREVIEW_SEARCH_EVENT,
   type FilePreviewSearchEventDetail,
 } from '@/lib/filePreviewSearchEvents';
-import { AGENT_PUBLIC_SHARE_CHANGED_EVENT } from '@/lib/share-links';
 import { APP_ADVISOR_SETTINGS_SAVED_EVENT } from '@/lib/appAdvisorSettingsEvents';
 import { requestPipelineAssistantOpen } from '@/lib/pipelineAssistantEvents';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -405,7 +404,6 @@ import {
   normalizeManagedDelegationMaxDepth,
 } from '@canopy/protocol/delegation/discovery';
 import { isClaudeSettingsAvailable } from '@/lib/claude-settings-availability';
-import { isRemoteAccessSettingAvailable } from '@/lib/remote-control/remote-access-availability';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { isClaudeTuiChatsEnabled } from '@/lib/claude-tui-chats';
 import {
@@ -816,15 +814,6 @@ function inAppBrowserUnavailableError(): AppAdvisorActionError {
   return {
     code: 'surface_unavailable',
     message: "Open Browser from the other computer's own window.",
-  };
-}
-
-/** Refuses a remote access read or change that would reach the wrong computer. */
-function remoteAccessUnavailableError(): AppAdvisorActionError {
-  return {
-    code: 'surface_unavailable',
-    message:
-      "Check or change remote access from the other computer's own window.",
   };
 }
 
@@ -8660,84 +8649,6 @@ async function listSharedAgentsResult(
   }
 }
 
-async function importSharedAgentResult(
-  action: Extract<AppAdvisorAction, { type: 'agents.import_shared' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const response = await window.agents.importShared({
-      agentId: action.agentId,
-      installMissing: true,
-    });
-    return { ok: true, result: response as unknown as AppAdvisorJson };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'agents' });
-  }
-}
-
-async function deleteSharedAgentResult(
-  action: Extract<AppAdvisorAction, { type: 'agents.delete_shared' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    await window.agents.deleteShared({ agentId: action.agentId });
-    return { ok: true, result: { agentId: action.agentId } };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'agents' });
-  }
-}
-
-async function publishAgentPublicShareResult(
-  action: Extract<AppAdvisorAction, { type: 'agents.publish_public_share' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    const publicShare = await window.agents.publishPublicShare(action.agentId);
-    window.dispatchEvent(new Event(AGENT_PUBLIC_SHARE_CHANGED_EVENT));
-    return {
-      ok: true,
-      result: {
-        agentId: action.agentId,
-        publicShare: {
-          externalId: publicShare.externalId,
-          pinnedContentHash: publicShare.pinnedContentHash,
-          upToDate: publicShare.upToDate,
-          sharePath: publicShare.sharePath,
-          createdAt: publicShare.createdAt,
-          updatedAt: publicShare.updatedAt,
-        },
-      },
-    };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'agents' });
-  }
-}
-
-async function revokeAgentPublicShareResult(
-  action: Extract<AppAdvisorAction, { type: 'agents.revoke_public_share' }>,
-): Promise<{
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-}> {
-  try {
-    await window.agents.revokePublicShare(action.agentId);
-    window.dispatchEvent(new Event(AGENT_PUBLIC_SHARE_CHANGED_EVENT));
-    return { ok: true, result: { agentId: action.agentId } };
-  } catch (err: unknown) {
-    return sharedResourceFailure(err, { unsupportedResource: 'agents' });
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Automations helpers (App Advisor → window.api.automations bridge)
 // ---------------------------------------------------------------------------
@@ -10659,7 +10570,7 @@ async function setLocalMemoryModel(
 
 type RemoteControlAction = Extract<
   AppAdvisorAction,
-  { type: `remote_control.${string}` }
+  { type: 'remote_control.open_computer' }
 >;
 
 /** What App Advisor may see: no pairing codes or connection errors. */
@@ -10667,31 +10578,6 @@ interface RemoteControlActionResult {
   ok: boolean;
   result?: AppAdvisorJson;
   error?: AppAdvisorActionError;
-}
-
-function summarizeRemoteControlState(
-  state: RemoteControlState,
-): AppAdvisorJson {
-  return {
-    signedIn: state.signedIn,
-    relayStatus: state.relayStatus,
-    allowIncoming: state.allowIncoming,
-    hosts: state.hosts.map((host) => ({
-      deviceId: host.deviceId,
-      name: host.name,
-      platform: host.platform,
-      online: host.online,
-      connection: host.connection,
-    })),
-    controllers: state.controllers.map((controller) => ({
-      deviceId: controller.deviceId,
-      name: controller.name,
-      platform: controller.platform,
-      online: controller.online,
-      connected: controller.connected,
-    })),
-    pendingPairingRequests: state.incomingPairings.length,
-  };
 }
 
 async function dispatchRemoteControlAction(
@@ -10713,31 +10599,21 @@ async function dispatchRemoteControlAction(
   }
   if (!state.available) return unavailable;
   try {
-    switch (action.type) {
-      case 'remote_control.get_state':
-        return { ok: true, result: summarizeRemoteControlState(state) };
-      case 'remote_control.open_computer': {
-        const { deviceId } = action;
-        if (
-          deviceId !== null &&
-          !state.hosts.some((host) => host.deviceId === deviceId)
-        ) {
-          return {
-            ok: false,
-            error: {
-              code: 'invalid_payload',
-              message: 'That computer is not paired with this one.',
-            },
-          };
-        }
-        await remote.openMachine(deviceId);
-        return { ok: true, result: { opened: deviceId ?? 'this-computer' } };
-      }
-      case 'remote_control.set_allow_incoming': {
-        const next = await remote.setAllowIncoming(action.enabled);
-        return { ok: true, result: { allowIncoming: next.allowIncoming } };
-      }
+    const { deviceId } = action;
+    if (
+      deviceId !== null &&
+      !state.hosts.some((host) => host.deviceId === deviceId)
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: 'invalid_payload',
+          message: 'That computer is not paired with this one.',
+        },
+      };
     }
+    await remote.openMachine(deviceId);
+    return { ok: true, result: { opened: deviceId ?? 'this-computer' } };
   } catch (error) {
     return {
       ok: false,
@@ -11030,74 +10906,6 @@ async function routeAction(
         result: { value: sanitizeAppAdvisorJsonValue(status) ?? null },
       };
     }
-    case 'opencode.connection': {
-      // Reuse the owned IPC path: main supplies rollout, cancellation,
-      // generation, publication and runtime-revocation policy.
-      const connection = window.api.opencodeConnection;
-      if (!connection) {
-        return {
-          ok: false,
-          error: {
-            code: 'surface_unavailable',
-            message: 'OpenCode connection is unavailable on this surface.',
-          },
-        };
-      }
-      const operation =
-        action.operation === 'models' ? 'listModels' : action.operation;
-      const value = await (async (): Promise<unknown> => {
-        if (operation !== 'connect') return connection[operation]();
-        signal?.throwIfAborted();
-        const operationId = createClientId();
-        let cancellation: Promise<void> | undefined;
-        const cancel = (): void => {
-          cancellation = connection.cancel(operationId);
-          // Observe rejection immediately; finally still awaits the cleanup.
-          void cancellation.catch(() => undefined);
-        };
-        signal?.addEventListener('abort', cancel, { once: true });
-        try {
-          return await connection.connect(operationId);
-        } finally {
-          signal?.removeEventListener('abort', cancel);
-          await cancellation;
-        }
-      })();
-      return {
-        ok: true,
-        result: { value: sanitizeAppAdvisorJsonValue(value) ?? null },
-      };
-    }
-    case 'ollama.install': {
-      useNavigationStore.getState().openSettings('ollama');
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      const state = await window.api.installOllama();
-      if (!state.installation.ready) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              state.error ?? 'Ollama installation could not be completed.',
-          },
-        };
-      }
-      return {
-        ok: true,
-        result: {
-          mode: state.mode,
-          status: state.status,
-          installation: {
-            ready: state.installation.ready,
-            version: state.installation.version,
-            source: state.installation.source,
-            automaticInstallSupported:
-              state.installation.automaticInstallSupported,
-          },
-          ...(state.error ? { error: state.error } : {}),
-        },
-      };
-    }
     case 'workspace_context.switch': {
       if (
         !useFeatureFlagsStore
@@ -11155,12 +10963,30 @@ async function routeAction(
         .openPrivacyOptIn({ feature: action.feature, organizationId });
       return { ok: true, result: { opened: true } };
     }
+    case 'canopy_cloud.load_account':
+    case 'canopy_cloud.validate_api_key':
+    case 'canopy_cloud.save_api_key':
+    case 'canopy_cloud.clear_api_key':
+    case 'canopy_cloud.start_oauth_login':
+    case 'canopy_cloud.cancel_oauth_login':
+    case 'canopy_cloud.disconnect':
+    case 'canopy_portal.start':
+    case 'canopy_portal.stop':
     case 'remote_control.get_state':
     case 'remote_control.set_allow_incoming':
-      if (!isRemoteAccessSettingAvailable()) {
-        return { ok: false, error: remoteAccessUnavailableError() };
-      }
-      return dispatchRemoteControlAction(action);
+    case 'opencode.connection':
+    case 'ollama.install':
+      // CAN-6008: the App Advisor runtime runs credential and remote-access
+      // actions in main, only while this window's lease is bound; these
+      // never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message:
+            'Credential and remote-access actions run in the main process.',
+        },
+      };
     case 'remote_control.open_computer':
       return dispatchRemoteControlAction(action);
     case 'settings.personalCatalog.set': {
@@ -11922,14 +11748,6 @@ async function routeAction(
     }
     case 'agents.list_shared':
       return listSharedAgentsResult(action);
-    case 'agents.import_shared':
-      return importSharedAgentResult(action);
-    case 'agents.delete_shared':
-      return deleteSharedAgentResult(action);
-    case 'agents.publish_public_share':
-      return publishAgentPublicShareResult(action);
-    case 'agents.revoke_public_share':
-      return revokeAgentPublicShareResult(action);
     case 'plugins.open_marketplaces':
       openMarketplacesTab();
       return { ok: true };
@@ -16086,47 +15904,6 @@ async function routeAction(
       }
       return { ok: true, result: { saved: true } };
     }
-    case 'canopy_cloud.load_account':
-      return {
-        ok: true,
-        result:
-          (await window.api.loadCanopyCloudAccount()) as unknown as AppAdvisorJson,
-      };
-    case 'canopy_cloud.validate_api_key':
-      return {
-        ok: true,
-        result: (await window.api.validateCanopyCloudApiKey(
-          action.apiKey === undefined ? {} : { apiKey: action.apiKey },
-        )) as unknown as AppAdvisorJson,
-      };
-    case 'canopy_cloud.save_api_key':
-      return {
-        ok: true,
-        result: (await window.api.saveCanopyCloudApiKey({
-          apiKey: action.apiKey,
-        })) as unknown as AppAdvisorJson,
-      };
-    case 'canopy_cloud.clear_api_key':
-      return {
-        ok: true,
-        result:
-          (await window.api.clearCanopyCloudApiKey()) as unknown as AppAdvisorJson,
-      };
-    case 'canopy_cloud.start_oauth_login':
-      return {
-        ok: true,
-        result:
-          (await window.api.startCanopyCloudOAuthLogin()) as unknown as AppAdvisorJson,
-      };
-    case 'canopy_cloud.cancel_oauth_login':
-      await window.api.cancelCanopyCloudOAuthLogin();
-      return { ok: true };
-    case 'canopy_cloud.disconnect':
-      return {
-        ok: true,
-        result:
-          (await window.api.disconnectCanopyCloudAccount()) as unknown as AppAdvisorJson,
-      };
     case 'canopy_portal.open':
       // The Remote Control dialog follows device Remote Control, not the
       // Portal flag: Portal only follows its opt-in (CAN-5985).
@@ -16141,43 +15918,6 @@ async function routeAction(
     case 'canopy_portal.close':
       useNavigationStore.getState().closeCanopyPortal();
       return { ok: true };
-    case 'canopy_portal.start': {
-      if (rejectIfPortalDisabled(`start ${PORTAL_NAME_INLINE}`)) {
-        return canopyPortalDisabledResponse();
-      }
-      try {
-        await window.api.canopyPortal.start();
-        return { ok: true };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : `Failed to start ${PORTAL_NAME_INLINE}.`,
-          },
-        };
-      }
-    }
-    case 'canopy_portal.stop': {
-      try {
-        await window.api.canopyPortal.stop();
-        return { ok: true };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : `Failed to stop ${PORTAL_NAME_INLINE}.`,
-          },
-        };
-      }
-    }
     case 'canopy_portal.open_account_settings': {
       if (
         rejectIfPortalDisabled(`open ${PORTAL_NAME_INLINE} account settings`)
@@ -16428,152 +16168,6 @@ async function routeAction(
         return resolveAutomationMutation(result);
       } catch (error: unknown) {
         return automationExecutionFailure(error);
-      }
-    }
-    case 'plan.share': {
-      // Share (and re-sync) a tracked plan to Canopy Cloud via the Transport
-      // plan's preload bridge. The main-process handler persists the returned
-      // `share` metadata on the local plan; we echo the plan id, server-side
-      // remote id, and sync status back to the assistant so it can report the
-      // outcome without re-reading the plan.
-      const resolved = resolveActionShareOrganization(action);
-      if (!resolved.ok) return resolved;
-      try {
-        const plan = unwrapShareOperationResult(
-          await window.api.activity.plans.share({
-            projectId: action.projectId,
-            worktreeId: action.worktreeId,
-            planId: action.planId,
-            shareScope: resolved.action.shareScope,
-            ...(resolved.action.teamId
-              ? { teamId: resolved.action.teamId }
-              : {}),
-            ...(resolved.action.organizationId
-              ? { organizationId: resolved.action.organizationId }
-              : {}),
-          }),
-        );
-        if (!plan) {
-          return {
-            ok: false,
-            error: {
-              code: 'not_found',
-              message: `Tracked plan ${action.planId} was not found or could not be shared.`,
-            },
-          };
-        }
-        return {
-          ok: true,
-          result: {
-            planId: plan.id,
-            remoteId: plan.share?.remoteId ?? null,
-            syncStatus: plan.share?.syncStatus ?? null,
-            shareScope: plan.share?.shareScope ?? null,
-          },
-        };
-      } catch (error: unknown) {
-        return sharedResourceFailure(error, { noun: 'plan' });
-      }
-    }
-    case 'runs.share': {
-      // Share a finished agent session as a team/org-scoped run to Cloud. The
-      // main-process handler ingests the referenced session rows
-      // on demand (bypassing the ambient telemetry gate), then creates the
-      // `SharedRun` grant and returns its `externalId`.
-      const resolved = resolveActionShareOrganization(action);
-      if (!resolved.ok) return resolved;
-      try {
-        const result = unwrapShareOperationResult(
-          await window.api.runs.share({
-            projectId: action.projectId,
-            worktreeId: action.worktreeId,
-            chatId: action.chatId,
-            shareScope: resolved.action.shareScope,
-            ...(resolved.action.teamId
-              ? { teamId: resolved.action.teamId }
-              : {}),
-            ...(resolved.action.organizationId
-              ? { organizationId: resolved.action.organizationId }
-              : {}),
-          }),
-        );
-        if (!result.externalId) {
-          return {
-            ok: false,
-            error: {
-              code: 'execution_failed',
-              message: `Chat ${action.chatId} could not be shared as a run.`,
-            },
-          };
-        }
-        return {
-          ok: true,
-          result: { externalId: result.externalId },
-        };
-      } catch (error: unknown) {
-        return sharedResourceFailure(error, { noun: 'run' });
-      }
-    }
-    case 'runs.unshare': {
-      // Unshare (delete) a previously shared run (CAN-395). The main-process
-      // handler recomputes the deterministic idempotency key from the session
-      // identity and hard-deletes the `SharedRun` grant on Canopy Cloud.
-      const chatState = useChatStore.getState();
-      const priorSharedRun = chatState.worktreeChats[
-        worktreeKey(action.projectId, action.worktreeId)
-      ]?.tabs.find((tab) => tab.id === action.chatId)?.sharedRun;
-      let canonicalCleared = false;
-      try {
-        // Revoke the canonical consent marker first so a concurrent completed
-        // turn cannot re-share the run while the cloud deletion is in flight.
-        await useChatStore
-          .getState()
-          .setSharedRun(
-            action.projectId,
-            action.worktreeId,
-            action.chatId,
-            undefined,
-          );
-        canonicalCleared = true;
-        const result = await window.api.runs.unshare({
-          projectId: action.projectId,
-          worktreeId: action.worktreeId,
-          chatId: action.chatId,
-        });
-        if (isCoworkChatTarget(action.projectId)) {
-          // Work-entry meta `sharedRun` is derived from tab files main-side;
-          // re-derive the sidebar list instead of patching a row.
-          void useStandaloneChatStore.getState().refreshWorkEntries();
-        }
-        return {
-          ok: true,
-          result: { unshared: result.unshared },
-        };
-      } catch (error: unknown) {
-        if (canonicalCleared && priorSharedRun) {
-          try {
-            await useChatStore
-              .getState()
-              .setSharedRun(
-                action.projectId,
-                action.worktreeId,
-                action.chatId,
-                priorSharedRun,
-              );
-          } catch {
-            // Preserve the cloud-revocation failure returned to the caller.
-          }
-        }
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to unshare the run.',
-          },
-        };
       }
     }
     case 'shared-containers.open_invite': {
@@ -16965,6 +16559,22 @@ async function routeAction(
         error: {
           code: 'unsupported_action',
           message: 'Chat speed and plugin changes run in the main process.',
+        },
+      };
+    case 'agents.import_shared':
+    case 'agents.delete_shared':
+    case 'agents.publish_public_share':
+    case 'agents.revoke_public_share':
+    case 'plan.share':
+    case 'runs.share':
+    case 'runs.unshare':
+      // CAN-6003: the App Advisor runtime shares in main; these never reach
+      // the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Sharing actions run in the main process.',
         },
       };
     case 'agents.list':

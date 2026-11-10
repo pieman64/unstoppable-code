@@ -16,6 +16,7 @@ import {
 
 import { WarningIcon, type AppIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { Stack } from './Stack';
 import { AppErrorDetails } from './AppErrorDetails';
 import { CopyDetailsButton } from './CopyDetailsButton';
 import { LoadingButton } from './LoadingButton';
@@ -712,20 +713,28 @@ export function EmptyState({
       data-testid={testId}
       className={`flex flex-col items-center justify-center text-center ${inset === 'none' ? '' : 'py-16'}`}
     >
-      {(icon || Art) && (
-        <div
-          className={`${spacing === 'relaxed' ? 'mb-3' : 'mb-2'} flex items-center justify-center ${tone === 'quiet' ? 'fg-quaternary' : ''}`}
-        >
-          {Art ? <Art size={artSize} exactSize aria-hidden /> : icon}
-        </div>
-      )}
-      <h3
-        className={`${subtitle ? 'mb-1' : ''} text-s ${titleWeight === 'normal' ? 'font-normal' : 'font-medium'} ${tone === 'quiet' ? 'fg-quaternary' : 'fg-primary'}`}
-      >
-        {title}
-      </h3>
-      {subtitle ? <p className="text-xs fg-secondary">{subtitle}</p> : null}
-      {action && <div className="mt-4">{action}</div>}
+      <Stack gap="group" align="center">
+        <Stack gap={spacing === 'relaxed' ? 'item' : 'inline'} align="center">
+          {(icon || Art) && (
+            <div
+              className={`flex items-center justify-center ${tone === 'quiet' ? 'fg-quaternary' : ''}`}
+            >
+              {Art ? <Art size={artSize} exactSize aria-hidden /> : icon}
+            </div>
+          )}
+          <Stack gap="tight" align="center">
+            <h3
+              className={`text-s ${titleWeight === 'normal' ? 'font-normal' : 'font-medium'} ${tone === 'quiet' ? 'fg-quaternary' : 'fg-primary'}`}
+            >
+              {title}
+            </h3>
+            {subtitle ? (
+              <p className="text-xs fg-secondary">{subtitle}</p>
+            ) : null}
+          </Stack>
+        </Stack>
+        {action && <div>{action}</div>}
+      </Stack>
     </div>
   );
 }

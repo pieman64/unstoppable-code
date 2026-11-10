@@ -1,6 +1,6 @@
 import { useId, type JSX, type ReactNode } from 'react';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
-import { ArchivedStateIcon } from '../ArchivedStateIcon';
+import { ArchivedStateIcon } from '../../icons/ArchivedStateIcon';
 import { ThinkingSpinner } from '../ThinkingSpinner';
 import { CostSplitBar } from './CostSplitBar';
 import type { CostSegment } from './cost-format';

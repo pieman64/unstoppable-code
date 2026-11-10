@@ -56,7 +56,7 @@ import {
   isCodexSpeed,
 } from '@canopy/execution-engine/lib/codex-speed';
 import { isCodexContextWindowSetting } from '@canopy/execution-engine/lib/codex-context-window';
-import { isChatTabPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { isChatTabPluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { registerIpcHandler } from './register';
 import {
   createChatCommandDispatchOptions,

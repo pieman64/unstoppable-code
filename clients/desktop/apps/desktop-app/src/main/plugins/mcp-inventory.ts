@@ -39,8 +39,8 @@ import type {
 import {
   getMcpHttpAuthDefault,
   getMcpHttpAuthHandler,
-} from '@canopy/desktop-shared/lib/mcp-http-auth';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+} from '@canopy/execution-engine/lib/mcp-http-auth';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type { CollectionConfigFile } from '@canopy/desktop-shared/types/collections';
 import type { BundleConfigFile } from '@canopy/desktop-shared/types/bundles';
 import type {
@@ -55,7 +55,7 @@ import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-serve
 import type {
   MarketplaceInfo,
   PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { probeMcpHttpOAuthRequirement } from '../mcp/oauth-probe';
 import {
   pluginMcpOAuthProbeInputs,

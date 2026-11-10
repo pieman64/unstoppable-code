@@ -21,7 +21,7 @@ import {
   resolveClaudeModAdmissionLaunch,
   type ClaudeModLaunchPluginRequest,
 } from './claude-mod-admission-launch';
-import { mergeClaudeModAdmissionSettings } from '@canopy/desktop-shared/node/plugins/claude-mod-admission';
+import { mergeClaudeModAdmissionSettings } from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 
 export interface DiscoveryResult {
   slashCommands: SlashCommandData[];

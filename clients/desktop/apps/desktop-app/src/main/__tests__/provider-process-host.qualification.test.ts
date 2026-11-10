@@ -62,6 +62,20 @@ function present(pid: number): boolean {
   }
 }
 
+/** A stray can be reaped between any check and the kill; gone is done. */
+function killStray(pid: number): void {
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (error) {
+    // Node's errors come from outside the test realm, so not `instanceof`.
+    const gone =
+      typeof error === 'object' &&
+      error !== null &&
+      Reflect.get(error, 'code') === 'ESRCH';
+    if (!gone) throw error;
+  }
+}
+
 async function until(check: () => boolean, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
@@ -305,8 +319,7 @@ beforeAll(() => {
 });
 
 afterEach(() => {
-  for (const pid of Array.from(strays))
-    if (present(pid)) process.kill(pid, 'SIGKILL');
+  for (const pid of Array.from(strays)) killStray(pid);
   strays.clear();
   jest.restoreAllMocks();
   jest.useRealTimers();

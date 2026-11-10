@@ -3,7 +3,7 @@ import { Stack, Button, Surface } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Checkbox } from '@canopy/ui-shared/components';
 import type { HookChatPluginDependencyItem } from '@canopy/desktop-shared/types';
-import { normalizeGitHubRepoRef } from '@canopy/desktop-shared/plugin-refs';
+import { normalizeGitHubRepoRef } from '@canopy/execution-engine/plugin-refs';
 import { DialogModal } from '../shared';
 import { parseGitHubRepo } from '@/lib/format';
 

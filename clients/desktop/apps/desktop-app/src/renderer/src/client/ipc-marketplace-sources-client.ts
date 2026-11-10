@@ -13,7 +13,7 @@ import type {
   PluginProvider,
   PluginsAPI,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import {
   getCurrentMarketplaceCache,

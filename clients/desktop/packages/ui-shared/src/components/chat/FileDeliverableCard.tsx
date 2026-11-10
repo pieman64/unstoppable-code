@@ -100,7 +100,8 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
   );
   return (
     <div
-      className="flex min-w-0 items-center rounded-md border bg-base"
+      // The card insets a trailing Download 12px, as the row pads its text.
+      className={`flex min-w-0 items-center rounded-md border bg-base${onDownload ? ' pr-3' : ''}`}
       data-testid="file-deliverable-card"
     >
       {onOpen ? (
@@ -126,7 +127,6 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
           size="compact"
           onClick={onDownload}
           aria-label={`Download ${filename}`}
-          className="mr-3"
         >
           <DownloadIcon size="sm" aria-hidden="true" />
           Download

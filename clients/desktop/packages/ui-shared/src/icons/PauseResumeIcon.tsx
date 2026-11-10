@@ -4,7 +4,7 @@ import {
   PlayIcon,
   type AppIconProps,
   type IconSize,
-} from '../icons/AppIcons';
+} from './AppIcons';
 
 export interface PauseResumeIconProps extends AppIconProps {
   /** When true renders the play (resume) glyph; otherwise the pause glyph. */

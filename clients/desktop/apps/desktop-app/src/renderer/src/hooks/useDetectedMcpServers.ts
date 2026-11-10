@@ -10,7 +10,7 @@ import type {
   ListDetectedMcpServersResponse,
   McpServerAuthStatus,
 } from '@canopy/execution-engine/types/mcp-servers';
-import { setMcpHttpAuthPreference } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import { setMcpHttpAuthPreference } from '@canopy/execution-engine/lib/mcp-http-auth';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import {
   isNoAuthCompletion,

@@ -1,4 +1,4 @@
-export * from './SubagentIcon';
+export * from '../../../../icons/SubagentIcon';
 export * from './SubagentStatusGlyph';
 export * from './SubagentChangesLabel';
 export * from './SubagentHarnessMark';

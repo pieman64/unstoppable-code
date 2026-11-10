@@ -4,7 +4,7 @@ import {
   effectiveClaudeConfigDir,
   isSameClaudePath,
   type ClaudeModAdmissionLaunch,
-} from '../../plugins/claude-mod-admission';
+} from '@canopy/execution-engine/node/plugins/claude-mod-admission';
 import type { ResourceContextInput } from '@canopy/execution-engine/lib/resource-context-policy';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
 import type {
@@ -123,7 +123,7 @@ import {
   getProviderForModel,
   resolveModelAlias,
 } from '@canopy/desktop-shared/types';
-import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import { mcpHttpAuthTargetKey } from '@canopy/execution-engine/lib/mcp-http-auth';
 import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 import type {
@@ -143,6 +143,7 @@ import type {
   ExecutionRuntime,
   NormalizedStep,
   PauseInputRequest,
+  PipelineAgentModelAliasResolution,
   PipelineAiCreditsRoutingContext,
   PipelineAiCreditsRoutingOverride,
   PipelineLedgerAttempt,
@@ -3023,6 +3024,67 @@ export async function resolvePipelineModelInputs(options: {
     selectedModel,
     runtimeModel: resolvedModel,
     aliasPluginCollectionIds: [],
+  };
+}
+
+/**
+ * Whether plugin selections add anything. The Agent store gives every Agent
+ * selections, empty when it adds no plugins (CAN-5832).
+ */
+export function pipelinePluginSelectionsAddPlugins(
+  selections: ChatTabPluginSelections | undefined,
+): boolean {
+  return (
+    selections !== undefined &&
+    (selections.collectionIds.length > 0 ||
+      (selections.bundleIds?.length ?? 0) > 0 ||
+      selections.skillRefs.length > 0 ||
+      selections.pluginRefs.length > 0 ||
+      (selections.mcpServerRefs?.length ?? 0) > 0)
+  );
+}
+
+/** What a workflow model alias names for a run before its steps (CAN-5832). */
+export interface PipelineModelAliasTarget {
+  /** The base model the alias's steps run on. */
+  readonly base: string;
+  /** The alias adds plugins: an inline plugin collection or an Agent's plugins. */
+  readonly plugins: boolean;
+  /** It names an Agent, whose base model each step resolves again. */
+  readonly agent: boolean;
+}
+
+/**
+ * Resolves `alias` with the precedence an agent step uses
+ * ({@link resolvePipelineModelInputs}): the run preference, then the
+ * workflow default; an Agent through `resolveAgent`. Null when the step
+ * would fail to resolve it, so a caller can leave such a run in process.
+ */
+export async function resolvePipelineModelAliasTarget(
+  alias: PipelineModelAlias,
+  preference: PipelineModelAliasPreference | undefined,
+  resolveAgent: (
+    agentId: string,
+  ) => Promise<PipelineAgentModelAliasResolution | null>,
+): Promise<PipelineModelAliasTarget | null> {
+  const defaults = preferenceToDefaults(preference) ?? alias.defaults;
+  if (!defaults) return null;
+  if ('agent_id' in defaults) {
+    const resolution = await resolveAgent(defaults.agent_id);
+    if (!resolution || !isRuntimeBaseModelAvailable(resolution.base))
+      return null;
+    return {
+      base: resolution.base,
+      plugins: pipelinePluginSelectionsAddPlugins(resolution.pluginSelections),
+      agent: true,
+    };
+  }
+  if (resolveModelAlias(defaults.base).startsWith(AGENT_MODEL_PREFIX))
+    return null;
+  return {
+    base: defaults.base,
+    plugins: Boolean(defaults.plugin_collection_id),
+    agent: false,
   };
 }
 

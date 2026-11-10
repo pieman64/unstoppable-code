@@ -2,6 +2,7 @@
 
 import type { JSX } from 'react';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
+import { formatRelativeTime } from '../lib/format-relative-time';
 import type { ActiveInstalledItemCounts } from '../lib/installed-item-status';
 import { Button } from './Button';
 import { SettingsRowsRow } from './settings/SettingsRows';
@@ -46,7 +47,12 @@ export type ActiveItemsSummaryState =
   | { readonly kind: 'loading' }
   | { readonly kind: 'error'; readonly message: string }
   | { readonly kind: 'unsupported'; readonly reason: string }
-  | { readonly kind: 'ready'; readonly counts: ActiveInstalledItemCounts };
+  | {
+      readonly kind: 'ready';
+      readonly counts: ActiveInstalledItemCounts;
+      /** Set when the counts come from a synced copy; see below. */
+      readonly syncedAt?: string;
+    };
 
 export interface ActiveItemsSummaryProps {
   readonly state: ActiveItemsSummaryState;
@@ -81,6 +87,28 @@ function ActiveItemsLine({
   );
 }
 
+/**
+ * `Updated 5m ago`, under a summary read from a synced copy of the desktop's
+ * installed items rather than a live read (CAN-6037). It does not tick on its
+ * own; it moves when the host reads the copy again.
+ */
+export function InstalledItemsSyncedAt({
+  syncedAt,
+  testId,
+}: {
+  readonly syncedAt: string;
+  readonly testId: string;
+}): JSX.Element {
+  return (
+    <span
+      className="block text-xs font-normal fg-tertiary"
+      data-testid={testId}
+    >
+      Updated {formatRelativeTime(syncedAt)}
+    </span>
+  );
+}
+
 export function ActiveItemsSummary({
   state,
   onManage,
@@ -103,7 +131,17 @@ export function ActiveItemsSummary({
   return (
     <SettingsRowsRow
       dataTestId={testId}
-      label={<span data-testid={`${testId}-counts`}>{line}</span>}
+      label={
+        <>
+          <span data-testid={`${testId}-counts`}>{line}</span>
+          {state.kind === 'ready' && state.syncedAt !== undefined ? (
+            <InstalledItemsSyncedAt
+              syncedAt={state.syncedAt}
+              testId={`${testId}-synced-at`}
+            />
+          ) : null}
+        </>
+      }
       description={ACTIVE_ITEMS_SUMMARY_DESCRIPTION}
       control={
         <Button

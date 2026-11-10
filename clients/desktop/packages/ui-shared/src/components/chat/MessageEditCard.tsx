@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { Button } from '../Button';
 import { ChatComposerShell } from '../ChatComposerShell';
+import { Stack } from '../Stack';
 
 // The desktop composer's editable text (ui-rich composer density), on a
 // plain textarea: no native ring or resize grip, growing with its content.
@@ -28,6 +29,11 @@ export interface MessageEditCardProps {
   readonly label?: ReactNode;
   /** Status or notes between the text and the actions. */
   readonly children?: ReactNode;
+  /**
+   * Own the gap before and between margin-free children with the text's
+   * tight gap. Omitted, children follow the text with their own spacing.
+   */
+  readonly childrenGap?: 'tight';
   /** Trailing buttons, in the composer's send position. */
   readonly actions: ReactNode;
   readonly dataTestId?: string;
@@ -48,6 +54,7 @@ export function MessageEditCard({
   readOnly = false,
   label,
   children,
+  childrenGap,
   actions,
   dataTestId,
 }: MessageEditCardProps): JSX.Element {
@@ -62,25 +69,28 @@ export function MessageEditCard({
     <div data-testid={dataTestId}>
       <ChatComposerShell dataTestId="message-edit-card">
         <div className="px-4 pt-3.5 pb-1.5">
-          {label ? (
-            <div className="mb-1 text-3xs fg-secondary">{label}</div>
-          ) : null}
-          <textarea
-            ref={(element): void => {
-              textarea.current = element;
-              if (typeof inputRef === 'function') inputRef(element);
-              else if (inputRef) inputRef.current = element;
-            }}
-            rows={1}
-            readOnly={readOnly}
-            aria-label={ariaLabel}
-            data-testid={inputTestId}
-            className={MESSAGE_EDIT_TEXT_CLASS}
-            value={value}
-            onChange={(event): void => onChange?.(event.currentTarget.value)}
-            onKeyDown={onKeyDown}
-          />
-          {children}
+          <Stack gap="tight">
+            {label ? (
+              <div className="text-3xs fg-secondary">{label}</div>
+            ) : null}
+            <textarea
+              ref={(element): void => {
+                textarea.current = element;
+                if (typeof inputRef === 'function') inputRef(element);
+                else if (inputRef) inputRef.current = element;
+              }}
+              rows={1}
+              readOnly={readOnly}
+              aria-label={ariaLabel}
+              data-testid={inputTestId}
+              className={MESSAGE_EDIT_TEXT_CLASS}
+              value={value}
+              onChange={(event): void => onChange?.(event.currentTarget.value)}
+              onKeyDown={onKeyDown}
+            />
+            {childrenGap === 'tight' ? children : null}
+          </Stack>
+          {childrenGap === 'tight' ? null : children}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5">
           {actions}

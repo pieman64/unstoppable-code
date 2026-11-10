@@ -1,9 +1,11 @@
 /**
  * Pure parsing/detection helpers for the "Create worktree from ..." flow
  * (ECW-8121). Detects whether free-form user input refers to a Linear issue,
- * a GitHub pull request, or a branch name. Zero runtime dependencies so it is
- * usable from renderer, main, and tests alike.
+ * a GitHub pull request, or a branch name. It relies only on browser-safe
+ * protocol helpers, so it is usable from renderer, main, and tests alike.
  */
+
+import { parseHomePullRequestReference } from '@canopy/protocol/portable-tasks/pull-request-reference';
 
 export type CreateFromMode = 'new' | 'branch' | 'pr' | 'linear';
 
@@ -14,14 +16,7 @@ export interface DetectedReference {
   value: string;
 }
 
-export interface ParsedPullRequestReference {
-  owner?: string;
-  repo?: string;
-  number: number;
-}
-
 const LINEAR_IDENTIFIER_RE = /^[A-Z][A-Z0-9]*-\d+$/;
-const BARE_PR_NUMBER_RE = /^#?(\d+)$/;
 
 export interface ParsedGitHubRepositoryReference {
   owner: string;
@@ -139,18 +134,18 @@ function parseLinkReference(input: string): CreateFromLinkReference | null {
   }
   const repository = githubRepositoryFromUrl(url);
   if (!repository) return null;
-  const pr = url.pathname.match(
-    /^\/[^/]+\/[^/]+\/pull\/(\d+)(?:\/(?:files|commits|checks))?\/?$/,
-  );
-  if (pr) {
-    const number = Number(pr[1]);
-    if (!Number.isSafeInteger(number) || number <= 0) return null;
+  const pullRequest = parseHomePullRequestReference(input);
+  if (
+    pullRequest &&
+    pullRequest.owner === repository.owner &&
+    pullRequest.repo === repository.repo
+  ) {
     return {
       ...repository,
       kind: 'pr',
-      number,
-      url: `${repository.url}/pull/${number}`,
-      key: `${repository.repositoryKey}/pull/${number}`,
+      number: pullRequest.number,
+      url: `${repository.url}/pull/${pullRequest.number}`,
+      key: `${repository.repositoryKey}/pull/${pullRequest.number}`,
     };
   }
   if (!parseGitHubRepositoryReference(input)) return null;
@@ -268,34 +263,6 @@ export function extractCreateFromReferences(
   };
 }
 
-export function parsePullRequestReference(
-  input: string,
-): ParsedPullRequestReference | null {
-  const trimmed = input.trim();
-  if (trimmed.length === 0) {
-    return null;
-  }
-
-  for (const url of legacyReferenceUrls(trimmed)) {
-    const reference = parseLinkReference(url);
-    if (reference?.kind === 'pr') {
-      return {
-        owner: reference.owner,
-        repo: reference.repo,
-        number: reference.number,
-      };
-    }
-  }
-
-  const bareMatch = trimmed.match(BARE_PR_NUMBER_RE);
-  if (bareMatch) {
-    const number = Number.parseInt(bareMatch[1], 10);
-    return Number.isSafeInteger(number) && number > 0 ? { number } : null;
-  }
-
-  return null;
-}
-
 export function parseLinearIdentifier(input: string): string | null {
   const trimmed = input.trim();
   if (LINEAR_IDENTIFIER_RE.test(trimmed)) {
@@ -329,7 +296,7 @@ export function detectCreateFromReference(
     return { mode: 'linear', value: linearIdentifier };
   }
 
-  if (parsePullRequestReference(trimmed)) {
+  if (parseHomePullRequestReference(trimmed)) {
     return { mode: 'pr', value: trimmed };
   }
 

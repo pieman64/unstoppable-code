@@ -7,7 +7,7 @@ import type {
   WorktreeDiscovery,
 } from '@canopy/desktop-shared/types';
 import type { ConfiguredPromptReference } from '@canopy/protocol/configured-prompt-references';
-import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
+import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import type { ConfigurationComposerContext } from '@/lib/configurationComposerTargets';
 import type { CodexSpeedRouteContext } from '@canopy/execution-engine/types/codex-speed-capabilities';
 

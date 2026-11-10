@@ -53,7 +53,7 @@ import type {
 } from '@canopy/execution-engine/types/pipeline';
 import { DEFAULT_PIPELINE_SCOPES } from '@canopy/desktop-shared/pipelines/scope';
 import { isSharedPipelineLocalId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
-import type { PluginsCache } from '@canopy/desktop-shared/types/plugins';
+import type { PluginsCache } from '@canopy/execution-engine/types/plugins';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import {
@@ -80,11 +80,8 @@ import {
 } from '@/components/shared/capability-package/useCapabilityPackageReadiness';
 import { PipelinePluginCollectionsSection } from './PipelinePluginCollectionsSection';
 import { PipelineModelAliasesSection } from './PipelineModelAliasesSection';
-import {
-  TriggerIcon,
-  ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
-import { WatcherEyeIcon } from '@canopy/ui-shared/icons';
+import { ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { PipelineGlyph, WatcherEyeIcon } from '@canopy/ui-shared/icons';
 import { ActionTooltip } from '@/components/shared/ActionTooltip';
 import {
   WatcherRecipientPicker,
@@ -385,7 +382,7 @@ function SharedPipelineSelector({
                 if (!info.remoteId) return;
                 void onSelect(info.remoteId, info.id);
               }}
-              icon={<PipelineListIcon icon={info.icon} />}
+              icon={<PipelineGlyph icon={info.icon} />}
               description={
                 info.description ? (
                   <span title={info.description}>{info.description}</span>
@@ -414,14 +411,6 @@ function SharedPipelineSelector({
       <ErrorBanner className="" error={hydrateError} />
     </Stack>
   );
-}
-
-function PipelineListIcon({ icon }: { icon?: string | null }): JSX.Element {
-  if (icon) {
-    return <span className="shrink-0 text-m">{icon}</span>;
-  }
-
-  return <TriggerIcon size="sm" className="shrink-0 fg-secondary" />;
 }
 
 function InputField({
@@ -2061,7 +2050,7 @@ export function PipelineTriggerModal({
                                     }
                                     onClick={onClick}
                                     icon={
-                                      <PipelineListIcon icon={row.info.icon} />
+                                      <PipelineGlyph icon={row.info.icon} />
                                     }
                                     description={
                                       row.info.description ? (
@@ -2148,7 +2137,7 @@ export function PipelineTriggerModal({
 
             <Surface variant="group" className="">
               <div className="flex items-center gap-3 px-3 py-2.5">
-                <PipelineListIcon icon={selectedPipeline.info.icon} />
+                <PipelineGlyph icon={selectedPipeline.info.icon} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-s font-medium fg-primary">
                     {selectedPipeline.info.name}

@@ -130,8 +130,11 @@ export function ShareAgentModal({
       setRemoteLoadRevision((revision) => revision + 1);
     };
     window.addEventListener(AGENT_PUBLIC_SHARE_CHANGED_EVENT, reload);
+    // Main announces a public link it published or revoked (CAN-6003).
+    const unsubscribe = window.agents.onChanged(reload);
     return (): void => {
       window.removeEventListener(AGENT_PUBLIC_SHARE_CHANGED_EVENT, reload);
+      unsubscribe();
     };
   }, []);
 

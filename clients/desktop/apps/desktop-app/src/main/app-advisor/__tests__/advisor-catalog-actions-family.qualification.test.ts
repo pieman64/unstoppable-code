@@ -6,7 +6,7 @@ import type {
   ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
 import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
-import type { MarketplaceInfo } from '@canopy/desktop-shared/types/plugins';
+import type { MarketplaceInfo } from '@canopy/execution-engine/types/plugins';
 import type * as AppAdvisorIpcModule from '../../ipc/app-advisor';
 import type {
   AdvisorCatalogActionHost,

@@ -78,7 +78,17 @@ export interface HostedChatDispatchDeps {
   answerQuestion(
     request: HostedQuestionAnswerRequest,
   ): Promise<ChatQuestionRespondOutcome>;
+  /** Whether an accepted send started its turn or waits in the queue. */
+  sendDelivery?(
+    target: { projectId: string; worktreeId: string; chatId: string },
+    userMessageId: string,
+  ): Promise<{ delivery?: 'accepted' | 'queued' }>;
 }
+
+/** A send's reply also says whether it started or was queued, as Portal's does. */
+export type HostedChatCommandResult = ChatCommandResult & {
+  delivery?: 'accepted' | 'queued';
+};
 
 export const HOSTED_SECRET_ANSWER_REFUSAL =
   "Agents can't answer a secret question. Answer it on this computer.";
@@ -102,7 +112,7 @@ export function createHostedChatDispatcher(
 ): (
   request: unknown,
   attribution: HostedChatAttribution,
-) => Promise<ChatCommandResult> {
+) => Promise<HostedChatCommandResult> {
   return async (value, attribution) => {
     const request = deps.validate(value);
     const command = request.command;
@@ -137,7 +147,7 @@ export function createHostedChatDispatcher(
           attribution,
         );
       }
-      case 'chat.send_message':
+      case 'chat.send_message': {
         if (command.model !== undefined) {
           const refusal = await deps.modelRefusal(
             {
@@ -149,7 +159,7 @@ export function createHostedChatDispatcher(
           );
           if (refusal !== null) return refused(request, 'rejected', refusal);
         }
-        return deps.dispatch(
+        const sent = await deps.dispatch(
           {
             ...request,
             origin: 'portal',
@@ -157,6 +167,23 @@ export function createHostedChatDispatcher(
           },
           attribution,
         );
+        if (
+          deps.sendDelivery === undefined ||
+          (sent.outcome !== 'applied' && sent.outcome !== 'already_applied')
+        )
+          return sent;
+        return {
+          ...sent,
+          ...(await deps.sendDelivery(
+            {
+              projectId: request.projectId,
+              worktreeId: request.worktreeId,
+              chatId: command.chatId,
+            },
+            sent.messageId ?? command.userMessageId,
+          )),
+        };
+      }
       case 'chat.answer_question': {
         const scope = {
           projectId: request.projectId,

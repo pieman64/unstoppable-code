@@ -1,5 +1,5 @@
 import { findAccountMcpConnection } from '../canopy-cloud/mcp-connections';
-import { getMcpHttpAuthDefault } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import { getMcpHttpAuthDefault } from '@canopy/execution-engine/lib/mcp-http-auth';
 import {
   readMcpAccountIndexEntry,
   withAccountMcpProxy,

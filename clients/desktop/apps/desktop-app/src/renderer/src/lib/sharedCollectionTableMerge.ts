@@ -2,8 +2,8 @@ import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import type {
   MarketplaceInfo,
   PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
-import { isBuiltInPluginMarketplaceId } from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
+import { isBuiltInPluginMarketplaceId } from '@canopy/execution-engine/types/plugins';
 import type {
   UnifiedTableBadge,
   UnifiedTablePipelineDerivedRow,
@@ -11,7 +11,7 @@ import type {
 } from '@/hooks/useUnifiedTableData';
 import { parseGitHubRepo } from '@/lib/format';
 import { brandText } from '@/lib/brand';
-import { normalizeGitHubRepoRef } from '@canopy/desktop-shared/plugin-refs';
+import { normalizeGitHubRepoRef } from '@canopy/execution-engine/plugin-refs';
 import type { EditableCollectionItem } from '@/lib/sharedCollections';
 
 const SHARED_ROW_KEY_PREFIX = '__shared-collection-item__:';

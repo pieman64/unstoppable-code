@@ -3,6 +3,7 @@ import { InfoIcon } from '../icons/InfoIcon';
 import { Button } from './Button';
 import { Disclosure } from './Disclosure';
 import { SettingsRowsRow } from './settings/SettingsRows';
+import { Stack } from './Stack';
 import { ToggleSwitch, ToggleSwitchField } from './ToggleSwitch';
 import { ErrorBanner } from './StatusBlocks';
 import { Tooltip } from './Tooltip';
@@ -65,35 +66,37 @@ export function PrivateMemoryCard({
       data-managed={managed ? 'true' : undefined}
       className={surface === 'card' ? 'rounded-lg border p-4' : ''}
     >
-      <SettingsRowsRow
-        label={PRIVATE_MEMORY_LABEL}
-        htmlFor={switchId}
-        description={
-          <div className="flex flex-col gap-1">
-            <p>{PRIVATE_MEMORY_EXPLANATION}</p>
-            {managed && (
-              <p data-testid={`${dataTestId}-managed`}>
-                {privateMemoryManagedLabel(organizationName)}
-              </p>
-            )}
-          </div>
-        }
-        control={
-          <ToggleSwitch
-            id={switchId}
-            checked={checked}
-            disabled={disabled || managed}
-            label={PRIVATE_MEMORY_LABEL}
-            onChange={onChange}
-            dataTestId={`${dataTestId}-toggle`}
-          />
-        }
-      />
-      <ErrorBanner
-        className="mt-2"
-        error={error}
-        testId={`${dataTestId}-error`}
-      />
+      <Stack gap="inline">
+        <SettingsRowsRow
+          label={PRIVATE_MEMORY_LABEL}
+          htmlFor={switchId}
+          description={
+            <div className="flex flex-col gap-1">
+              <p>{PRIVATE_MEMORY_EXPLANATION}</p>
+              {managed && (
+                <p data-testid={`${dataTestId}-managed`}>
+                  {privateMemoryManagedLabel(organizationName)}
+                </p>
+              )}
+            </div>
+          }
+          control={
+            <ToggleSwitch
+              id={switchId}
+              checked={checked}
+              disabled={disabled || managed}
+              label={PRIVATE_MEMORY_LABEL}
+              onChange={onChange}
+              dataTestId={`${dataTestId}-toggle`}
+            />
+          }
+        />
+        <ErrorBanner
+          className=""
+          error={error}
+          testId={`${dataTestId}-error`}
+        />
+      </Stack>
     </div>
   );
 }

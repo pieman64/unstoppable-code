@@ -17,12 +17,8 @@ import {
   thinkingDotCount,
   type ThinkingLevel,
 } from '@canopy/protocol/thinking';
-import {
-  CheckIcon,
-  FastModeIcon,
-  FastModeOnIcon,
-  ThinkingIcon,
-} from '../icons/AppIcons';
+import { CheckIcon, FastModeIcon, FastModeOnIcon } from '../icons/AppIcons';
+import { ThinkingLevelIcon } from '../icons/ThinkingLevelIcon';
 import {
   thinkingLevelLabel,
   thinkingControlLevels,
@@ -90,48 +86,6 @@ const WORKSPACE_DEFAULT_LABEL = 'Default';
 const TOOLTIP_LABEL = 'Effort';
 const FAST_MODE_DESCRIPTION = 'Faster replies, 2x usage';
 const ULTRA_FAST_DESCRIPTION = 'Fastest replies, more usage';
-
-/**
- * Escalating effort ramp: green (`medium`) -> blue (`high`) -> amber
- * (`xhigh`) -> red (`max`) -> purple (`ultra`). `ApprovalModePicker` reuses
- * the first three stops so the two composer controls read as one system.
- */
-function getThinkingIconColorClass(level: ThinkingLevel | undefined): string {
-  switch (level) {
-    case 'medium':
-      return 'fg-success';
-    case 'high':
-      return 'fg-blue';
-    case 'xhigh':
-      return 'fg-warning';
-    case 'max':
-      return 'fg-destructive';
-    case 'ultra':
-      return 'fg-purple';
-    case 'low':
-    case 'off':
-    case undefined:
-      return 'fg-secondary';
-  }
-  return 'fg-secondary';
-}
-
-interface ThinkingLevelIconProps {
-  value: ThinkingLevel | undefined;
-}
-
-/** The shared effort glyph and its current-level color. */
-export function ThinkingLevelIcon({
-  value,
-}: ThinkingLevelIconProps): JSX.Element {
-  return (
-    <ThinkingIcon
-      size="sm"
-      className={`shrink-0 ${getThinkingIconColorClass(value)}`}
-      active={value !== undefined && value !== 'off'}
-    />
-  );
-}
 
 function ThinkingDots({
   level,

@@ -1,3 +1,4 @@
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import * as path from 'node:path';
 
 /**
@@ -7,7 +8,7 @@ import * as path from 'node:path';
  */
 export function getSkillSourceDirectoryName(
   sourceId: string,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform | null = hostOperatingSystem(),
 ): string {
   if (platform !== 'win32') return sourceId;
 
@@ -31,7 +32,7 @@ export function getInstalledSkillDirectory(
   skillsRootDir: string,
   sourceId: string,
   skillName: string,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform | null = hostOperatingSystem(),
 ): string {
   return path.join(
     skillsRootDir,

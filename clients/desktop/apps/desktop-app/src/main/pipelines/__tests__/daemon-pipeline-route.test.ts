@@ -104,7 +104,10 @@ import {
 } from '@canopy/desktop-shared/node/pipelines/executor';
 import { setLoginShellProbe } from '@canopy/desktop-shared/node/pipelines/config-paths';
 import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
-import type { ExecutionRuntime } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type {
+  ExecutionRuntime,
+  PipelineAgentModelAliasResolution,
+} from '@canopy/desktop-shared/node/pipelines/executor/types';
 import type {
   ExecutionState,
   Pipeline,
@@ -149,7 +152,9 @@ import {
 } from '../pipeline-worker-dispatch';
 import { registerDesktopPipelineHostActions } from '../pipeline-host-requests';
 import {
+  DEFAULT_CLAUDE_MODEL,
   DEFAULT_CODEX_MODEL,
+  initClaudeModels,
   initCodexModels,
 } from '@canopy/desktop-shared/types';
 
@@ -940,7 +945,7 @@ describe('daemon pipeline route (CAN-5086)', () => {
     }
   });
 
-  it('a run in Claude terminal mode, or with plugin collection or model alias preferences, runs in process (CAN-5095)', async () => {
+  it('a run in Claude terminal mode, or with plugin collection preferences, runs in process (CAN-5095)', async () => {
     const daemon = fakeDaemon();
     mockGet.mockResolvedValue({ client: daemon.client });
     mockOwnerPossible.mockReturnValue(true);
@@ -953,11 +958,108 @@ describe('daemon pipeline route (CAN-5086)', () => {
         },
       },
     });
-    await routed(MODEL_PIPELINE, 'user', {
-      modelAliasPreferences: { fast: { mode: 'reset' } },
-    });
-    expect(mockExecutePipeline).toHaveBeenCalledTimes(3);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
     expect(daemon.instructions).toHaveLength(0);
+  });
+
+  it("model alias steps go to the daemon with the run's merged preferences and what each alias names (CAN-5832)", async () => {
+    initClaudeModels([{ id: DEFAULT_CLAUDE_MODEL, label: 'Claude' }]);
+    const aliasPipeline = (agentId: string): Pipeline => ({
+      name: 'Route',
+      on: 'dispatch',
+      model_aliases: [
+        { id: 'fast', name: 'Fast', defaults: { base: 'unset-model' } },
+        { id: 'reviewer', name: 'Reviewer', defaults: { agent_id: agentId } },
+      ],
+      jobs: {
+        j: {
+          steps: [
+            {
+              id: 'inline',
+              uses: 'builtin/agent-prompt',
+              with: { model: 'fast' },
+            },
+            {
+              id: 'agent',
+              uses: 'builtin/agent-prompt',
+              with: { model: 'reviewer' },
+            },
+          ],
+        },
+      },
+    });
+    const agentScopes: unknown[] = [];
+    executionRuntime.resolvePipelineAgentModelAlias = (
+      agentId,
+      scope,
+    ): Promise<PipelineAgentModelAliasResolution | null> => {
+      agentScopes.push(scope);
+      return Promise.resolve(
+        agentId === 'agent_model_missing'
+          ? null
+          : {
+              agentId,
+              name: 'Reviewer',
+              base: DEFAULT_CLAUDE_MODEL,
+              instructions: 'Review carefully.',
+              // The Agent store gives every Agent selections, empty when it
+              // adds no plugins (CAN-5832 review).
+              pluginSelections: {
+                collectionIds: [],
+                skillRefs: [],
+                pluginRefs:
+                  agentId === 'agent_model_plugins'
+                    ? [{ marketplaceId: 'market', pluginName: 'reviewer' }]
+                    : [],
+              },
+            },
+      );
+    };
+    const daemon = fakeDaemon();
+    mockGet.mockResolvedValue({ client: daemon.client });
+    mockOwnerPossible.mockReturnValue(true);
+    const preferences = {
+      modelAliasPreferences: {
+        fast: { mode: 'inline' as const, base: DEFAULT_CLAUDE_MODEL },
+        gone: { mode: 'reset' as const },
+      },
+    };
+    await routed(aliasPipeline('agent_model_reviewer'), 'user', preferences);
+    expect(mockExecutePipeline).not.toHaveBeenCalled();
+    expect(sentLaunch(daemon)).toMatchObject({
+      ownerBound: true,
+      // Filtered to the pipeline's aliases, as the executor stores them.
+      modelAliasPreferences: {
+        fast: { mode: 'inline', base: DEFAULT_CLAUDE_MODEL },
+      },
+      modelAliasResolutions: {
+        fast: { base: DEFAULT_CLAUDE_MODEL, plugins: false },
+        reviewer: { base: DEFAULT_CLAUDE_MODEL, plugins: false },
+      },
+    });
+    expect(
+      readField(readField(sentLaunch(daemon), 'modelAliasPreferences'), 'gone'),
+    ).toBeUndefined();
+    // Each step resolves its Agent again, so a Claude run with an Agent
+    // alias carries the Codex environment the Agent may move to.
+    expect(sentLaunch(daemon)).toMatchObject({
+      codexEnvironment: {
+        environment: { CODEX_ROUTE_ENV: 'value' },
+        logicalWorkspaceEnvironmentId: 'pipeline:default',
+      },
+    });
+    expect(agentScopes).toEqual([
+      {
+        projectId: 'project',
+        worktreeId: 'task',
+        executionContext: 'personal',
+      },
+    ]);
+    // An Agent that adds plugins, or one that is not available, runs in process.
+    await routed(aliasPipeline('agent_model_plugins'), 'user', preferences);
+    await routed(aliasPipeline('agent_model_missing'), 'user', preferences);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
+    expect(daemon.instructions).toHaveLength(1);
   });
 
   it("a Codex step's launch carries the run's Codex environment (CAN-5095)", async () => {

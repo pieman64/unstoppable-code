@@ -379,12 +379,12 @@ function PageColumnSample({
   return (
     <Surface variant="dashed" className="w-full overflow-hidden">
       <PageColumn width={width} as={as === 'main' ? 'div' : as}>
-        <section className="rounded-md bg-tertiary p-3 text-xs">
-          Section one
-        </section>
-        <section className="rounded-md bg-tertiary p-3 text-xs">
-          Section two, 32px below
-        </section>
+        <Surface as="section" variant="group" size="small" padding="compact">
+          <span className="text-xs">Section one</span>
+        </Surface>
+        <Surface as="section" variant="group" size="small" padding="compact">
+          <span className="text-xs">Section two, 32px below</span>
+        </Surface>
       </PageColumn>
     </Surface>
   );
@@ -790,14 +790,16 @@ export function PipelineDispatchedTimeSpecimen(): JSX.Element {
           />
         </SpecimenCell>
         <SpecimenCell label="Menu variant, right-aligned after name and status">
-          <div className="flex w-64 items-center rounded-md bg-tertiary px-2 py-1 text-xs">
-            <span>Release pipeline</span>
-            <PipelineDispatchedTime
-              startedAt="2026-11-04T10:00:00.000Z"
-              variant="menu"
-              now={NOW}
-            />
-          </div>
+          <Surface variant="group" size="small" className="w-64">
+            <div className="flex items-center px-2 py-1 text-xs">
+              <span>Release pipeline</span>
+              <PipelineDispatchedTime
+                startedAt="2026-11-04T10:00:00.000Z"
+                variant="menu"
+                now={NOW}
+              />
+            </div>
+          </Surface>
         </SpecimenCell>
         <SpecimenCell label="Unknown start renders nothing">
           <PipelineDispatchedTime startedAt={undefined} now={NOW} />

@@ -53,7 +53,7 @@ import {
   classifyInputRequest,
   isGeneratedInputRequest,
 } from './chat-input-request-kind';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   getChatSessionLiveness,
   getSessionPluginSelections,

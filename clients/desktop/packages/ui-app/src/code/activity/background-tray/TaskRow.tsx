@@ -42,22 +42,14 @@ import {
 import { DrawerRowPresentationContext } from './drawer-presentation';
 
 /** A background task's glyph. Workflows fan out into agents (D9). */
-export function TaskKindIcon({
-  kind,
-}: {
-  readonly kind: BackgroundTask['kind'];
-}): JSX.Element {
-  switch (kind) {
-    case 'agent':
-      return <AgentIcon size={14} aria-hidden="true" />;
-    case 'bash':
-      return <TerminalIcon size={14} aria-hidden="true" />;
-    case 'workflow':
-      return <GraphIcon size={14} aria-hidden="true" />;
-    case 'task':
-      return <TaskIcon size={14} aria-hidden="true" />;
-  }
-}
+export const TASK_KIND_GLYPHS: Readonly<
+  Record<BackgroundTask['kind'], JSX.Element>
+> = {
+  agent: <AgentIcon size="sm" aria-hidden="true" />,
+  bash: <TerminalIcon size="sm" aria-hidden="true" />,
+  workflow: <GraphIcon size="sm" aria-hidden="true" />,
+  task: <TaskIcon size="sm" aria-hidden="true" />,
+};
 
 const OPEN_LABELS: Record<BackgroundTask['kind'], string> = {
   bash: 'Open output',
@@ -315,7 +307,7 @@ export function TaskRow({
       rowKey={`task:${task.id}`}
       testId="background-tray-row"
       // A live task is running: its kind's glyph, and the name shimmers.
-      glyph={<TaskKindIcon kind={task.kind} />}
+      glyph={TASK_KIND_GLYPHS[task.kind]}
       running={task.status !== 'queued'}
       // Descriptions fall back to the command or prompt.
       name={<span className={REPLAY_BLOCK_CLASS}>{task.title}</span>}

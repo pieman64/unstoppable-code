@@ -130,53 +130,55 @@ export const AnsweredQuestionsBlock = memo(function AnsweredQuestionsBlock({
   const clean = useCleanChatLook();
   return (
     <div
-      className={`rounded-2xl border border-line-base bg-tertiary text-s text-pretty ${
+      className={`flex flex-col gap-2 rounded-2xl border border-line-base bg-tertiary text-s text-pretty ${
         clean ? 'canopy-small-icon-stroke p-3' : 'px-3 py-2.5'
       }`}
       data-testid="answered-questions"
     >
-      <div className="mb-2 flex items-center gap-2 fg-tertiary">
+      <div className="flex items-center gap-2 fg-tertiary">
         <MessagesSquare width={14} height={14} aria-hidden="true" />
         <span>Answers</span>
       </div>
-      {answers.map((answer, i) => {
-        const additional =
-          answer.secret && answer.additional ? '[hidden]' : answer.additional;
-        return (
-          <div
-            key={i}
-            className={
-              i === 0
-                ? ''
-                : clean
-                  ? 'mt-3 border-t border-line-base pt-3'
-                  : 'mt-2.5 border-t border-line-base pt-2.5'
-            }
-            data-testid="answered-question"
-          >
-            <div className="mb-1 whitespace-pre-wrap break-words fg-tertiary">
-              {answer.question}
+      <div className={`flex flex-col ${clean ? 'gap-3' : 'gap-2.5'}`}>
+        {answers.map((answer, i) => {
+          const additional =
+            answer.secret && answer.additional ? '[hidden]' : answer.additional;
+          return (
+            <div
+              key={i}
+              className={`flex flex-col gap-1${
+                i === 0
+                  ? ''
+                  : clean
+                    ? ' border-t border-line-base pt-3'
+                    : ' border-t border-line-base pt-2.5'
+              }`}
+              data-testid="answered-question"
+            >
+              <div className="whitespace-pre-wrap break-words fg-tertiary">
+                {answer.question}
+              </div>
+              <div className="whitespace-pre-wrap break-words fg-primary">
+                {answer.answer ? (
+                  <>
+                    {answer.answer}
+                    {additional && (
+                      <span className="fg-primary">
+                        {', '}
+                        {additional}
+                      </span>
+                    )}
+                  </>
+                ) : additional ? (
+                  additional
+                ) : (
+                  <span className="fg-tertiary">No selection</span>
+                )}
+              </div>
             </div>
-            <div className="whitespace-pre-wrap break-words fg-primary">
-              {answer.answer ? (
-                <>
-                  {answer.answer}
-                  {additional && (
-                    <span className="fg-primary">
-                      {', '}
-                      {additional}
-                    </span>
-                  )}
-                </>
-              ) : additional ? (
-                additional
-              ) : (
-                <span className="fg-tertiary">No selection</span>
-              )}
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 });
@@ -660,8 +662,8 @@ function AskUserQuestionCardImpl({
       aria-label="Question controls"
       className={
         embedded
-          ? 'w-full p-3 text-pretty outline-none'
-          : 'w-full overflow-hidden rounded-2xl border border-line-base bg-tertiary p-3 text-pretty'
+          ? 'flex w-full flex-col gap-3 p-3 text-pretty outline-none'
+          : 'flex w-full flex-col gap-3 overflow-hidden rounded-2xl border border-line-base bg-tertiary p-3 text-pretty'
       }
       onSubmit={(event) => {
         event.preventDefault();
@@ -740,9 +742,9 @@ function AskUserQuestionCardImpl({
           className="flex flex-col outline-none gap-2"
         >
           <div className="flex items-start gap-3">
-            <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
               {q.header && (
-                <div className="mb-1 text-xs fg-secondary">
+                <div className="text-xs fg-secondary">
                   {renderText(q.header)}
                 </div>
               )}
@@ -942,21 +944,20 @@ function AskUserQuestionCardImpl({
           intent={deliveryNotice.intent}
           title={deliveryNotice.title}
           data-testid="ask-user-question-helper"
-          className="mt-3"
         >
           {deliveryNotice.message}
         </Notice>
       )}
 
       {validationError && (
-        <div className="mt-3">
+        <div>
           <FieldError id={validationErrorId} announce>
             {validationError}
           </FieldError>
         </div>
       )}
 
-      <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         {step > 0 && (
           <Button
             variant="ghost"

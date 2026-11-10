@@ -139,7 +139,7 @@ export function SidebarItemGroupRail({
           onClick={onToggle}
           onContextMenu={onContextMenu}
           {...activatorProps}
-          className="group/group-rail flex h-full w-2 items-stretch justify-center pointer-coarse:pointer-events-none"
+          className="group/group-rail flex h-full w-2 items-stretch justify-center py-1 pointer-coarse:pointer-events-none"
         >
           {/* Doubles 2px to 4px on hover and while expanded by `scale` on the
               compositor, never by `width`; the doubled geometry lives with the
@@ -148,7 +148,7 @@ export function SidebarItemGroupRail({
             aria-hidden="true"
             data-group-rail-line=""
             data-expanded={expanded ? 'true' : undefined}
-            className="my-1 w-0.5 rounded-full transition-[scale]"
+            className="w-0.5 rounded-full transition-[scale]"
             style={{ backgroundColor: sidebarItemGroupColor(color) }}
           />
         </button>

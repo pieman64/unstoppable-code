@@ -474,7 +474,8 @@ export function ToolCallCard({
   }
 
   return (
-    <div
+    <Stack
+      gap="tight"
       data-testid={dataTestId}
       data-tool-use-id={toolUseId}
       data-tool-name={toolName}
@@ -552,21 +553,23 @@ export function ToolCallCard({
         )}
       </button>
       {isOpen && (
-        <div
-          className={`ml-5.5 mt-1 overflow-hidden rounded border bg-fg-primary/[0.02]${expandedAction != null ? ' p-2 empty:p-0' : ''}`}
-        >
-          {expandedAction ?? expandedSlot ?? (
-            <>
-              {input != null && input.length > 0 && (
-                <pre className="max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary">
-                  {input}
-                </pre>
-              )}
-              {result && <ToolCallResultSection result={result} />}
-            </>
-          )}
+        <div className="pl-5.5">
+          <div
+            className={`overflow-hidden rounded border bg-fg-primary/[0.02]${expandedAction != null ? ' p-2 empty:p-0' : ''}`}
+          >
+            {expandedAction ?? expandedSlot ?? (
+              <>
+                {input != null && input.length > 0 && (
+                  <pre className="max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary">
+                    {input}
+                  </pre>
+                )}
+                {result && <ToolCallResultSection result={result} />}
+              </>
+            )}
+          </div>
         </div>
       )}
-    </div>
+    </Stack>
   );
 }

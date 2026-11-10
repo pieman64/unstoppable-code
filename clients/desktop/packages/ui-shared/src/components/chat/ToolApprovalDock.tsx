@@ -374,9 +374,12 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
       {current && (
         // The dock chrome is recorded; the card blocks the command, path, or
         // input the agent asks to run.
-        <div data-testid="tool-approval-dock" className="mb-1.5">
+        <div
+          data-testid="tool-approval-dock"
+          className="mb-1.5 flex flex-col gap-1"
+        >
           {pending.length > 1 && (
-            <div className="mb-1 flex items-center justify-between px-0.5">
+            <div className="flex items-center justify-between px-0.5">
               <span
                 data-testid="tool-approval-count"
                 className="text-2xs fg-secondary"

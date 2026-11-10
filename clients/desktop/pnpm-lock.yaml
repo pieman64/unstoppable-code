@@ -728,6 +728,9 @@ importers:
       '@canopy/agent-transcript':
         specifier: workspace:*
         version: link:../agent-transcript
+      '@canopy/copilot-recipient':
+        specifier: workspace:*
+        version: link:../copilot-recipient
       '@canopy/core-platform':
         specifier: workspace:*
         version: link:../core-platform
@@ -737,9 +740,15 @@ importers:
       '@canopy/pipeline-interop':
         specifier: workspace:*
         version: link:../pipeline-interop
+      '@canopy/plugin-interop':
+        specifier: workspace:*
+        version: link:../plugin-interop
       '@canopy/protocol':
         specifier: workspace:*
         version: link:../protocol
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
 
   packages/ipc-canopy-client:
     dependencies:

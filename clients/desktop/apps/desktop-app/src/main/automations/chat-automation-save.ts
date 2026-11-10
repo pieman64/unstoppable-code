@@ -1,11 +1,9 @@
 /**
- * A person's automation save from the edit form (CAN-4551, 7b), by the chat
- * automation pipelines experiment's state:
- *
- * - on: a convertible chat automation is stored as a pipeline it owns, or
- *   its owned pipeline is regenerated in place;
- * - off: a converted automation is stored as the native chat action from the
- *   form, and its owned pipeline is deleted.
+ * A person's automation save from the edit form (CAN-4551, 7b). A convertible
+ * chat automation is stored as a pipeline it owns, or its owned pipeline is
+ * regenerated in place. An edit that no longer converts, such as one pinned
+ * to an Agent route, stores the native chat action from the form and deletes
+ * the owned pipeline.
  *
  * D4 sends, the Home scheduled task and other actions that stay native keep
  * today's save. A failed conversion leaves the native save in place, which
@@ -42,7 +40,6 @@ import {
   sameNativeGrantAuthority,
   withNativeGrantAuthority,
 } from './chat-automation-native-grant';
-import { chatAutomationPipelinesEnabled } from './chat-automation-experiment';
 import {
   deleteOwnedPipeline,
   ownedChatPipelineState,
@@ -105,8 +102,6 @@ export async function createAutomationFromForm(
   service: AutomationsService = getAutomationsService(),
 ): Promise<AutomationMutationResponse> {
   const created = await service.create(request, PERSON);
-  if (!(await chatAutomationPipelinesEnabled()))
-    return projected(created, service);
   return projected(await convertSaved(created, service), service);
 }
 
@@ -347,13 +342,11 @@ export async function updateAutomationFromForm(
     await service.republish();
     return { ok: false, error: OWNED_PIPELINE_CHANGED };
   }
-  const enabled = await chatAutomationPipelinesEnabled();
   if (
     stored &&
     owned !== undefined &&
     current !== undefined &&
-    request.action !== undefined &&
-    enabled
+    request.action !== undefined
   ) {
     const regenerated = await regenerateOwned(
       request,
@@ -365,7 +358,8 @@ export async function updateAutomationFromForm(
     );
     if (regenerated) return projected(regenerated, service);
   }
-  // A chat action for an automation that owns its pipeline converts it back.
+  // A chat action that no longer converts, for an automation that owns its
+  // pipeline, converts it back.
   const chatBack =
     stored && owned !== undefined ? chatActionOf(request.action) : undefined;
   const back = chatBack ? convertedBack(request, chatBack) : undefined;
@@ -390,7 +384,6 @@ export async function updateAutomationFromForm(
     await deleteOwnedPipeline(stored, current?.info.revision ?? null);
   // Only an edit of the action converts; switching it on or off doesn't.
   if (
-    enabled &&
     request.action !== undefined &&
     ownedPipelineId(updated.activity) === undefined
   )
@@ -399,10 +392,10 @@ export async function updateAutomationFromForm(
 }
 
 /**
- * An agent's create (CAN-4551, 7c): stored as the native action, then, while
- * the experiment is on, converted with the agent's marker on the automation
- * and its pipeline, so runs stay agent-originated (D11). An action whose
- * runs D11 would refuse doesn't convert, and keeps working natively.
+ * An agent's create (CAN-4551, 7c): stored as the native action, then
+ * converted with the agent's marker on the automation and its pipeline, so
+ * runs stay agent-originated (D11). An action whose runs D11 would refuse
+ * doesn't convert, and keeps working natively.
  */
 export async function createAutomationForAgent(
   request: AutomationCreateRequest,
@@ -412,7 +405,6 @@ export async function createAutomationForAgent(
   const created = await service.create(request, trusted);
   if (!created.ok || !created.activity) return created;
   if (!convertsToOwnedChatPipeline(created.activity)) return created;
-  if (!(await chatAutomationPipelinesEnabled())) return created;
   return convertSaved(created, service);
 }
 
@@ -424,12 +416,11 @@ export const OWNED_PIPELINE_HAND_EDITED =
 
 /**
  * An agent's update (CAN-4551, 7c). A native automation updates as before.
- * One that owns its pipeline is re-checked as agent-authored, whatever the
- * experiment's state: while it still converts, its pipeline is regenerated
- * with the agent's marker; once D11 would refuse its runs, or the update
- * changes the plugins, approval mode or Orchestrator model its native grant
- * keeps (CAN-5479), it converts back to the native action and the pipeline is
- * deleted. Its chat action is the one sent, else the one its pipeline stands
+ * One that owns its pipeline is re-checked as agent-authored: while it still
+ * converts, its pipeline is regenerated with the agent's marker; once D11
+ * would refuse its runs, or the update changes the plugins, approval mode or
+ * Orchestrator model its native grant keeps (CAN-5479), it converts back to
+ * the native action and the pipeline is deleted. Its chat action is the one sent, else the one its pipeline stands
  * for, with the grant's settings in place of whatever a hand edit set.
  */
 export async function updateAutomationForAgent(

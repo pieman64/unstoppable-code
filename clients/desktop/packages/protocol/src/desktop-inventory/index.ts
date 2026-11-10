@@ -21,6 +21,7 @@ import {
   type PortalPluginsListMarketplacesResult,
   type PortalSkillsListResult,
 } from '../portal';
+import type { InstalledItemSnapshot } from '../installed-items';
 import { stableStringify } from '../lib/stable-stringify';
 
 // ===========================================================================
@@ -39,6 +40,7 @@ export const DESKTOP_INVENTORY_KINDS = [
   'mcp_servers',
   'collections',
   'pipelines',
+  'installed_items',
 ] as const;
 
 export type DesktopInventoryKind = (typeof DESKTOP_INVENTORY_KINDS)[number];
@@ -120,13 +122,19 @@ export function isDesktopInventoryScopeKeyValid(
 // Documents
 // ===========================================================================
 
-/** Kind → payload. Each payload is the existing portal list result shape. */
+/**
+ * Kind → payload. Each list kind is the existing portal list result shape;
+ * `installed_items` is the desktop's installed-item status snapshot, which
+ * carries ids, statuses and fixed notice copy only (no MCP environment
+ * values, headers, tokens or local paths), so it syncs unredacted.
+ */
 export interface DesktopInventoryPayloadMap {
   marketplaces: PortalPluginsListMarketplacesResult;
   skills: PortalSkillsListResult;
   mcp_servers: PortalMcpListServersResult;
   collections: PortalCollectionsListResult;
   pipelines: PortalPipelineListResult;
+  installed_items: InstalledItemSnapshot;
 }
 
 /** The document shape for exactly one kind. */
@@ -294,7 +302,11 @@ export interface DesktopInventoryStoredDocument extends ParsedDesktopInventoryDo
   syncedAt: string;
 }
 
-/** Response of `GET /api/v1/[brandNamespace]/portal/browser/inventory`. */
+/**
+ * Response of `GET /api/account/desktop-inventory`. The older
+ * `GET /api/v1/[brandNamespace]/portal/browser/inventory` returns the same
+ * shape and retires with the Portal routes (CAN-5986).
+ */
 export interface DesktopInventoryReadResponse {
   /** `null` when the user has no synced device yet. */
   device: DesktopInventoryDeviceSummary | null;

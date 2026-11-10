@@ -2,12 +2,12 @@ import type {
   MarketplaceInfo,
   PluginInfo,
   PluginsCache,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { createHash } from 'node:crypto';
 import type { CollectionSkillRef } from '@canopy/protocol/collections';
 import { validateSharedCollectionDocument } from '@canopy/protocol/collections';
 import { getShareablePluginRefKey } from '@canopy/protocol/plugins';
-import { computePluginShareableRef } from '@canopy/desktop-shared/plugin-refs';
+import { computePluginShareableRef } from '@canopy/execution-engine/plugin-refs';
 import {
   readLocalCollectionSnapshot,
   saveCollectionConfig,

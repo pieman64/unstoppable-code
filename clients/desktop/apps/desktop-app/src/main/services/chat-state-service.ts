@@ -264,7 +264,7 @@ import {
 } from '../lib/terminal-driven-chat';
 import { getEffectiveClaudeChatInterfaceMode } from '../lib/claude-tui-chats';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { formatAskUserAnswers } from '@canopy/desktop-shared/lib/ask-user-answers';
 import { resolveClaudeForkResumePoint } from '@canopy/desktop-shared/lib/claude-fork-resume-point';
 import {

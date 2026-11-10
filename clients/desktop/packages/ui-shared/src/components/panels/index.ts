@@ -55,7 +55,7 @@ export {
   PanelFullScreenIcon,
   PanelNewWindowIcon,
   PanelSplitDirectionIcon,
-} from './panel-menu-icons';
+} from '../../icons/PanelMenuIcons';
 export type { PanelChromeLabels, PanelChromeProps } from './PanelChrome';
 export { PANEL_DROP_ZONE_EDGES, PanelDropOverlay } from './PanelDropOverlay';
 export type {

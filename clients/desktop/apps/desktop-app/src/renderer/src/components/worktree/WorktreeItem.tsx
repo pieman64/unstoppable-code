@@ -14,7 +14,7 @@ import {
 import {
   foldWorktreeMenuIntoMore,
   getWorktreeDeleteLabels,
-  WorktreeGroupingMenuIcon,
+  WORKTREE_GROUPING_GLYPHS,
   type WorktreeGroupingActionKind,
   type WorktreeRemovalMode,
 } from '@canopy/ui-app';
@@ -1818,7 +1818,7 @@ function WorktreeItemContent({
       items.push({
         key: branchGroupingMenu.kind,
         label: branchGroupingMenu.label,
-        icon: <WorktreeGroupingMenuIcon kind={branchGroupingMenu.kind} />,
+        icon: WORKTREE_GROUPING_GLYPHS[branchGroupingMenu.kind],
         onSelect: (): void => {
           void branchGroupingMenu.onSelect();
         },

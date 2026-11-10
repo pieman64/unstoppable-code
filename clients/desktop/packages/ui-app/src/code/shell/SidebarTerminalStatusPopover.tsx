@@ -13,6 +13,8 @@ export interface SidebarTerminalStatusPopoverProps {
   readonly anchorRect: DOMRect;
   readonly worktreeLocalId: string;
   readonly status: WorktreeTerminalStatus;
+  /** Lets the badge that opened it name it in `aria-describedby`. */
+  readonly id?: string;
   readonly getRows?: (worktreeLocalId: string) => TerminalPopoverRow[];
   /**
    * The host's live row source. When present, the open popover subscribes and
@@ -42,6 +44,7 @@ export function SidebarTerminalStatusPopover({
       anchorRect={props.anchorRect}
       rows={props.getRows?.(props.worktreeLocalId) ?? NO_ROWS}
       status={props.status}
+      id={props.id}
     />
   );
 }
@@ -52,6 +55,7 @@ function LiveTerminalStatusPopover({
   status,
   getRows,
   subscribeRows,
+  id,
 }: SidebarTerminalStatusPopoverProps & {
   readonly subscribeRows: NonNullable<
     SidebarTerminalStatusPopoverProps['subscribeRows']
@@ -72,6 +76,7 @@ function LiveTerminalStatusPopover({
       anchorRect={anchorRect}
       rows={rows}
       status={status}
+      id={id}
     />
   );
 }

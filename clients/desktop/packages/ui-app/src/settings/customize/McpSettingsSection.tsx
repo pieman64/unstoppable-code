@@ -4,6 +4,7 @@ import type { JSX } from 'react';
 import { summarizeInstalledMcpServers } from '@canopy/protocol/installed-items';
 import {
   Button,
+  InstalledItemsSyncedAt,
   MANAGE_IN_CUSTOMIZE_LABEL,
   SettingsRowsGroup,
   SettingsRowsRow,
@@ -42,9 +43,19 @@ function McpServersLine({
     case 'ready': {
       const summary = summarizeInstalledMcpServers(state.snapshot);
       return (
-        <span className={summary.installed > 0 ? 'fg-primary' : 'fg-tertiary'}>
-          {installedMcpServersSummaryText(summary)}
-        </span>
+        <>
+          <span
+            className={summary.installed > 0 ? 'fg-primary' : 'fg-tertiary'}
+          >
+            {installedMcpServersSummaryText(summary)}
+          </span>
+          {state.syncedAt !== undefined ? (
+            <InstalledItemsSyncedAt
+              syncedAt={state.syncedAt}
+              testId="settings-mcp-synced-at"
+            />
+          ) : null}
+        </>
       );
     }
   }

@@ -167,11 +167,7 @@ function PlanCard({
       )}
 
       <div className="flex items-start gap-2 pr-6">
-        <PlanSourceMark
-          source={plan.source}
-          size={14}
-          className="mt-0.5 shrink-0"
-        />
+        <PlanSourceMark source={plan.source} className="mt-0.5 shrink-0" />
         <Stack gap="tight" className="min-w-0 flex-1">
           <div className="truncate text-s font-semibold fg-primary">
             <Markdown options={INLINE_PLAN_MARKDOWN_OPTIONS}>

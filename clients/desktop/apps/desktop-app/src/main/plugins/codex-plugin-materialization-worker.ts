@@ -1,5 +1,5 @@
 import type { ParentPort } from 'electron';
-import { projectCodexPluginWithoutMcpServers } from '@canopy/desktop-shared/node/plugins/codex-plugin-projection';
+import { projectCodexPluginWithoutMcpServers } from '@canopy/execution-engine/node/plugins/codex-plugin-projection';
 import {
   buildCodexQualifiedReferenceMap,
   BUILTIN_APP_PLUGIN_NAME,

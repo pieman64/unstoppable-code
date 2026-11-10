@@ -21,6 +21,7 @@ import {
   SegmentedControl,
   Tooltip,
   EmptyStateRow,
+  Surface,
 } from '@canopy/ui-shared/components';
 import {
   BellIcon,
@@ -414,7 +415,7 @@ export function CoordinatorLabPage(): JSX.Element {
 
   return (
     // The whole window: the lab is its own window's root, not an overlay.
-    <div className="h-screen bg-base">
+    <Surface variant="pane" extent="viewport">
       <OverlayScrollArea
         className="h-full"
         viewportClassName="overflow-x-hidden"
@@ -634,7 +635,11 @@ export function CoordinatorLabPage(): JSX.Element {
             trapFocus={true}
           >
             {isVideoPath(lightbox.path) ? (
-              <div className="flex min-h-0 flex-1 items-center justify-center bg-tertiary p-4">
+              <Surface
+                variant="well"
+                padding="default"
+                className="flex min-h-0 flex-1 items-center justify-center"
+              >
                 <video
                   key={shotKey(lightbox)}
                   src={shotUrl(lightbox)}
@@ -644,7 +649,7 @@ export function CoordinatorLabPage(): JSX.Element {
                   aria-label={`Demo video ${fileName(lightbox.path)}`}
                   className="max-h-full max-w-full rounded-md object-contain"
                 />
-              </div>
+              </Surface>
             ) : (
               <ZoomableImage
                 key={shotKey(lightbox)}
@@ -691,7 +696,7 @@ export function CoordinatorLabPage(): JSX.Element {
           </DialogModal>
         ) : null}
       </OverlayScrollArea>
-    </div>
+    </Surface>
   );
 }
 
@@ -719,7 +724,7 @@ function ZoomableImage({
   src: string;
   alt: string;
 }): JSX.Element {
-  const box = useRef<HTMLDivElement | null>(null);
+  const box = useRef<HTMLElement | null>(null);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [zoom, setZoom] = useState<Zoom>('fit');
   const drag = useRef<{
@@ -848,15 +853,10 @@ function ZoomableImage({
           />
         </div>
       </div>
-      <div
+      <Surface
+        variant="well"
         ref={box}
-        className={`relative min-h-0 flex-1 overflow-auto bg-tertiary ${
-          zoom === 'fit'
-            ? 'cursor-zoom-in'
-            : drag.current
-              ? 'cursor-grabbing'
-              : 'cursor-zoom-out'
-        }`}
+        className="relative min-h-0 flex-1 overflow-auto"
         onPointerDown={(e) => {
           if (zoom === 'fit' || e.button !== 0) return;
           const el = box.current;
@@ -893,7 +893,13 @@ function ZoomableImage({
         }}
       >
         <div
-          className="flex min-h-full min-w-full items-center justify-center"
+          className={`flex min-h-full min-w-full items-center justify-center ${
+            zoom === 'fit'
+              ? 'cursor-zoom-in'
+              : drag.current
+                ? 'cursor-grabbing'
+                : 'cursor-zoom-out'
+          }`}
           style={
             natural && zoom !== 'fit'
               ? {
@@ -926,7 +932,7 @@ function ZoomableImage({
             }
           />
         </div>
-      </div>
+      </Surface>
     </div>
   );
 }
@@ -1011,7 +1017,7 @@ function ChatCard({
       : ago(c.lastActivityAt, now);
 
   return (
-    <li className="flex flex-col gap-4 rounded-lg bg-secondary p-4 ring-[length:var(--border-hairline)] ring-line-base">
+    <Surface as="li" variant="group" padding="default" gap="group">
       <div className="flex items-start gap-3">
         <span className="flex h-5 w-4 shrink-0 items-center justify-center">
           <StatusGlyph chat={c} group={group} />
@@ -1097,7 +1103,7 @@ function ChatCard({
           </Stack>
         </Disclosure>
       </div>
-    </li>
+    </Surface>
   );
 }
 
@@ -1246,7 +1252,7 @@ function reviewSummary(c: Chat, media: Shot[]): string {
   return `Show ${bits.join(', ').replace(/^./, (x) => x.toLowerCase())}`;
 }
 
-type Surface = 'report' | 'lab' | 'pictures';
+type ReviewView = 'report' | 'lab' | 'pictures';
 
 /**
  * What to look at for one chat, one thing at a time: its report page or lab,
@@ -1274,12 +1280,12 @@ function ReviewPanel({
   const pointedCount = pictures.filter((m) =>
     c.replyMedia.includes(m.path),
   ).length;
-  const surfaces: Surface[] = [
+  const surfaces: ReviewView[] = [
     ...(c.reports.length > 0 ? (['report'] as const) : []),
     ...(c.labs.length > 0 ? (['lab'] as const) : []),
     ...(pictures.length > 0 ? (['pictures'] as const) : []),
   ];
-  const [surface, setSurface] = useState<Surface>(surfaces[0] ?? 'pictures');
+  const [surface, setSurface] = useState<ReviewView>(surfaces[0] ?? 'pictures');
   const active = surfaces.includes(surface)
     ? surface
     : (surfaces[0] ?? 'pictures');
@@ -1292,7 +1298,7 @@ function ReviewPanel({
   );
   const report = reports[Math.min(reportIndex, reports.length - 1)];
   const lab = c.labs[Math.min(labIndex, c.labs.length - 1)];
-  const label: Record<Surface, string> = {
+  const label: Record<ReviewView, string> = {
     report: 'Report',
     lab: 'Live lab',
     pictures: 'Pictures',
@@ -1302,7 +1308,7 @@ function ReviewPanel({
     <Stack gap="item">
       <div className="flex flex-wrap items-center justify-between gap-3">
         {surfaces.length > 1 ? (
-          <SegmentedControl<Surface>
+          <SegmentedControl<ReviewView>
             label="Show"
             value={active}
             onChange={setSurface}
@@ -1709,72 +1715,74 @@ function PictureViewer({
         </div>
       </div>
 
-      <div className="group/stage relative h-88 overflow-hidden rounded-lg bg-tertiary ring-[length:var(--border-hairline)] ring-line-base">
-        {activePhase === 'compare' && before && after ? (
-          <CompareSlider before={before} after={after} />
-        ) : single ? (
-          isVideoPath(single.path) ? (
-            <video
-              key={shotKey(single)}
-              src={shotUrl(single)}
-              controls={true}
-              muted={true}
-              preload="metadata"
-              aria-label={`Video ${fileName(single.path)}`}
-              className="absolute inset-0 h-full w-full object-scale-down p-4"
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={() => onShot(single)}
-              aria-label={`Open ${fileName(single.path)} larger`}
-              className="focus-ring absolute inset-0 cursor-zoom-in"
-            >
-              <FadeImage
+      <Surface variant="group" className="overflow-hidden">
+        <div className="group/stage relative h-88">
+          {activePhase === 'compare' && before && after ? (
+            <CompareSlider before={before} after={after} />
+          ) : single ? (
+            isVideoPath(single.path) ? (
+              <video
                 key={shotKey(single)}
                 src={shotUrl(single)}
-                className="h-full w-full object-scale-down p-4"
+                controls={true}
+                muted={true}
+                preload="metadata"
+                aria-label={`Video ${fileName(single.path)}`}
+                className="absolute inset-0 h-full w-full object-scale-down p-4"
               />
-            </button>
-          )
-        ) : (
-          <p className="absolute inset-0 flex items-center justify-center text-s fg-tertiary">
-            No capture for this theme and platform
-          </p>
-        )}
-        {bases.length > 1 ? (
-          <>
-            {/* The holder places and reveals each arrow on stage hover or
-                keyboard focus; the button keeps its own look. */}
-            <div className="absolute left-3 top-1/2 z-10 flex -translate-y-1/2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/stage:opacity-100">
-              <Button
-                variant="secondary"
-                size="md"
-                iconOnly
-                onClick={() => go(-1)}
-                aria-label="Previous"
+            ) : (
+              <button
+                type="button"
+                onClick={() => onShot(single)}
+                aria-label={`Open ${fileName(single.path)} larger`}
+                className="focus-ring absolute inset-0 cursor-zoom-in"
               >
-                <ChevronRightIcon
-                  size="sm"
-                  aria-hidden={true}
-                  className="rotate-180"
+                <FadeImage
+                  key={shotKey(single)}
+                  src={shotUrl(single)}
+                  className="h-full w-full object-scale-down p-4"
                 />
-              </Button>
-            </div>
-            <div className="absolute right-3 top-1/2 z-10 flex -translate-y-1/2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/stage:opacity-100">
-              <Button
-                variant="secondary"
-                size="md"
-                iconOnly
-                onClick={() => go(1)}
-                aria-label="Next"
-              >
-                <ChevronRightIcon size="sm" aria-hidden={true} />
-              </Button>
-            </div>
-          </>
-        ) : null}
-      </div>
+              </button>
+            )
+          ) : (
+            <p className="absolute inset-0 flex items-center justify-center text-s fg-tertiary">
+              No capture for this theme and platform
+            </p>
+          )}
+          {bases.length > 1 ? (
+            <>
+              {/* The holder places and reveals each arrow on stage hover or
+                keyboard focus; the button keeps its own look. */}
+              <div className="absolute left-3 top-1/2 z-10 flex -translate-y-1/2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/stage:opacity-100">
+                <Button
+                  variant="secondary"
+                  size="md"
+                  iconOnly
+                  onClick={() => go(-1)}
+                  aria-label="Previous"
+                >
+                  <ChevronRightIcon
+                    size="sm"
+                    aria-hidden={true}
+                    className="rotate-180"
+                  />
+                </Button>
+              </div>
+              <div className="absolute right-3 top-1/2 z-10 flex -translate-y-1/2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/stage:opacity-100">
+                <Button
+                  variant="secondary"
+                  size="md"
+                  iconOnly
+                  onClick={() => go(1)}
+                  aria-label="Next"
+                >
+                  <ChevronRightIcon size="sm" aria-hidden={true} />
+                </Button>
+              </div>
+            </>
+          ) : null}
+        </div>
+      </Surface>
 
       <div className="flex h-12 items-center gap-2">
         {bases.length > 1 ? (

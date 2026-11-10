@@ -31,7 +31,7 @@ import type {
   MarketplaceInfo,
   MarketplaceProviderStatus,
   PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { RELAY_DEFINITIONS } from '../renderer-relay/definitions';
 import {
   createDesktopCatalogHost,

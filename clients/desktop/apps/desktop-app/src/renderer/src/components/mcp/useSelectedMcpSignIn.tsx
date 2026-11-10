@@ -41,7 +41,7 @@ import {
 import type { McpRowDestination } from '@canopy/ui-shared/components';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
-import { setMcpHttpAuthPreference } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import { setMcpHttpAuthPreference } from '@canopy/execution-engine/lib/mcp-http-auth';
 import { pluginSelectionsEqual } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { targetForDetectedServer } from '@/hooks/detectedMcpServerHelpers';
 import { selectedMcpNavigation } from './selectedMcpNavigation';

@@ -74,11 +74,16 @@ export type WorktreeCreationRefusal =
  * stays `Error`, so the message a renderer sees through IPC is unchanged.
  */
 export class WorktreeCreationRefusedError extends Error {
+  /** Internal checkout identity hint; adapters must never serialize this path. */
+  readonly checkoutPath?: string;
+
   constructor(
     readonly reason: WorktreeCreationRefusal,
     message: string,
+    options?: { checkoutPath?: string },
   ) {
     super(message);
+    this.checkoutPath = options?.checkoutPath;
   }
 }
 

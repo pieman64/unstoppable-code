@@ -79,13 +79,17 @@ export const SidebarNavRow = forwardRef<HTMLButtonElement, SidebarNavRowProps>(
         : touchTarget === 'coarse'
           ? 'pointer-coarse:min-h-11'
           : '';
+    // Unavailable (New task before its host can create one), the row dims
+    // and drops its hover fill like a disabled `Button`.
+    const disabledClassName =
+      'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent';
     return (
       <button
         {...buttonProps}
         ref={ref}
         type={type}
         data-sidebar-nav-row=""
-        className={`group/nav-row ${SIDEBAR_NAV_ITEM_CLASSNAME} ${touchClassName} ${stateClassName}${className ? ` ${className}` : ''}`}
+        className={`group/nav-row ${SIDEBAR_NAV_ITEM_CLASSNAME} ${touchClassName} ${stateClassName} ${disabledClassName}${className ? ` ${className}` : ''}`}
       >
         <span
           className={`${SIDEBAR_LIST_ICON_CLASSNAME} ${iconInkClassName}${iconClassName ? ` ${iconClassName}` : ''}`}

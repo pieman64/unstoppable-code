@@ -40,7 +40,7 @@ import {
   type CommandShellDefinition,
   type WorkspaceRootLifecycleScriptName,
 } from '@canopy/desktop-shared/scripts';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   createEditableHooks,
   toHookInputMap,
@@ -57,7 +57,7 @@ import type {
 import {
   getShareablePluginRefKey,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import { getDefaultWorkspaceClaudeMd } from '@canopy/desktop-shared/constants/workspace-templates';
 import { EMPTY_SELECTIONS, normalizeSelections } from '@/lib/pluginSelections';
 import {

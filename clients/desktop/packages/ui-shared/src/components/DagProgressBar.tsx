@@ -226,49 +226,53 @@ function JobDot({
   const duration = formatDuration(job.startedAt, job.completedAt);
 
   const detail = (
-    <>
-      <div className="mb-1.5 flex items-center gap-1.5 text-2xs font-semibold fg-primary/80">
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-1.5 text-2xs font-semibold fg-primary/80">
         <StatusGlyph state={jobGlyphState(job.status)} size={12} />
         {job.name}
       </div>
-      <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
-        <span>Status</span>
-        <Badge tone={statusBadge.tone} muted={statusBadge.muted}>
-          {statusBadge.label}
-        </Badge>
+      <div>
+        <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
+          <span>Status</span>
+          <Badge tone={statusBadge.tone} muted={statusBadge.muted}>
+            {statusBadge.label}
+          </Badge>
+        </div>
+        {duration && (
+          <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
+            <span>{durationLabel}</span>
+            <span className="font-medium fg-primary/80">{duration}</span>
+          </div>
+        )}
+        {job.stepProgress && (
+          <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
+            <span>Steps</span>
+            <span className="font-medium fg-primary/80">
+              {job.stepProgress}
+            </span>
+          </div>
+        )}
+        {job.variantProgress && (
+          <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
+            <span>Children</span>
+            <span className="font-medium fg-primary/80">
+              {job.variantProgress}
+            </span>
+          </div>
+        )}
+        {job.maxParallel !== undefined && (
+          <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
+            <span>Max parallel</span>
+            <span className="font-medium fg-primary/80">{job.maxParallel}</span>
+          </div>
+        )}
+        {job.variantBreakdown && (
+          <div className="pt-0.5 text-3xs fg-secondary">
+            {job.variantBreakdown}
+          </div>
+        )}
       </div>
-      {duration && (
-        <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
-          <span>{durationLabel}</span>
-          <span className="font-medium fg-primary/80">{duration}</span>
-        </div>
-      )}
-      {job.stepProgress && (
-        <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
-          <span>Steps</span>
-          <span className="font-medium fg-primary/80">{job.stepProgress}</span>
-        </div>
-      )}
-      {job.variantProgress && (
-        <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
-          <span>Children</span>
-          <span className="font-medium fg-primary/80">
-            {job.variantProgress}
-          </span>
-        </div>
-      )}
-      {job.maxParallel !== undefined && (
-        <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
-          <span>Max parallel</span>
-          <span className="font-medium fg-primary/80">{job.maxParallel}</span>
-        </div>
-      )}
-      {job.variantBreakdown && (
-        <div className="pt-0.5 text-3xs fg-secondary">
-          {job.variantBreakdown}
-        </div>
-      )}
-    </>
+    </div>
   );
 
   return (

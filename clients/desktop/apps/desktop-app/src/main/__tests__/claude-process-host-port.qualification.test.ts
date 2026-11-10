@@ -482,18 +482,20 @@ describe('Claude process host in-process: a post-spawn error', () => {
         kill: jest.fn(() => true),
       });
       let fakeExited = false;
+      // The case exits the child itself, once it has seen the child stay
+      // tracked; a timer here would race those checks on a loaded runner.
+      const exitFake = (): void => {
+        fakeExited = true;
+        fake.stdout.end();
+        fake.stderr.end();
+        fake.emit('exit', 0, null);
+        fake.emit('close', 0, null);
+      };
       const spawn = jest.fn(() => {
         setImmediate(() => {
           fake.emit('error', new Error('kill EPERM'));
           fake.emit('error', new Error('kill EPERM'));
         });
-        setTimeout(() => {
-          fakeExited = true;
-          fake.stdout.end();
-          fake.stderr.end();
-          fake.emit('exit', 0, null);
-          fake.emit('close', 0, null);
-        }, 100);
         return fake;
       });
       let runner: typeof RunnerModule | undefined;
@@ -550,16 +552,20 @@ describe('Claude process host in-process: a post-spawn error', () => {
         expect(observed.errors[0].message).toBe('kill EPERM');
         expect(observed.exits).toEqual([]);
         expect(proxy.kill('SIGKILL')).toBe(true);
-        await delay(20);
+        await until(() => fake.kill.mock.calls.length > 0);
         expect(fake.kill).toHaveBeenCalledWith('SIGKILL');
+        await delay(20);
         expect(observed.exits).toEqual([]);
 
+        exitFake();
         await until(() => observed.exits.length > 0);
         await delay(50);
         expect(observed.exits).toEqual([[0, null]]);
         expect(exitedBeforeExit).toEqual([true]);
         expect(observed.errors).toHaveLength(1);
       } finally {
+        // A case that failed early still lets the fake child exit.
+        if (!fakeExited) exitFake();
         await runner.shutdownClaudeProcessHost();
         runner.resetClaudeProcessHostForTests();
         port.setExecutionHostPort(undefined);

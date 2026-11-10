@@ -15,7 +15,7 @@ import {
   type PortalCommandEnvelope,
   type PortalInvocableChatTarget,
 } from '@canopy/desktop-shared/types';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { appendEnableRef } from '@canopy/desktop-shared/lib/slash-invocable-inventory';
 import { validateId } from '../../lib/validation';
 import {

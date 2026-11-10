@@ -7,7 +7,10 @@ import { handlePortalSharedMultiRepo } from './adapters/shared-multi-repo-adapte
 import { createPortalScriptActionsAdapter } from './adapters/script-actions-adapter';
 import { handlePortalPersonalOrganizationProjects } from './adapters/personal-organization-upgrade-adapter';
 import { handlePortalInstalledItems } from './adapters/installed-items-adapter';
-import { handlePortalSidebarItemGroups } from './adapters/sidebar-item-groups-adapter';
+import {
+  handlePortalSidebarItemGroups,
+  handlePortalSidebarItemGroupsAssignNamed,
+} from './adapters/sidebar-item-groups-adapter';
 import { handlePortalOrgProjectsFindRepositoryOwner } from './adapters/org-projects-adapter';
 import {
   handlePortalWorkspaceItemsListNotes,
@@ -169,6 +172,11 @@ import {
   handlePortalWorktreeReorder,
   handlePortalWorktreeUpdate,
 } from './adapters/worktree-adapter';
+import {
+  handlePortalWorkEntryDelete,
+  handlePortalWorkEntryUpdate,
+} from './adapters/work-entry-adapter';
+import { handlePortalTaskRefsList } from './adapters/task-refs-adapter';
 import {
   handlePortalCollectionsGet,
   handlePortalCollectionsList,
@@ -519,6 +527,8 @@ const FEATURE_ADAPTERS: Partial<
   'portal.sidebar.item_groups.ungroup': handlePortalSidebarItemGroups,
   'portal.sidebar.item_groups.move_item': handlePortalSidebarItemGroups,
   'portal.sidebar.item_groups.move_group': handlePortalSidebarItemGroups,
+  'portal.sidebar.item_groups.assign_named':
+    handlePortalSidebarItemGroupsAssignNamed,
   'portal.chat.send': handlePortalChatSend as PortalCommandAdapter<unknown>,
   'portal.chat.mark_read': handlePortalChatMarkRead,
   'portal.chat.set_unread': handlePortalChatSetUnread,
@@ -698,6 +708,9 @@ const FEATURE_ADAPTERS: Partial<
   'portal.worktree.discard.describe': handlePortalWorktreeDiscardDescribe,
   'portal.worktree.discard': handlePortalWorktreeDiscard,
   'portal.worktree.update': handlePortalWorktreeUpdate,
+  'portal.work_entry.update': handlePortalWorkEntryUpdate,
+  'portal.work_entry.delete': handlePortalWorkEntryDelete,
+  'portal.task_refs.list': handlePortalTaskRefsList,
   'portal.worktree.reorder': handlePortalWorktreeReorder,
   'portal.workspace.create':
     handlePortalWorkspaceCreate as PortalCommandAdapter<unknown>,
@@ -829,13 +842,7 @@ function createAdapterContext(
         ),
       );
     },
-    fail: (
-      command,
-      code,
-      message,
-      retryable = false,
-      coworkFolderMissing,
-    ): void => {
+    fail: (command, code, message, retryable = false, details): void => {
       context.enqueueEvent(
         createPortalCommandEvent(
           command,
@@ -845,7 +852,7 @@ function createAdapterContext(
             code,
             message,
             retryable,
-            coworkFolderMissing,
+            details,
           ),
         ),
       );

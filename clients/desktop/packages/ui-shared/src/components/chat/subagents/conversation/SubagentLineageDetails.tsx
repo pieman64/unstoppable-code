@@ -2,7 +2,7 @@ import { Button } from '../../../Button';
 import type { JSX } from 'react';
 import { type SubagentNode, type SubagentTree } from '@canopy/agent-transcript';
 import { ChatIcon, ChevronRightIcon } from '../../../../icons/AppIcons';
-import { SubagentIcon } from '../common/SubagentIcon';
+import { SubagentIcon } from '../../../../icons/SubagentIcon';
 import { SubagentStatusGlyph } from '../common/SubagentStatusGlyph';
 import {
   SUBAGENT_LINEAGE_ALONGSIDE,

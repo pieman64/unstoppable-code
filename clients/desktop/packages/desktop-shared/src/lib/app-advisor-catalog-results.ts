@@ -1,5 +1,5 @@
 import type { AppAdvisorJson } from '../types';
-import type { MarketplaceInfo } from '../types/plugins';
+import type { MarketplaceInfo } from '@canopy/execution-engine/types/plugins';
 import { fuzzyMatchText } from './app-advisor-chat-reads';
 
 /** One marketplace as App Advisor's plugin marketplace actions answer it. */

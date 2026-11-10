@@ -29,7 +29,7 @@ import type {
   PluginInfo,
   PluginProviderFacet,
   PluginSkillInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import { getDataDir } from '../lib/paths';
 import { getBundledSkillDir } from '../pipelines/config-paths';
 import { readSkillContent, loadSkills } from '../skills/skill-service';

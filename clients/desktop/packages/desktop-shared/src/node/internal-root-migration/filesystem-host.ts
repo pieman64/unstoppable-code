@@ -230,7 +230,6 @@ export async function copyInternalRootTree(
         }
       }
     } else if (before.isFile()) {
-      if (before.nlink !== 1) refuse(`Hard-linked source file: ${from}`);
       if (windows) windowsFilesystem(host).copy(from, to);
       else {
         const handle = await open(
@@ -299,6 +298,7 @@ export async function copyInternalRootTree(
       (windows
         ? beforeIdentity !== (await migrationNodeIdentity(from, after))
         : before.ino !== after.ino) ||
+      before.nlink !== after.nlink ||
       before.size !== after.size ||
       before.mode !== after.mode ||
       before.mtimeMs !== after.mtimeMs ||
@@ -308,7 +308,8 @@ export async function copyInternalRootTree(
     const copied = before.isSocket() ? null : await lstat(to);
     if (
       copied &&
-      (copied.dev !== before.dev ||
+      ((before.isFile() && copied.nlink !== 1) ||
+        copied.dev !== before.dev ||
         (windows
           ? (await migrationNodeIdentity(to, copied)) === beforeIdentity
           : copied.ino === before.ino) ||

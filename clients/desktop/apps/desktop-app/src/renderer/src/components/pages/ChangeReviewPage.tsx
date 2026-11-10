@@ -461,14 +461,16 @@ function PanelMinWidthAfter(): JSX.Element {
         </Caption>
         <div
           data-testid="change-review-resizable-leaf"
-          className="resize-x overflow-hidden rounded-lg ring-[length:var(--border-hairline)] ring-line-secondary"
+          className="resize-x overflow-hidden"
           style={{
             width: '320px',
             maxWidth: '100%',
             minWidth: `${DEFAULT_PANEL_LEAF_MINIMUM_WIDTH}px`,
           }}
         >
-          <LeafCard />
+          <Surface variant="outline" className="overflow-hidden">
+            <LeafCard />
+          </Surface>
         </div>
       </div>
       <FixedLeaf
@@ -775,15 +777,17 @@ function renderAfter(
 export function ChangeReviewPage(): JSX.Element {
   if (!isChangeReviewPageEnabled()) {
     return (
-      <div
-        className="flex h-full items-center justify-center bg-base"
+      <Surface
+        variant="pane"
+        extent="parent"
+        className="flex items-center justify-center"
         data-testid="change-review-page-disabled"
       >
         <p className="text-xs fg-secondary">
           This page is a development-only reference and is not enabled in this
           build.
         </p>
-      </div>
+      </Surface>
     );
   }
   return <ChangeReviewContent />;

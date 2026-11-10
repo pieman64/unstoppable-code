@@ -331,7 +331,7 @@ export function TurnFilesSummaryView({
       className={
         clean
           ? `@container/turn-files cursor-default select-none overflow-hidden rounded-xl border bg-base ${singleOutput ? `group/turn-file relative isolate grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 pl-3 pr-1 py-3 before:pointer-events-none before:absolute before:inset-1 before:-z-10 before:rounded-lg before:content-[''] ${headerHovered ? 'before:bg-subtle' : ''}` : ''}`
-          : 'cursor-default select-none rounded-md border bg-fg-primary/[0.02] px-3 py-2'
+          : 'flex cursor-default select-none flex-col gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-2'
       }
     >
       {clean ? (
@@ -418,7 +418,7 @@ export function TurnFilesSummaryView({
               ? `col-start-2 ${actions ? 'col-end-3' : 'col-end-4'} row-start-1 min-w-0`
               : clean
                 ? 'border-t'
-                : 'mt-2 flex flex-wrap gap-2'
+                : 'flex flex-wrap gap-2'
         }
       >
         {!(clean && singleFile) && (visible || hasOpened) && (

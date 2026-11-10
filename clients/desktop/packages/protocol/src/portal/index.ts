@@ -65,6 +65,7 @@ import type {
 import type { PortalMcpServerStatus } from './mcp-management';
 export * from './mcp-management';
 import { normalizeRepositoryCloneUrl } from './repository-clone';
+import { normalizeGitHubRepositoryIdentity } from '../portable-tasks/pull-request-reference';
 export {
   normalizeRepositoryCloneUrl,
   repositoryCloneErrorMessage,
@@ -83,6 +84,7 @@ import type {
   SidebarItemGroup,
   SidebarItemGroupCreationOptions,
   SidebarItemGroupScope,
+  SidebarItemGroupColor,
   SidebarItemGroupCreateRequest,
   SidebarItemGroupUpdateRequest,
   SidebarItemGroupMoveItemRequest,
@@ -256,6 +258,7 @@ export type PortalCommandType =
   | 'portal.sidebar.item_groups.ungroup'
   | 'portal.sidebar.item_groups.move_item'
   | 'portal.sidebar.item_groups.move_group'
+  | 'portal.sidebar.item_groups.assign_named'
   | 'portal.auth.validate_code'
   | 'portal.session.end'
   | 'portal.state.request'
@@ -381,6 +384,9 @@ export type PortalCommandType =
   | 'portal.worktree.discard.describe'
   | 'portal.worktree.discard'
   | 'portal.worktree.update'
+  | 'portal.work_entry.update'
+  | 'portal.work_entry.delete'
+  | 'portal.task_refs.list'
   | 'portal.worktree.reorder'
   | 'portal.workspace.create'
   | 'portal.workspace.delete'
@@ -437,6 +443,7 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.sidebar.item_groups.ungroup',
   'portal.sidebar.item_groups.move_item',
   'portal.sidebar.item_groups.move_group',
+  'portal.sidebar.item_groups.assign_named',
   'portal.auth.validate_code',
   'portal.session.end',
   'portal.state.request',
@@ -562,6 +569,9 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.worktree.discard.describe',
   'portal.worktree.discard',
   'portal.worktree.update',
+  'portal.work_entry.update',
+  'portal.work_entry.delete',
+  'portal.task_refs.list',
   'portal.worktree.reorder',
   'portal.workspace.create',
   'portal.workspace.delete',
@@ -662,6 +672,7 @@ export const PORTAL_DESTRUCTIVE_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.worktree.archive',
     'portal.worktree.discard',
     'portal.installed_items.uninstall',
+    'portal.work_entry.delete',
   ]);
 
 /**
@@ -685,6 +696,10 @@ export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.lifecycle_journal.quarantine',
     'portal.chat.create_tab',
     'portal.standalone_chat.create',
+    'portal.work_entry.update',
+    'portal.work_entry.delete',
+    'portal.sidebar.item_groups.assign_named',
+    'portal.task_refs.list',
     'portal.chat.asset.read',
     'portal.file.asset.read',
     'portal.chat.transcript.page',
@@ -1805,6 +1820,59 @@ export const PORTAL_CAPABILITY_CHAT_ASSETS = 'chat_assets_v1' as const;
  */
 export const PORTAL_CAPABILITY_STANDALONE_CHAT_CREATE =
   'standalone_chat_create' as const;
+
+/**
+ * `portal.worktree.create` accepts `existingBranch`, `baseBranch`,
+ * `pullRequest`, `sidebarItemGroupName` and `firstChat`, and completes with
+ * {@link PortalWorktreeCreateResult}.
+ */
+export const PORTAL_CAPABILITY_WORKTREE_CREATE_FROM =
+  'worktree_create_from_v1' as const;
+
+/**
+ * `portal.work_entry.update` and `portal.work_entry.delete`, and
+ * `workEntryId`, `sidebarItemGroupName` and `firstChat` on
+ * `portal.standalone_chat.create`.
+ */
+export const PORTAL_CAPABILITY_WORK_ENTRY_COMMANDS =
+  'work_entry_commands_v1' as const;
+
+/** `portal.sidebar.item_groups.assign_named`. */
+export const PORTAL_CAPABILITY_SIDEBAR_ITEM_GROUP_NAMES =
+  'sidebar_item_group_names_v1' as const;
+
+/** `portal.task_refs.list`. */
+export const PORTAL_CAPABILITY_TASK_REFS = 'task_refs_v1' as const;
+
+/**
+ * Workspace entities carry `repositoryIdentity`, and `portal.worktree.create`
+ * accepts `pullRequest.repository`, which the host checks against its root
+ * repository's current `origin` before creating.
+ */
+export const PORTAL_CAPABILITY_PROJECT_REPOSITORY_IDENTITY =
+  'project_repository_identity_v1' as const;
+
+/**
+ * A project's GitHub repository, lowercased. Never a URL, remote name or
+ * path; for a multi-repo project it names the root repository.
+ */
+export interface PortalRepositoryIdentity {
+  owner: string;
+  repo: string;
+}
+
+/** The validated identity, or undefined for anything malformed. */
+export function parsePortalRepositoryIdentity(
+  value: unknown,
+): PortalRepositoryIdentity | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  return (
+    normalizeGitHubRepositoryIdentity(
+      Reflect.get(value, 'owner'),
+      Reflect.get(value, 'repo'),
+    ) ?? undefined
+  );
+}
 
 /**
  * Capability for New Task settings on `portal.chat.create_tab`. Desktops
@@ -4241,6 +4309,15 @@ export interface PortalStandaloneChatCreatePayload {
    * `portal.standalone_chat.send`. Applies only when the entry is created.
    */
   sidebarItemGroupId?: string;
+  /** Add the chat to this existing Work Entry (`work_entry_commands_v1`). */
+  workEntryId?: string;
+  /**
+   * Group a new Work Entry joins by name, creating it when missing. Applies
+   * only when the entry is created (`work_entry_commands_v1`).
+   */
+  sidebarItemGroupName?: PortalTaskSidebarItemGroupName;
+  /** Submit the chat's first message (`work_entry_commands_v1`). */
+  firstChat?: PortalTaskFirstChat;
 }
 
 export interface PortalStandaloneChatCreateResult {
@@ -4250,6 +4327,11 @@ export interface PortalStandaloneChatCreateResult {
   projectId: string;
   worktreeId: string;
   workEntryId: string;
+  chat?: PortalTaskFirstChatResult;
+  /** Why the first chat message was not sent; the chat itself was created. */
+  chatError?: string;
+  /** Why the new Work Entry stayed ungrouped; the chat itself was created. */
+  groupError?: string;
 }
 
 /**
@@ -5405,6 +5487,151 @@ export interface PortalWorktreeCreatePayload extends SidebarItemGroupCreationOpt
    * The desktop create ignores it — a worktree owns no client-supplied id.
    */
   chatId?: string;
+  /** Check out this existing branch instead of creating one (`worktree_create_from_v1`). */
+  existingBranch?: string;
+  /** Start the new branch from this base branch (`worktree_create_from_v1`). */
+  baseBranch?: string;
+  /**
+   * A pull request on the project's repository: check out its head branch, or
+   * start a new branch from it (`worktree_create_from_v1`).
+   */
+  pullRequest?: {
+    number: number;
+    as: 'checkout' | 'base';
+    /**
+     * The repository the caller named. The host refuses with
+     * `pr_not_in_repository` unless it matches the root repository's current
+     * `origin` (`project_repository_identity_v1`).
+     */
+    repository?: PortalRepositoryIdentity;
+  };
+  /** Join the group with this name, creating it when missing (`worktree_create_from_v1`). */
+  sidebarItemGroupName?: PortalTaskSidebarItemGroupName;
+  /**
+   * Create the task's first chat and submit its first message, which waits
+   * for git setup in the chat's queue (`worktree_create_from_v1`).
+   */
+  firstChat?: PortalTaskFirstChat;
+}
+
+/** A sidebar item group chosen by name; a missing group is created. */
+export interface PortalTaskSidebarItemGroupName {
+  name: string;
+  color?: SidebarItemGroupColor;
+}
+
+/**
+ * The first chat of a new task and its first message. `chatId` and
+ * `userMessageId` are client-minted and stable across retries of the same
+ * submission, so a redelivered create replays instead of adding a chat.
+ */
+export interface PortalTaskFirstChat {
+  chatId: string;
+  userMessageId: string;
+  text: string;
+  planMode?: boolean;
+  model?: PortalChatModel;
+  providerType?: PortalChatAgentProviderType;
+  modelConfig?: PortalAgentModelConfig;
+  pluginSelections?: PortalChatTabPluginSelections;
+}
+
+/** The first chat a task create made, and how its message was delivered. */
+export interface PortalTaskFirstChatResult {
+  chatId: string;
+  userMessageId: string;
+  delivery: 'started' | 'queued';
+}
+
+/**
+ * Result of `portal.worktree.create`. `id` is the new worktree's id, as on
+ * older hosts; `chat`, `chatError` and `groupError` are added by hosts with
+ * `worktree_create_from_v1`.
+ */
+export interface PortalWorktreeCreateResult {
+  id: string;
+  branchName: string;
+  createdAt?: string;
+  trackedBaseBranch?: string | null;
+  /** Git checkout state when the create completed; not the setup-script phase. */
+  setupPhase?: 'git-pending' | 'git-ready';
+  chat?: PortalTaskFirstChatResult;
+  /** Why the task stayed ungrouped; the task itself was created. */
+  groupError?: string;
+  /** Why the first chat message was not sent; the task itself was created. */
+  chatError?: string;
+}
+
+/**
+ * `portal.work_entry.update` (`work_entry_commands_v1`): `title: null` clears
+ * it. Work Entries have no Hide, so there is no `hidden` field.
+ */
+export interface PortalWorkEntryUpdatePayload {
+  projectLocalId: string;
+  entryId: string;
+  title?: string | null;
+}
+
+/** `portal.work_entry.delete` (`work_entry_commands_v1`): `archive` keeps it as Archived. */
+export interface PortalWorkEntryDeletePayload {
+  projectLocalId: string;
+  entryId: string;
+  archive: boolean;
+}
+
+/** `portal.sidebar.item_groups.assign_named` (`sidebar_item_group_names_v1`). */
+export interface PortalSidebarItemGroupsAssignNamedPayload {
+  scope: SidebarItemGroupScope;
+  itemId: string;
+  name: string;
+  color?: SidebarItemGroupColor;
+}
+
+export interface PortalSidebarItemGroupsAssignNamedResult {
+  group: SidebarItemGroup;
+  created: boolean;
+}
+
+/** `portal.task_refs.list` (`task_refs_v1`): branches and open pull requests to start a task from. */
+export interface PortalTaskRefsListPayload {
+  workspaceId: string;
+  kind?: 'branch' | 'pr';
+  /** Case-insensitive filter, 1-200 characters. */
+  query?: string;
+  limit: number;
+  offset: number;
+}
+
+export type PortalTaskRef =
+  | {
+      kind: 'branch';
+      name: string;
+      local: boolean;
+      remote: boolean;
+      isDefault: boolean;
+      /**
+       * Any checkout has this branch, including one the host doesn't manage,
+       * such as the repository root. Absent on older hosts.
+       */
+      checkedOut?: true;
+      /** The worktree that has this branch checked out, when the host manages it. */
+      checkedOutWorktreeId?: string;
+    }
+  | {
+      kind: 'pr';
+      number: number;
+      title: string;
+      headBranch: string;
+      baseBranch: string;
+      draft: boolean;
+      updatedAt?: string;
+      checkedOutWorktreeId?: string;
+    };
+
+export interface PortalTaskRefsListResult {
+  items: PortalTaskRef[];
+  /** Offset of the next page; absent on the last page. */
+  nextOffset?: number;
 }
 
 /**
@@ -5449,15 +5676,17 @@ export interface PortalWorkspaceReorderPayload {
  * therefore is not part of the destructive-action feature gate.
  *
  * `trackedBaseBranch` sets the base branch the worktree tracks (mirrors
- * `WorktreeData.trackedBaseBranch`); omitting it leaves the tracked base
- * untouched.
+ * `WorktreeData.trackedBaseBranch`); `null` clears it and omitting it leaves
+ * the tracked base untouched. `trackedRepoBaseBranches` does the same per
+ * repository id in a multi-repository project.
  */
 export interface PortalWorktreeUpdatePayload {
   workspaceId: string;
   worktreeId: string;
   label?: string | null;
   hidden?: boolean;
-  trackedBaseBranch?: string;
+  trackedBaseBranch?: string | null;
+  trackedRepoBaseBranches?: Record<string, string | null>;
 }
 
 /** Persist a drag-reorder of two visible worktrees in one workspace. */
@@ -5602,6 +5831,7 @@ export interface PortalCommandPayloadMap {
   };
   'portal.sidebar.item_groups.move_item': SidebarItemGroupMoveItemRequest;
   'portal.sidebar.item_groups.move_group': SidebarItemGroupMoveRequest;
+  'portal.sidebar.item_groups.assign_named': PortalSidebarItemGroupsAssignNamedPayload;
   'portal.auth.validate_code': PortalAuthValidateCodePayload;
   'portal.session.end': PortalSessionEndPayload;
   'portal.state.request': PortalStateRequestPayload;
@@ -5722,6 +5952,9 @@ export interface PortalCommandPayloadMap {
   'portal.worktree.discard.describe': PortalWorktreeDiscardDescribePayload;
   'portal.worktree.discard': PortalWorktreeDiscardPayload;
   'portal.worktree.update': PortalWorktreeUpdatePayload;
+  'portal.work_entry.update': PortalWorkEntryUpdatePayload;
+  'portal.work_entry.delete': PortalWorkEntryDeletePayload;
+  'portal.task_refs.list': PortalTaskRefsListPayload;
   'portal.worktree.reorder': PortalWorktreeReorderPayload;
   'portal.workspace.create': PortalWorkspaceCreatePayload;
   'portal.workspace.delete': PortalWorkspaceDeletePayload;
@@ -5977,7 +6210,7 @@ export interface PortalCommandCompletedPayload<TResult = unknown> {
  * limits.
  */
 export interface PortalCommandFailedPayload {
-  /** Typed script-action or collection-save refusal retained by the waited RPC path. */
+  /** Typed script-action, collection-save or task-refs-list refusal retained by the waited RPC path. */
   response?: { code: string; message: string };
   commandId: string;
   sequenceNumber: number;
@@ -5986,8 +6219,40 @@ export interface PortalCommandFailedPayload {
     message: string;
     coworkFolderMissing?: CoworkFolderMissing;
   };
+  /** Typed `portal.worktree.create` refusal; absent on other failures and older hosts. */
+  refusal?: PortalWorktreeCreateRefusal;
   retryable?: boolean;
   generatedAt: string;
+}
+
+/**
+ * Why a host refused `portal.worktree.create`. Each value is also the
+ * failure's `error.code`.
+ */
+export const PORTAL_WORKTREE_CREATE_REFUSAL_REASONS = [
+  'branch_not_found',
+  'branch_checked_out',
+  'base_not_found',
+  'branch_name_in_use',
+  'checkout_in_use',
+  'invalid_branch_name',
+  'invalid_selection',
+  'invalid_repository_selection',
+  'unsupported_project',
+  'read_only_project',
+  'base_task_detached',
+  'pr_not_found',
+  'pr_not_in_repository',
+] as const;
+
+export type PortalWorktreeCreateRefusalReason =
+  (typeof PORTAL_WORKTREE_CREATE_REFUSAL_REASONS)[number];
+
+/** Path-free refusal detail on a failed `portal.worktree.create`. */
+export interface PortalWorktreeCreateRefusal {
+  reason: PortalWorktreeCreateRefusalReason;
+  /** The worktree that has the branch checked out, when the host manages it. */
+  existingWorktreeId?: string;
 }
 
 /**
@@ -6165,6 +6430,8 @@ export interface PortalChangedFilesPayload {
  *   transport-level issues
  * - `unsupported_command` — command type not implemented (the dispatcher
  *   emits this for unmapped types)
+ * - {@link PortalWorktreeCreateRefusalReason} values — a refused
+ *   `portal.worktree.create`, with the same value in `refusal.reason`
  *
  * Adapters MAY emit codes outside this set (the wire field is `string` for
  * forward compatibility), but any new code added here MUST also be reflected
@@ -6180,7 +6447,8 @@ export type PortalAdapterFailureCode =
   | 'forbidden'
   | 'execution_failed'
   | 'github_not_connected'
-  | 'unsupported_command';
+  | 'unsupported_command'
+  | PortalWorktreeCreateRefusalReason;
 
 /**
  * Frozen runtime list of every supported `PortalAdapterFailureCode`. Exposed
@@ -6198,6 +6466,7 @@ export const PORTAL_ADAPTER_FAILURE_CODES = [
   'execution_failed',
   'github_not_connected',
   'unsupported_command',
+  ...PORTAL_WORKTREE_CREATE_REFUSAL_REASONS,
 ] as const satisfies readonly PortalAdapterFailureCode[];
 
 // ---------------------------------------------------------------------------
@@ -7548,6 +7817,10 @@ export interface PortalStandaloneChatSummary extends PortalStandaloneWorkEntryFi
    * phase 41b). Omitted by older desktops.
    */
   backgroundTasks?: number;
+  /** As {@link PortalChatSummaryEntity.awaitingApproval}. */
+  awaitingApproval?: boolean;
+  /** As {@link PortalChatSummaryEntity.scheduledMessages}. */
+  scheduledMessages?: PortalChatScheduledMessages;
   /** True when the chat has output the user has not viewed. */
   hasUnread?: boolean;
   /** Provider that owns the chat session. */
@@ -9211,6 +9484,13 @@ export interface PortalQueuedMessage {
   delivering?: boolean;
 }
 
+/** Pending scheduled sends to one chat. */
+export interface PortalChatScheduledMessages {
+  count: number;
+  /** ISO-8601 time of the earliest pending send; absent when `count` is 0. */
+  nextAt?: string;
+}
+
 export interface PortalChatSummaryEntity {
   /** Desktop-owned unread flag; absent on older hosts. */
   hasUnread?: boolean;
@@ -9308,6 +9588,14 @@ export interface PortalChatSummaryEntity {
    * `backgroundTasks`.
    */
   backgroundDelegations?: number;
+  /**
+   * True while a tool-approval prompt in this chat waits for an answer. Sent
+   * with `backgroundTasks`, `false` included, so a delta clears it; omitted
+   * by older desktops.
+   */
+  awaitingApproval?: boolean;
+  /** The chat's pending scheduled sends; sent with `backgroundTasks`. */
+  scheduledMessages?: PortalChatScheduledMessages;
   /**
    * Present while this chat's provider quota is exhausted and the desktop is
    * showing its composer usage-limit banner (CAN-2601). The portal renders
@@ -9652,6 +9940,12 @@ export interface PortalSessionShellState {
      */
     avatarUrl?: string;
     /**
+     * The root repository's GitHub identity from its `origin` remote
+     * (`project_repository_identity_v1`). Absent when the remote is unknown
+     * or not on GitHub, and on older desktops.
+     */
+    repositoryIdentity?: PortalRepositoryIdentity;
+    /**
      * True for temporary (adhoc-combine) multi-repo workspaces; rendered
      * with the desktop's neutral gray badge instead of the assigned color.
      */
@@ -9917,6 +10211,10 @@ export interface PortalSessionShellState {
        * background spinner (turn-state phase 41b). Undefined until projected.
        */
       backgroundTasks?: number;
+      /** As {@link PortalChatSummaryEntity.awaitingApproval}. */
+      awaitingApproval?: boolean;
+      /** As {@link PortalChatSummaryEntity.scheduledMessages}. */
+      scheduledMessages?: PortalChatScheduledMessages;
       /**
        * Mirrors the desktop cowork entry row's unread indicator, falling back
        * to `CoworkWorkEntryMeta.unreadChats`. Undefined until projected.

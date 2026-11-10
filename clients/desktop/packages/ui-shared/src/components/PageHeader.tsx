@@ -1,6 +1,7 @@
 import type { JSX, ReactNode, Ref } from 'react';
 import { BackIcon } from '../icons/AppIcons';
 import { Button } from './Button';
+import { Stack } from './Stack';
 
 /** A detail page's way back to the list it came from, named for that list. */
 export interface PageHeaderBack {
@@ -90,60 +91,62 @@ export function PageHeader({
       // layout starts the card below an empty top row).
       data-inset={inset}
     >
-      {back ? (
-        <Button
-          variant="ghost"
-          size="compact"
-          onClick={back.onClick}
-          data-testid={back.testId ?? 'page-header-back'}
-          className="-ml-3 mb-2"
-        >
-          <BackIcon size="sm" aria-hidden="true" />
-          {back.label}
-        </Button>
-      ) : null}
-      <div className="flex min-h-7 items-center gap-2">
-        <HeadingTag
-          ref={headingRef}
-          tabIndex={headingRef ? -1 : undefined}
-          className="min-w-0 text-xl font-medium text-balance break-words fg-primary outline-none"
-          data-testid={titleTestId}
-        >
-          {title}
-        </HeadingTag>
-        {badge ? (
-          <span
-            className="flex shrink-0 items-center gap-1.5 text-xs fg-tertiary"
-            data-testid="page-header-badge"
-          >
-            {badge}
-          </span>
-        ) : null}
-        {showActions ? (
-          <div
-            className="ml-auto flex min-h-7 shrink-0 items-center gap-2"
-            data-testid="page-header-actions"
-          >
-            {actions}
-          </div>
-        ) : null}
-      </div>
-      {description ? (
-        // A div, not a p: some hosts pass a link or a short block. A saved
-        // description of any length (a workflow's) stops at two lines, so
-        // the page body below keeps its room.
-        <div
-          className="mt-1 line-clamp-2 max-w-160 text-s text-pretty fg-tertiary"
-          data-testid="page-header-description"
-        >
-          {description}
-        </div>
-      ) : null}
-      {tabs ? (
-        <div className="mt-4" data-testid="page-header-tabs">
-          {tabs}
-        </div>
-      ) : null}
+      <Stack gap="group">
+        <Stack gap="inline">
+          {back ? (
+            <Button
+              variant="ghost"
+              size="compact"
+              onClick={back.onClick}
+              data-testid={back.testId ?? 'page-header-back'}
+              className="-ml-3 self-start"
+            >
+              <BackIcon size="sm" aria-hidden="true" />
+              {back.label}
+            </Button>
+          ) : null}
+          <Stack gap="tight">
+            <div className="flex min-h-7 items-center gap-2">
+              <HeadingTag
+                ref={headingRef}
+                tabIndex={headingRef ? -1 : undefined}
+                className="min-w-0 text-xl font-medium text-balance break-words fg-primary outline-none"
+                data-testid={titleTestId}
+              >
+                {title}
+              </HeadingTag>
+              {badge ? (
+                <span
+                  className="flex shrink-0 items-center gap-1.5 text-xs fg-tertiary"
+                  data-testid="page-header-badge"
+                >
+                  {badge}
+                </span>
+              ) : null}
+              {showActions ? (
+                <div
+                  className="ml-auto flex min-h-7 shrink-0 items-center gap-2"
+                  data-testid="page-header-actions"
+                >
+                  {actions}
+                </div>
+              ) : null}
+            </div>
+            {description ? (
+              // A div, not a p: some hosts pass a link or a short block. A
+              // saved description of any length (a workflow's) stops at two
+              // lines, so the page body below keeps its room.
+              <div
+                className="line-clamp-2 max-w-160 text-s text-pretty fg-tertiary"
+                data-testid="page-header-description"
+              >
+                {description}
+              </div>
+            ) : null}
+          </Stack>
+        </Stack>
+        {tabs ? <div data-testid="page-header-tabs">{tabs}</div> : null}
+      </Stack>
     </header>
   );
 }

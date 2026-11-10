@@ -2,7 +2,7 @@ import { type JSX, useEffect, useState } from 'react';
 import type {
   MarketplaceInfo,
   PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import type { SkillContentResponse } from '@canopy/desktop-shared/types/skills';
 import type {
   SkillDetailSelection,

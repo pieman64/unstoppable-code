@@ -1,12 +1,6 @@
 import { Stack } from '@canopy/ui-shared/components';
 import { Heading } from '@canopy/ui-shared/components';
-import {
-  useEffect,
-  useMemo,
-  useState,
-  type ComponentType,
-  type JSX,
-} from 'react';
+import { useEffect, useMemo, useState, type JSX } from 'react';
 import type {
   ResourceGroupId,
   ResourceMonitorSnapshot,
@@ -26,7 +20,7 @@ import {
   type ResourceDiagnosticsSortColumn,
   type ResourceDiagnosticsSortState,
 } from './sortState';
-import { RailIconButton } from '@canopy/ui-shared';
+import { ModelProviderIcon, RailIconButton } from '@canopy/ui-shared';
 import {
   Button,
   DataTableBody,
@@ -41,7 +35,6 @@ import {
   DisclosureChevron,
   DisclosureToggle,
 } from '@canopy/ui-shared/components';
-import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import {
   ChatIcon,
   ChipSimpleIcon,
@@ -86,25 +79,20 @@ const GROUP_PRIORITY: Record<ResourceGroupId, number> = {
 
 const ELECTRON_PROCESS_LABEL_PREFIX = 'Electron ';
 
-const SOURCE_ICON_SIZE = 12;
-
-function AppSourceIcon(): JSX.Element {
-  return <BrandLogo size={SOURCE_ICON_SIZE} aria-hidden />;
-}
-
-const SOURCE_ICONS: Record<
-  ResourceGroupId,
-  ComponentType<{ width?: number; height?: number }>
-> = {
-  app: AppSourceIcon,
-  browser: GlobeIcon,
-  codex: CodexLogo,
-  claude: ClaudeLogo,
-  chat: ChatIcon,
-  pipelines: WorkflowIcon,
-  terminal: TerminalIcon,
-  scripts: PlayIcon,
-  other: ChipSimpleIcon,
+/**
+ * Each source's glyph in its 12px slot. Lucide glyphs draw at the compact
+ * 14px step; the logos draw at 12px.
+ */
+const SOURCE_GLYPHS: Readonly<Record<ResourceGroupId, JSX.Element>> = {
+  app: <BrandLogo size={12} aria-hidden />,
+  browser: <GlobeIcon size="sm" />,
+  codex: <ModelProviderIcon provider="codex" size="xs" />,
+  claude: <ModelProviderIcon provider="claude" size="xs" />,
+  chat: <ChatIcon size="sm" />,
+  pipelines: <WorkflowIcon size="sm" />,
+  terminal: <TerminalIcon size="sm" />,
+  scripts: <PlayIcon size="sm" />,
+  other: <ChipSimpleIcon size="sm" />,
 };
 
 /**
@@ -749,7 +737,7 @@ export function ResourceDiagnosticsPopover({
           data-testid="resource-diagnostics-popover-app-totals"
         >
           <span className="flex w-5 shrink-0 items-center" aria-hidden="true">
-            <AppSourceIcon />
+            {SOURCE_GLYPHS.app}
           </span>
           <span className="min-w-0 flex-1 truncate fg-secondary">
             App processes
@@ -895,7 +883,6 @@ function ResourceRow({
 }): JSX.Element {
   const { process, groupLabel, secondaryText, depth, navigationTarget } = row;
   const displayLabel = getProcessDisplayLabel(process);
-  const SourceIcon = SOURCE_ICONS[process.groupId];
   // One line per process: the group, PID, and owner are details, shown on
   // hover and read out with the name rather than taking a second line.
   const details = `${groupLabel}${secondaryText ? ` · ${secondaryText}` : ''}`;
@@ -907,7 +894,7 @@ function ResourceRow({
   };
   const sourceIcon = (
     <span className="flex h-3 w-3 items-center justify-center fg-tertiary">
-      <SourceIcon width={SOURCE_ICON_SIZE} height={SOURCE_ICON_SIZE} />
+      {SOURCE_GLYPHS[process.groupId]}
     </span>
   );
   return (

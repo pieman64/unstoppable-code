@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { ChevronDownMediumIcon, PlusIcon } from '../icons/AppIcons';
 import { FLOATING_MENU_GAP } from './FloatingMenu';
+import { Inline } from './Stack';
 import {
   FloatingPickerMenu,
   PickerMenuList,
@@ -442,16 +443,18 @@ export function CreatablePickerSelect({
             {triggerLeading}
           </span>
         ) : null}
-        <span
-          className={`min-w-0 flex-1 truncate ${value === '' ? 'fg-tertiary' : 'fg-primary'}`}
-        >
-          {triggerLabel}
-        </span>
-        {hasUnmatchedValue && unmatchedValueHint ? (
-          <span className="ml-2 shrink-0 text-2xs fg-tertiary">
-            {unmatchedValueHint}
+        <Inline as="span" className="min-w-0 flex-1">
+          <span
+            className={`min-w-0 flex-1 truncate ${value === '' ? 'fg-tertiary' : 'fg-primary'}`}
+          >
+            {triggerLabel}
           </span>
-        ) : null}
+          {hasUnmatchedValue && unmatchedValueHint ? (
+            <span className="shrink-0 text-2xs fg-tertiary">
+              {unmatchedValueHint}
+            </span>
+          ) : null}
+        </Inline>
       </button>
       <span
         aria-hidden="true"

@@ -19,7 +19,7 @@ import type {
   PipelineInfo,
 } from '@canopy/execution-engine/types/pipeline';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
-import type { MarketplaceInfo } from '@canopy/desktop-shared/types/plugins';
+import type { MarketplaceInfo } from '@canopy/execution-engine/types/plugins';
 import { TRIGGER_META } from '@/components/pipeline/pipeline-trigger-meta';
 
 /** The capability whose detail page is asking for related items. */

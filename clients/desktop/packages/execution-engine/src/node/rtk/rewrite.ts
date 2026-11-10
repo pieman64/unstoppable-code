@@ -1,3 +1,4 @@
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -114,7 +115,7 @@ export async function runRtkRewrite(
     const child = spawn(options.rtkBinaryPath, ['rewrite', command], {
       ...(spawnEnv ? { env: spawnEnv } : {}),
       stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: process.platform === 'win32',
+      windowsHide: hostOperatingSystem() === 'win32',
     });
 
     const finish = (value: string | undefined): void => {

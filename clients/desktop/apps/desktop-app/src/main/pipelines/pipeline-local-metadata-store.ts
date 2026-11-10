@@ -6,12 +6,12 @@ import type {
   ChatPluginDefault,
   ChatPluginSelection,
 } from '@canopy/desktop-shared/lib/chat-automation-conversion';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { serializePipelinePreferenceLocator } from '@canopy/desktop-shared/pipelines/plugin-collections';
 import {
   isShareablePluginRef,
   type ShareablePluginRef,
-} from '@canopy/desktop-shared/plugin-refs';
+} from '@canopy/execution-engine/plugin-refs';
 import {
   APPROVAL_MODES,
   type ApprovalMode,

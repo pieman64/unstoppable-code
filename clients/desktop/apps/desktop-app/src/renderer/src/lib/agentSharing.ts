@@ -1,6 +1,6 @@
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
-import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type { UnifiedTableRow } from '@/hooks/useUnifiedTableData';
 
 /**

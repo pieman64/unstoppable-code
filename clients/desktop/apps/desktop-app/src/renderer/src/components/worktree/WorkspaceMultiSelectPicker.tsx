@@ -4,7 +4,7 @@ import {
   type WorkspaceMultiSelectPickerProps,
   type WorkspacePickerOption as SharedWorkspacePickerOption,
 } from '@canopy/ui-app/code/shell/WorkspaceMultiSelectPicker';
-import { WorkspaceBadgeIcon } from '../shared/WorkspaceBadgeIcon';
+import { ProjectIcon } from '../shared/ProjectIcon';
 
 /**
  * Desktop's project option: the shared one plus the local repository the
@@ -21,11 +21,10 @@ export function renderDesktopWorkspaceOption(
   option: WorkspacePickerOption,
 ): JSX.Element {
   return (
-    <WorkspaceBadgeIcon
-      isMultiRepo={option.isMultiRepo}
+    <ProjectIcon
+      kind={option.isMultiRepo ? 'multi-repo' : 'single-repo'}
       temporary={option.temporary === true}
       color={option.color}
-      name={option.name}
       repoPath={option.repoPath}
     />
   );

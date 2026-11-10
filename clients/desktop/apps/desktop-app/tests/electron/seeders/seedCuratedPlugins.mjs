@@ -6,7 +6,7 @@ import { writeJson } from './fsHelpers.mjs';
 const ISO = '2026-06-17T00:00:00.000Z';
 
 // Mirrors `CURATED_PLUGIN_MARKETPLACE_ID` / `CURATED_PLUGIN_MARKETPLACE_SOURCE_URL`
-// in `packages/desktop-shared/src/types/plugins.ts`. Kept as literals here
+// in `packages/execution-engine/src/types/plugins.ts`. Kept as literals here
 // (this is a plain .mjs harness fixture, not part of the TS build graph).
 const CURATED_MARKETPLACE_ID = 'curated/cloud';
 const CURATED_MARKETPLACE_SOURCE_URL = 'curated:cloud';
@@ -41,7 +41,7 @@ function sha256(content) {
  * `.mcp.json` materialization path. Field names mirror
  * `CuratedPluginEntry`/`PluginProviderFacet` in
  * `apps/desktop-app/src/main/plugins/curated-plugin-sync.ts` and
- * `packages/desktop-shared/src/types/plugins.ts`.
+ * `packages/execution-engine/src/types/plugins.ts`.
  */
 const PLUGIN_DEFS = [
   {

@@ -42,7 +42,7 @@ import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
 import { ThinkingSpinner } from '../../../ThinkingSpinner';
 import { ChatIcon, ChevronLeftMediumIcon } from '../../../../icons/AppIcons';
 import { HeaderActionButton } from '../../../HeaderActionButton';
-import { SubagentIcon } from '../common/SubagentIcon';
+import { SubagentIcon } from '../../../../icons/SubagentIcon';
 import { SubagentWorkflowMark } from '../common/SubagentWorkflow';
 import { subagentAncestors } from '@canopy/agent-transcript';
 

@@ -27,7 +27,7 @@ export function ProjectChoiceCard({
       aria-pressed={selected}
       disabled={disabled}
       onClick={onSelect}
-      className={`focus-ring flex min-w-0 flex-col justify-start rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+      className={`focus-ring flex min-w-0 flex-col justify-start gap-1 rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
         selected
           ? 'border-line-accent bg-accent-subtle fg-primary'
           : 'bg-secondary/10 fg-secondary hover:bg-secondary/20'
@@ -39,7 +39,7 @@ export function ProjectChoiceCard({
       </div>
       {/* An organization's tile names it here, and a name can be one long
           word. */}
-      <div className="mt-1 text-xs wrap-anywhere">{description}</div>
+      <div className="text-xs wrap-anywhere">{description}</div>
     </button>
   );
 }

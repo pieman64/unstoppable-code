@@ -1,19 +1,73 @@
 import type { PendingApprovalView } from '@canopy/core-runtime/node/agent/approvals';
 import type {
+  ChatWaitKind,
+  ChatWaitScope,
+} from '@canopy/core-runtime/node/agent/waits';
+import type {
   ApprovalPromptDecision,
   ApprovalRequestEvent,
   ApprovalSecretInputRequest,
 } from '@canopy/desktop-shared/types';
+import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
 import { getDesktopApprovalBroker } from './approval-broker';
 
 // Pending tool approvals are owned by the core approval broker (CAN-4129).
 // These adapters keep the names the IPC handlers, the approval session and
 // the busy-session checks already use.
 
-interface ApprovalIdentity {
-  projectId: string;
-  worktreeId: string;
-  chatId: string;
+export interface PendingApprovalIdentity {
+  readonly projectId: string;
+  readonly worktreeId: string;
+  readonly chatId: string;
+}
+
+export function subscribePendingApprovalChanges(
+  listener: (identity: PendingApprovalIdentity) => void,
+): () => void {
+  let active = true;
+  const notify = ({
+    kind,
+    scope,
+  }: {
+    kind: ChatWaitKind;
+    scope: ChatWaitScope | null;
+  }): void => {
+    if (kind !== 'approval' || !scope) return;
+    // The lifecycle opens before the broker registers its pending view.
+    queueMicrotask(() => {
+      if (!active) return;
+      try {
+        listener({
+          projectId: scope.workspaceId,
+          worktreeId: scope.worktreeId,
+          chatId: scope.chatId,
+        });
+      } catch {
+        // A summary subscriber must not interrupt approval delivery or settling.
+      }
+    });
+  };
+  const unsubscribe = getDesktopChatWaits().observe({
+    opened: notify,
+    settled: notify,
+  });
+  return () => {
+    active = false;
+    unsubscribe();
+  };
+}
+
+export function hasPendingApprovalForChat(
+  identity: PendingApprovalIdentity,
+): boolean {
+  return getDesktopApprovalBroker()
+    .pending()
+    .some(
+      ({ scope }) =>
+        scope.workspaceId === identity.projectId &&
+        scope.worktreeId === identity.worktreeId &&
+        scope.chatId === identity.chatId,
+    );
 }
 
 export interface ApprovalResponder {
@@ -34,7 +88,7 @@ function pendingView(
     .find((view) => view.requestId === requestId);
 }
 
-function scopeOf(identity: ApprovalIdentity): {
+function scopeOf(identity: PendingApprovalIdentity): {
   workspaceId: string;
   worktreeId: string;
   chatId: string;
@@ -90,7 +144,7 @@ export function resolveApproval(
   requestId: string,
   decision: ApprovalPromptDecision,
   responder: ApprovalResponder,
-  identity: ApprovalIdentity,
+  identity: PendingApprovalIdentity,
   policyRevision: number | undefined,
 ): boolean {
   // A secret-input card is allowed only with its secret.

@@ -286,31 +286,35 @@ export function AutomationDefinitionSummary({
           What it does
         </Heading>
         <div className="rounded-xl border bg-card p-4 text-s">
-          <p className="font-medium">{actionLabel(action)}</p>
-          <div className="mt-1">
-            <AutomationTargetRequirementLine
-              automation={automation}
-              {...(resolvedTargetContexts !== undefined
-                ? { resolvedTargetContexts }
-                : {})}
-            />
-          </div>
-          {action.type === 'worktree_prompt' && action.planMode && (
-            <p className="mt-1 text-xs fg-secondary">Starts in plan mode.</p>
-          )}
-          {bundlingNote !== null && (
-            <p
-              className="mt-1 text-xs fg-secondary"
-              data-testid="automation-summary-pipeline-bundling"
-            >
-              {bundlingNote}
-            </p>
-          )}
-          {prompt !== null && (
-            <pre className="mt-3 whitespace-pre-wrap break-words font-sans text-s">
-              {prompt || 'No prompt text.'}
-            </pre>
-          )}
+          <Stack gap="item">
+            <Stack gap="tight">
+              <p className="font-medium">{actionLabel(action)}</p>
+              <div>
+                <AutomationTargetRequirementLine
+                  automation={automation}
+                  {...(resolvedTargetContexts !== undefined
+                    ? { resolvedTargetContexts }
+                    : {})}
+                />
+              </div>
+              {action.type === 'worktree_prompt' && action.planMode && (
+                <p className="text-xs fg-secondary">Starts in plan mode.</p>
+              )}
+              {bundlingNote !== null && (
+                <p
+                  className="text-xs fg-secondary"
+                  data-testid="automation-summary-pipeline-bundling"
+                >
+                  {bundlingNote}
+                </p>
+              )}
+            </Stack>
+            {prompt !== null && (
+              <pre className="whitespace-pre-wrap break-words font-sans text-s">
+                {prompt || 'No prompt text.'}
+              </pre>
+            )}
+          </Stack>
         </div>
       </Stack>
 

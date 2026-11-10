@@ -613,6 +613,10 @@ describe('main archives auto-archive chats at a completed turn (CAN-6014)', () =
         listeners.push(listener);
         return (): void => undefined;
       },
+      // turn-1's root terminal reduction would otherwise recheck the chat,
+      // and archive it rightly if that read lands after turn-1 ends; only the
+      // stale idle below may reach this archiver.
+      onUnblocked: () => (): void => undefined,
       dispatch: (request): Promise<ChatCommandResult> => {
         dispatched.push(request.command.type);
         return inner.dispatch(request);
@@ -622,6 +626,7 @@ describe('main archives auto-archive chats at a completed turn (CAN-6014)', () =
     await mark();
     // The real chat's last turn was cancelled after turn-1 completed.
     await turn('turn-1', 'completed');
+    expect((await state()).archived).toEqual([]);
     await turn('turn-2', 'cancelled');
     await mark();
     const staleIdle: ChatTurnStateCommit = {

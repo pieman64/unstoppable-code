@@ -44,7 +44,7 @@ type DelegationSessionOptions = Parameters<
   typeof createManagedDelegationSession
 >[0];
 
-jest.mock('@canopy/desktop-shared/node/rtk/rewrite', () => ({
+jest.mock('@canopy/execution-engine/node/rtk/rewrite', () => ({
   runRtkRewrite: jest.fn(() => Promise.resolve(undefined)),
 }));
 

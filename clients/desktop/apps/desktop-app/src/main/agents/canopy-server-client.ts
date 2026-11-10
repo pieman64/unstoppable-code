@@ -1,11 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
-import { normalizeShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
+import { normalizeShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import { requireProviderForModel } from '@canopy/desktop-shared/types';
 import { isAgentDefaultBaseModel } from '@canopy/protocol/agents';
 import {
   emptyPluginSelections,
   normalizePluginSelections,
-} from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+} from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import {
   assertAgentContext,
   assertAgentContextSnapshot,

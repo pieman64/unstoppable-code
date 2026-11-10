@@ -34,20 +34,23 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-function store(writerFence?: ScriptRunWriterFence): ScriptRunLogStore {
+async function writeAtomically(path: string, text: string): Promise<void> {
+  const temp = `${path}.${randomUUID()}.tmp`;
+  await writeFile(temp, text, 'utf8');
+  await rename(temp, path);
+}
+
+function store(
+  writerFence?: ScriptRunWriterFence,
+  writeFileAtomically = writeAtomically,
+): ScriptRunLogStore {
   return new ScriptRunLogStore({
     paths: {
       runDir: (projectId, worktreeId): string =>
         join(dir, projectId, worktreeId),
       fileStem: scriptRunFileStem,
     },
-    files: {
-      writeFileAtomically: async (path, text): Promise<void> => {
-        const temp = `${path}.${randomUUID()}.tmp`;
-        await writeFile(temp, text, 'utf8');
-        await rename(temp, path);
-      },
-    },
+    files: { writeFileAtomically },
     ...(writerFence ? { writerFence } : {}),
   });
 }
@@ -135,6 +138,35 @@ it('keeps the writer through completion', async () => {
     status: 'success',
     writer: writerA,
   });
+});
+
+it('lists a run as completed when its completion was pending', async () => {
+  let release = (): void => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const a = store(undefined, async (path, text): Promise<void> => {
+    if (text.includes('"completedAt"')) await held;
+    await writeAtomically(path, text);
+  });
+  const ref = await a.start({ ...target, script, invocation: 'manual-run' });
+  const completing = a.complete({
+    ref,
+    response: {
+      success: false,
+      exitCode: null,
+      timedOut: false,
+      durationMs: 5,
+    },
+  });
+  const listing = a.listTails({ ...target, maxLines: 10 });
+  // The listing reads the running run first, then waits for the write.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  release();
+  await completing;
+  const [tail] = await listing;
+  const completedAt: unknown = expect.any(String);
+  expect(tail?.meta).toMatchObject({ status: 'cancelled', completedAt });
 });
 
 it('drops a malformed writer and still reads the run', async () => {

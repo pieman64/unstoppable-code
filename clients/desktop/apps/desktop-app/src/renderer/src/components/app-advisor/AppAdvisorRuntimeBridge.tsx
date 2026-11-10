@@ -21,6 +21,7 @@ import { contributeInterfaceTools } from '@/client/interface-tools-client';
 import {
   APP_ADVISOR_GUARDED_PRESENTATION_ACTION_TYPES,
   APP_ADVISOR_PRESENTATION_ACTION_TYPES,
+  APP_ADVISOR_SURFACE_REQUEST_ACTION_TYPES,
 } from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
 import {
   onTurnFileViewerClosed,
@@ -222,6 +223,8 @@ function RuntimeBridge({
         !APP_ADVISOR_GUARDED_PRESENTATION_ACTION_TYPES.has(
           request.action.type,
         ) &&
+        // CAN-6008 B1: main hands these to their mounted Settings surface.
+        !APP_ADVISOR_SURFACE_REQUEST_ACTION_TYPES.has(request.action.type) &&
         !(
           request.action.type === 'worktree-chat.open_tab' &&
           request.action.chatId

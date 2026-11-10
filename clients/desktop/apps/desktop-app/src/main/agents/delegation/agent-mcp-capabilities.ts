@@ -15,10 +15,10 @@ import {
   buildManagedMcpServerIdentityDigest,
   normalizeManagedMcpServerLabel,
   readManagedMcpServerNameDigest,
-} from '@canopy/desktop-shared/node/plugins/mcp-server-name';
+} from '@canopy/execution-engine/node/plugins/mcp-server-name';
 import { resolvePluginServerCwd } from '@canopy/desktop-shared/node/plugins/plugin-resolver';
 import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
-import { getMcpHttpAuthHandler } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import { getMcpHttpAuthHandler } from '@canopy/execution-engine/lib/mcp-http-auth';
 import type {
   McpHttpAuthPreference,
   McpHttpAuthTarget,

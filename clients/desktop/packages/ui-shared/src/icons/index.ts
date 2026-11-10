@@ -64,6 +64,7 @@ export * from './MoreHorizontalIcon';
 export * from './MoreVerticalIcon';
 export * from './PencilIcon';
 export * from './PersonIcon';
+export * from './PipelineGlyph';
 export * from './PipelineIcon';
 export * from './PlanModeIcon';
 export * from './PlansIcon';

@@ -183,7 +183,7 @@ static bool mf_admit(mf_node *node, bool privacy) {
       FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED |
       ((attributes & FILE_ATTRIBUTE_DIRECTORY) ? 0 : FILE_ATTRIBUTE_READONLY))) return false;
   bool directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-  if (!directory && node->info.nNumberOfLinks != 1) return false;
+
   node->stage = directory ? "directory-streams" : "file-streams";
   node->stream_failure = true;
   BYTE streams[65536] = {0};
@@ -269,7 +269,8 @@ static bool mf_copy(wchar_t *path, wchar_t *other, mf_node *source, mf_node *tar
   BY_HANDLE_FILE_INFORMATION opened;
   if (!GetFileInformationByHandle(target->file, &opened) ||
       (opened.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
-      !!(opened.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != directory) return false;
+      !!(opened.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != directory ||
+      (!directory && opened.nNumberOfLinks != 1)) return false;
   if (!directory && !finish) {
     source->stage = "copy-bytes";
     char buffer[65536];
@@ -355,6 +356,7 @@ typedef NTSTATUS(NTAPI *mf_nt_create_fn)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTE
   PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
 
 static bool mf_remove_node(mf_node *node, mf_nt_create_fn create, wchar_t *path) {
+  if (!(node->info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && node->info.nNumberOfLinks != 1) return false;
   bool directory = (node->info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
   if (directory) {
     BYTE *buffer = calloc(1, 65536);
@@ -465,6 +467,7 @@ static bool mf_replace(wchar_t *path, wchar_t *other, mf_node *source, mf_node *
   if (!mf_open_access(path, source, DELETE) || !mf_open(other, target) ||
       (source->info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
       (target->info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+      source->info.nNumberOfLinks != 1 || target->info.nNumberOfLinks != 1 ||
       source->info.dwVolumeSerialNumber != target->info.dwVolumeSerialNumber) return false;
   size_t length = wcslen(other) * sizeof(wchar_t);
   struct mf_rename_info { DWORD flags; HANDLE root; DWORD length; WCHAR name[MF_LIMIT]; } rename_info = {0};

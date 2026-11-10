@@ -73,21 +73,23 @@ export const TranscriptPagingControls = memo(function TranscriptPagingControls({
           Loading messages…
         </span>
       ) : error ? (
-        <Notice
-          intent="destructive"
-          className="my-2 w-full"
-          liveRegionScope="content"
-          actions={
-            <NoticeButton
-              data-testid="chat-transcript-retry"
-              onClick={needsLoad ? onReload : onLoadEarlier}
-            >
-              {TRY_AGAIN_LABEL}
-            </NoticeButton>
-          }
-        >
-          {error}
-        </Notice>
+        // The same 8px room above and below as the loading status.
+        <div className="w-full py-2">
+          <Notice
+            intent="destructive"
+            liveRegionScope="content"
+            actions={
+              <NoticeButton
+                data-testid="chat-transcript-retry"
+                onClick={needsLoad ? onReload : onLoadEarlier}
+              >
+                {TRY_AGAIN_LABEL}
+              </NoticeButton>
+            }
+          >
+            {error}
+          </Notice>
+        </div>
       ) : null}
     </div>
   );

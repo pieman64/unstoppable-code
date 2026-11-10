@@ -5,7 +5,7 @@ import type {
   PluginInfo,
   PluginProviderFacet,
   PluginSkillInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 
 export interface InvocableMentionContent {
   title: string;

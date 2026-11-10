@@ -1,5 +1,5 @@
 import { loadMarketplacesCacheOnly } from '../../plugins/plugin-service';
-import { readPluginCacheIndex } from '@canopy/desktop-shared/node/plugins/catalog-read-health';
+import { readPluginCacheIndex } from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import {
   existsSync,
   mkdirSync,

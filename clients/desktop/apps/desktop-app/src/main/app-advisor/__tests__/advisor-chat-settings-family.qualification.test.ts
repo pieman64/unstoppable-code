@@ -31,7 +31,7 @@ jest.mock('../advisor-chat-settings-host', () => ({
   mainAdvisorChatSettingsHost: (): AdvisorChatSettingsHost => mockHost,
 }));
 
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { AdvisorActionRuns } from '@canopy/core-runtime/node/agent/advisor';
 import { OperationService } from '@canopy/core-runtime/node/operations';
 import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';

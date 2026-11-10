@@ -12,12 +12,12 @@ import type {
   DeferredToolsReloadAdditions,
   LoadDeferredToolRejection,
 } from '@canopy/desktop-shared/types';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import type {
   MarketplaceInfo,
   PluginInfo,
-} from '@canopy/desktop-shared/types/plugins';
+} from '@canopy/execution-engine/types/plugins';
 import {
   cursorPluginFacetProvider,
   cursorPluginFacetSupport,

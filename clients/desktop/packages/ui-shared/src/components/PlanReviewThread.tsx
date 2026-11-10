@@ -20,6 +20,7 @@ import type { StatusGlyphState } from '../lib/status-glyph';
 import { Button } from './Button';
 import { DISPLAY_AVATAR_GLYPH_SIZE, DisplayAvatar } from './DisplayAvatar';
 import { RichHoverTooltip } from './RichHoverTooltip';
+import { Stack } from './Stack';
 import { Tooltip } from './Tooltip';
 import { StatusGlyph } from './StatusGlyph';
 
@@ -352,8 +353,10 @@ export function PlanReviewThread({
       </div>
       {!collapsed && (
         <div className={compact ? 'px-3 py-2.5' : 'px-3.5 py-3'}>
-          <ThreadSpine compact={compact}>{children}</ThreadSpine>
-          {footer && <div className="mt-3">{footer}</div>}
+          <Stack gap="item">
+            <ThreadSpine compact={compact}>{children}</ThreadSpine>
+            {footer && <div>{footer}</div>}
+          </Stack>
         </div>
       )}
     </div>

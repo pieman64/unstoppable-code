@@ -15,7 +15,7 @@ import {
   normalizeHookInputMap,
   normalizeHookValue,
 } from '@canopy/desktop-shared/hooks';
-import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
+import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 
 export type EditableHookActionDraft =
   | {

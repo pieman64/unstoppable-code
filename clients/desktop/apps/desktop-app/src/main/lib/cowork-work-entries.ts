@@ -36,7 +36,7 @@ import { loadLegacyChatMigrationSource } from './legacy-chat-migration';
 import { renameWithRetry } from './atomic-file';
 import { dirname, join } from 'node:path';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type {
   CoworkWorkEntriesFile,
   CoworkWorkEntryData,

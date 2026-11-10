@@ -28,26 +28,6 @@ const STATUS_TEXT: Record<SetupStepStatus, string> = {
   pending: 'Not done',
 };
 
-/** A check once done, a spinner while running, an empty circle until then. */
-function SetupStepIcon({ status }: { status: SetupStepStatus }): JSX.Element {
-  return (
-    <span className="flex h-5 w-5 shrink-0 items-center justify-center">
-      {status === 'completed' ? (
-        <CircleCheckIcon
-          size={20}
-          aria-hidden
-          className={OPERATIONAL_STATUS_COLORS.success.foreground}
-        />
-      ) : status === 'active' ? (
-        <LoadingSpinner tone="active" sizePx={16} decorative />
-      ) : (
-        <span className="h-4 w-4 rounded-full ring-2 ring-fg-quaternary ring-inset" />
-      )}
-      <span className="sr-only">{STATUS_TEXT[status]}</span>
-    </span>
-  );
-}
-
 interface ProjectsSetupChecklistProps {
   detail: OrganizationDetail;
   replayBlock: string;
@@ -148,7 +128,21 @@ export function ProjectsSetupChecklist({
             data-step-status={step.status}
             className="flex items-center gap-3"
           >
-            <SetupStepIcon status={step.status} />
+            {/* A check once done, a spinner while running, an empty circle until then. */}
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+              {step.status === 'completed' ? (
+                <CircleCheckIcon
+                  size="xl"
+                  aria-hidden
+                  className={OPERATIONAL_STATUS_COLORS.success.foreground}
+                />
+              ) : step.status === 'active' ? (
+                <LoadingSpinner tone="active" sizePx={16} decorative />
+              ) : (
+                <span className="h-4 w-4 rounded-full ring-2 ring-fg-quaternary ring-inset" />
+              )}
+              <span className="sr-only">{STATUS_TEXT[step.status]}</span>
+            </span>
             <div className="min-w-0 flex-1">
               <p
                 className={

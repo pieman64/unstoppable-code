@@ -37,6 +37,7 @@ import {
   relocatedRepositoryAddReceipt,
   prepareRelocationGit,
   repairRelocationGit,
+  qualifyRelocationGit,
   discardRelocatedRuntime,
   repairRelocatedWorkspace,
   assertRelocationW5Settled,
@@ -44,6 +45,7 @@ import {
   relocationTransition,
   createRelocationRepairStep,
   assertRelocationOwnedPathsSafe,
+  repairRelocationCarriedLinks,
   type RelocationTransition,
 } from '..';
 
@@ -155,6 +157,119 @@ async function expectNoStagingReferences(root: string): Promise<void> {
       expect(contents).not.toContain(Buffer.from(spelling).toString('hex'));
     }
 }
+
+(process.platform === 'win32' ? it.skip : it).each([
+  'clean',
+  'dirty',
+  'staged',
+  'untracked',
+])(
+  'preserves %s checkout links and exact Git qualification on retry',
+  async (kind) => {
+    const common = join(oldRoot, 'repo');
+    const checkout = join(oldRoot, 'checkout');
+    await repository(common);
+    const target = join(oldRoot, 'payload');
+    await writeFile(target, 'retained source');
+    await symlink(target, join(common, 'pointer'));
+    if (kind !== 'untracked') {
+      await git(common, ['add', 'pointer']);
+      await git(common, [
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        'commit',
+        '-m',
+        'link fixture',
+      ]);
+      if (kind !== 'clean') {
+        await rm(join(common, 'pointer'));
+        await symlink(join(oldRoot, 'missing'), join(common, 'pointer'));
+        if (kind === 'staged') await git(common, ['add', 'pointer']);
+      }
+    }
+    await git(common, ['worktree', 'add', '-b', 'linked', checkout]);
+    // Non-checkout links still project, including chains through retained checkout links.
+    await symlink(join(common, 'pointer'), join(oldRoot, 'alias'));
+    await mkdir(join(oldRoot, 'repo-copy'));
+    await symlink(target, join(oldRoot, 'repo-copy/pointer'));
+    const plan = await prepareRelocationGit(git, [common, checkout]);
+    const preserved = plan.checkouts.map((row) =>
+      movedOwnedPath(transition, row.path),
+    );
+    const paths = [oldRoot];
+    await copyRoot();
+    const warnings = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      await createRelocationRepairStep()({
+        transition,
+        workingRoot,
+        gitPlan: plan,
+        ownedPaths: paths,
+        carryPayloadLinks: true,
+        admit: () => Promise.resolve(),
+        recordAuthority: () => Promise.resolve(),
+        repairMetadata: () => Promise.resolve(),
+      });
+      expect(
+        warnings.mock.calls.some(
+          ([line]) =>
+            typeof line === 'string' &&
+            line.includes('retaining checkout absolute link') &&
+            line.includes('repo/pointer'),
+        ),
+      ).toBe(true);
+    } finally {
+      warnings.mockRestore();
+    }
+    await assertRelocationOwnedPathsSafe(
+      transition,
+      paths,
+      workingRoot,
+      false,
+      {
+        preserveSourceTargetsWithin: preserved,
+      },
+    );
+    await rename(workingRoot, newRoot);
+    await assertRelocationOwnedPathsSafe(transition, paths, newRoot, true, {
+      preserveSourceTargetsWithin: preserved,
+    });
+    await qualifyRelocationGit(git, transition, plan);
+    expect(await readlink(join(newRoot, 'repo/pointer'))).toBe(
+      await readlink(join(common, 'pointer')),
+    );
+    expect(await readlink(join(newRoot, 'alias'))).toBe(
+      join(newRoot, 'repo/pointer'),
+    );
+    expect(await readlink(join(newRoot, 'repo-copy/pointer'))).toBe(
+      join(newRoot, 'payload'),
+    );
+    const published = join(newRoot, 'repo');
+    await writeFile(join(published, 'tracked'), 'unexpected change');
+    await expect(
+      qualifyRelocationGit(git, transition, plan),
+    ).rejects.toMatchObject({
+      reason: 'published-git-state-changed',
+    });
+    await writeFile(join(published, 'tracked'), 'original\n');
+    await qualifyRelocationGit(git, transition, plan);
+    const before = await readlink(join(published, 'pointer'));
+    await rm(join(published, 'pointer'));
+    await symlink(join(newRoot, 'payload'), join(published, 'pointer'));
+    // Porcelain does not fingerprint untracked bytes or already-dirty contents.
+    if (kind === 'clean' || kind === 'staged')
+      await expect(
+        qualifyRelocationGit(git, transition, plan),
+      ).rejects.toMatchObject({
+        reason: 'published-git-state-changed',
+      });
+    await rm(join(published, 'pointer'));
+    await symlink(before, join(published, 'pointer'));
+    await qualifyRelocationGit(git, transition, plan);
+  },
+);
 
 it.each(['absolute', 'relative'])(
   'publishes repaired staging with final-only %s Git paths, owner records and runtime state',
@@ -2369,5 +2484,178 @@ it('accepts fully inventoried relative and external link chains without changing
     expect(await realpath(join(workingRoot, 'safe-compatibility'))).toBe(
       join(workingRoot, 'checkout'),
     );
+  },
+);
+
+(process.platform === 'win32' ? it.skip : it).each([
+  'dangling',
+  'directory-chain',
+  'cycle',
+  'absolute-destination',
+  'source-escape',
+  'indirect-source',
+  'ordinary-parent',
+  'external',
+  'proven-external',
+  'parent-traversal',
+])(
+  'whole-root copies check %s payload links identically before and after copying',
+  async (kind) => {
+    const home = join(oldRoot, 'cowork/home');
+    await mkdir(home, { recursive: true });
+    const link = join(home, 'AGENTS.md');
+    let target = 'CLAUDE.md';
+    if (kind === 'directory-chain' || kind === 'cycle') {
+      await mkdir(join(home, '.agents/skills'), { recursive: true });
+      await mkdir(join(home, '.claude'));
+      await symlink('../.agents/skills', join(home, '.claude/skills'));
+      if (kind === 'cycle')
+        await symlink(
+          '../../.claude/skills/example',
+          join(home, '.agents/skills/example'),
+        );
+      else await writeFile(join(home, '.agents/skills/example'), 'carried');
+      target = '.claude/skills/example';
+    }
+    if (kind === 'absolute-destination')
+      target = join(newRoot, 'cowork/home/CLAUDE.md');
+    if (kind === 'source-escape')
+      target = relative(
+        join(newRoot, 'cowork/home'),
+        join(oldRoot, 'preferences.json'),
+      );
+    if (kind === 'indirect-source') {
+      await symlink(oldRoot, join(home, 'pivot'));
+      target = 'pivot/../CLAUDE.md';
+    }
+    if (kind === 'ordinary-parent') {
+      await mkdir(join(home, 'ordinary'));
+      target = 'ordinary/../CLAUDE.md';
+    }
+    if (kind === 'external') target = join(dir, 'unproven');
+    if (kind === 'proven-external') {
+      target = join(dir, 'external-file');
+      await writeFile(target, 'external bytes');
+    }
+    if (kind === 'parent-traversal') {
+      await symlink('..', join(home, 'pivot'));
+      target = 'pivot/../../old/preferences.json';
+    }
+    await symlink(target, link);
+    const paths = [link, ...(kind === 'proven-external' ? [target] : [])];
+    await copyRoot();
+    const checkRoot = async (
+      root: string,
+      source = false,
+      published = false,
+    ): Promise<void> => {
+      const check = assertRelocationOwnedPathsSafe(
+        transition,
+        paths,
+        root,
+        published,
+        { source },
+      );
+      if (
+        ['source-escape', 'indirect-source', 'parent-traversal'].includes(kind)
+      ) {
+        const reason =
+          kind === 'parent-traversal' || (kind === 'indirect-source' && source)
+            ? 'symlink-owned-parent'
+            : 'stale-owned-link';
+        await expect(check).rejects.toMatchObject({ reason });
+        await expect(check).rejects.toThrow(
+          `link "cowork/home/AGENTS.md" -> ${JSON.stringify(target)}`,
+        );
+      } else await expect(check).resolves.toBeUndefined();
+    };
+    await checkRoot(oldRoot, true);
+    await checkRoot(workingRoot);
+    await rename(workingRoot, newRoot);
+    await checkRoot(newRoot, false, true);
+    expect(await readlink(join(newRoot, 'cowork/home/AGENTS.md'))).toBe(target);
+  },
+);
+
+(process.platform === 'win32' ? it.skip : it).each([
+  'external',
+  'dangling-external',
+  'source',
+  'source-cycle',
+  'source-indirection',
+  'noncanonical-source',
+  'owner-parent',
+])(
+  'whole-root absolute %s links are carried or projected only in staging',
+  async (kind) => {
+    const home = join(oldRoot, 'chat-plugins/provider-home');
+    await mkdir(home, { recursive: true });
+    const link = join(home, 'pointer');
+    const targetFile = join(oldRoot, 'plugin-cache/linear/local');
+    await mkdir(dirname(targetFile), { recursive: true });
+    await writeFile(targetFile, 'plugin bytes');
+    let target = targetFile;
+    if (kind === 'external' || kind === 'dangling-external') {
+      target = join(dir, 'user-home/skills');
+      if (kind === 'external') {
+        await mkdir(dirname(target), { recursive: true });
+        await symlink(join(dir, 'absent-user-owned-folder'), target);
+      }
+    }
+    if (kind === 'source-cycle') target = link;
+    if (kind === 'source-indirection') {
+      await symlink(join(oldRoot, 'plugin-cache'), join(home, 'directory'));
+      target = join(home, 'directory/linear/local');
+    }
+    if (kind === 'noncanonical-source')
+      target = `${oldRoot}/plugin-cache/../preferences.json`;
+    if (kind === 'owner-parent') {
+      await mkdir(join(oldRoot, 'owned-directory'));
+      await writeFile(join(oldRoot, 'owned-directory/record'), 'owned');
+      target = join(oldRoot, 'owned-directory');
+    }
+    await symlink(target, link);
+    const paths = kind === 'owner-parent' ? [join(link, 'record')] : [link];
+    const check = assertRelocationOwnedPathsSafe(
+      transition,
+      paths,
+      oldRoot,
+      false,
+      { source: true },
+    );
+    if (['noncanonical-source', 'owner-parent'].includes(kind)) {
+      await expect(check).rejects.toThrow(
+        `link "chat-plugins/provider-home/pointer" -> ${JSON.stringify(target)}`,
+      );
+      await copyRoot();
+      await expect(
+        repairRelocationCarriedLinks(transition, paths, workingRoot),
+      ).rejects.toThrow('Installation relocation refused');
+      expect(await readlink(join(workingRoot, relative(oldRoot, link)))).toBe(
+        target,
+      );
+      return;
+    }
+    await expect(check).resolves.toBeUndefined();
+    await copyRoot();
+    await repairRelocationCarriedLinks(transition, paths, workingRoot);
+    await assertRelocationOwnedPathsSafe(
+      transition,
+      paths,
+      workingRoot,
+      false,
+      {},
+    );
+    // Repeating the repair after an interruption must not project the new root again.
+    await repairRelocationCarriedLinks(transition, paths, workingRoot);
+    await rename(workingRoot, newRoot);
+    await assertRelocationOwnedPathsSafe(transition, paths, newRoot, true, {});
+    expect(await readlink(join(newRoot, relative(oldRoot, link)))).toBe(
+      kind === 'external' || kind === 'dangling-external'
+        ? target
+        : join(newRoot, relative(oldRoot, target)),
+    );
+    expect(await readlink(link)).toBe(target);
+    expect(await readFile(targetFile, 'utf8')).toBe('plugin bytes');
   },
 );

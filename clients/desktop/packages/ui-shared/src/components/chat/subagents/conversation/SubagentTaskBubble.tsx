@@ -8,7 +8,7 @@ import {
 import { Markdown } from '../../../Markdown';
 import { UserBubble } from '../../../UserBubble';
 import { WatcherFiredTitle } from '../../WatcherFiredTitle';
-import { SubagentIcon } from '../common/SubagentIcon';
+import { SubagentIcon } from '../../../../icons/SubagentIcon';
 import {
   SUBAGENT_HIDDEN_INSTRUCTIONS_LABEL,
   subagentFollowUpFromLabel,

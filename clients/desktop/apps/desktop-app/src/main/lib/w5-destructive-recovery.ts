@@ -39,6 +39,8 @@ export const destructiveArchiveOutcomeSchema = z.object({
 
 import {
   journalSchema,
+  isArchiveCleanupPhase,
+  readDestructiveJournal,
   type DestructiveRecoveryRecord,
 } from '@canopy/desktop-shared/node/w5-destructive-journal';
 export type { DestructiveRecoveryRecord } from '@canopy/desktop-shared/node/w5-destructive-journal';
@@ -453,9 +455,7 @@ async function parseJournalEntry(
   name: string,
 ): Promise<DestructiveRecoveryRecord> {
   try {
-    return journalSchema.parse(
-      JSON.parse(await readFile(join(journalDirectory(), name), 'utf8')),
-    );
+    return await readDestructiveJournal(join(journalDirectory(), name));
   } catch {
     throw await unreadableJournalEntry(name);
   }
@@ -877,22 +877,6 @@ export function refuseInterruptedArchiveJournal(
       'An interrupted archive needs manual recovery. Preserve its remaining checkout, retained payload and journals.',
       { workspaceId, worktreeId, phase: 'archive-journal', check },
     ),
-  );
-}
-
-function isArchiveCleanupPhase(phase: string): boolean {
-  return (
-    phase.startsWith('sidecar:') ||
-    [
-      'live-state-teardown',
-      'browser-retirement',
-      'sidecar-cleanup',
-      'compatibility-symlinks',
-      'canonical-row-removal',
-      'deferred-browser-retirement',
-      'watcher-commit',
-      'temporary-workspace-cleanup',
-    ].includes(phase)
   );
 }
 

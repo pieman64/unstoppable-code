@@ -45,6 +45,7 @@ import {
   isDesktopPipelineModelBlocked,
   isDesktopPipelineOrgPolicyActive,
   recordDesktopPipelineModelPolicyRefusal,
+  resolveDesktopPipelineAgentModelAlias,
   resolveDesktopPipelineAiCreditsRouting,
   resolveDesktopPipelineHarnessInvocation,
 } from './pipeline-model-invocation';
@@ -599,6 +600,19 @@ export class PipelineOwnerRunContext {
               kind: 'claude.modAdmission',
               context: context ?? null,
             }),
+          ),
+        );
+        return answer.success ? settled(answer.data) : failed(UNANSWERED);
+      }
+      case 'owner.model.agentAlias': {
+        // The run's own workspace decides an inheriting Agent's base (CAN-5832).
+        const resolution = await resolveDesktopPipelineAgentModelAlias(
+          action.agentId,
+          scope,
+        );
+        const answer = WorkerPipelineOwnerResultSchema.safeParse(
+          JSON.parse(
+            JSON.stringify({ kind: 'model.agentAlias', alias: resolution }),
           ),
         );
         return answer.success ? settled(answer.data) : failed(UNANSWERED);

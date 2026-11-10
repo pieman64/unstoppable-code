@@ -76,6 +76,11 @@ export {
   type PipelineReadDetailProps,
 } from './pipelines/PipelineReadDetail';
 export {
+  PipelineStepRow,
+  type PipelineStepKind,
+  type PipelineStepRowProps,
+} from './pipelines/PipelineStepRow';
+export {
   PipelineRunDefinitionUsed,
   type PipelineRunDefinitionUsedProps,
 } from './pipelines/PipelineRunDefinitionUsed';
@@ -690,7 +695,7 @@ export {
 export {
   deriveWorktreeMenuItems,
   foldWorktreeMenuIntoMore,
-  WorktreeGroupingMenuIcon,
+  WORKTREE_GROUPING_GLYPHS,
   type WorktreeGroupingActionKind,
   type WorktreeMenuCallbacks,
 } from './code/shell/worktree-menu-items';

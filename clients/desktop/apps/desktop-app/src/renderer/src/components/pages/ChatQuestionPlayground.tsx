@@ -7,6 +7,7 @@ import {
   Divider,
   Heading,
   ListRow,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { toActiveComposerView, toActiveTranscriptView } from '../chat/types';
 import { ChatSurfaceProvider } from '@/stores/chat/surface-store';
@@ -43,21 +44,32 @@ export function ChatQuestionPlayground(): JSX.Element {
     dispatch({ type: 'preset', id });
 
   return (
-    <div
+    <Surface
+      variant="outline"
+      extent="parent"
       data-testid="chat-question-playground"
       data-state={machine.phase}
-      className="grid h-full min-h-0 min-w-0 grid-cols-[minmax(0,1fr)_280px] overflow-hidden rounded-xl border border-line-base bg-base"
+      className="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)_280px] overflow-hidden"
     >
       <section
         data-testid="playground-chat"
         className={`flex h-full min-h-0 min-w-0 flex-col ${compact ? 'mx-auto w-full max-w-97.5' : ''}`}
       >
-        <header className="flex h-11 shrink-0 items-center justify-between border-b border-line-base px-4">
-          <span className="text-xs font-medium fg-primary">{preset.title}</span>
-          <span className="text-xs fg-secondary">
-            {inFlight ? 'Waiting for response' : 'Chat'}
-          </span>
-        </header>
+        <Surface
+          as="header"
+          variant="section"
+          boundary="bottom"
+          className="shrink-0"
+        >
+          <div className="flex h-11 items-center justify-between px-4">
+            <span className="text-xs font-medium fg-primary">
+              {preset.title}
+            </span>
+            <span className="text-xs fg-secondary">
+              {inFlight ? 'Waiting for response' : 'Chat'}
+            </span>
+          </div>
+        </Surface>
         <ChatSurfaceProvider
           scope={{
             store: sandbox.store,
@@ -77,9 +89,14 @@ export function ChatQuestionPlayground(): JSX.Element {
           />
         </ChatSurfaceProvider>
       </section>
-      <aside
+      <Surface
+        as="aside"
+        variant="pane"
+        boundary="left"
+        padding="default"
+        gap="block"
         aria-label="Playground controls"
-        className="flex min-h-0 flex-col gap-5 overflow-y-auto [&>*]:shrink-0 border-l border-line-base bg-base p-4"
+        className="min-h-0 overflow-y-auto [&>*]:shrink-0"
       >
         <div className="flex items-center justify-between gap-2">
           <Heading level={2} variant="title">
@@ -217,9 +234,15 @@ export function ChatQuestionPlayground(): JSX.Element {
                   </ol>
                 </Stack>
                 <Disclosure label="Response payload">
-                  <pre className="overflow-auto whitespace-pre-wrap break-words rounded-lg bg-secondary p-3 text-xs fg-primary">
-                    {JSON.stringify(safeAnswers, null, 2)}
-                  </pre>
+                  <Surface
+                    variant="group"
+                    padding="compact"
+                    className="overflow-auto"
+                  >
+                    <pre className="whitespace-pre-wrap break-words text-xs fg-primary">
+                      {JSON.stringify(safeAnswers, null, 2)}
+                    </pre>
+                  </Surface>
                 </Disclosure>
               </div>
             </div>
@@ -228,7 +251,7 @@ export function ChatQuestionPlayground(): JSX.Element {
         <p className="text-xs leading-relaxed fg-secondary">
           Local simulation. No messages are sent and no agents are started.
         </p>
-      </aside>
-    </div>
+      </Surface>
+    </Surface>
   );
 }

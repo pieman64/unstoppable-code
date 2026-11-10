@@ -30,7 +30,7 @@ import { logMainProcessWarn } from '../lib/main-process-logging';
 import { openCodeToolDisplay } from '@canopy/desktop-shared/node/opencode/tool-display';
 import { copilotMcpCallIdentity } from '@canopy/copilot-recipient/tool-correlation';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
-import { runRtkRewrite } from '@canopy/desktop-shared/node/rtk/rewrite';
+import { runRtkRewrite } from '@canopy/execution-engine/node/rtk/rewrite';
 import {
   getBundledRtkBinaryPath,
   getRtkManagedEnv,
