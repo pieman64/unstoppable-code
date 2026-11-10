@@ -1,5 +1,4 @@
-import 'dart:async';
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/device_link/chats/models.dart';
@@ -21,6 +20,17 @@ final class ComputerRecentChats implements HomeRecentChatsSource {
   @override
   void removeListener(VoidCallback listener) =>
       account.removeListener(listener);
+
+  @override
+  Future<void> refresh() async {
+    await Future.wait([
+      for (final computer in account.connectedComputers)
+        if (account.engine.sessions[computer.id] case final controller?)
+          // Also update ownership evidence so newly listed worktrees can open.
+          // refresh() reads inventory without changing the active chat scopes.
+          controller.refresh(),
+    ]);
+  }
 
   @override
   HomeRecentChatsSnapshot read(WorkspaceContext context) {
@@ -61,21 +71,21 @@ final class ComputerRecentChats implements HomeRecentChatsSource {
       DeviceRecentAttention.awaitingAnswer =>
         RecentChatAttention.awaitingAnswer,
     },
-    open: (context) =>
-        unawaited(_open(context, computerId, chat.ref, chat.worktreeName)),
+    open: (context, showChat) =>
+        _open(context, computerId, chat.ref, chat.worktreeName, showChat),
   );
 
   /// Switches to the chat's computer, so its overview and Home follow, then
-  /// opens the chat the way the overview does.
+  /// lets the shell host the chat with its navigation menu.
   Future<void> _open(
     BuildContext context,
     String computerId,
     DeviceChatRef ref,
     String? worktreeName,
+    Future<void> Function(Widget page) showChat,
   ) async {
     final controller = account.engine.sessions[computerId];
     if (_opening || controller == null || !controller.chats.online) return;
-    final navigator = Navigator.of(context);
     final workspaceContext = context.read<WorkspaceContext?>();
     _opening = true;
     try {
@@ -91,17 +101,15 @@ final class ComputerRecentChats implements HomeRecentChatsSource {
       final opening = controller.chats.open(ref);
       var generation = controller.chats.chats.selectionGeneration;
       try {
-        await navigator.push<void>(
-          MaterialPageRoute(
-            builder: (_) => DeviceChatScreen(
-              model: controller.chats,
-              locationLabel: worktreeName,
-              worktree: controller.activityContext(ref),
-            ),
+        await showChat(
+          DeviceChatScreen(
+            model: controller.chats,
+            locationLabel: worktreeName,
+            worktree: controller.activityContext(ref),
           ),
         );
-        // The route owned the selection while it covered the shell, including
-        // tab switches and reconnects inside it. Read it as the route closes:
+        // The page owned the selection, including tab switches and reconnects
+        // inside it. Read it as the shell leaves the page:
         // a chat opened after that, while this open finishes, keeps its own.
         generation = controller.chats.chats.selectionGeneration;
         await opening;

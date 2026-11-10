@@ -29,8 +29,14 @@ final class HomeRecentChat {
   /// Sort key; null when the computer does not say when it was last active.
   final DateTime? activityAt;
 
-  /// Opens the chat from [context], which must outlive the drawer.
-  final void Function(BuildContext context) open;
+  /// Opens the chat from [context], which must outlive the drawer. The shell
+  /// hosts [showChat]'s page until another destination is selected; completing
+  /// this future releases the chat's selection before the next chat opens.
+  final Future<void> Function(
+    BuildContext context,
+    Future<void> Function(Widget page) showChat,
+  )
+  open;
 }
 
 /// What the drawer shows for the selected workspace context.
@@ -48,4 +54,7 @@ typedef HomeRecentChatsSnapshot = ({
 /// navigation and never reaches a computer connection itself.
 abstract interface class HomeRecentChatsSource implements Listenable {
   HomeRecentChatsSnapshot read(WorkspaceContext context);
+
+  /// Re-reads the drawer's inventory without changing the selected chat.
+  Future<void> refresh();
 }

@@ -12,11 +12,15 @@ class HomeNavigationScope extends InheritedWidget {
     required super.child,
     this.goBack,
     this.backHandlers,
+    this.contentVisible = true,
     super.key,
   });
 
   final VoidCallback openDrawer;
   final HomeBackHandlers? backHandlers;
+
+  /// False while the shell's navigation menu obscures its content.
+  final bool contentVisible;
 
   /// Set for a destination opened from another one, such as an organization
   /// page opened from Settings (CAN-3558); [HomeMenuButton] then goes back instead
@@ -30,6 +34,7 @@ class HomeNavigationScope extends InheritedWidget {
   bool updateShouldNotify(HomeNavigationScope oldWidget) =>
       openDrawer != oldWidget.openDrawer ||
       goBack != oldWidget.goBack ||
+      contentVisible != oldWidget.contentVisible ||
       backHandlers != oldWidget.backHandlers;
 }
 

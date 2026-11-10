@@ -34,6 +34,10 @@ final class DeviceActivityRepository {
       pipelines = DevicePipelineRepository(ipc),
       hooks = DeviceHookRepository(ipc) {
     _subscription = ipc.events.listen(_event);
+    _diffSubscription = diffs.unchanged.listen((file) {
+      final ref = _watching['${file.projectId}/${file.worktreeId}'];
+      if (ref != null) unawaited(load(ref));
+    });
     _prSubscription = prs.updates.listen((_) => _notify());
     _pipelineSubscription = pipelines.updates.listen((_) => _notify());
     _hookSubscription = hooks.updates.listen((_) => _notify());
@@ -45,6 +49,7 @@ final class DeviceActivityRepository {
   final DevicePipelineRepository pipelines;
   final DeviceHookRepository hooks;
   late final StreamSubscription<void> _hookSubscription;
+  late final StreamSubscription<DeviceFileDiffKey> _diffSubscription;
   late final StreamSubscription<void> _prSubscription;
   late final StreamSubscription<void> _pipelineSubscription;
   final _updates = StreamController<void>.broadcast();
@@ -365,6 +370,7 @@ final class DeviceActivityRepository {
     _generation++;
     _refresh?.cancel();
     await _subscription?.cancel();
+    await _diffSubscription.cancel();
     await diffs.dispose();
     await _prSubscription.cancel();
     await prs.dispose();

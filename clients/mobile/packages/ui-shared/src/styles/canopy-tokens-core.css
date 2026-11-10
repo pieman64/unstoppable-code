@@ -952,24 +952,6 @@ body {
   font-family: var(--font-mono);
 }
 
-/* Card styles */
-.card-surface {
-  background-color: var(--bg-card);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-md);
-}
-
-/* Surface elevated - for dropdowns, popovers */
-.surface-elevated {
-  background-color: var(--bg-card);
-  border: 0.5px solid var(--line-base);
-  border-radius: var(--radius-lg);
-}
-
-.dark .surface-elevated {
-  background-color: var(--bg-secondary);
-}
-
 /* GitHub-style PR label pills. The label color math is precomputed in JS
    (`PrLabelBadge`) and handed in via CSS custom properties so the light/dark
    switch stays here. Light mode is a solid fill with contrasting text; dark

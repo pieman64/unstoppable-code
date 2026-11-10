@@ -107,6 +107,15 @@ class _DeviceFileDiffScreenState extends State<DeviceFileDiffScreen> {
           ?state.error,
           if (state.truncated)
             'The computer returned a partial diff. Open it on your computer to see all changes.',
+          // The list counted lines, but the file now matches: its changes
+          // were committed or discarded after the list loaded.
+          if (!state.stale &&
+              diff != null &&
+              diff.patch.isEmpty &&
+              (widget.file.insertions ?? 0) + (widget.file.deletions ?? 0) > 0)
+            widget.file.committed
+                ? 'These changes are no longer on this branch.'
+                : 'These changes were committed or discarded on your computer.',
         ];
         return FileDiffView(
           padding: padding,

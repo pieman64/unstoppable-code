@@ -11,6 +11,7 @@ import 'package:mobile/ui/core/widgets/chat_list_notice.dart';
 import 'package:mobile/ui/features/account/views/account_screen.dart';
 import 'package:mobile/ui/features/desktop_app/view_models/desktop_app_prompt_controller.dart';
 import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
+import 'package:mobile/ui/core/navigation/home_recent_chat_controller.dart';
 import 'package:mobile/ui/features/home/views/activity_refresh_binding.dart';
 import 'package:mobile/ui/features/feed/views/feed_screen.dart';
 import 'package:mobile/ui/features/home/home_tab.dart';
@@ -100,12 +101,20 @@ class _HomeShellState extends State<HomeShell>
   HomeTabController? _tabController;
 
   final _backHandlers = HomeBackHandlers();
+  late final _recentChat = HomeRecentChatController()
+    ..addListener(_recentChatChanged);
+
+  void _recentChatChanged() {
+    setState(() {});
+    _syncRemoteVisibility();
+  }
 
   /// Whether the app-composed [HomeExtraDestination] covers the selected tab.
   /// It mounts on first open and then keeps its state like a tab does.
   bool _extraSelected = false;
   bool _extraMounted = false;
-  HomeTab? get _visibleTab => _extraSelected ? null : _tabController?.value;
+  HomeTab? get _visibleTab =>
+      _extraSelected || _recentChat.page != null ? null : _tabController?.value;
 
   @override
   void didChangeDependencies() {
@@ -126,12 +135,15 @@ class _HomeShellState extends State<HomeShell>
 
   @override
   void dispose() {
+    _recentChat.removeListener(_recentChatChanged);
+    _recentChat.dispose();
     _tabController?.removeListener(_handleTabChanged);
     _menu.dispose();
     super.dispose();
   }
 
   void _handleTabChanged() {
+    _recentChat.close();
     // Selecting a tab, even the one under it, leaves the extra destination.
     if (_extraSelected) setState(() => _extraSelected = false);
     _syncRemoteVisibility();
@@ -145,10 +157,17 @@ class _HomeShellState extends State<HomeShell>
   }
 
   void _openMenu() {
+    if (_menu.isDismissed) _refreshRecents();
     _menu.fling(velocity: 1);
   }
 
+  void _refreshRecents() {
+    final source = context.read<HomeRecentChatsSource?>();
+    if (source != null) unawaited(source.refresh());
+  }
+
   void _openExtraDestination() {
+    _recentChat.close();
     setState(() {
       _extraSelected = true;
       _extraMounted = true;
@@ -173,14 +192,17 @@ class _HomeShellState extends State<HomeShell>
     _tabController?.select(HomeTab.chat);
   }
 
-  /// Opens a chat from the drawer's Recents over the shell. The shell's
+  /// Opens a chat from the drawer's Recents inside the shell. The shell's
   /// context, not the drawer's: the drawer unmounts as it closes.
   void _openRecentChat(HomeRecentChat chat) {
     _closeMenu();
-    chat.open(context);
+    unawaited(_recentChat.open(chat, context));
   }
 
   void _dragMenu(DragUpdateDetails details, double menuWidth) {
+    if (_menu.isDismissed && (details.primaryDelta ?? 0) > 0) {
+      _refreshRecents();
+    }
     _menu.value += (details.primaryDelta ?? 0) / menuWidth;
   }
 
@@ -198,7 +220,8 @@ class _HomeShellState extends State<HomeShell>
     final tabController = context.watch<HomeTabController>();
     final tabs = tabController.tabs;
     final extra = HomeExtraDestination.maybeOf(context);
-    final showsExtra = extra != null && _extraSelected;
+    final showsRecent = _recentChat.page != null;
+    final showsExtra = extra != null && _extraSelected && !showsRecent;
     final outlineColor = Theme.of(context).colorScheme.outlineVariant;
     return Scaffold(
       backgroundColor: HomeNavigationDrawer.backgroundColorOf(context),
@@ -225,6 +248,8 @@ class _HomeShellState extends State<HomeShell>
                     _closeMenu();
                   } else if (_backHandlers.consume()) {
                     return;
+                  } else if (showsRecent) {
+                    _recentChat.close();
                   } else if (showsExtra) {
                     _leaveExtraDestination();
                   } else if (parentTab != null) {
@@ -280,7 +305,7 @@ class _HomeShellState extends State<HomeShell>
                                           remoteConnected)
                                         tab,
                                   ],
-                                  selectedTab: showsExtra
+                                  selectedTab: showsExtra || showsRecent
                                       ? null
                                       : tabController.value,
                                   onSelected: (tab) {
@@ -381,8 +406,15 @@ class _HomeShellState extends State<HomeShell>
                                         child: HomeNavigationScope(
                                           openDrawer: _openMenu,
                                           backHandlers: _backHandlers,
+                                          contentVisible: !menuVisible,
                                           child: IndexedStack(
-                                            index: showsExtra
+                                            index: showsRecent
+                                                ? tabs.length +
+                                                      (extra != null &&
+                                                              _extraMounted
+                                                          ? 1
+                                                          : 0)
+                                                : showsExtra
                                                 ? tabs.length
                                                 : tabController.selectedIndex,
                                             children: [
@@ -395,6 +427,12 @@ class _HomeShellState extends State<HomeShell>
                                                     'home-extra-destination',
                                                   ),
                                                   builder: extra.pageBuilder,
+                                                ),
+                                              if (_recentChat.page
+                                                  case final page?)
+                                                KeyedSubtree(
+                                                  key: ObjectKey(page),
+                                                  child: page,
                                                 ),
                                             ],
                                           ),

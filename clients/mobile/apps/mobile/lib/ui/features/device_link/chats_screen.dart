@@ -1,5 +1,7 @@
 import 'package:mobile/services/speech_recognizer.dart';
 import 'package:mobile/ui/core/chat/widgets/voice_composer_binding.dart';
+import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
+import 'package:mobile/ui/core/navigation/home_back_handlers.dart';
 import 'package:mobile/ui/core/activity/worktree_activity_context.dart';
 import 'computer_connect/activity_drawer.dart';
 import 'computer_connect/work_composer.dart';
@@ -153,15 +155,33 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
     }
   }
 
-  bool _routeVisible = false, _drawerOpen = false;
+  bool _routeVisible = false, _drawerOpen = false, _shellVisible = true;
+  HomeBackHandlers? _backHandlers;
   AppLifecycleState? _lifecycle;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final navigation = HomeNavigationScope.maybeOf(context);
+    final handlers = navigation?.backHandlers;
+    if (handlers != _backHandlers) {
+      _backHandlers?.remove(_consumeDrawerBack);
+      _backHandlers = handlers;
+      if (_drawerOpen) handlers?.add(_consumeDrawerBack);
+    }
+    _shellVisible = navigation?.contentVisible ?? true;
     _routeVisible = ModalRoute.isCurrentOf(context) ?? true;
     _lifecycle = WidgetsBinding.instance.lifecycleState;
     _syncVisibility();
+  }
+
+  bool _consumeDrawerBack() {
+    final scaffold = _scaffoldKey.currentState;
+    if (!_routeVisible || !_shellVisible || scaffold?.isEndDrawerOpen != true) {
+      return false;
+    }
+    scaffold?.closeEndDrawer();
+    return true;
   }
 
   @override
@@ -175,13 +195,14 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
         _lifecycle == null || _lifecycle == AppLifecycleState.resumed;
     _reconnectNotice.setForeground(foreground);
     widget.model.setTranscriptVisible(
-      _routeVisible && !_drawerOpen && foreground,
+      _routeVisible && _shellVisible && !_drawerOpen && foreground,
     );
   }
 
   void _draftChanged() => widget.model.setDraft(_composer.text);
   @override
   void dispose() {
+    _backHandlers?.remove(_consumeDrawerBack);
     WidgetsBinding.instance.removeObserver(this);
     widget.model.setTranscriptVisible(false);
     widget.model.removeListener(_syncAttachments);
@@ -389,6 +410,9 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
         scaffoldKey: _scaffoldKey,
         onEndDrawerChanged: (open) {
           _drawerOpen = open;
+          _backHandlers?.remove(_consumeDrawerBack);
+          // The open drawer consumes Back before controls underneath it.
+          if (open) _backHandlers?.add(_consumeDrawerBack);
           _syncVisibility();
           if (open && state != null) unawaited(model.activity.load(state.ref));
         },
@@ -401,6 +425,7 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                 online: model.online,
               ),
         appBar: CanopyAppBar(
+          leading: HomeMenuButton.maybeOf(context, designSystem: true),
           automaticallyImplyLeading: true,
           content: Text(
             state?.title ?? 'Chat',

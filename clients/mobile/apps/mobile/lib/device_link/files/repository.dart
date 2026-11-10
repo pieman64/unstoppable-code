@@ -72,6 +72,12 @@ final class DeviceFileDiffRepository {
   Timer? _refresh;
 
   Stream<DeviceFileDiffKey> get updates => _cache.updates;
+
+  /// Files whose fresh read found no changes. The computer sends no push when
+  /// a change is committed or discarded, so the list that offered the file is
+  /// out of date.
+  Stream<DeviceFileDiffKey> get unchanged => _unchanged.stream;
+  final _unchanged = StreamController<DeviceFileDiffKey>.broadcast();
   DeviceFileDiffKey key(DeviceWorktreeRef ref, RemoteChangedFile file) => (
     projectId: ref.projectId,
     worktreeId: ref.worktreeId,
@@ -215,6 +221,7 @@ final class DeviceFileDiffRepository {
           truncated: raw['truncated'] == true,
         ),
       );
+      if (patch.isEmpty) _unchanged.add(target);
     } catch (cause) {
       if (!current()) return;
       _cache.put(
@@ -271,6 +278,7 @@ final class DeviceFileDiffRepository {
     _reads.clear();
     _watching.clear();
     await _subscription.cancel();
+    await _unchanged.close();
     await _cache.close();
   }
 }
