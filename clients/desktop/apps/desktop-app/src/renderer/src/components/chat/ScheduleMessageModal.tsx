@@ -8,6 +8,12 @@ import {
   toIsoDateValue,
   type SelectOption,
 } from '@canopy/ui-shared/components';
+import {
+  buildTimeSlotOptions,
+  defaultScheduleRunAt,
+  passedTimeOn,
+  toTimeSlotValue,
+} from '@/lib/timeSlotOptions';
 
 interface ScheduleMessageModalProps {
   /** When editing an existing schedule, the current ISO runAt to seed fields. */
@@ -21,46 +27,6 @@ interface ScheduleMessageModalProps {
    * when the chat has been popped out to an aux panel window.
    */
   ownerDocument?: Document;
-}
-
-/** The time picker offers a send time every quarter hour. */
-const TIME_STEP_MINUTES = 15;
-const MINUTES_PER_DAY = 24 * 60;
-
-function pad(value: number): string {
-  return value.toString().padStart(2, '0');
-}
-
-function toTimeValue(minutes: number): string {
-  return `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
-}
-
-function minutesOfDay(date: Date): number {
-  return date.getHours() * 60 + date.getMinutes();
-}
-
-const TIME_LABEL_FORMAT = new Intl.DateTimeFormat(undefined, {
-  hour: 'numeric',
-  minute: '2-digit',
-});
-
-function timeLabel(minutes: number): string {
-  return TIME_LABEL_FORMAT.format(
-    new Date(2000, 0, 1, Math.floor(minutes / 60), minutes % 60),
-  );
-}
-
-/**
- * The first quarter hour at least five minutes away, so a new schedule
- * defaults to a time that is still in the future when the person saves.
- */
-function defaultRunAt(): Date {
-  const earliest = new Date(Date.now() + 5 * 60 * 1000);
-  const minutes = minutesOfDay(earliest);
-  const rounded =
-    Math.ceil(minutes / TIME_STEP_MINUTES) * TIME_STEP_MINUTES - minutes;
-  earliest.setMinutes(earliest.getMinutes() + rounded, 0, 0);
-  return earliest;
 }
 
 /**
@@ -77,10 +43,11 @@ export function ScheduleMessageModal({
 }: ScheduleMessageModalProps): JSX.Element {
   const defaults = useMemo(() => {
     const seed = initialRunAt ? new Date(initialRunAt) : null;
-    const base = seed && !Number.isNaN(seed.getTime()) ? seed : defaultRunAt();
+    const base =
+      seed && !Number.isNaN(seed.getTime()) ? seed : defaultScheduleRunAt();
     return {
       date: toIsoDateValue(base),
-      time: toTimeValue(minutesOfDay(base)),
+      time: toTimeSlotValue(base),
     };
   }, [initialRunAt]);
 
@@ -94,26 +61,13 @@ export function ScheduleMessageModal({
   } | null>(null);
 
   const today = toIsoDateValue(new Date());
-  const timeOptions = useMemo((): SelectOption[] => {
-    const slots = new Set<string>([defaults.time]);
-    for (
-      let minutes = 0;
-      minutes < MINUTES_PER_DAY;
-      minutes += TIME_STEP_MINUTES
-    ) {
-      slots.add(toTimeValue(minutes));
-    }
-    // Earlier today has passed: those slots stay listed but can't be chosen.
-    const now = date === today ? toTimeValue(minutesOfDay(new Date())) : null;
-    return [...slots].sort().map((slot) => {
-      const [hours = 0, minutes = 0] = slot.split(':').map(Number);
-      return {
-        value: slot,
-        label: timeLabel(hours * 60 + minutes),
-        disabled: now !== null && slot <= now,
-      };
-    });
-  }, [date, today, defaults.time]);
+  // Earlier today has passed: those slots stay listed but can't be chosen.
+  const passed = passedTimeOn(date);
+  const timeOptions = useMemo(
+    (): SelectOption[] =>
+      buildTimeSlotOptions({ keep: [defaults.time], passed }),
+    [defaults.time, passed],
+  );
 
   const handleSave = useCallback((): void => {
     if (!date || !time) {

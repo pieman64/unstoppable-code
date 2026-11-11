@@ -132,6 +132,9 @@ export function buildDesktopRoutingCandidateSet(input: {
       input.defaultModelByHarness.codex === undefined
         ? undefined
         : wireByLocalId.get(input.defaultModelByHarness.codex),
+      input.defaultModelByHarness.opencode === undefined
+        ? undefined
+        : wireByLocalId.get(input.defaultModelByHarness.opencode),
     ],
   );
   const ids = new Set(candidates.map((candidate) => candidate.modelId));

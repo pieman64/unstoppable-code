@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 export const workspaceCommonjsOptions = {
   include: [
     /node_modules/,
-    /[/\\]packages[/\\]desktop-shared[/\\]src[/\\]canopy-paths\.[jt]s$/,
+    /[/\\]packages[/\\](?:desktop-shared|execution-engine)[/\\]src[/\\]canopy-paths\.[jt]s$/,
   ],
   extensions: ['.js', '.cjs', '.ts'],
   transformMixedEsModules: true,

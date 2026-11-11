@@ -34,13 +34,13 @@ import type {
 import {
   PipelineHostRefusal,
   type PipelineHostFailureReason,
-} from '@canopy/desktop-shared/pipelines/host-actions';
+} from '@canopy/execution-engine/pipelines/host-actions';
 import {
   emptyCreateBotEntryOutputs,
   emptyCreateProjectEntryOutputs,
   type CreateBotEntryInputs,
   type CreateProjectEntryInputs,
-} from '@canopy/desktop-shared/pipelines/host-create-entry';
+} from '@canopy/execution-engine/pipelines/host-create-entry';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import type { SidebarItemGroupScope } from '@canopy/protocol/sidebar';
 import { z } from 'zod';

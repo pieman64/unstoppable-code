@@ -18,7 +18,7 @@ import type {
 import {
   validatePauseInputAnswerErrors,
   type PauseInputAnswerError,
-} from '@canopy/desktop-shared/pipelines/pause-input-validation';
+} from '@canopy/execution-engine/pipelines/pause-input-validation';
 import {
   ChoiceField,
   ErrorBanner,

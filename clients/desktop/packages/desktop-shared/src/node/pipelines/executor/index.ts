@@ -3,7 +3,7 @@ export {
   endExecutionPause,
   getExecutionRunDurationMs,
   resetExecutionPauseClock,
-} from './execution-pause-clock';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-pause-clock';
 export {
   clearExecutionCancellation,
   deleteExecutionState,
@@ -59,7 +59,7 @@ export {
   normalizePipeline,
   resolveStepDefaults,
   assignStepIds,
-} from './normalize-pipeline';
+} from '@canopy/execution-engine/node/pipelines/executor/normalize-pipeline';
 export {
   buildNeedsContext,
   cancelPipelineExecution,
@@ -81,7 +81,7 @@ export {
   configurePipelineOwnerFence,
   type PipelineOwnerInspection,
   type PipelineOwnerInspector,
-} from './owner-fence';
+} from '@canopy/execution-engine/node/pipelines/executor/owner-fence';
 export {
   defaultTargetForExecution,
   inferExecutionScope,

@@ -1,4 +1,9 @@
 import type {
+  WorkEntryAutoDeleteWorkspaceSnapshot,
+  WorkEntryAutoDeleteDisarmRequest,
+  WorkEntryAutoDeleteResolveBranchRequest,
+} from '@canopy/protocol/work-entry-auto-delete';
+import type {
   CoworkFolderStatus,
   CoworkFolderMissing,
   CoworkUnstartedSend,
@@ -775,7 +780,7 @@ import type {
   ApprovalMode,
   ApprovalRule,
   ApprovalRuleTarget,
-} from './types/approvals';
+} from '@canopy/execution-engine/types/approvals';
 import type {
   ApprovalPromptDecision,
   ApprovalRequestDetails,
@@ -830,7 +835,7 @@ import type {
   LoadEnvironmentConfigResponse,
   SaveEnvironmentConfigResponse,
   UserEnvironmentEntryView,
-} from './types/user-environment';
+} from '@canopy/execution-engine/types/user-environment';
 import type { ChatModel } from '@canopy/execution-engine/types/chat-models';
 import type { BillingLane } from './lib/default-model-lane';
 import {
@@ -1051,7 +1056,7 @@ export {
 
 export * from './types/code-review';
 
-export * from './types/approvals';
+export * from '@canopy/execution-engine/types/approvals';
 export * from './types/remote-control';
 export * from '@canopy/execution-engine/types/stored-secrets';
 export * from './types/activation-journey';
@@ -1151,7 +1156,7 @@ export type {
   UserEnvironmentEntryView,
   UserEnvironmentUiMode,
   WorkspaceEnvironmentAssignment,
-} from './types/user-environment';
+} from '@canopy/execution-engine/types/user-environment';
 
 export * from '@canopy/protocol/portal';
 export type {
@@ -2400,6 +2405,8 @@ export interface AgentProviderAuthStatus {
   accountEmail?: string | null;
   /** Raw provider plan/subscription type string (not normalized). */
   planType?: string | null;
+  /** The selected ChatGPT workspace's display name (Codex 0.165+), if known. */
+  workspaceName?: string | null;
   /** How the provider is authenticated, used to gate turn attribution. */
   accountKind?: 'subscription' | 'api_key' | 'bedrock' | 'unknown';
   /**
@@ -2600,6 +2607,17 @@ export type CanopyCloudAuthMode = 'oauth' | 'api_key' | 'guest';
  *   and is overwritten with `oauth_desktop` once the guest signs in.
  */
 export type CanopyCloudCredentialSource = 'manual' | 'oauth_desktop' | 'guest';
+
+/** Why the renderer asks main to re-check the OS credential store. */
+export interface SecureStorageRecheckRequest {
+  /** `retry`: the person's Try again. `shown`: a notice appeared; throttled. */
+  readonly trigger: 'retry' | 'shown';
+}
+
+export interface SecureStorageRecheckResult {
+  /** Whether the re-check changed the remembered credential store state. */
+  readonly changed: boolean;
+}
 
 /**
  * Renderer-safe view of the saved Canopy Cloud account.
@@ -12993,6 +13011,22 @@ export interface ChatActiveSessions {
   sessions?: ChatActiveSessionInfo[];
 }
 
+/**
+ * When a live session applies a model or thinking-level change: at once
+ * (`live`), or only from the next turn it starts (`next_turn`), so a running
+ * turn keeps the settings it started with.
+ */
+export interface ChatSessionSettingApplication {
+  model: 'live' | 'next_turn';
+  thinkingLevel: 'live' | 'next_turn';
+}
+
+/** A model and thinking level a session turn runs with. */
+export interface ChatSessionTurnSettings {
+  model?: ChatModel;
+  thinkingLevel?: ThinkingLevel;
+}
+
 export interface ChatActiveSessionInfo {
   chatId: string;
   /** Project ID parsed from the main-process session key. */
@@ -13012,6 +13046,14 @@ export interface ChatActiveSessionInfo {
   pendingMessageCount: number;
   activeBackgroundTaskCount?: number;
   lastEventType?: string;
+  /** Declared by sessions whose setters do not apply at once; see the type. */
+  settingApplication?: ChatSessionSettingApplication;
+  /**
+   * The settings the running turn applied, while a turn runs. With a
+   * `next_turn` declaration, a chat whose selected model or thinking level
+   * differs has that change pending until the next turn.
+   */
+  turnSettings?: ChatSessionTurnSettings;
 }
 
 export interface StaleSessionInfo {
@@ -18833,6 +18875,9 @@ export interface LocalMemoryImportResult {
 }
 
 export interface AutoArchiveNotification {
+  trigger?: 'agent' | 'inactivity';
+  /** Agent-armed removals only: whether the item was deleted or archived. */
+  mode?: 'delete' | 'archive';
   workspaceId: string;
   workspaceName: string;
   targetId: string;
@@ -20059,6 +20104,15 @@ export interface CanopyApi {
    */
   loadCanopyCloudApiKey: () => Promise<string>;
   /**
+   * Re-check the OS credential store for a secure storage notice, so the
+   * following reload sees its current state. `retry` is the person's Try
+   * again; `shown` runs when a notice appears and is throttled in main.
+   * Linux only; resolves `{ changed: false }` on macOS and Windows.
+   */
+  recheckSecureStorage: (
+    request: SecureStorageRecheckRequest,
+  ) => Promise<SecureStorageRecheckResult>;
+  /**
    * Validate `apiKey` against the configured Canopy Cloud base URL and, on
    * success, persist the entry to secure storage. The handler:
    *
@@ -20265,6 +20319,17 @@ export interface CanopyApi {
   ledger: LedgerApi;
   /** The observed cost of a work scope, read for the cost views. */
   cost: CostApi;
+  workEntryAutoDelete: {
+    list: () => Promise<WorkEntryAutoDeleteWorkspaceSnapshot[]>;
+    /** False when no arm was left to remove. */
+    disarm: (request: WorkEntryAutoDeleteDisarmRequest) => Promise<boolean>;
+    resolveBranch: (
+      request: WorkEntryAutoDeleteResolveBranchRequest,
+    ) => Promise<void>;
+    onChanged: (
+      listener: (snapshot: WorkEntryAutoDeleteWorkspaceSnapshot) => void,
+    ) => () => void;
+  };
   workEntries: WorkEntriesApi;
   sidebarItemGroups: {
     list: (scope: SidebarItemGroupScope) => Promise<SidebarItemGroup[]>;
@@ -27223,6 +27288,10 @@ export const IPC_CHANNELS = {
   sidebarItemGroupsMoveItem: REMOTE_IPC_CHANNELS.sidebarItemGroupsMoveItem,
   sidebarItemGroupsMoveGroup: REMOTE_IPC_CHANNELS.sidebarItemGroupsMoveGroup,
   sidebarItemGroupsChanged: 'sidebar-item-groups:changed',
+  workEntryAutoDeleteList: 'work-entry-auto-delete:list',
+  workEntryAutoDeleteDisarm: 'work-entry-auto-delete:disarm',
+  workEntryAutoDeleteResolveBranch: 'work-entry-auto-delete:resolve-branch',
+  workEntryAutoDeleteChanged: 'work-entry-auto-delete:changed',
   workEntriesList: REMOTE_IPC_CHANNELS.workEntriesList,
   workEntriesCreate: REMOTE_IPC_CHANNELS.workEntriesCreate,
   workEntriesUpdate: 'work-entries:update',
@@ -27268,6 +27337,7 @@ export const IPC_CHANNELS = {
   settingsLoadNativeAiCreditsAvailability:
     'settings:load-native-ai-credits-availability',
   settingsLoadCanopyCloudApiKey: 'settings:load-canopy-cloud-api-key',
+  secureStorageRecheck: 'secure-storage:recheck',
   settingsSaveCanopyCloudApiKey: 'settings:save-canopy-cloud-api-key',
   settingsClearCanopyCloudApiKey: 'settings:clear-canopy-cloud-api-key',
   settingsStartCanopyCloudOAuthLogin: 'settings:start-canopy-cloud-oauth-login',

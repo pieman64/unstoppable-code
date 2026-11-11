@@ -51,7 +51,9 @@ import {
 } from './definitions';
 import {
   SET_AUTO_ARCHIVE_DESCRIPTION,
+  SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION,
   setAutoArchiveJsonSchema,
+  setWorkEntryAutoDeleteJsonSchema,
   ASK_USER_QUESTION_DESCRIPTION,
   addLedgerEntryJsonSchema,
   searchLedgerEntriesJsonSchema,
@@ -90,6 +92,7 @@ const descriptions = {
   watch_command: WATCH_COMMAND_DESCRIPTION,
   schedule_wakeup: SCHEDULE_WAKEUP_DESCRIPTION,
   set_auto_archive: SET_AUTO_ARCHIVE_DESCRIPTION,
+  set_work_entry_auto_delete: SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION,
   start_forked_agent: APP_ADVISOR_START_FORKED_AGENT_DESCRIPTION,
   search_deferred_tools: SEARCH_DEFERRED_TOOLS_DESCRIPTION,
   load_deferred_tools: LOAD_DEFERRED_TOOLS_DESCRIPTION,
@@ -117,6 +120,7 @@ const schemas = {
   watch_command: watchCommandJsonSchema,
   schedule_wakeup: scheduleWakeupJsonSchema,
   set_auto_archive: setAutoArchiveJsonSchema,
+  set_work_entry_auto_delete: setWorkEntryAutoDeleteJsonSchema,
   start_forked_agent: startSplitAgentJsonSchema,
   search_deferred_tools: searchDeferredToolsJsonSchema,
   load_deferred_tools: loadDeferredToolsJsonSchema,

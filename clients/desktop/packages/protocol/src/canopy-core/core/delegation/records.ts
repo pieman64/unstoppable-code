@@ -51,24 +51,81 @@ export const IN_PROCESS_WORKER_TARGET: ExecutionTargetRegistration = {
 };
 
 /**
+ * Why a lease ended. `process-ended`: the run holding it ended. The rest
+ * belong to a remote executor's lease (ADR 31): `child-terminal`, the primary
+ * recorded the child's terminal state; `drained`, the executor checkpointed
+ * and released for rollover or shutdown; `superseded`, a newer lease epoch was
+ * granted; `expired`, the TTL lapsed and the child may still be running;
+ * `revoked`, the primary withdrew the target or the work; `executor-lost`,
+ * the executor's host reported its sandbox gone.
+ */
+export const DELEGATION_LEASE_RELEASE_REASONS = [
+  'process-ended',
+  'child-terminal',
+  'drained',
+  'superseded',
+  'expired',
+  'revoked',
+  'executor-lost',
+] as const;
+export const DelegationLeaseReleaseReasonSchema = z.enum(
+  DELEGATION_LEASE_RELEASE_REASONS,
+);
+export type DelegationLeaseReleaseReason = z.output<
+  typeof DelegationLeaseReleaseReasonSchema
+>;
+
+/** A renewal: only the primary renews, never the executor (ADR 31). */
+export const DelegationLeaseRenewalSchema = z.strictObject({
+  renewedAt: timestamp,
+  /** The primary instance that renewed, such as one web core pod. */
+  renewedBy: id,
+});
+export type DelegationLeaseRenewal = z.output<
+  typeof DelegationLeaseRenewalSchema
+>;
+
+/**
  * A delegation lease. The in-process binding's is degenerate: process
  * liveness is its only signal, it is never renewed and never expires by
  * timer, and it ends with the process run that holds it.
+ *
+ * A remote executor's lease (ADR 31) adds a lease epoch and its last
+ * renewal. Leases that are never granted again, such as the in-process one,
+ * omit both, so the ledger rows older builds wrote and read stay unchanged.
  */
-export const DelegationLeaseRecordSchema = z.strictObject({
-  leaseId: id,
-  targetId: id,
-  binding: z.enum(['in-process', 'local', 'http']),
-  signal: z.enum(['process_liveness', 'transport_close', 'renewal']),
-  /** The ledger run (process) that holds it. */
-  runEpoch: id,
-  acquiredAt: timestamp,
-  renewAfterMs: z.number().int().min(0).nullable(),
-  ttlMs: z.number().int().min(0).nullable(),
-  expiresAt: timestamp.nullable(),
-  releasedAt: timestamp.nullable(),
-  releaseReason: z.enum(['process-ended']).nullable(),
-});
+export const DelegationLeaseRecordSchema = z
+  .strictObject({
+    leaseId: id,
+    targetId: id,
+    binding: z.enum(['in-process', 'local', 'http']),
+    signal: z.enum(['process_liveness', 'transport_close', 'renewal']),
+    /** The ledger run (process) that holds it. */
+    runEpoch: id,
+    /**
+     * Separate from `runEpoch`: the primary raises it at each grant to a new
+     * executor incarnation, and writes from an older epoch are refused.
+     */
+    leaseEpoch: z.number().int().min(1).optional(),
+    /** Null until the primary first renews it. */
+    lastRenewal: DelegationLeaseRenewalSchema.nullable().optional(),
+    acquiredAt: timestamp,
+    renewAfterMs: z.number().int().min(0).nullable(),
+    ttlMs: z.number().int().min(0).nullable(),
+    expiresAt: timestamp.nullable(),
+    releasedAt: timestamp.nullable(),
+    releaseReason: DelegationLeaseReleaseReasonSchema.nullable(),
+  })
+  .refine(
+    (lease): boolean =>
+      lease.lastRenewal === undefined ||
+      lease.lastRenewal === null ||
+      lease.leaseEpoch !== undefined,
+    {
+      path: ['lastRenewal'],
+      message: 'Only a lease with a lease epoch is renewed.',
+    },
+  );
 export type DelegationLeaseRecord = z.output<
   typeof DelegationLeaseRecordSchema
 >;

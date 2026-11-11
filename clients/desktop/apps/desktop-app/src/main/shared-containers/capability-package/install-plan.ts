@@ -47,8 +47,8 @@ import {
   extractInvocationTokens,
   isExplicitPathInvocationToken,
 } from '@canopy/desktop-shared/lib/invocation-tokens';
-import { assignStepIds } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { assignStepIds } from '@canopy/execution-engine/pipelines/normalize-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { Pipeline, Step } from '@canopy/execution-engine/types/pipeline';
 
 /** The package cannot be installed as a whole; nothing is changed. */

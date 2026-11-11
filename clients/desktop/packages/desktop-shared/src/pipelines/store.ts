@@ -13,9 +13,12 @@ import {
   getBundledPipelinesDir,
   getUserPipelineIndexPath,
   getUserPipelinesDir,
-} from './config-paths';
-import { ensureDir, safeReadFile } from './fs-utils';
-import { getCanopyDataDir } from '../canopy-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
+import {
+  ensureDir,
+  safeReadFile,
+} from '@canopy/execution-engine/pipelines/fs-utils';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import {
   ensurePrivateLockDirectorySync,
   withOwnerLockFileSync,
@@ -27,7 +30,7 @@ import {
 } from '@canopy/execution-engine/node/lib/damaged-copies';
 import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
 import { flushDirectorySync } from '@canopy/core-platform/directory-flush';
-import { normalizePipeline } from './normalize-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
   getTriggerTypes,
   type IPCResult,
@@ -40,8 +43,8 @@ import {
   type PipelineSaveInput,
   type PipelineTriggerType,
 } from '@canopy/execution-engine/types/pipeline';
-import { normalizePipelineScopes } from './scope';
-import { parsePipelineText } from './parse-pipeline';
+import { normalizePipelineScopes } from '@canopy/execution-engine/pipelines/scope';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { serializePipelineDocument } from '@canopy/pipeline-interop/serialize-pipeline';
 import { isCuratedCatalogKey } from '@canopy/protocol/plugin-catalog';
 import type { CuratedPipelineOrigin } from '@canopy/protocol/pipelines';

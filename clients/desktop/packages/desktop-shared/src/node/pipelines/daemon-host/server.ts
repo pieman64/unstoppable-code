@@ -10,7 +10,7 @@ import type {
   PipelineHostRequestMessage,
 } from '@canopy/core-runtime/node/pipeline/host';
 import type { WorkerPipelineHostRequest } from '@canopy/protocol/canopy-core';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type {
   ExecutionState,
   Pipeline,
@@ -18,14 +18,21 @@ import type {
 } from '@canopy/execution-engine/types/pipeline';
 import { setBrandEnv } from '@canopy/execution-engine/brand/env';
 import { applyModelRegistrySnapshot } from '@canopy/execution-engine/builtin-actions/_lib/model-registry';
-import { getCanopyDataDir } from '../../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { normalizeAgentModelConfig } from '../../../types';
 import { classifyDaemonPipeline } from '../daemon-eligibility';
 import { normalizeExecutionModelAliasPreferences } from '../executor/model-alias-preferences';
-import { projectPipelineExecution } from '../execution-projection';
+import { normalizePipelinePluginCollectionPreferences } from '../plugin-collection-store';
+import { parseLaunchPluginCollections } from './plugin-collections';
+import { listPipelineExecutionPage } from '../execution-list';
+import {
+  projectPipelineExecution,
+  projectPipelineExecutionView,
+} from '@canopy/execution-engine/node/pipelines/execution-projection';
 import { cancelPipelineExecution, executePipeline } from '../executor';
 import { recoverOrphanedPipelineExecutions } from '../executor/crash-recovery';
 import {
+  listExecutionSummaries,
   loadExecutionState,
   normalizeAgentChatAddress,
   normalizeCuratedPipelineSource,
@@ -36,7 +43,7 @@ import {
 import {
   configurePipelineOwnerFence,
   type PipelineOwnerInspector,
-} from '../executor/owner-fence';
+} from '@canopy/execution-engine/node/pipelines/executor/owner-fence';
 import type {
   ExecutionHandle,
   ExecutionOptions,
@@ -174,6 +181,7 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
   let dataRoot: string | null = null;
   /** The provider CLIs the host's first model-step launch named (D21). */
   let providerBinaries: { claude: string; codex: string } | null = null;
+  let bundledResourcesDir: string | null = null;
 
   const post = (message: PipelineHostMessage): void => {
     channel.postMessage(message);
@@ -253,6 +261,14 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     return true;
   };
 
+  /** Points the host's builtin skills at the app's own resources, once (CAN-5832); false for another folder. */
+  const useBundledResources = (dir: string): boolean => {
+    if (bundledResourcesDir !== null) return bundledResourcesDir === dir;
+    bundledResourcesDir = dir;
+    setBrandEnv(process.env, 'BUNDLED_RESOURCES_DIR', dir);
+    return true;
+  };
+
   const forget = (executionId: string, handle: ExecutionHandle): void => {
     if (runs.get(executionId)?.handle !== handle) return;
     runs.delete(executionId);
@@ -292,10 +308,18 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     const launcher = codexMcpLauncher;
     const configuredRoot = dataRoot ?? path.dirname(dir);
     const runOwnerRequests = isOwnerBound ? new AbortController() : undefined;
+    // The run's collections as its core resolved them (CAN-5832); a snapshot
+    // that does not parse or names an MCP server refuses the launch.
+    const pluginCollections =
+      isOwnerBound && launch.pluginCollectionSnapshots
+        ? parseLaunchPluginCollections(launch.pluginCollectionSnapshots)
+        : undefined;
+    if (pluginCollections === null) return fail(id, 'start_failed');
     const runtime = createDaemonPipelineRuntime({
       executionsDir: dir,
       bundledActionsDir: launch.bundledActionsDir,
       processEnvironment,
+      ...(pluginCollections && { pluginCollections }),
       onStepNotifications: (stepId, notifications): void => {
         for (const { title, body } of notifications)
           post({
@@ -357,6 +381,9 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
           launch.modelAliasResolutions && {
             modelAliases: launch.modelAliasResolutions,
           }),
+        ...(pluginCollections && {
+          pluginCollections: new Set(Object.keys(pluginCollections)),
+        }),
       },
       {
         hostSteps: isOwnerBound ? 'owner' : 'refuse',
@@ -377,7 +404,9 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       if (
         !launch.modelCatalog ||
         !launch.providerBinaries ||
-        !useProviderBinaries(launch.providerBinaries)
+        !useProviderBinaries(launch.providerBinaries) ||
+        !launch.bundledResourcesDir ||
+        !useBundledResources(launch.bundledResourcesDir)
       )
         return fail(id, 'start_failed');
       if (
@@ -415,6 +444,13 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         modelConfig: normalizeAgentModelConfig(launch.modelConfig),
         agentTerminalMode: false,
       }),
+      ...(pluginCollections &&
+        launch.pluginCollectionPreferences !== undefined && {
+          pluginCollectionPreferences:
+            normalizePipelinePluginCollectionPreferences(
+              launch.pluginCollectionPreferences,
+            ),
+        }),
       ...(launch.modelAliasPreferences !== undefined && {
         // The executor's own normalizer: a run's reset entries must survive.
         modelAliasPreferences: normalizeExecutionModelAliasPreferences(
@@ -503,17 +539,31 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     respond(id, projectPipelineExecution(state));
   };
 
+  /** The stored state, or the live run's while it isn't terminal. */
+  const currentState = async (
+    dir: string,
+    executionId: string,
+  ): Promise<ExecutionState | null> => {
+    const stored = await loadExecutionState(executionId, dir);
+    return stored && TERMINAL.has(stored.status)
+      ? stored
+      : (runs.get(executionId)?.handle.getState() ?? stored);
+  };
+
   const get = async (
     id: number,
     dir: string,
     executionId: string,
+    detail: boolean,
   ): Promise<void> => {
-    const stored = await loadExecutionState(executionId, dir);
-    const state =
-      stored && TERMINAL.has(stored.status)
-        ? stored
-        : (runs.get(executionId)?.handle.getState() ?? stored);
-    respond(id, state ? projectPipelineExecution(state) : null);
+    const state = await currentState(dir, executionId);
+    if (state === null) return respond(id, null);
+    respond(
+      id,
+      detail
+        ? projectPipelineExecutionView(state, { detail: true })
+        : projectPipelineExecution(state),
+    );
   };
 
   const cancel = async (
@@ -599,18 +649,25 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
   };
 
   /** Pauses the owner-bound runs named: their owner is gone (CAN-5771). Admission stays open. */
-  const pause = async (id: number, executionIds: string[]): Promise<void> => {
+  const pause = async (
+    id: number,
+    executionIds: string[],
+    reason: 'owner_lost' | undefined,
+  ): Promise<void> => {
     const live = executionIds
       .filter((executionId) => ownerBound.has(executionId))
       .flatMap((executionId) => {
         const run = runs.get(executionId);
         return run ? [run] : [];
       });
-    const pausing = live.map(({ handle }) =>
-      handle.pauseForShutdown
-        ? handle.pauseForShutdown()
-        : Promise.reject(new Error('The run cannot pause.')),
-    );
+    const pausing = live.map(({ handle }) => {
+      // A remote owner's loss records its own reason (CAN-6102).
+      const paused =
+        reason === 'owner_lost'
+          ? handle.pauseForOwnerLoss?.()
+          : handle.pauseForShutdown?.();
+      return paused ?? Promise.reject(new Error('The run cannot pause.'));
+    });
     for (const run of live) run.ownerRequests?.abort();
     const settled = await Promise.allSettled(pausing);
     if (settled.some((result) => result.status === 'rejected'))
@@ -653,7 +710,16 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         return admitted;
       }
       case 'get':
-        return get(id, dir, request.executionId);
+        return get(id, dir, request.executionId, request.detail === true);
+      case 'list':
+        return respond(
+          id,
+          await listPipelineExecutionPage(
+            await listExecutionSummaries(dir),
+            (executionId) => currentState(dir, executionId),
+            request.query,
+          ),
+        );
       case 'cancel':
         return cancel(id, dir, request.executionId, request.mode);
       case 'sweep': {
@@ -677,7 +743,7 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         return respond(id, null);
       }
       case 'pause':
-        return pause(id, request.executionIds);
+        return pause(id, request.executionIds, request.reason);
       case 'exit':
         admissionOpen = false;
         hostSteps?.close();

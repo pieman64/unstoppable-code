@@ -164,11 +164,13 @@ export async function copyInternalRootTree(
   destination: string,
   host: InternalRootFilesystemHost,
   rootExists = false,
+  omitted: (relative: string) => boolean = () => false,
 ): Promise<void> {
   const windows = hostOperatingSystem() === 'win32';
   if (!windows) await qualifyCopyVolume(source, destination);
   const device = (await lstat(source)).dev;
   async function visit(from: string, to: string, relative = ''): Promise<void> {
+    if (omitted(relative)) return;
     const before = await lstat(from);
     if (before.dev !== device || !ownedMigrationNode(before))
       refuse(`Unsafe source tree entry: ${from}`);

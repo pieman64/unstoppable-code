@@ -1,12 +1,13 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import type { JSX, ReactNode } from 'react';
 import type { MemberProfileHeader } from '@canopy/protocol/team';
 import type { OrganizationRole } from '@canopy/protocol/settings';
 import { useSettingsPrivacy } from '../../host';
 import { joinClassNames } from '../join-class-names';
 import { MemberAvatar } from '../MemberAvatar';
-import { TeamRoleBadge } from '../team-role-badge';
+import { ROLE_LABEL } from '../team-role-label';
 import { ProfileIdentityEditor } from './ProfileIdentityEditor';
 import type { ProfileEditTarget } from './use-profile-editor';
 import { Heading } from '@canopy/ui-shared/components';
@@ -101,7 +102,7 @@ export function ProfileHeader({
           <ProfileIdentityEditor
             initialName={member.name}
             initialImage={member.image}
-            roleBadge={<TeamRoleBadge role={role} />}
+            roleBadge={<Badge>{ROLE_LABEL[role]}</Badge>}
             target={editContext}
           >
             {meta}
@@ -120,7 +121,7 @@ export function ProfileHeader({
                     {member.name}
                   </span>
                 </Heading>
-                <TeamRoleBadge role={role} />
+                <Badge>{ROLE_LABEL[role]}</Badge>
               </div>
               {meta}
             </div>

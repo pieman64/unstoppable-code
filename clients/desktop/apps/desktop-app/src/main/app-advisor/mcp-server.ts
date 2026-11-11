@@ -55,7 +55,9 @@ import {
 } from './definitions';
 import {
   SET_AUTO_ARCHIVE_DESCRIPTION,
+  SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION,
   setAutoArchiveSchema,
+  setWorkEntryAutoDeleteSchema,
   ASK_USER_QUESTION_DESCRIPTION,
   startSplitAgentSchema,
 } from '../canopy-tools/definitions';
@@ -102,6 +104,12 @@ export function createAppAdvisorMcpServer(
         'set_auto_archive',
         SET_AUTO_ARCHIVE_DESCRIPTION,
         setAutoArchiveSchema.shape,
+        runtime,
+      ),
+      appAdvisorTool(
+        'set_work_entry_auto_delete',
+        SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION,
+        setWorkEntryAutoDeleteSchema.shape,
         runtime,
       ),
       appAdvisorTool(

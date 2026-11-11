@@ -88,7 +88,7 @@ export type LedgerToolKey = Extract<
 >;
 
 /** The harness a session's agent runs on, recorded in author details. */
-export type LedgerHarness = 'claude' | 'codex' | 'cursor';
+export type LedgerHarness = 'claude' | 'codex' | 'cursor' | 'opencode';
 
 /** The chat a session's Ledger tools speak for. */
 export interface LedgerChatTarget {

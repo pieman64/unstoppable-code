@@ -1,7 +1,7 @@
 import type { RmOptions } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 import { validateId } from '@canopy/execution-engine/node/lib/validation';
 

@@ -36,7 +36,7 @@ import { formatWorkRatchetVerdict, judgeWorkRatchet } from './work-ratchet.mjs';
 import { w5StoreCaveats, w5StoreTreatment } from './w5-store-arms.mjs';
 
 const configPathsModule =
-  await import('../../../../packages/desktop-shared/src/pipelines/config-paths.ts');
+  await import('../../../../packages/execution-engine/src/pipelines/config-paths.ts');
 const { getBundledClaudeBinaryPath, getBundledCodexBinaryPath } =
   configPathsModule.default ?? configPathsModule;
 

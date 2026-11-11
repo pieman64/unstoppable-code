@@ -1,6 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
+import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { LoadingSpinner } from './LoadingSpinner';
 import { Notice, NoticeButton } from './Notice';
 import {
@@ -25,6 +26,10 @@ export interface SidebarBatchRemovalNoticeProps {
   readonly skipped: number;
   /** Still pending: queued while running, or dropped by Stop once idle. */
   readonly notStarted: number;
+  /** Rows already gone whose background cleanup still runs. */
+  readonly cleanupRunning?: number;
+  /** Of `failed`, those whose background cleanup failed after the row left. */
+  readonly lateFailed?: number;
   readonly onStop: () => void;
   readonly onShowDetails: () => void;
   readonly onDismiss: () => void;
@@ -58,6 +63,8 @@ export function SidebarBatchRemovalNotice({
   failed,
   skipped,
   notStarted,
+  cleanupRunning = 0,
+  lateFailed = 0,
   onStop,
   onShowDetails,
   onDismiss,
@@ -90,6 +97,7 @@ export function SidebarBatchRemovalNotice({
   if (skipped > 0) parts.push(`${skipped} skipped`);
   if (notStarted > 0) parts.push(`${notStarted} not started`);
   if (parts.length === 0) return null;
+  const outcome = `${parts.join(', ')}.`;
   return (
     <Notice
       data-testid={testId}
@@ -104,7 +112,83 @@ export function SidebarBatchRemovalNotice({
       onDismiss={onDismiss}
       dismissTestId={`${testId}-dismiss`}
     >
-      {parts.join(', ')}.
+      {cleanupRunning > 0
+        ? `${outcome} ${cleanupRunningSentence(unitLabel, cleanupRunning)}`
+        : lateFailed > 0
+          ? `Cleanup finished. ${outcome}`
+          : outcome}
+    </Notice>
+  );
+}
+
+function cleanupRunningSentence(
+  unitLabel: SidebarBatchUnitLabel,
+  count: number,
+): string {
+  return `Cleanup is still running for ${unitCountLabel(unitLabel, count)}, so more errors may appear.`;
+}
+
+const PRESENT: Readonly<Record<SidebarBatchRemovalVerb, string>> = {
+  archive: 'archive',
+  delete: 'delete',
+  remove: 'remove',
+};
+
+export interface SidebarBatchCleanupFailureNoticeProps {
+  readonly verb: SidebarBatchRemovalVerb;
+  readonly unitLabel: SidebarBatchUnitLabel;
+  /** Names of the batch's rows whose background cleanup failed. */
+  readonly failedLabels: readonly string[];
+  /** The batch's rows whose background cleanup still runs. */
+  readonly cleanupRunning: number;
+  readonly onShowDetails: () => void;
+  readonly onDismiss: () => void;
+  readonly testId?: string;
+}
+
+/**
+ * A finished batch whose rows already left the rail, reporting cleanup that
+ * failed afterwards (the rows are back). Further failures from the same
+ * batch join it; it says so while more cleanup still runs.
+ */
+export function SidebarBatchCleanupFailureNotice({
+  verb,
+  unitLabel,
+  failedLabels,
+  cleanupRunning,
+  onShowDetails,
+  onDismiss,
+  testId = 'worktree-batch-cleanup-notice',
+}: SidebarBatchCleanupFailureNoticeProps): JSX.Element | null {
+  const [onlyLabel] = failedLabels;
+  if (onlyLabel === undefined) return null;
+  const failed = failedLabels.length;
+  return (
+    <Notice
+      data-testid={testId}
+      intent="attention"
+      role="status"
+      title={
+        failed === 1 ? (
+          <>
+            Couldn't {PRESENT[verb]}{' '}
+            <span className={REPLAY_MASK_CLASS}>{onlyLabel}</span>
+          </>
+        ) : (
+          `Couldn't ${PRESENT[verb]} ${unitCountLabel(unitLabel, failed)}`
+        )
+      }
+      actions={
+        <NoticeButton onClick={onShowDetails} data-testid={`${testId}-details`}>
+          Details
+        </NoticeButton>
+      }
+      onDismiss={onDismiss}
+      dismissTestId={`${testId}-dismiss`}
+    >
+      {cleanupRunning > 0
+        ? cleanupRunningSentence(unitLabel, cleanupRunning)
+        : `Cleanup finished. ${failed} failed.`}
     </Notice>
   );
 }

@@ -698,6 +698,23 @@ export function runtimeChatEventToPortalMessage(
     createdAtMs: now,
     updatedAtMs: now,
   };
+  if (
+    (type === 'result' || type === 'error') &&
+    status === 'failed' &&
+    typeof input.data.canopy_provider_error_details === 'string' &&
+    input.data.canopy_provider_error_details.length > 0
+  ) {
+    projected.text = '';
+    projected.parts = [
+      {
+        kind: 'text',
+        data: {
+          text,
+          providerErrorDetails: input.data.canopy_provider_error_details,
+        },
+      },
+    ];
+  }
   const refusedUserMessageId = input.data.canopy_turn_user_message_id;
   if (
     (type === 'canopy_ai_credits_no_billing_source' ||

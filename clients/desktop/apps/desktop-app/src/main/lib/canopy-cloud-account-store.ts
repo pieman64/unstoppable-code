@@ -409,11 +409,13 @@ function observedStorageBackend(): string {
   return JSON.stringify([hostOperatingSystem(), status.backend]);
 }
 
-function readCache(): CanopyCloudAccountEntry | null | undefined {
+function readCache(
+  backend: string,
+): CanopyCloudAccountEntry | null | undefined {
   if (
     cachedEntry === undefined ||
     Date.now() - cachedAt >= CACHE_TTL_MS ||
-    cachedBackend !== observedStorageBackend()
+    cachedBackend !== backend
   ) {
     return undefined;
   }
@@ -565,7 +567,7 @@ export async function readCanopyCloudAccountWithStatus(
     // A held cache never grants permission to expose unreadable credentials.
     getSecretStoragePolicy().assertCanRead();
     const backend = observedStorageBackend();
-    const cached = useCache ? readCache() : undefined;
+    const cached = useCache ? readCache(backend) : undefined;
     if (cached !== undefined) return { status: 'ok', entry: cached };
 
     const filePath = getCanopyCloudAccountFilePath();

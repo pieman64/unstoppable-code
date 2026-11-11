@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { lstat, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { getGitExecutableCommand } from '../../lib/git-executable';
 import { WORKSPACE_ROOT_REPO_ID, WORKSPACE_ROOT_REPO_NAME } from '../../types';
 import type {

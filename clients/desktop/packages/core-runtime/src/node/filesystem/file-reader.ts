@@ -7,7 +7,7 @@ import {
   type WorkerFilesystemFileContentKind,
   type WorkerFilesystemFileReadResult,
 } from '@canopy/protocol/canopy-core';
-import { isSafePortableRelativePath } from '@canopy/protocol/safe-relative-path';
+import { isSafeFilesystemRelativePath } from './relative-path';
 import { CanopyOperationError } from '../../runtime/errors';
 import type { FilesystemRoot } from './root-catalog';
 
@@ -280,7 +280,10 @@ export async function readFilesystemFile(
 ): Promise<FilesystemFileRead> {
   const io = input.io ?? NODE_IO;
   const { relativePath, maxBytes } = input;
-  if (!isSafePortableRelativePath(relativePath) || relativePath.includes('\0'))
+  if (
+    !isSafeFilesystemRelativePath(relativePath) ||
+    relativePath.includes('\0')
+  )
     throw filesystemFileReadError('outsideRoots');
   const root = input.roots.find((entry) => entry.id === input.fileRootId);
   if (!root) throw filesystemFileReadError('notFound');

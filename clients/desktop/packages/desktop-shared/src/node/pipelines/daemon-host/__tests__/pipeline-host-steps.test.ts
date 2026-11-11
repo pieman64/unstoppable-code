@@ -25,9 +25,9 @@ import type {
   CanopyJsonValue,
   WorkerPipelineHostRequest,
 } from '@canopy/protocol/canopy-core';
-import { PIPELINE_NEEDS_DESKTOP_MESSAGE } from '../../../../pipelines/host-actions';
-import { stepTimedOutMessage } from '../../step-timeout';
-import { getProjectActionsDir } from '../../../../pipelines/config-paths';
+import { PIPELINE_NEEDS_DESKTOP_MESSAGE } from '@canopy/execution-engine/pipelines/host-actions';
+import { stepTimedOutMessage } from '@canopy/execution-engine/node/pipelines/step-timeout';
+import { getProjectActionsDir } from '@canopy/execution-engine/pipelines/config-paths';
 import { loadExecutionState } from '../../executor/execution-state';
 import type { PipelineHostActionResult } from '../../executor/types';
 import { createDaemonHostStepPort } from '../host-steps';

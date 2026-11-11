@@ -49,6 +49,11 @@ export function createWorkerPipelineAdapter(
           params,
           context,
         ),
+      'worker.pipeline.execution.list': async (params, context) =>
+        (await handlers()).queries['worker.pipeline.execution.list'](
+          params,
+          context,
+        ),
     },
     instructions: {
       'worker.pipeline.execution.start': async (params, context) =>

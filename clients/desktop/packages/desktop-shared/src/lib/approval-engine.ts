@@ -6,7 +6,7 @@
 // browser-safe code, so it must stay a pure data transform.
 // ---------------------------------------------------------------------------
 
-import { APPROVAL_MODES } from '../types/approvals';
+import { APPROVAL_MODES } from '@canopy/execution-engine/types/approvals';
 import { currentNameOfRenamedTool } from './renamed-tool-names';
 import type {
   ApprovalCheck,
@@ -17,7 +17,7 @@ import type {
   ApprovalRuleOrigin,
   ApprovalRuleTarget,
   SafetyDenyReason,
-} from '../types/approvals';
+} from '@canopy/execution-engine/types/approvals';
 
 /**
  * Hardcoded safety-deny command patterns. These are checked before any user

@@ -8,7 +8,7 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http';
-import { getEnhancedEnv } from '../../pipelines/config-paths';
+import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import { killProcessGroupByPid } from '@canopy/execution-engine/node/lib/process-kill';
 import {
   codexMcpRouteAuthFileName,

@@ -74,6 +74,7 @@ function routeFingerprint(entry: GatewayModelEntry): string {
     entry.toolSchemaProfile,
     entry.contextWindow,
     entry.promptCachePassthrough,
+    entry.supportsImages === true,
   ]);
 }
 
@@ -267,6 +268,7 @@ export async function openOpenCodeInferenceLease(options: {
       inferencePolicy: {
         providerType: 'opencode',
         modelId: entry.gatewayId,
+        toolSchemaProfile: entry.toolSchemaProfile,
         headers,
       },
       resolveToken: async () => {
@@ -307,7 +309,7 @@ export async function openOpenCodeInferenceLease(options: {
         id: entry.gatewayId,
         contextWindow: entry.contextWindow,
         outputLimit,
-        supportsVision: false,
+        supportsVision: entry.supportsImages === true,
       },
     });
     return {

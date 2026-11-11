@@ -37,6 +37,8 @@ export interface ArchiveWorkEntryOptions {
   entryId: string;
   /** Fail before any destructive cleanup if retention cannot be prepared. */
   requireArchivedContainer?: boolean;
+  lockAfterArchive?: boolean;
+  expectedCreatedAt?: string;
   expectedLastTouchedAt?: string;
   revalidateAutoArchivePolicy?: () => Promise<{
     deleteBranch?: boolean;
@@ -111,6 +113,8 @@ async function archiveWorkEntryWithoutOperationLock({
   workspaceId,
   entryId,
   requireArchivedContainer = false,
+  lockAfterArchive,
+  expectedCreatedAt,
   expectedLastTouchedAt,
   revalidateAutoArchivePolicy,
 }: ArchiveWorkEntryOptions): Promise<{
@@ -130,6 +134,14 @@ async function archiveWorkEntryWithoutOperationLock({
   const entry = entries.find((candidate) => candidate.id === entryId);
   if (!entry) {
     throw new Error(`Unknown work entry ${entryId}`);
+  }
+  if (
+    expectedCreatedAt !== undefined &&
+    entry.createdAt !== expectedCreatedAt
+  ) {
+    throw new WorkspaceTargetAutoArchiveExcludedError(
+      'The work entry identity changed before deletion',
+    );
   }
   // Active agent/workflow work keeps its Work Entry until it has stopped.
   assertWorktreeCanBeRemoved(workspaceId, entryId);
@@ -202,6 +214,7 @@ async function archiveWorkEntryWithoutOperationLock({
             entryTitle: entry.title,
             entryCreatedAt: entry.createdAt,
             retentionDays,
+            lockAfterArchive,
           });
           retained = true;
         }

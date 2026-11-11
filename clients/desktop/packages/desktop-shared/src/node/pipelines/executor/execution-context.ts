@@ -8,10 +8,10 @@ import type {
   PipelineTriggerType,
 } from '@canopy/execution-engine/types/pipeline';
 import { BRAND } from '@canopy/brand/current';
-import type { NormalizedPipeline } from '@canopy/desktop-shared/pipelines/types';
+import type { NormalizedPipeline } from '@canopy/execution-engine/pipelines/types';
 import type { CanopyEventData, NormalizedJob, JobResult } from './types';
-import { isPipelineInputValue } from '@canopy/desktop-shared/pipelines/json-values';
-import { resolvePipelineModelAlias } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { isPipelineInputValue } from '@canopy/execution-engine/pipelines/json-values';
+import { resolvePipelineModelAlias } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 
 export type {
   CanopyEventData,

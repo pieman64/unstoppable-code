@@ -6,7 +6,7 @@ import { createJsonLineStream } from './json-lines';
 import {
   getBundledCodexBinaryPath,
   getEnhancedEnv,
-} from '../../pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import {
   DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
   type ResourceMetadata,
@@ -3115,7 +3115,13 @@ export class CodexAppServerConnection {
 
     const proc = spawn(
       getBundledCodexBinaryPath(),
-      ['app-server', ...(this.configArgs ?? [])],
+      [
+        'app-server',
+        // Canopy lists plugins itself; skip the startup catalog prefetch.
+        '-c',
+        'features.plugin_discovery_prefetch=false',
+        ...(this.configArgs ?? []),
+      ],
       {
         cwd: resolveCodexAppServerSpawnCwd(),
         env:

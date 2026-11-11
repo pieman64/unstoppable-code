@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { normalizePipeline } from '../../../../pipelines/normalize-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { createInitialState } from '../pipeline-executor';
 import {
   installRestoredExecutionState,

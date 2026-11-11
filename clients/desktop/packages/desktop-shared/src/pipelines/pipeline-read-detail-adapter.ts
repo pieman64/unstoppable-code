@@ -1,6 +1,6 @@
 import * as yaml from 'js-yaml';
 import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
-import { normalizePipelineScopes } from './scope';
+import { normalizePipelineScopes } from '@canopy/execution-engine/pipelines/scope';
 import {
   getTriggerTypes,
   normalizeNeeds,

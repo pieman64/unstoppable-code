@@ -230,6 +230,7 @@ function blocksMatch(a: DisplayBlock[], b: DisplayBlock[]): boolean {
       if (
         blkA.text !== blkB.text ||
         blkA.errorCode !== blkB.errorCode ||
+        blkA.providerErrorDetails !== blkB.providerErrorDetails ||
         (blkA.modelAccessFailure !== blkB.modelAccessFailure &&
           JSON.stringify(blkA.modelAccessFailure) !==
             JSON.stringify(blkB.modelAccessFailure))

@@ -42,7 +42,7 @@ import type * as NodeFs from 'node:fs';
 import type * as ChildProcessModule from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type * as ConfigPathsModule from '@canopy/desktop-shared/pipelines/config-paths';
+import type * as ConfigPathsModule from '@canopy/execution-engine/pipelines/config-paths';
 import type * as PathLookupModule from '@canopy/execution-engine/node/lib/path-lookup';
 import type * as MainConfigPathsModule from '../../pipelines/config-paths';
 import type * as LoggingModule from '../../lib/main-process-logging';
@@ -187,9 +187,9 @@ jest.mock('../../lib/worktree-data-env', () => {
   };
 });
 
-jest.mock('@canopy/desktop-shared/pipelines/config-paths', () => {
+jest.mock('@canopy/execution-engine/pipelines/config-paths', () => {
   const actual = jest.requireActual<typeof ConfigPathsModule>(
-    '@canopy/desktop-shared/pipelines/config-paths',
+    '@canopy/execution-engine/pipelines/config-paths',
   );
   const { goldenHost } = jest.requireActual<typeof GoldenHostModule>(
     './golden/terminal-golden-host',

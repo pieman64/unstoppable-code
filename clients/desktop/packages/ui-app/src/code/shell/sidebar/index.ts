@@ -88,3 +88,9 @@ export * from './use-sidebar-batch-removal';
 export * from './use-sidebar-bulk';
 export * from './use-sidebar-work-entry-bulk';
 export * from '../work-entry-removal-labels';
+
+export {
+  useSidebarAutoDelete,
+  SidebarAutoDeleteProvider,
+  SidebarAutoDeleteNotice,
+} from '../SidebarAutoDelete';

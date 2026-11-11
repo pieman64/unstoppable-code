@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { isPipelineHostActionId } from '../../pipelines/host-actions';
+import { isPipelineHostActionId } from '@canopy/execution-engine/pipelines/host-actions';
 import { resolveActionRuntime } from './action-resolver';
 import type { ResolvedActionRuntime } from './action-resolver';
 import type { ExecutionRuntime } from './executor/types';
@@ -146,6 +146,12 @@ export interface DaemonPipelineClassifierContext {
    * (CAN-5832). An alias step whose alias is absent here is `model_alias`.
    */
   readonly modelAliases?: Readonly<Record<string, DaemonModelAliasResolution>>;
+  /**
+   * The pipeline's plugin collections its core resolved for this run, none
+   * of which names a standalone MCP server (CAN-5832). A model step of a
+   * pipeline with a collection absent here is `plugin_collections`.
+   */
+  readonly pluginCollections?: ReadonlySet<string>;
 }
 
 const BUILTIN_ACTION_PREFIX = 'builtin/';
@@ -312,11 +318,24 @@ function classifyModelStep(
   context: DaemonPipelineClassifierContext,
   tally: ModelStepTally,
 ): DaemonPipelineRefusalReason | null {
+  // The run's core resolves its collections at launch, by the trimmed ids
+  // the executor looks them up with (CAN-5832).
   if (
-    pipeline.plugin_collections?.length ||
-    step.with?.plugin_collection_id !== undefined
-  ) {
+    pipeline.plugin_collections?.some(
+      (collection) => !context.pluginCollections?.has(collection.id.trim()),
+    )
+  )
     return 'plugin_collections';
+  const collectionId = step.with?.plugin_collection_id;
+  let addsPlugins = false;
+  if (collectionId !== undefined) {
+    if (
+      !DAEMON_ALIAS_MODEL_ACTIONS.has(name) ||
+      typeof collectionId !== 'string' ||
+      !context.pluginCollections?.has(collectionId.trim())
+    )
+      return 'plugin_collections';
+    addsPlugins = true;
   }
   const value = stepModelValue(step, definition);
   if (value.includes('${{')) return 'dynamic_model';
@@ -326,7 +345,7 @@ function classifyModelStep(
       ? context.modelAliases?.[model]
       : undefined;
     if (target === undefined) return 'model_alias';
-    if (target.plugins) return 'plugin_collections';
+    addsPlugins ||= target.plugins;
     model = target.base.trim();
   }
   let harness: DaemonModelHarness;
@@ -344,6 +363,9 @@ function classifyModelStep(
     if (admitted === undefined) return 'model_provider';
     harness = admitted;
   }
+  // Only Claude steps load plugins in the daemon; Codex plugins stay in
+  // process (CAN-6012).
+  if (addsPlugins && harness !== 'claude') return 'plugin_collections';
   tally.count += 1;
   tally.harnesses.add(harness);
   return null;

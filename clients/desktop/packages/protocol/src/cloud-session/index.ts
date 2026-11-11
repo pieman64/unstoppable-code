@@ -436,3 +436,4 @@ export function isCloudSandboxNotAwakeCode(
 }
 
 export * from './agent-task';
+export * from './agent-task-row';

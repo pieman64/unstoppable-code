@@ -201,7 +201,10 @@ export function projectAccountProxyUsageAccount(
     id: account.authIndex,
     ...(account.label ? { label: account.label } : {}),
     ...(plan ? { planLabel: plan } : {}),
-    status: account.status,
+    // Older hosts know no sign-in status; they show this one as an error.
+    ...(account.status === 'sign-in-required'
+      ? { status: 'error' as const, signInRequired: true as const }
+      : { status: account.status }),
     ...(availableAt === undefined ? {} : { availableAt }),
   };
   const usage = account.usage;

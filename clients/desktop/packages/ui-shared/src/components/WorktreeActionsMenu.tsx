@@ -59,6 +59,7 @@ export type WorktreeMenuItemKey =
   | 'more'
   | 'notifications'
   | SpaceNotificationMenuChoiceKey
+  | 'auto-delete-disarm'
   | 'archive'
   | 'delete'
   | `sidebar-group-${string}`;

@@ -24,7 +24,7 @@ export const MODEL_ROUTING_ASSUMED_REQUESTS_PER_TURN = 4;
 export const MODEL_ROUTING_ASSUMED_OUTPUT_TOKENS_PER_TURN = 3_000;
 
 export type ModelSelectionMode = 'manual' | 'auto';
-export type ModelRoutingHarness = 'claude' | 'codex';
+export type ModelRoutingHarness = 'claude' | 'codex' | 'opencode';
 export type ModelExecutionLane = 'provider_subscription' | 'ai_credits';
 
 /**
@@ -813,7 +813,11 @@ export function parseAutoModelRoutingRequestV1(
   const capturedHarness =
     root.capturedHarness === undefined
       ? undefined
-      : enumValue(root.capturedHarness, ['claude', 'codex'], 'capturedHarness');
+      : enumValue(
+          root.capturedHarness,
+          ['claude', 'codex', 'opencode'],
+          'capturedHarness',
+        );
   const executionLane = enumValue(
     root.executionLane,
     ['provider_subscription', 'ai_credits'],
@@ -852,7 +856,7 @@ export function parseAutoModelRoutingRequestV1(
     ids.add(modelId);
     const harness = enumValue(
       candidate.harness,
-      ['claude', 'codex'],
+      ['claude', 'codex', 'opencode'],
       'candidate.harness',
     );
     const lane = enumValue(
@@ -863,6 +867,14 @@ export function parseAutoModelRoutingRequestV1(
     if (lane !== executionLane) fail('all candidates must match executionLane');
     if (capturedHarness && harness !== capturedHarness) {
       fail('all candidates must match capturedHarness');
+    }
+    if (
+      harness === 'opencode' &&
+      (surface !== 'desktop' ||
+        executionLane !== 'ai_credits' ||
+        capturedHarness !== 'opencode')
+    ) {
+      fail('OpenCode Auto requires a captured desktop AI Credits harness');
     }
     if (
       candidate.isDefault !== undefined &&

@@ -11,6 +11,7 @@ import {
   type BadgeTone,
   type BadgeVariant,
   type CountTone,
+  type DotSize,
   type DotTone,
 } from '../lib/badge';
 
@@ -19,6 +20,7 @@ export type {
   BadgeTone,
   BadgeVariant,
   CountTone,
+  DotSize,
   DotTone,
 } from '../lib/badge';
 
@@ -40,6 +42,8 @@ export interface BadgeProps {
   /** Placement classes appended after the shared geometry and tone. */
   className?: string;
   title?: string;
+  /** A fuller name when the visible word is terse, e.g. "Workflow input required". */
+  'aria-label'?: string;
   'data-testid'?: string;
 }
 
@@ -57,6 +61,7 @@ export function Badge({
   variant = 'tint',
   className,
   title,
+  'aria-label': ariaLabel,
   'data-testid': testId,
 }: BadgeProps): JSX.Element {
   const base = badgeClassName(tone, { muted, size, variant });
@@ -68,6 +73,7 @@ export function Badge({
       data-badge-size={size === 'compact' ? size : undefined}
       data-badge-variant={variant === 'solid' ? variant : undefined}
       title={title}
+      aria-label={ariaLabel}
       className={className ? `${base} ${className}` : base}
     >
       {Icon ? (
@@ -130,6 +136,11 @@ export function Count({
 export interface DotProps {
   tone: DotTone;
   /**
+   * `regular` (default) is 6px. `large` is 8px, only where the dot stands in
+   * for a row's leading icon.
+   */
+  size?: DotSize;
+  /**
    * Accessible name when the dot is the only thing that carries its meaning
    * (an unread group). Without it the dot is decorative and the caller says
    * the meaning in text.
@@ -140,16 +151,18 @@ export interface DotProps {
 }
 
 /**
- * A 6px marker: unread (blue), waiting on you (orange), filter on (grey),
- * connected or working (green), offline or failed (red).
+ * A 6px marker (8px `large` in a leading icon slot): unread (blue), waiting
+ * on you (orange), filter on (grey), working or connected (green), offline or
+ * failed (red).
  */
 export function Dot({
   tone,
+  size = 'regular',
   label,
   className,
   'data-testid': testId,
 }: DotProps): JSX.Element {
-  const base = dotClassName(tone);
+  const base = dotClassName(tone, size);
   const cls = className ? `${base} ${className}` : base;
   if (label !== undefined) {
     return (

@@ -1,3 +1,4 @@
+import { registerWorkEntryAutoDeleteHandlers } from './work-entry-auto-delete';
 import { registerScriptActionsHandlers } from './script-actions';
 import { registerLabsExperimentsHandlers } from './labs-experiments';
 import { registerSidebarItemGroupHandlers } from './sidebar-item-groups';
@@ -375,6 +376,7 @@ export function registerAllIpcHandlers(
   registerDeepLinkHandlers();
   registerStandaloneChatHandlers();
   registerWorkEntryHandlers();
+  registerWorkEntryAutoDeleteHandlers();
   registerSidebarItemGroupHandlers();
   registerGitHubHandlers(getMainWindow, canopyRuntime);
   registerCliHandlers();

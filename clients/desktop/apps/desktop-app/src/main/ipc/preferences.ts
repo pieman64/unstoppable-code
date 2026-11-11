@@ -45,7 +45,7 @@ import {
   DATA_DIR_ADOPTION_MARKER_FILENAME,
   getPrimaryBrandDataDir,
   getResolvedCanopyDataDir,
-} from '@canopy/desktop-shared/canopy-paths';
+} from '@canopy/execution-engine/canopy-paths';
 import {
   acknowledgePreferencesLoadError,
   readLatestPreferencesFile,

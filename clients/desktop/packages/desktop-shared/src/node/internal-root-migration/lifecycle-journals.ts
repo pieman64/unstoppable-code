@@ -14,14 +14,21 @@ import {
   inspectDestructiveJournals,
   type DestructiveRecoveryRecord,
 } from '../w5-destructive-journal';
-import { inertArchiveGroup, isInertArchiveCandidate } from './lifecycle-policy';
+import {
+  inertArchiveGroup,
+  isInertArchiveCandidate,
+  isAbandonedArchive,
+  assertAbandonedArchivesMatch,
+} from './lifecycle-policy';
 import { durableJson, statIfPresent } from './filesystem';
 import type { InternalRootFilesystemHost } from './filesystem-host';
 
 async function carriedJournals(
   source: string,
+  abandonArchives: readonly string[] = [],
 ): ReturnType<typeof inspectDestructiveJournals> {
   const inspection = await inspectDestructiveJournals(source);
+  assertAbandonedArchivesMatch(inspection.records, abandonArchives);
   if (
     inspection.issues.length ||
     (
@@ -29,6 +36,7 @@ async function carriedJournals(
         inspection.records.map(
           async ({ record }) =>
             record.state === 'completed' ||
+            isAbandonedArchive(record, abandonArchives) ||
             (await inertArchiveGroup(source, record)) !== null,
         ),
       )
@@ -53,7 +61,11 @@ function evidenceRecord(
   const record = journalSchema.parse(JSON.parse(evidence.raw));
   if (
     !LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN.test(evidence.name) ||
-    (record.state !== 'completed' && !isInertArchiveCandidate(record)) ||
+    (evidence.abandoned
+      ? !isAbandonedArchive(record, [
+          `${evidence.abandoned.workspaceId}/${evidence.abandoned.worktreeId}`,
+        ])
+      : record.state !== 'completed' && !isInertArchiveCandidate(record)) ||
     record.ownedPaths.length !== evidence.ownedIdentities.length
   )
     throw new Error('Invalid frozen lifecycle evidence');
@@ -65,19 +77,22 @@ export function internalRootJournalOwnedPaths(
   source: string,
   evidence: readonly InternalRootLifecycleJournalEvidence[],
 ): readonly string[] {
-  return evidence.flatMap((entry) => {
-    const record = evidenceRecord(entry);
-    return [
-      workspacePath(source, record),
-      ...record.ownedPaths.map(({ path }) => path),
-    ];
-  });
+  return evidence
+    .filter((entry) => !entry.abandoned)
+    .flatMap((entry) => {
+      const record = evidenceRecord(entry);
+      return [
+        workspacePath(source, record),
+        ...record.ownedPaths.map(({ path }) => path),
+      ];
+    });
 }
 
 export async function freezeInternalRootJournals(
   source: string,
+  abandonArchives: readonly string[] = [],
 ): Promise<readonly InternalRootLifecycleJournalEvidence[]> {
-  const { records } = await carriedJournals(source);
+  const { records } = await carriedJournals(source, abandonArchives);
   return Promise.all(
     records.map(async ({ name, record }) => {
       const directory = workspacePath(source, record);
@@ -90,6 +105,14 @@ export async function freezeInternalRootJournals(
             );
       return {
         name,
+        ...(isAbandonedArchive(record, abandonArchives) && record.worktreeId
+          ? {
+              abandoned: {
+                workspaceId: record.workspaceId,
+                worktreeId: record.worktreeId,
+              },
+            }
+          : {}),
         raw: JSON.stringify(record),
         workspaceIdentity:
           stat === null ? null : `${stat}${marker ? `:${marker}` : ''}`,
@@ -195,10 +218,12 @@ export async function relocateInternalRootJournals(
   if (workingRoot === source)
     throw new Error('Cannot repair source lifecycle journals');
   const original = evidence;
-  const copied = await carriedJournals(workingRoot);
+  const copied = await inspectDestructiveJournals(workingRoot);
+  if (copied.issues.length)
+    throw new Error('Unreadable copied lifecycle journals');
   if (
     !isDeepStrictEqual(
-      original.map(({ name }) => name),
+      original.filter((entry) => !entry.abandoned).map(({ name }) => name),
       copied.records.map(({ name }) => name),
     )
   )
@@ -212,6 +237,7 @@ export async function relocateInternalRootJournals(
   for (const entry of original) {
     const { name } = entry;
     const record = evidenceRecord(entry);
+    if (entry.abandoned) continue;
     const projected = await projectJournal(transition, workingRoot, entry);
     const current = copied.records.find((entry) => entry.name === name)?.record;
     if (verify) {

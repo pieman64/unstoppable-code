@@ -14,7 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computePipelinePackageDigestSync } from '@canopy/desktop-shared/node/pipelines/package-contract';
+import { computePipelinePackageDigestSync } from '@canopy/execution-engine/node/pipelines/package-contract';
 import type {
   PipelinePackageManifestV1,
   PipelinePackageResource,
@@ -698,7 +698,7 @@ export async function createPipelineGoldenWorld(): Promise<GoldenWorld> {
   const { saveStoredPipeline } =
     await import('@canopy/desktop-shared/pipelines/store');
   const { parsePipelineText } =
-    await import('@canopy/desktop-shared/pipelines/parse-pipeline');
+    await import('@canopy/execution-engine/pipelines/parse-pipeline');
   const content = parsePipelineText(GOLDEN_USER_PIPELINE_YAML);
   const saved = saveStoredPipeline({
     name: content.name,
@@ -718,6 +718,9 @@ export async function createPipelineGoldenWorld(): Promise<GoldenWorld> {
   const metadataProbe = jest
     .spyOn(metadata, 'getLinuxSecretServiceState')
     .mockReturnValue('secure');
+  const asyncMetadataProbe = jest
+    .spyOn(metadata, 'getLinuxSecretServiceStateAsync')
+    .mockResolvedValue('secure');
   // The execution golden simulates a relaunch with jest.resetModules(). Keep
   // that fresh runtime on this world's metadata boundary until disposal.
   jest.doMock('../../lib/linux-secret-service', () => metadata);
@@ -809,6 +812,7 @@ export async function createPipelineGoldenWorld(): Promise<GoldenWorld> {
       if (currentSubscriptions !== subscriptions)
         await currentSubscriptions.flushSharedItemSubscriptions();
       metadataProbe.mockRestore();
+      asyncMetadataProbe.mockRestore();
       jest.dontMock('../../lib/linux-secret-service');
       restoreCloud();
       originalEnv.forEach((value, key) => {

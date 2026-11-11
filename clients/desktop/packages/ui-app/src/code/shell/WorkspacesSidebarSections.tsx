@@ -1,5 +1,6 @@
 'use client';
 
+import { useSidebarAutoDelete } from './SidebarAutoDelete';
 import {
   CodeSidebarItemGroups,
   codeSidebarItemGroupRowMenu,
@@ -527,6 +528,12 @@ const PopoverWorktreeRow = memo(function PopoverWorktreeRow({
   renderPipelinePopover,
   renderTerminalPopover,
 }: PopoverWorktreeRowProps): JSX.Element {
+  const autoDelete = useSidebarAutoDelete({
+    workspaceId: rowContext.workspace.localId,
+    targetId: rowContext.worktree.localId,
+    name: sidebarRowLabel(rowContext.workspace, rowContext.worktree),
+  });
+
   const overrides = useRowOverrides(rowContext);
   // Runtime-enforce the allowlist: a host hook that returns extra keys (a
   // loosely-typed variable, or an object built by spreading unrelated
@@ -593,6 +600,7 @@ const PopoverWorktreeRow = memo(function PopoverWorktreeRow({
 
   return (
     <WorktreeRow
+      {...autoDelete}
       {...rowProps}
       {...safeOverrides}
       onPipelineIconMouseEnter={

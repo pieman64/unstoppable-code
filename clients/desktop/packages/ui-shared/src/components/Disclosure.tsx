@@ -399,8 +399,11 @@ export interface DisclosureChevronProps {
    * `up`.
    */
   readonly direction: DisclosureChevronDirection;
-  /** `xs` is the 12px small glyph, for a toggle swapped in for a 12px icon. */
-  readonly size?: 'xs' | 'md';
+  /**
+   * `xs` is the 12px small glyph, for a toggle swapped in for a 12px icon.
+   * `sm` is the 14px glyph of the subagents tree.
+   */
+  readonly size?: 'xs' | 'sm' | 'md';
   /** Turns over 150ms instead of snapping. */
   readonly animated?: boolean;
   readonly dataTestId?: string;
@@ -423,7 +426,7 @@ export function DisclosureChevron({
     />
   ) : (
     <ChevronDownMediumIcon
-      size="md"
+      size={size === 'sm' ? 'sm' : 'md'}
       aria-hidden="true"
       data-testid={dataTestId}
       className={className}
@@ -439,7 +442,14 @@ export function DisclosureChevron({
  *   the header around it.
  * - `sidebar-group`: a sidebar item group's header.
  * - `sidebar-row`: a row at the foot of a sidebar list.
- * - `tree`: the 16px chevron column of a tree row.
+ * - `tree`: the 16px chevron column of a tree row. It stays 16px on a touch
+ *   screen, so foldable rows keep the height and indent of their siblings;
+ *   an overlay grows the hit area to 44px wide instead. It reaches 22px
+ *   toward the indent and only 6px toward the row's content, so it stops at
+ *   the 6px gap before the status glyph. Deliberate exception to the 44 × 44
+ *   touch target in docs/design/principles.md: the row's cell clips the
+ *   overlay to the 36px row height (44 × 36), because growing foldable rows
+ *   would misalign them with their siblings.
  * - `tree-icon`: a row's icon that turns into the chevron on hover.
  * - `row`: a label and a value on one line, with the body further down.
  * - `summary`, `summary-wrapping`: a card's title row, whose hit area
@@ -472,7 +482,7 @@ const DISCLOSURE_TOGGLE_CLASS: Readonly<
     'focus-ring flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded text-left text-s font-normal fg-quaternary hover:fg-secondary group-focus-within/sidebar-item:fg-secondary pointer-coarse:h-11',
   'sidebar-row':
     'focus-ring flex h-7 w-full items-center gap-1.5 rounded-row px-1.5 text-left text-s font-normal fg-tertiary hover:bg-subtle hover:fg-primary',
-  tree: 'focus-ring pointer-coarse:min-h-11 pointer-coarse:min-w-11 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm fg-secondary hover:fg-primary',
+  tree: "focus-ring pointer-coarse:relative pointer-coarse:before:absolute pointer-coarse:before:-inset-y-3.5 pointer-coarse:before:-left-5.5 pointer-coarse:before:-right-1.5 pointer-coarse:before:content-[''] inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm fg-secondary hover:fg-primary",
   'tree-icon':
     'focus-ring pointer-coarse:min-h-11 pointer-coarse:min-w-11 flex rounded-sm fg-tertiary hover:fg-primary',
   row: 'group focus-ring flex items-center justify-between gap-3 rounded-sm text-left text-xs pointer-coarse:min-h-11 pointer-coarse:min-w-11',

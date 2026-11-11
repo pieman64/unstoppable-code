@@ -1,3 +1,36 @@
+import type * as WorkerTerminalModule from '../../terminal/worker-terminal';
+import type * as RoutedWorkerTerminalModule from '../../terminal/routed-worker-terminal';
+import type * as PortalEventBusModule from '../../portal/portal-event-bus';
+
+// Keep the real worker, PTY and cwd resolver; isolate host accounting and shell
+// configuration from the developer's environment.
+jest.mock('../../terminal/worker-terminal', () => {
+  const actual = jest.requireActual<typeof WorkerTerminalModule>(
+    '../../terminal/worker-terminal',
+  );
+  const { RoutedWorkerTerminal } = jest.requireActual<
+    typeof RoutedWorkerTerminalModule
+  >('../../terminal/routed-worker-terminal');
+  return {
+    ...actual,
+    workerTerminal: new RoutedWorkerTerminal(
+      actual.createDesktopTerminalEngine({
+        host: {
+          environment: {
+            base: () => ({
+              PATH: '/usr/bin:/bin',
+              HOME: process.env.TMPDIR ?? '/tmp',
+              ENV: '',
+            }),
+            worktree: () => ({}),
+            variable: () => undefined,
+          },
+          resources: { register: () => ({ unregister: (): void => {} }) },
+        },
+      }),
+    ),
+  };
+});
 import type * as IdentityTestHost from '@canopy/desktop-shared/node/w5-routed-writes/__tests__/fixtures/w5-test-commit-log-host';
 import type { W5CommitLogHost } from '@canopy/core-runtime/node/w5/commit-log-host';
 import type { W5CommitLogFileStore } from '../w5-commit-log-file-store';
@@ -24,11 +57,28 @@ jest.mock('../../portal/portal-structural-sync', () => ({
 }));
 jest.mock('../../portal/portal-event-bus', () => ({
   notifyPortalStructureChanged: jest.fn(),
+  createPortalEvent: jest.requireActual<typeof PortalEventBusModule>(
+    '../../portal/portal-event-bus',
+  ).createPortalEvent,
 }));
 jest.mock('../code-graph-eager-seed', () => ({
   eagerSeedNewWorktreeCodeGraph: jest.fn(() => Promise.resolve()),
 }));
 
+import { realpathSync } from 'node:fs';
+import { registerWorkspaceTypes } from '../workspace-registry';
+import { spawnTerminalForRenderer } from '../../services/terminal-service';
+import * as terminalService from '../../services/terminal-service';
+import { handlePortalTerminalOpen } from '../../portal/adapters/terminal-adapter';
+import type { PortalAdapterContext } from '../../portal/adapters/types';
+import {
+  beginWorktreeGitSetup,
+  endWorktreeGitSetup,
+} from '../worktree-git-setup';
+import {
+  workerTerminal,
+  desktopTerminalShells,
+} from '../../terminal/worker-terminal';
 import { execFileSync } from 'node:child_process';
 import {
   mkdir,
@@ -46,6 +96,9 @@ import { AutomationsService } from '../../automations/service';
 import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   type WorktreeData,
+  type PortalCommandEnvelope,
+  type TerminalSession,
+  type TerminalSpawnRequest,
 } from '@canopy/desktop-shared/types';
 import {
   getSidebarItemGroupsFilePath,
@@ -75,6 +128,45 @@ import {
 const TEST_TIMEOUT_MS = 60_000;
 const SINGLE = 'single';
 const MULTI = 'multi';
+
+function terminalOpenCommand(
+  request: TerminalSpawnRequest,
+): PortalCommandEnvelope<TerminalSpawnRequest> {
+  return {
+    id: `open-${request.worktreeId}`,
+    sequence: 1,
+    type: 'portal.terminal.open',
+    createdAt: new Date().toISOString(),
+    expiresAt: null,
+    payload: request,
+  };
+}
+
+function spawnTerminalForPortal(
+  request: TerminalSpawnRequest,
+): Promise<TerminalSession> {
+  return new Promise((resolve, reject) => {
+    handlePortalTerminalOpen(terminalOpenCommand(request), {
+      getWindow: () => null,
+      canMutateResources: () => true,
+      enqueueEvent: () => {},
+      complete: () => {
+        const session = workerTerminal
+          .list()
+          .find(
+            (entry) =>
+              entry.projectId === request.projectId &&
+              entry.worktreeId === request.worktreeId,
+          );
+        if (session) resolve(session);
+        else reject(new Error('Portal completed without a terminal'));
+      },
+      fail: (_command, code, message) => {
+        reject(new Error(`${code}: ${message}`));
+      },
+    });
+  });
+}
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -189,6 +281,235 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
     if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
     else process.env.CANOPY_DATA_DIR = originalDataDir;
   });
+
+  (process.platform === 'win32' ? it.skip : it).each([
+    ['single-repo', SINGLE, undefined, 'renderer'],
+    ['multi-repo', MULTI, 'api', 'renderer'],
+    ['single-repo', SINGLE, undefined, 'Portal'],
+    ['multi-repo', MULTI, 'api', 'Portal'],
+  ] as const)(
+    'opens the first terminal in a completed %s checkout (%s, %s) through %s after deferred creation',
+    async (workspaceKind, workspaceId, selectedRepoId, entryPoint) => {
+      // The sidebar normally populates this registry before opening a terminal.
+      registerWorkspaceTypes(new Map([[workspaceId, workspaceKind]]));
+      const createWorktree = worktreeGit.createWorktree;
+      let releaseCheckout: () => void = () => {};
+      const checkoutGate = new Promise<void>((resolve) => {
+        releaseCheckout = resolve;
+      });
+      let enteredCheckout: () => void = () => {};
+      const checkoutStarted = new Promise<void>((resolve) => {
+        enteredCheckout = resolve;
+      });
+      const gitSpy = jest
+        .spyOn(worktreeGit, 'createWorktree')
+        .mockImplementation(async (...args) => {
+          enteredCheckout();
+          await checkoutGate;
+          return createWorktree(...args);
+        });
+      const shellSpy = jest
+        .spyOn(desktopTerminalShells, 'profile')
+        .mockReturnValue({
+          shell: '/bin/sh',
+          args: ['-f'],
+          shellBasename: 'sh',
+        });
+      let settle: () => void = () => {};
+      const settled = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      let output = '';
+      let exited: (code: number | null) => void = () => {};
+      const exit = new Promise<number | null>((resolve) => {
+        exited = resolve;
+      });
+      const unsubscribe = workerTerminal.addEventListener((event) => {
+        if (event.type === 'output')
+          output += Buffer.from(event.payload.data).toString('utf8');
+        if (event.type === 'exit') exited(event.payload.exitCode);
+      });
+      try {
+        const outcome = await createWorktreeFromSelection({
+          workspaceId,
+          workspaceKind,
+          branch: { kind: 'default' },
+          base: { kind: 'repository-default' },
+          deferGitSetup: true,
+          onGitSetupSettled: settle,
+        });
+        if (outcome.status !== 'created') throw new Error('Expected a create');
+        const { record } = outcome;
+        expect(record.setupPhase).toBe('git-pending');
+        await checkoutStarted;
+        const spawn =
+          entryPoint === 'Portal'
+            ? spawnTerminalForPortal
+            : spawnTerminalForRenderer;
+        const firstTerminal = spawn({
+          projectId: workspaceId,
+          selectedRepoId,
+          worktreeId: record.worktreeId,
+          cols: 80,
+          rows: 24,
+          terminalProfileId: 'bash',
+        });
+        let finished = false;
+        void firstTerminal.then(
+          () => {
+            finished = true;
+          },
+          () => {
+            finished = true;
+          },
+        );
+        // Advance one event-loop turn, not a timing-dependent sleep: the
+        // checkout remains behind a barrier while terminal admission runs.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(finished).toBe(false);
+        releaseCheckout();
+        const session = await firstTerminal;
+        workerTerminal.write(
+          session.id,
+          "printf '\nCANOPY_CWD='; pwd -P; test -f README.md; exit $?\r",
+        );
+        const exitCode = await exit;
+        const expectedCwd = selectedRepoId
+          ? getWorkspaceWorktreeRepoDir(
+              workspaceId,
+              record.worktreeId,
+              selectedRepoId,
+            )
+          : getWorktreeDir(workspaceId, record.worktreeId);
+        expect(output).toContain(`CANOPY_CWD=${realpathSync(expectedCwd)}\r\n`);
+        expect(exitCode).toBe(0);
+      } finally {
+        releaseCheckout();
+        await settled;
+        workerTerminal.killAll();
+        registerWorkspaceTypes(new Map());
+        unsubscribe();
+        shellSpy.mockRestore();
+        gitSpy.mockRestore();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it.each(['teardown', 'session replacement'] as const)(
+    'allows queued %s while a Portal terminal waits for worktree readiness',
+    async (nextCommand) => {
+      registerWorkspaceTypes(new Map([[SINGLE, 'single-repo']]));
+      const { record } = await createWorktreeFromSelection({
+        workspaceId: SINGLE,
+        workspaceKind: 'single-repo',
+        branch: { kind: 'default' },
+        base: { kind: 'repository-default' },
+      });
+      // A real checkout makes stale admission observable: if the old session
+      // is admitted after readiness, the real worker can create a PTY here.
+      const settleSetup = beginWorktreeGitSetup(SINGLE, record.worktreeId);
+      let sessionActive = true;
+      const complete = jest.fn();
+      const fail = jest.fn();
+      const enqueueEvent = jest.fn();
+      const context: PortalAdapterContext = {
+        sessionId: 'original-session',
+        getWindow: () => null,
+        canMutateResources: () => sessionActive,
+        // Match the processor's event sink: an ended session discards late
+        // deltas and receipts, even when its deferred operation has settled.
+        enqueueEvent: (event) => {
+          if (sessionActive) enqueueEvent(event);
+        },
+        complete: (open, result) => {
+          if (sessionActive) complete(open, result);
+        },
+        fail: (...args) => {
+          if (sessionActive) fail(...args);
+        },
+      };
+      const command = terminalOpenCommand({
+        projectId: SINGLE,
+        worktreeId: record.worktreeId,
+        cols: 80,
+        rows: 24,
+        terminalProfileId: 'bash',
+      });
+      const shellSpy = jest
+        .spyOn(desktopTerminalShells, 'profile')
+        .mockReturnValue({
+          shell: '/bin/sh',
+          args: ['-f'],
+          shellBasename: 'sh',
+        });
+      const createSpy = jest.spyOn(workerTerminal, 'create');
+      const spawn = terminalService.spawnTerminalAfterShellPrewarm;
+      let finishedOpening: () => void = () => {};
+      const openSettled = new Promise<void>((resolve) => {
+        finishedOpening = resolve;
+      });
+      // Observe completion without replacing readiness, admission or PTY
+      // execution; a stale adapter intentionally emits no receipt to await.
+      const spawnSpy = jest
+        .spyOn(terminalService, 'spawnTerminalAfterShellPrewarm')
+        .mockImplementation(async (...args) => {
+          try {
+            return await spawn(...args);
+          } finally {
+            finishedOpening();
+          }
+        });
+      let nextCommandRan = false;
+      // Match the Portal processor's serial await: detachment must happen
+      // inside the production adapter, not in this command queue.
+      const serial = Promise.resolve()
+        .then(() => handlePortalTerminalOpen(command, context))
+        .then(() => {
+          nextCommandRan = true;
+          if (nextCommand === 'teardown') {
+            endWorktreeGitSetup(SINGLE, record.worktreeId);
+          } else {
+            sessionActive = false;
+            settleSetup('ready');
+          }
+        });
+      try {
+        // An event-loop turn, not a timed sleep: an inline-awaiting adapter
+        // cannot run the queued command while the readiness barrier is held.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(nextCommandRan).toBe(true);
+        await serial;
+        await openSettled;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(complete).not.toHaveBeenCalled();
+        expect(enqueueEvent).not.toHaveBeenCalled();
+        if (nextCommand === 'teardown') {
+          expect(fail).toHaveBeenCalledTimes(1);
+          expect(fail).toHaveBeenCalledWith(
+            command,
+            'invalid_target',
+            expect.stringContaining('cancelled'),
+            false,
+          );
+        } else {
+          expect(fail).not.toHaveBeenCalled();
+        }
+        expect(createSpy).not.toHaveBeenCalled();
+        expect(workerTerminal.list()).toEqual([]);
+      } finally {
+        endWorktreeGitSetup(SINGLE, record.worktreeId);
+        await serial;
+        await openSettled;
+        workerTerminal.killAll();
+        registerWorkspaceTypes(new Map());
+        spawnSpy.mockRestore();
+        createSpy.mockRestore();
+        shellSpy.mockRestore();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
 
   // Uses real Git and filesystem effects; native Linux acceptance still runs
   // separately. An explicit missing selection must not use system Git instead.

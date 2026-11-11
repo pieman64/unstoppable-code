@@ -17,6 +17,10 @@ import type { W5Resource } from './w5/commit-log/commit-log';
 import type { W5FileStore } from './w5/file-store';
 
 export interface InternalRootLifecycleJournalEvidence {
+  readonly abandoned?: {
+    readonly workspaceId: string;
+    readonly worktreeId: string;
+  };
   readonly name: string;
   readonly raw: string;
   readonly workspaceIdentity: string | null;
@@ -26,6 +30,7 @@ export interface InternalRootLifecycleJournalEvidence {
 export interface InternalRootRepairPlan {
   /** In-memory evidence; persistence keeps it in a transaction-bound sidecar. */
   readonly lifecycleJournals?: readonly InternalRootLifecycleJournalEvidence[];
+  readonly abandonedPaths?: readonly string[];
   readonly transition: RelocationTransition;
   readonly gitPlan: RelocationGitPlan;
   readonly ownedPaths: readonly string[];
@@ -79,6 +84,20 @@ export async function projectInternalRootMetadata(
       readRow: (row) => row,
     });
     await repairRelocatedWorkspace(plan.transition, evidence, manifest, list);
+    const abandoned = (plan.lifecycleJournals ?? []).flatMap((entry) =>
+      entry.abandoned?.workspaceId === evidence.workspaceId
+        ? [entry.abandoned.worktreeId]
+        : [],
+    );
+    if (abandoned.length) {
+      const current = await list.read(evidence.workspaceId);
+      if (current.authority === 'ok')
+        await list.replace(
+          evidence.workspaceId,
+          current.worktrees.filter((row) => !abandoned.includes(row.id)),
+          current,
+        );
+    }
     const manifestRaw = files.get('manifest');
     if (typeof manifestRaw !== 'string')
       throw new Error('Missing projected manifest');

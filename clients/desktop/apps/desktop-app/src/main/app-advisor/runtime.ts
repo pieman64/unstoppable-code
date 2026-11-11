@@ -33,6 +33,7 @@ import { isAdvisorPipelineAction } from './advisor-pipeline-actions';
 import { isAdvisorCatalogAction } from './advisor-catalog-actions';
 import { isAdvisorSharingAction } from './advisor-sharing-actions';
 import { isAdvisorFileTreeAction } from './advisor-file-tree-actions';
+import { isAdvisorRecordsAction } from './advisor-records-actions';
 import { isAdvisorCredentialAction } from './advisor-credential-actions';
 import type { AppAdvisorCodeGraphAction } from '@canopy/desktop-shared/types/app-advisor-code-graph';
 import type { CanopyInjectedToolKey } from '@canopy/execution-engine/lib/canopy-injected-tools';
@@ -879,6 +880,33 @@ export function createAppAdvisorToolRuntime(
           ...(await dispatchAdvisorFileTreeAction(
             action,
             mainAdvisorFileTreeActionHost({ chatId: destination.chatId }),
+          )),
+          requestId,
+        };
+      }
+      if (isAdvisorRecordsAction(action)) {
+        // CAN-6007: the Feed as the advisor chat, every watcher read-only,
+        // and the archive through core.archive.*; another chat's watcher and
+        // an archive unlock only after a person confirms.
+        const [
+          { dispatchAdvisorRecordsAction },
+          { mainAdvisorRecordsActionHost },
+        ] = await Promise.all([
+          import('./advisor-records-actions'),
+          import('./advisor-records-actions-host'),
+        ]);
+        return {
+          ...(await dispatchAdvisorRecordsAction(
+            action,
+            mainAdvisorRecordsActionHost({
+              destination,
+              callKey: `${destination.chatId}:${requestId}`,
+              requestUserAnswers: (questions) =>
+                runtime.requestUserAnswers(
+                  questions,
+                  signal ? { signal } : undefined,
+                ),
+            }),
           )),
           requestId,
         };

@@ -126,6 +126,7 @@ function toIndexEntry(collection: CollectionConfig): CollectionIndexEntry {
       ),
     ).size,
     hasExistingShare: Boolean(collection.remote),
+    ...(collection.remote ? { remote: collection.remote } : {}),
     ...(collection.sharedSource !== undefined ? { hasSharedSource: true } : {}),
     ...(parseCollectionIndexSharedSource(collection.sharedSource)
       ? {
@@ -160,10 +161,12 @@ async function readCollectionIndexFile(): Promise<CollectionIndexFile | null> {
     return {
       ...parsed,
       collections: parsed.collections.map((entry) => {
-        const { sharedSource: raw, ...rest } = entry;
+        const { sharedSource: raw, remote: rawRemote, ...rest } = entry;
         const sharedSource = parseCollectionIndexSharedSource(raw);
+        const remote = parseShareRemoteMetadata(rawRemote);
         return {
           ...rest,
+          ...(remote ? { remote } : {}),
           ...(raw !== undefined || entry.hasSharedSource
             ? { hasSharedSource: true }
             : {}),
@@ -228,7 +231,11 @@ async function writeCollectionIndexFile(
   const payload: CollectionIndexFile = {
     version: 2,
     ...(complete
-      ? { entrySchema: 2 as const, memberCountsSchema: 1 as const }
+      ? {
+          entrySchema: 2 as const,
+          memberCountsSchema: 1 as const,
+          authorLinkSchema: 1 as const,
+        }
       : {}),
     collections,
   };
@@ -282,7 +289,7 @@ async function migrateLegacyBundles(): Promise<CollectionIndexFile> {
 
 /**
  * Re-project every entry from its config once, for indexes written before
- * entries carried `sharedSource`. An unreadable config keeps its entry, and a
+ * entries carried `sharedSource`, canonical member counts or `remote`. An unreadable config keeps its entry, and a
  * failed write only defers the repair to the next read.
  */
 async function repairIndexEntrySchema(
@@ -320,19 +327,29 @@ async function repairIndexEntrySchema(
   return {
     version: 2,
     ...(complete
-      ? { entrySchema: 2 as const, memberCountsSchema: 1 as const }
+      ? {
+          entrySchema: 2 as const,
+          memberCountsSchema: 1 as const,
+          authorLinkSchema: 1 as const,
+        }
       : {}),
     collections,
   };
 }
 
+/** True once every entry was projected by the current {@link toIndexEntry}. */
+function indexSchemaComplete(index: CollectionIndexFile): boolean {
+  return (
+    index.entrySchema === 2 &&
+    index.memberCountsSchema === 1 &&
+    index.authorLinkSchema === 1
+  );
+}
+
 async function readCollectionIndexUnfiltered(): Promise<CollectionIndexFile> {
   const currentIndex = await readCollectionIndexFile();
   if (currentIndex) {
-    if (
-      currentIndex.entrySchema !== 2 ||
-      currentIndex.memberCountsSchema !== 1
-    ) {
+    if (!indexSchemaComplete(currentIndex)) {
       return repairIndexEntrySchema(currentIndex);
     }
     const hasLegacyEntries = currentIndex.collections.some(
@@ -698,8 +715,7 @@ async function saveCollectionConfigUnlocked(
     );
     await writeCollectionIndexFile(
       nextEntries,
-      (index.entrySchema === 2 && index.memberCountsSchema === 1) ||
-        index.collections.length === 0,
+      indexSchemaComplete(index) || index.collections.length === 0,
     );
   } catch (error) {
     // A durable write can reject after rename (directory sync). Restore both
@@ -766,7 +782,7 @@ async function writeCollectionRemoteMetadataUnlocked(
       index.collections.map((entry) =>
         entry.id === id ? toIndexEntry(collection) : entry,
       ),
-      index.entrySchema === 2 && index.memberCountsSchema === 1,
+      indexSchemaComplete(index),
     );
   } catch (error) {
     if (writeStarted) {
@@ -815,7 +831,7 @@ async function clearCollectionRemoteMetadataByRemoteIdUnlocked(
       count += 1;
     }
     if (count > 0)
-      await writeCollectionIndexFile(nextEntries, index.entrySchema === 2);
+      await writeCollectionIndexFile(nextEntries, indexSchemaComplete(index));
   } catch (error) {
     for (const collection of changedCollections) {
       await writeFileAtomically(
@@ -860,7 +876,7 @@ async function deleteCollectionConfigUnlocked(id: string): Promise<void> {
   const index = await readCollectionIndexUnfiltered();
   await writeCollectionIndexFile(
     index.collections.filter((entry) => entry.id !== id),
-    index.entrySchema === 2 && index.memberCountsSchema === 1,
+    indexSchemaComplete(index),
   );
   unregisterCollectionInstall(id, sharedSource);
 }
@@ -908,7 +924,7 @@ async function rollbackNewCollectionInstallUnlocked(
   const index = await readCollectionIndexUnfiltered();
   await writeCollectionIndexFile(
     index.collections.filter((entry) => entry.id !== expected.id),
-    index.entrySchema === 2 && index.memberCountsSchema === 1,
+    indexSchemaComplete(index),
   );
   unregisterCollectionInstall(expected.id, expected.sharedSource);
 }

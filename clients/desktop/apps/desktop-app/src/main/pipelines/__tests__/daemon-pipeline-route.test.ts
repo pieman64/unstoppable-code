@@ -102,11 +102,12 @@ import {
   type ExecutionHandle,
   type ExecutionOptions,
 } from '@canopy/desktop-shared/node/pipelines/executor';
-import { setLoginShellProbe } from '@canopy/desktop-shared/node/pipelines/config-paths';
+import { setLoginShellProbe } from '@canopy/execution-engine/node/pipelines/config-paths';
 import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
 import type {
   ExecutionRuntime,
   PipelineAgentModelAliasResolution,
+  PipelinePluginCollectionResolution,
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import type {
   ExecutionState,
@@ -156,6 +157,7 @@ import {
   DEFAULT_CODEX_MODEL,
   initClaudeModels,
   initCodexModels,
+  type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
 
 const BUNDLED_ACTIONS = resolve(
@@ -912,6 +914,8 @@ describe('daemon pipeline route (CAN-5086)', () => {
     expect(
       typeof readField(readField(launch, 'providerBinaries'), 'codex'),
     ).toBe('string');
+    // The app's own bundled resources, for builtin skills (CAN-5832).
+    expect(typeof readField(launch, 'bundledResourcesDir')).toBe('string');
     expect(
       typeof readField(readField(launch, 'modelCatalog'), 'MODEL_CATALOG'),
     ).toBe('string');
@@ -945,21 +949,144 @@ describe('daemon pipeline route (CAN-5086)', () => {
     }
   });
 
-  it('a run in Claude terminal mode, or with plugin collection preferences, runs in process (CAN-5095)', async () => {
+  it('a run in Claude terminal mode runs in process (CAN-5095)', async () => {
     const daemon = fakeDaemon();
     mockGet.mockResolvedValue({ client: daemon.client });
     mockOwnerPossible.mockReturnValue(true);
     await routed(MODEL_PIPELINE, 'user', { agentTerminalMode: true });
-    await routed(MODEL_PIPELINE, 'user', {
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(1);
+    expect(daemon.instructions).toHaveLength(0);
+  });
+
+  it('plugin collection steps on Claude go to the daemon with the snapshots the executor would resolve (CAN-5832)', async () => {
+    initClaudeModels([{ id: DEFAULT_CLAUDE_MODEL, label: 'Claude' }]);
+    initCodexModels([{ id: DEFAULT_CODEX_MODEL, label: 'Codex' }]);
+    const selections = (mcp: boolean): ChatTabPluginSelections => ({
+      collectionIds: [],
+      skillRefs: [{ sourceId: 'local', skillName: 'review' }],
+      pluginRefs: [],
+      ...(mcp && { mcpServerRefs: [{ serverId: 'github', configId: 'd' }] }),
+    });
+    let mcp = false;
+    let required = false;
+    const resolverPreferences: unknown[] = [];
+    executionRuntime.resolvePipelinePluginCollections = (
+      collections,
+      preferences,
+    ): Promise<PipelinePluginCollectionResolution> => {
+      resolverPreferences.push(preferences);
+      return Promise.resolve({
+        snapshots: Object.fromEntries(
+          (collections ?? []).map(({ id }) => [
+            id,
+            {
+              selections: selections(mcp),
+              missingOptionalDefaults: [],
+              unresolvedRequiredDefaults: required
+                ? [{ defaultKey: 'plugin:x', error: 'X is required.' }]
+                : [],
+            },
+          ]),
+        ),
+      });
+    };
+    const collectionPipeline = (model?: string): Pipeline => ({
+      name: 'Route',
+      on: 'dispatch',
+      plugin_collections: [{ id: 'review', name: 'Review', defaults: [] }],
+      jobs: {
+        j: {
+          steps: [
+            {
+              id: 'ask',
+              uses: 'builtin/agent-prompt',
+              with: {
+                plugin_collection_id: 'review',
+                permission_preset: 'read_only',
+                ...(model !== undefined ? { model } : {}),
+              },
+            },
+          ],
+        },
+      },
+    });
+    const draft = {
       pluginCollectionPreferences: {
         review: {
           disabledDefaultKeys: [],
           extraSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
         },
       },
+    };
+    const daemon = fakeDaemon();
+    mockGet.mockResolvedValue({ client: daemon.client });
+    mockOwnerPossible.mockReturnValue(true);
+    await routed(collectionPipeline(), 'user', draft);
+    expect(mockExecutePipeline).not.toHaveBeenCalled();
+    expect(sentLaunch(daemon)).toMatchObject({
+      ownerBound: true,
+      pluginCollectionPreferences: draft.pluginCollectionPreferences,
+      pluginCollectionSnapshots: {
+        review: { selections: selections(false) },
+      },
     });
-    expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
-    expect(daemon.instructions).toHaveLength(0);
+    // The executor's own merge of stored and draft preferences resolved it.
+    expect(resolverPreferences[0]).toMatchObject(
+      draft.pluginCollectionPreferences,
+    );
+    // A Codex step with a collection, a snapshot that names a standalone MCP
+    // server, and one that misses a required default run in process.
+    await routed(collectionPipeline(DEFAULT_CODEX_MODEL), 'user', draft);
+    mcp = true;
+    await routed(collectionPipeline(), 'user', draft);
+    mcp = false;
+    required = true;
+    await routed(collectionPipeline(), 'user', draft);
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(3);
+    expect(daemon.instructions).toHaveLength(1);
+    // A collection id with spaces around it, named through an alias, is
+    // snapshotted under the trimmed id the executor looks it up by.
+    required = false;
+    await routed(
+      {
+        name: 'Route',
+        on: 'dispatch',
+        plugin_collections: [{ id: ' review ', name: 'Review', defaults: [] }],
+        model_aliases: [
+          {
+            id: 'fast',
+            name: 'Fast',
+            defaults: {
+              base: DEFAULT_CLAUDE_MODEL,
+              plugin_collection_id: 'review',
+            },
+          },
+        ],
+        jobs: {
+          j: {
+            steps: [
+              {
+                id: 'ask',
+                uses: 'builtin/agent-prompt',
+                with: { model: 'fast', permission_preset: 'read_only' },
+              },
+            ],
+          },
+        },
+      },
+      'user',
+      draft,
+    );
+    expect(mockExecutePipeline).toHaveBeenCalledTimes(3);
+    expect(daemon.instructions).toHaveLength(2);
+    expect(
+      readField(
+        readField(daemon.instructions[1]?.options, 'execution'),
+        'pipelineLaunch',
+      ),
+    ).toMatchObject({
+      pluginCollectionSnapshots: { review: { selections: selections(false) } },
+    });
   });
 
   it("model alias steps go to the daemon with the run's merged preferences and what each alias names (CAN-5832)", async () => {
@@ -1007,10 +1134,10 @@ describe('daemon pipeline route (CAN-5086)', () => {
               pluginSelections: {
                 collectionIds: [],
                 skillRefs: [],
-                pluginRefs:
-                  agentId === 'agent_model_plugins'
-                    ? [{ marketplaceId: 'market', pluginName: 'reviewer' }]
-                    : [],
+                pluginRefs: [],
+                ...(agentId === 'agent_model_mcp' && {
+                  mcpServerRefs: [{ serverId: 'github', configId: 'default' }],
+                }),
               },
             },
       );
@@ -1055,8 +1182,9 @@ describe('daemon pipeline route (CAN-5086)', () => {
         executionContext: 'personal',
       },
     ]);
-    // An Agent that adds plugins, or one that is not available, runs in process.
-    await routed(aliasPipeline('agent_model_plugins'), 'user', preferences);
+    // An Agent that names a standalone MCP server (CAN-5832 D9, CAN-6011),
+    // or one that is not available, runs in process.
+    await routed(aliasPipeline('agent_model_mcp'), 'user', preferences);
     await routed(aliasPipeline('agent_model_missing'), 'user', preferences);
     expect(mockExecutePipeline).toHaveBeenCalledTimes(2);
     expect(daemon.instructions).toHaveLength(1);

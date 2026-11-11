@@ -93,6 +93,8 @@ import {
   DataTableHead,
   DataTableHeaderCell,
   DataTableRow,
+  Dot,
+  type DotTone,
   FloatingPickerMenu,
   Notice,
   PickerMenuOption,
@@ -1397,23 +1399,25 @@ function StatusBadgeDropdown({
   const failed = activity.lastResult?.status === 'failure' && !activity.enabled;
   const label = isRunning ? 'Running' : triggeredActivityStatusLabel(activity);
   let toneClasses: string;
-  let dotClass: string;
+  let dotTone: DotTone;
   if (isRunning) {
     toneClasses = 'border-fg-info/40 bg-info-subtle fg-primary';
-    dotClass = 'bg-info';
+    dotTone = 'working';
   } else if (activity.sharedPipelineReview) {
     toneClasses = 'border-line-attention/40 bg-warning-subtle fg-warning';
-    dotClass = 'bg-warning';
+    dotTone = 'attention';
   } else if (failed) {
     toneClasses =
       'border-line-destructive/40 bg-destructive-subtle fg-destructive';
-    dotClass = 'bg-destructive';
+    dotTone = 'danger';
   } else if (activity.enabled) {
     toneClasses = 'border-line-positive/40 bg-success-subtle fg-primary';
-    dotClass = 'bg-success';
+    // A named deviation in docs/design/markers.md: green is the pill's on
+    // state, not a live connection.
+    dotTone = 'success';
   } else {
     toneClasses = 'bg-fg-primary/[0.04] fg-secondary';
-    dotClass = 'bg-fg-secondary/70';
+    dotTone = 'filter';
   }
 
   return (
@@ -1431,7 +1435,7 @@ function StatusBadgeDropdown({
         data-testid={`automations-toggle-${activity.id}`}
         className={`focus-ring inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-3xs font-medium transition-colors ${toneClasses}`}
       >
-        <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
+        <Dot tone={dotTone} />
         <span>{label}</span>
         <ChevronDownIcon size="sm" />
       </button>
@@ -1450,7 +1454,7 @@ function StatusBadgeDropdown({
         <StatusDropdownOption
           label="Enabled"
           description="Runs when triggered"
-          dotClass="bg-success"
+          dotTone="success"
           selected={activity.enabled}
           onSelect={(): void => {
             setOpen(false);
@@ -1462,7 +1466,7 @@ function StatusBadgeDropdown({
         <StatusDropdownOption
           label="Disabled"
           description="Skips trigger events"
-          dotClass="bg-fg-secondary/70"
+          dotTone="filter"
           selected={!activity.enabled}
           onSelect={(): void => {
             setOpen(false);
@@ -1479,13 +1483,13 @@ function StatusBadgeDropdown({
 function StatusDropdownOption({
   label,
   description,
-  dotClass,
+  dotTone,
   selected,
   onSelect,
 }: {
   label: string;
   description: string;
-  dotClass: string;
+  dotTone: DotTone;
   selected: boolean;
   onSelect: () => void;
 }): JSX.Element {
@@ -1497,7 +1501,7 @@ function StatusDropdownOption({
       onClick={onSelect}
     >
       <PickerMenuOptionLeading>
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
+        <Dot tone={dotTone} />
       </PickerMenuOptionLeading>
       <PickerMenuOptionContent>
         <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>

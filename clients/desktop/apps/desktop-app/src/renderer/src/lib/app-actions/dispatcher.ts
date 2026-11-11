@@ -12,7 +12,6 @@ import { pipelineAutomationTargetSummary } from '@canopy/desktop-shared/lib/auto
 import { storedAutomationActivity } from '@/lib/workflows/stored-automation-activity';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import { classifyShareFailure } from '@canopy/ui-app/sharing';
-import { serializeLegacyChatHistoryMessage } from '@canopy/desktop-shared/lib/chat-history-serialization';
 import {
   isSidebarItemGroupAction,
   sidebarItemGroupIds,
@@ -258,7 +257,6 @@ import {
   CHAT_PLUGIN_LIST_MAX_LIMIT,
   STANDALONE_LIST_MAX_LIMIT,
   chatSettingsResult,
-  clampChatHistoryLimit,
   clampLimit,
   fuzzyMatchText,
   standaloneChatSummary,
@@ -379,11 +377,7 @@ import {
   parseSharedPipelineLocalId,
 } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import { APP_ADVISOR_REVISION_AGNOSTIC_ACTION_TYPES } from '@canopy/desktop-shared/lib/app-advisor-actions';
-import {
-  runLedgerAddEntryAction,
-  runLedgerOpenAction,
-  runLedgerSearchAction,
-} from '@/lib/ledger/ledger-advisor-actions';
+import { runLedgerOpenAction } from '@/lib/ledger/ledger-advisor-actions';
 import { openChatTurnDestination } from '@/components/automations/resolveAutomationRunDestination';
 import {
   buildAutomationArtifactReceipt,
@@ -428,8 +422,8 @@ import {
   isPrReadyToMerge,
   hasUnresolvedReviewThreads,
 } from '@canopy/desktop-shared/types/github';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
-import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
   createEmptySelections,
   parseSelectionsJson,
@@ -443,7 +437,6 @@ import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
 import { openSharedContainerInOwningContext } from '@/lib/openSharedContainerInOwningContext';
 import {
-  navigateToRestoredContainerDestination,
   openArchivedContainerSurface,
   openArchivedOverviewSurface,
 } from '@/lib/archivedContainerNavigation';
@@ -9097,20 +9090,6 @@ function rejectAdvisorAutomationPolicy(message: string): {
   return { ok: false, error: { code: 'invalid_payload', message } };
 }
 
-function watcherExecutionFailure(error: unknown): {
-  ok: boolean;
-  result?: AppAdvisorJson;
-  error?: AppAdvisorActionError;
-} {
-  return {
-    ok: false,
-    error: {
-      code: 'execution_failed',
-      message: error instanceof Error ? error.message : 'Watcher IPC failed.',
-    },
-  };
-}
-
 function formatMergePrRepos(
   repos: Array<{ repoName: string; prNumber?: number }>,
 ): string {
@@ -15632,13 +15611,16 @@ async function routeAction(
     case 'ledger.open':
       return runLedgerOpenAction(action);
     case 'ledger.search':
-      return runLedgerSearchAction(action);
     case 'ledger.add_entry':
-      return runLedgerAddEntryAction(
-        action,
-        request.requestId,
-        request.originChatTabId,
-      );
+      // CAN-6007: the App Advisor runtime searches and adds Feed entries in
+      // main, as the advisor chat; these never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Feed actions run in the main process.',
+        },
+      };
     case 'panel.add_tab': {
       if (
         action.kind === 'usage' &&
@@ -15988,55 +15970,18 @@ async function routeAction(
       useAppAdvisorStore.getState().syncWindowState(state);
       return { ok: true };
     }
-    case 'watcher.list': {
-      try {
-        const watchers = await window.api.appAdvisor.listWatchers();
-        return {
-          ok: true,
-          result: { watchers } as unknown as AppAdvisorJson,
-        };
-      } catch (error: unknown) {
-        return watcherExecutionFailure(error);
-      }
-    }
-    case 'watcher.get': {
-      try {
-        const watchers = await window.api.appAdvisor.listWatchers();
-        const watcher = watchers.find((entry) => entry.id === action.id);
-        if (!watcher) {
-          return {
-            ok: false,
-            error: {
-              code: 'not_found',
-              message: `Watcher ${action.id} was not found.`,
-            },
-          };
-        }
-        return {
-          ok: true,
-          result: { watcher } as unknown as AppAdvisorJson,
-        };
-      } catch (error: unknown) {
-        return watcherExecutionFailure(error);
-      }
-    }
-    case 'watcher.delete': {
-      try {
-        const result = await window.api.appAdvisor.deleteWatcher({
-          watcherId: action.id,
-          notifySubscriber: action.notifySubscriber === true,
-        });
-        if (!result.ok) {
-          return {
-            ok: false,
-            error: { code: 'execution_failed', message: result.error },
-          };
-        }
-        return { ok: true, result: { id: action.id } };
-      } catch (error: unknown) {
-        return watcherExecutionFailure(error);
-      }
-    }
+    case 'watcher.list':
+    case 'watcher.get':
+    case 'watcher.delete':
+      // CAN-6007: the App Advisor runtime reads and deletes watchers in main;
+      // these never reach the renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Watcher actions run in the main process.',
+        },
+      };
     // ----------------------------------------------------------------------
     // Automations actions — bridge each App Advisor action verb onto the
     // matching `window.api.automations.*` IPC method. The transport plan
@@ -16776,14 +16721,24 @@ async function routeAction(
       return runSaveDownload(action, request.originChat);
     case 'browser.save_pdf':
       return runSavePdf(action);
-    case 'archived.list':
     case 'archived.open_overview':
     case 'archived.open_empty_trash':
     case 'archived.open':
+      return runArchivedAction(action);
+    case 'archived.list':
     case 'archived.read_chat':
     case 'archived.restore':
     case 'archived.set_locked':
-      return runArchivedAction(action);
+      // CAN-6007: the App Advisor runtime lists, reads, restores and locks
+      // archives in main through core.archive.*; these never reach the
+      // renderer dispatcher.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Archive actions run in the main process.',
+        },
+      };
     case 'skills.open_shared_viewer':
       useNavigationStore.getState().openSkillViewer({
         kind: 'shared',
@@ -16841,7 +16796,15 @@ async function routeAction(
  * live chat-history reads (default 20 messages, max 100).
  */
 async function runArchivedAction(
-  action: Extract<AppAdvisorAction, { type: `archived.${string}` }>,
+  action: Extract<
+    AppAdvisorAction,
+    {
+      type:
+        | 'archived.open_overview'
+        | 'archived.open_empty_trash'
+        | 'archived.open';
+    }
+  >,
 ): Promise<{
   ok: boolean;
   result?: AppAdvisorJson;
@@ -16849,36 +16812,6 @@ async function runArchivedAction(
 }> {
   try {
     switch (action.type) {
-      case 'archived.list': {
-        const containers = await window.api.archivedContainers.list({
-          projectId: action.workspaceId,
-        });
-        // Keep the renderer cache in sync so a follow-up `archived.open`
-        // (or the sidebar) sees the same listing without a refetch race.
-        void useArchivedContainersStore
-          .getState()
-          .loadForWorkspace(action.workspaceId);
-        return {
-          ok: true,
-          result: {
-            workspaceId: action.workspaceId,
-            containers: containers.map((container) => ({
-              id: container.id,
-              kind: container.kind,
-              name: container.name,
-              branchName: container.branchName ?? null,
-              archivedAt: container.archivedAt,
-              expiresAt: container.expiresAt,
-              locked: container.lockedAt !== undefined,
-              lockedAt: container.lockedAt ?? null,
-              chatCount: container.chatCount,
-              archivedChatCount: container.archivedChatCount,
-              executionCount: container.executionCount,
-              partiallyRestored: container.restoredTo !== undefined,
-            })),
-          },
-        };
-      }
       case 'archived.open_overview': {
         if (action.workspaceId === APP_ADVISOR_PROJECT_ID) {
           await window.api.appAdvisor.openWindow({
@@ -17041,99 +16974,6 @@ async function runArchivedAction(
             tab: action.tab ?? 'chats',
             ...(action.chatId !== undefined ? { chatId: action.chatId } : {}),
             ...(action.planId !== undefined ? { planId: action.planId } : {}),
-          },
-        };
-      }
-      case 'archived.read_chat': {
-        const response = await window.api.archivedContainers.readChat({
-          projectId: action.workspaceId,
-          containerId: action.containerId,
-          chatId: action.chatId,
-        });
-        const tab = hydratePersistedChatTab(response.tab);
-        const limit = clampChatHistoryLimit(action.limit);
-        const selected = tab.messages.slice(-limit);
-        return {
-          ok: true,
-          result: {
-            workspaceId: action.workspaceId,
-            containerId: action.containerId,
-            chatId: action.chatId,
-            title: tab.title ?? null,
-            limit,
-            totalMessages: tab.messages.length,
-            returnedMessages: selected.length,
-            messages: selected.map(serializeLegacyChatHistoryMessage),
-          },
-        };
-      }
-      case 'archived.restore': {
-        const result = await useArchivedContainersStore
-          .getState()
-          .restore(action.workspaceId, action.containerId);
-        if (result === null) {
-          return {
-            ok: false,
-            error: {
-              code: 'execution_failed',
-              message: `Restoring archived container ${action.containerId} failed.`,
-              retryable: true,
-            },
-          };
-        }
-        const stillPresent =
-          useArchivedContainersStore
-            .getState()
-            .byWorkspace[
-              action.workspaceId
-            ]?.some((entry) => entry.id === action.containerId) ?? false;
-        if (!stillPresent) {
-          // Fully consumed — navigate exactly like the viewer's Restore.
-          await navigateToRestoredContainerDestination(
-            action.workspaceId,
-            result,
-          );
-        }
-        return {
-          ok: true,
-          result: {
-            workspaceId: action.workspaceId,
-            containerId: action.containerId,
-            kind: result.kind,
-            restoredWorktreeId: result.restoredWorktreeId ?? null,
-            restoredEntryId: result.restoredEntryId ?? null,
-            branchName: result.branchName ?? null,
-            warnings: result.warnings,
-            // True when pipeline imports are still pending (partial restore);
-            // `archived.restore` on the same container retries the import.
-            pending: stillPresent,
-          },
-        };
-      }
-      case 'archived.set_locked': {
-        const updated = await useArchivedContainersStore
-          .getState()
-          .setLocked(action.workspaceId, action.containerId, action.locked);
-        if (updated === null) {
-          return {
-            ok: false,
-            error: {
-              code: 'execution_failed',
-              message: `${action.locked ? 'Locking' : 'Unlocking'} archived container ${action.containerId} failed.`,
-              retryable: true,
-            },
-          };
-        }
-        return {
-          ok: true,
-          result: {
-            workspaceId: action.workspaceId,
-            containerId: action.containerId,
-            locked: updated.lockedAt !== undefined,
-            lockedAt: updated.lockedAt ?? null,
-            // Meaningful when unlocked: the retention window restarted from
-            // the unlock time.
-            expiresAt: updated.expiresAt,
           },
         };
       }

@@ -21,7 +21,7 @@ import {
   SharedCollectionDetailModal,
 } from '../pages/CollectionsTab';
 import { CapabilityRelatedSections } from './CapabilityRelatedSections';
-import { DetailBackChip } from '../shared/DetailBackChip';
+import { DetailBackButton } from '../shared/DetailBackButton';
 import { DialogModal } from '../shared';
 import { McpServerLogo } from '../shared/McpServerLogo';
 import {
@@ -451,7 +451,7 @@ function DetailShell({
           slots.declared > 0) && (
           <div className="flex items-start justify-between gap-2">
             {onNavigateBack ? (
-              <DetailBackChip onNavigateBack={onNavigateBack} />
+              <DetailBackButton onNavigateBack={onNavigateBack} />
             ) : (
               <span />
             )}

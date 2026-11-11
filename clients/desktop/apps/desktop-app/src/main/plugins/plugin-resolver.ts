@@ -340,10 +340,11 @@ export interface ResolvePluginsOptions {
    */
   mcpHttpAuthPins?: readonly McpHttpAuthPreference[];
   /**
-   * The user's home-folder skills and commands a Cursor chat inherits
+   * The user's home-folder skills and commands a Cursor, Copilot or
+   * OpenCode chat inherits
    * (docs/planning/2026-10-05-cursor-inherited-capabilities/design.md).
-   * Read for `purpose: 'cursor-session'` only. Appended after the selection,
-   * so an explicit pick keeps its id on a collision.
+   * Read for those three session purposes only. Appended after the
+   * selection, so an explicit pick keeps its id on a collision.
    */
   inheritedCursorCapabilities?: InheritedCursorCapabilities;
   /**
@@ -1580,11 +1581,9 @@ export async function resolvePlugins(
           cursorPluginsWithMcpServers,
           cursorNotices,
           warnings,
-          // Cursor and Copilot read the user's home folders every turn;
-          // OpenCode stays with the selection alone.
-          purpose === 'cursor-session' || purpose === 'copilot-session'
-            ? options?.inheritedCursorCapabilities
-            : undefined,
+          // Cursor, Copilot and OpenCode read the user's home folders every
+          // turn, through the same projection.
+          options?.inheritedCursorCapabilities,
         )
       : emptyCursorCapabilityProjection();
 

@@ -7,7 +7,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import {
   isPanelLayoutModeFileV1,
   isWorkspaceLayoutMode,

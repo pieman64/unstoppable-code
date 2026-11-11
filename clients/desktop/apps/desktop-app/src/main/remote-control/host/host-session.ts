@@ -110,6 +110,28 @@ export interface HostSessionOptions {
 
 const APP_ADVISOR_WINDOW_TIMEOUT_MS = 15_000;
 
+/** Deployed mobile usage readers accept only the original account states. */
+function projectControllerAccountProxyStatus(value: unknown): unknown {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('accounts' in value) ||
+    !Array.isArray(value.accounts)
+  )
+    return value;
+  return {
+    ...value,
+    accounts: value.accounts.map((account: unknown) =>
+      typeof account === 'object' &&
+      account !== null &&
+      'status' in account &&
+      account.status === 'sign-in-required'
+        ? { ...account, status: 'error', signInRequired: true }
+        : account,
+    ),
+  };
+}
+
 /**
  * One controller's live session on this computer: replays each controller
  * window's calls through its own bridge window and forwards this computer's
@@ -315,9 +337,16 @@ export class RemoteHostSession {
     )
       return;
     let bytes = 0;
+    const wireArgs =
+      this.options.kind !== 'desktop' &&
+      channel === IPC_CHANNELS.accountProxyChanged
+        ? args.map(projectControllerAccountProxyStatus)
+        : args;
     const sent = this.rpc.notify(
       REMOTE_EVENTS.push,
-      surface === undefined ? { channel, args } : { channel, args, surface },
+      surface === undefined
+        ? { channel, args: wireArgs }
+        : { channel, args: wireArgs, surface },
       (serializedBytes) => {
         bytes = serializedBytes;
       },
@@ -402,7 +431,11 @@ export class RemoteHostSession {
           return this.dispatchHostedChat(channel, args[0]);
         }
         const bridge = await this.bridgeFor(surface ?? 'main');
-        return bridge.invoke(channel, args);
+        const result = await bridge.invoke(channel, args);
+        return this.options.kind !== 'desktop' &&
+          channel === IPC_CHANNELS.accountProxyStatus
+          ? projectControllerAccountProxyStatus(result)
+          : result;
       }
       case REMOTE_METHODS.pairRevoke: {
         const revoke = this.options.revokeOwnPairing;

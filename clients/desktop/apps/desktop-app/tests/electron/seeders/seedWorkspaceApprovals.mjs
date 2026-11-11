@@ -8,7 +8,7 @@ import { writeJson } from './fsHelpers.mjs';
  * (`apps/desktop-app/src/main/lib/approvals-persistence.ts`
  * `getWorkspaceApprovalsFilePath` -> `getWorkspaceDir(workspaceId)/approvals.json`).
  *
- * Shape: `ApprovalsFile` from `packages/desktop-shared/src/types/approvals.ts`:
+ * Shape: `ApprovalsFile` from `packages/execution-engine/src/types/approvals.ts`:
  *   { version: 1, rules: ApprovalRule[], defaultMode?: ApprovalMode }
  *
  * `readWorkspaceApprovals` silently falls back to `{ version: 1, rules: [] }`
@@ -58,7 +58,7 @@ export function seedWorkspaceApprovals(options) {
 
 /**
  * Convenience builder for a single `ApprovalRule` matching the shape
- * `packages/desktop-shared/src/types/approvals.ts` expects. Defaults
+ * `packages/execution-engine/src/types/approvals.ts` expects. Defaults
  * `origin` to `'settings'` (a rule added via Settings > Approvals, as
  * opposed to `'prompt'` or the repo-managed `'canopy-json'`) and `createdAt`
  * to a fixed timestamp so seeded fixtures are deterministic.

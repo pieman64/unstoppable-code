@@ -44,6 +44,10 @@ import type {
   SharedSkillSummary,
 } from '@canopy/protocol/skills';
 import type { PipelineInfo } from '@canopy/protocol/pipelines';
+import {
+  authorLinkedLocalIndex,
+  type AuthorShareLink,
+} from '@canopy/protocol/sharing';
 import type { SharedAutomationSummary } from '@canopy/protocol/automations';
 import type { CuratedAutomationSummary } from '@canopy/protocol/automation-catalog';
 import type { CuratedPipelineSummary } from '@canopy/protocol/pipeline-catalog';
@@ -77,6 +81,7 @@ import {
   type UnifiedPluginEntry,
   type UnifiedWorkflowFacets,
   type WorkflowLastRun,
+  ownShareAudienceText,
 } from '@canopy/ui-shared';
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
 import { sourceLabelProvider } from '@canopy/ui-shared/lib/unified-plugin-entry';
@@ -192,6 +197,22 @@ export type UnifiedInstalledSkillInput = Pick<
   };
 
 /**
+ * A pipeline row. Desktop local rows link to their own share through
+ * `remote`; the Portal supplies the same browser-safe link as
+ * `shareRemoteId`, with that share's audience in `shareScope` (the skills
+ * precedent is {@link UnifiedInstalledSkillInput}).
+ */
+export type UnifiedPipelineInput = PipelineInfo & { shareRemoteId?: string };
+
+/**
+ * A local Collection row. Desktop links its own share through `remote`; the
+ * Portal supplies `shareRemoteId`.
+ */
+export type UnifiedCollectionInput = CollectionIndexEntry & {
+  shareRemoteId?: string;
+};
+
+/**
  * Structural local automation row. `@canopy/ui-app` cannot import the desktop
  * `ScheduledActivity`, so the host maps its automations onto this shape.
  */
@@ -250,7 +271,7 @@ export interface UnifiedEntryInputs {
   curatedMcpServers: CuratedMcpServerEntry[];
   /** Per-provider connector reads; empty until they resolve. */
   providerConnectors: ProviderConnectorInput[];
-  pipelines?: PipelineInfo[];
+  pipelines?: UnifiedPipelineInput[];
   /**
    * User pipelines a live automation owns (CAN-4551); each is listed under
    * its automation instead of as a pipeline.
@@ -263,7 +284,7 @@ export interface UnifiedEntryInputs {
   pipelineLastRuns?: ReadonlyMap<string, WorkflowLastRun | null>;
   /** Host-specific reason a manually runnable pipeline entry cannot run. */
   pipelineRunUnavailable?: ReadonlyMap<string, string>;
-  localCollections?: CollectionIndexEntry[];
+  localCollections?: UnifiedCollectionInput[];
   sharedSkills?: SharedSkillSummary[];
   sharedCollections?: SharedCollectionSummary[];
   localAutomations?: UnifiedLocalAutomationInput[];
@@ -402,6 +423,19 @@ function sharedOwnershipLabel(
 }
 
 /**
+ * The ownership label of a local row the viewer's own loaded share folds
+ * into. A private (public-link) share reads `Shared`, not the viewer's name.
+ */
+function authorShareOwnershipLabel(share: {
+  owner?: ResourceOwner;
+  shareScope?: string;
+}): string | undefined {
+  return share.shareScope === 'private'
+    ? ownShareAudienceText('private')
+    : sharedOwnershipLabel(share.owner, share.shareScope);
+}
+
+/**
  * The team or organization a shared row is shared with, read from its owner.
  * A personal owner (a private or public share) names no narrower audience.
  */
@@ -419,6 +453,29 @@ function sharedWithFromOwner(
       ...(name ? { name } : {}),
     },
   };
+}
+
+/**
+ * For each share the viewer created that exactly one local row links to, the
+ * index of that row (see `authorLinkedLocalIndex`), keyed by share id.
+ */
+function authorLinkedLocals<TShare>(
+  shares: readonly TShare[],
+  shareKey: (
+    share: TShare,
+  ) => { id: string; createdBy?: { id: string } | null } | undefined,
+  locals: readonly AuthorShareLink[],
+  viewerId: string | null | undefined,
+): Map<string, number> {
+  const linked = new Map<string, number>();
+  if (!viewerId || locals.length === 0) return linked;
+  for (const share of shares) {
+    const key = shareKey(share);
+    if (!key) continue;
+    const index = authorLinkedLocalIndex(key, locals, viewerId);
+    if (index !== undefined) linked.set(key.id, index);
+  }
+  return linked;
 }
 
 /** Which providers a capability can actually run on. */
@@ -1752,59 +1809,101 @@ function pipelineWorkflowFacets(
   };
 }
 
+/**
+ * Pipeline rows. The viewer's own share that exactly one local pipeline links
+ * to folds into that row: the share stays in the projection with
+ * `installedEntryId`, so Browse leaves it out while direct links and "Shared
+ * by me" still find it, and the local row carries the share's audience.
+ */
 function buildPipelineEntries(
-  pipelines: PipelineInfo[],
+  pipelines: UnifiedPipelineInput[],
+  viewerId: string | null | undefined,
   lastRuns?: ReadonlyMap<string, WorkflowLastRun | null>,
   runUnavailable?: ReadonlyMap<string, string>,
 ): UnifiedPluginEntry[] {
-  return pipelines
-    .filter(
-      (
-        pipeline,
-      ): pipeline is PipelineInfo & {
-        source: Exclude<PipelineInfo['source'], 'curated'>;
-      } => pipeline.source !== 'curated',
-    )
-    .map((pipeline): UnifiedPluginEntry => {
-      const state: UnifiedEntryState =
-        pipeline.source === 'shared' ? 'available' : 'installed';
-      return {
-        id: `pipeline:${pipeline.source}:${pipeline.id}`,
-        kind: 'pipeline',
-        origin: pipelineOrigin(pipeline.source),
-        name: pipeline.name,
-        description: pipeline.description,
-        categories: [],
-        authorName: pipeline.owner?.name ?? undefined,
-        typeLabel: WORKFLOW_ITEM_LABEL,
-        sourceLabel: pipelineSourceLabel(pipeline.source),
-        ownershipLabel: sharedOwnershipLabel(
-          pipeline.owner,
-          pipeline.shareScope,
-        ),
-        ...(pipeline.source === 'shared'
-          ? sharedWithFromOwner(pipeline.owner)
+  const listed = pipelines.filter(
+    (
+      pipeline,
+    ): pipeline is UnifiedPipelineInput & {
+      source: Exclude<PipelineInfo['source'], 'curated'>;
+    } => pipeline.source !== 'curated',
+  );
+  const entryId = (pipeline: (typeof listed)[number]): string =>
+    `pipeline:${pipeline.source}:${pipeline.id}`;
+  const locals = listed.filter((pipeline) => pipeline.source !== 'shared');
+  const shares = listed.filter((pipeline) => pipeline.source === 'shared');
+  const localIndexByShare = authorLinkedLocals(
+    shares,
+    (share) =>
+      share.remoteId
+        ? { id: share.remoteId, createdBy: share.createdBy }
+        : undefined,
+    locals,
+    viewerId,
+  );
+  const shareByLocalEntryId = new Map<string, (typeof listed)[number]>();
+  const localEntryIdByShare = new Map<string, string>();
+  for (const share of shares) {
+    const index = share.remoteId
+      ? localIndexByShare.get(share.remoteId)
+      : undefined;
+    const local = index === undefined ? undefined : locals[index];
+    if (!local) continue;
+    shareByLocalEntryId.set(entryId(local), share);
+    localEntryIdByShare.set(entryId(share), entryId(local));
+  }
+  return listed.map((pipeline): UnifiedPluginEntry => {
+    const id = entryId(pipeline);
+    const installedEntryId = localEntryIdByShare.get(id);
+    const state: UnifiedEntryState =
+      pipeline.source === 'shared' && !installedEntryId
+        ? 'available'
+        : 'installed';
+    const authorShare = shareByLocalEntryId.get(id);
+    const authorScope =
+      pipeline.remote?.shareScope ??
+      (pipeline.shareRemoteId ? pipeline.shareScope : undefined);
+    return {
+      id,
+      kind: 'pipeline',
+      origin: pipelineOrigin(pipeline.source),
+      name: pipeline.name,
+      description: pipeline.description,
+      categories: [],
+      authorName: pipeline.owner?.name ?? undefined,
+      typeLabel: WORKFLOW_ITEM_LABEL,
+      sourceLabel: pipelineSourceLabel(pipeline.source),
+      ownershipLabel: authorShare
+        ? authorShareOwnershipLabel(authorShare)
+        : authorScope
+          ? ownShareAudienceText(authorScope)
+          : sharedOwnershipLabel(pipeline.owner, pipeline.shareScope),
+      ...(pipeline.source === 'shared'
+        ? sharedWithFromOwner(pipeline.owner)
+        : authorShare
+          ? sharedWithFromOwner(authorShare.owner)
           : {}),
-        availabilityLabel: availabilityLabel(state),
-        components: emptyComponents(),
-        providerSupport: NEUTRAL_PROVIDER_SUPPORT,
-        state,
-        recommended: false,
-        pipeline: {
-          source: pipeline.source,
-          scopes: pipeline.scopes ?? ['directory'],
-          triggerTypes: pipeline.triggerTypes ?? [],
-        },
-        workflow: pipelineWorkflowFacets(pipeline, lastRuns, runUnavailable),
-        ref: {
-          type: 'pipeline',
-          pipelineId: pipeline.id,
-          source: pipeline.source,
-          ...(pipeline.filePath ? { filePath: pipeline.filePath } : {}),
-          ...(pipeline.remoteId ? { remoteId: pipeline.remoteId } : {}),
-        },
-      };
-    });
+      availabilityLabel: availabilityLabel(state),
+      components: emptyComponents(),
+      providerSupport: NEUTRAL_PROVIDER_SUPPORT,
+      state,
+      ...(installedEntryId ? { installedEntryId } : {}),
+      recommended: false,
+      pipeline: {
+        source: pipeline.source,
+        scopes: pipeline.scopes ?? ['directory'],
+        triggerTypes: pipeline.triggerTypes ?? [],
+      },
+      workflow: pipelineWorkflowFacets(pipeline, lastRuns, runUnavailable),
+      ref: {
+        type: 'pipeline',
+        pipelineId: pipeline.id,
+        source: pipeline.source,
+        ...(pipeline.filePath ? { filePath: pipeline.filePath } : {}),
+        ...(pipeline.remoteId ? { remoteId: pipeline.remoteId } : {}),
+      },
+    };
+  });
 }
 
 /**
@@ -1853,15 +1952,8 @@ function buildSharedSkillEntries(
   function authorInstalledEntryId(
     share: SharedSkillSummary,
   ): string | undefined {
-    const matches = installedSkills.filter(
-      (skill) =>
-        viewerId &&
-        share.createdBy.id === viewerId &&
-        (!skill.remote?.accountId || skill.remote.accountId === viewerId) &&
-        (skill.remote?.remoteId ?? skill.shareRemoteId) === share.id,
-    );
-    // An ambiguous author identity proves no single status to follow.
-    const match = matches.length === 1 ? matches[0] : undefined;
+    const index = authorLinkedLocalIndex(share, installedSkills, viewerId);
+    const match = index === undefined ? undefined : installedSkills[index];
     return match ? installedSkillEntryId(match) : undefined;
   }
   return skills.map((skill): UnifiedPluginEntry => {
@@ -1910,10 +2002,12 @@ function sharedCollectionItemCounts(collection: SharedCollectionSummary): {
  * linked to that share: the local row learns who shared it and whether the
  * share changed since, and the share's Browse card reads Installed. When
  * several local copies name one share, all of them link and the card installs
- * to the first by index order.
+ * to the first by index order. The viewer's own share that exactly one local
+ * Collection links to folds the same way, and that local row carries the
+ * share's audience.
  */
 function buildCollectionEntries(
-  localCollections: CollectionIndexEntry[],
+  localCollections: UnifiedCollectionInput[],
   sharedCollections: SharedCollectionSummary[],
   viewerId: string | null | undefined,
 ): UnifiedPluginEntry[] {
@@ -1927,81 +2021,115 @@ function buildCollectionEntries(
       localEntryIdByShare.set(remoteId, localCollectionEntryId(collection.id));
     }
   }
+  const authorShareByLocalIndex = new Map<number, SharedCollectionSummary>();
+  for (const [shareId, index] of authorLinkedLocals(
+    sharedCollections,
+    (share) => share,
+    localCollections,
+    viewerId,
+  )) {
+    const share = sharesById.get(shareId);
+    if (share) authorShareByLocalIndex.set(index, share);
+  }
+  const authorEntryIdByShare = new Map<string, string>();
+  for (const [index, share] of authorShareByLocalIndex) {
+    const local = localCollections[index];
+    if (local) {
+      authorEntryIdByShare.set(share.id, localCollectionEntryId(local.id));
+    }
+  }
 
-  const local = localCollections.map((collection): UnifiedPluginEntry => {
-    const base: UnifiedPluginEntry = {
-      id: localCollectionEntryId(collection.id),
-      kind: 'collection',
-      origin: 'installed-standalone',
-      name: collection.name,
-      description: collection.description,
-      categories: [],
-      typeLabel: 'Collection',
-      sourceLabel: 'Local',
-      collectionRevision: collection.revision ?? collection.updatedAt,
-      collectionProvenanceUnknown:
-        collection.hasSharedSource === true ||
-        collection.provenanceUnknown === true,
-      ownedByViewer:
-        !collection.sharedSource &&
-        !collection.hasSharedSource &&
-        !collection.provenanceUnknown,
-      availabilityLabel: 'Installed',
-      components: {
-        skills: collection.skillCount,
-        mcpServers: collection.mcpServerCount,
-        commands: 0,
-        agents: 0,
-        plugins: collection.pluginCount,
-      },
-      providerSupport: NEUTRAL_PROVIDER_SUPPORT,
-      state: 'installed',
-      recommended: false,
-      ref: { type: 'local-collection', collectionId: collection.id },
-    };
-    const source = collection.sharedSource;
-    if (!source) return base;
-    base.ownedByViewer = undefined;
-    const installedContentHash = source.contentHash;
-    const share = sharesById.get(source.remoteId);
-    if (!share) {
+  const local = localCollections.map(
+    (collection, index): UnifiedPluginEntry => {
+      const authorShare = authorShareByLocalIndex.get(index);
+      const base: UnifiedPluginEntry = {
+        id: localCollectionEntryId(collection.id),
+        kind: 'collection',
+        origin: 'installed-standalone',
+        name: collection.name,
+        description: collection.description,
+        categories: [],
+        typeLabel: 'Collection',
+        sourceLabel: 'Local',
+        collectionRevision: collection.revision ?? collection.updatedAt,
+        collectionProvenanceUnknown:
+          collection.hasSharedSource === true ||
+          collection.provenanceUnknown === true,
+        ownedByViewer:
+          !collection.sharedSource &&
+          !collection.hasSharedSource &&
+          !collection.provenanceUnknown,
+        availabilityLabel: 'Installed',
+        components: {
+          skills: collection.skillCount,
+          mcpServers: collection.mcpServerCount,
+          commands: 0,
+          agents: 0,
+          plugins: collection.pluginCount,
+        },
+        providerSupport: NEUTRAL_PROVIDER_SUPPORT,
+        state: 'installed',
+        recommended: false,
+        ...(authorShare
+          ? {
+              ownershipLabel: authorShareOwnershipLabel(authorShare),
+              ...sharedWithFromOwner(authorShare.owner),
+            }
+          : collection.remote
+            ? {
+                ownershipLabel: ownShareAudienceText(
+                  collection.remote.shareScope,
+                ),
+              }
+            : {}),
+        ref: { type: 'local-collection', collectionId: collection.id },
+      };
+      const source = collection.sharedSource;
+      if (!source) return base;
+      base.ownedByViewer = undefined;
+      const installedContentHash = source.contentHash;
+      const share = sharesById.get(source.remoteId);
+      if (!share) {
+        return {
+          ...base,
+          sharedSource: {
+            remoteId: source.remoteId,
+            ...(installedContentHash ? { installedContentHash } : {}),
+          },
+        };
+      }
+      const sharedBy =
+        share.createdBy?.name?.trim() || ownerDisplayName(share.owner);
+      const updateAvailable =
+        !!installedContentHash &&
+        !!share.contentHash &&
+        installedContentHash !== share.contentHash;
       return {
         ...base,
+        authorName: sharedBy,
+        ownershipLabel: sharedOwnershipLabel(share.owner, share.shareScope),
+        ...sharedWithFromOwner(share.owner),
+        availabilityLabel: updateAvailable ? 'Update available' : 'Installed',
+        ...(updateAvailable ? { updateAvailable: true } : {}),
+        ...(viewerId != null
+          ? { ownedByViewer: share.createdBy?.id === viewerId }
+          : {}),
         sharedSource: {
           remoteId: source.remoteId,
           ...(installedContentHash ? { installedContentHash } : {}),
+          latestContentHash: share.contentHash,
+          ...(sharedBy ? { sharedBy } : {}),
+          updatedAt: share.updatedAt,
+          latestItemCounts: sharedCollectionItemCounts(share),
         },
       };
-    }
-    const sharedBy =
-      share.createdBy?.name?.trim() || ownerDisplayName(share.owner);
-    const updateAvailable =
-      !!installedContentHash &&
-      !!share.contentHash &&
-      installedContentHash !== share.contentHash;
-    return {
-      ...base,
-      authorName: sharedBy,
-      ownershipLabel: sharedOwnershipLabel(share.owner, share.shareScope),
-      ...sharedWithFromOwner(share.owner),
-      availabilityLabel: updateAvailable ? 'Update available' : 'Installed',
-      ...(updateAvailable ? { updateAvailable: true } : {}),
-      ...(viewerId != null
-        ? { ownedByViewer: share.createdBy?.id === viewerId }
-        : {}),
-      sharedSource: {
-        remoteId: source.remoteId,
-        ...(installedContentHash ? { installedContentHash } : {}),
-        latestContentHash: share.contentHash,
-        ...(sharedBy ? { sharedBy } : {}),
-        updatedAt: share.updatedAt,
-        latestItemCounts: sharedCollectionItemCounts(share),
-      },
-    };
-  });
+    },
+  );
 
   const shared = sharedCollections.map((collection): UnifiedPluginEntry => {
-    const installedEntryId = localEntryIdByShare.get(collection.id);
+    const installedEntryId =
+      localEntryIdByShare.get(collection.id) ??
+      authorEntryIdByShare.get(collection.id);
     const counts = sharedCollectionItemCounts(collection);
     return {
       id: `collection:shared:${collection.id}`,
@@ -2117,8 +2245,10 @@ export function pendingLocalAgentEntry(
 
 /**
  * Shared agents the viewer already holds a local copy of are listed once, as
- * the local row. Only an exact `sharedRemoteId` match folds; names never do,
- * and the shared resource itself stays resolvable for direct links.
+ * the local row. Only an exact `sharedRemoteId` match folds; names never do.
+ * The viewer's own non-private share passes through so it stays resolvable
+ * for direct links and "Shared by me"; {@link buildSharedAgentEntries} folds
+ * it into the local row.
  */
 function sharedAgentsWithoutLocalCopies(
   shared: SharedAgentSummary[],
@@ -2142,9 +2272,21 @@ function sharedAgentsWithoutLocalCopies(
 
 function buildSharedAgentEntries(
   agents: SharedAgentSummary[],
+  local: readonly UnifiedLocalAgentInput[],
+  viewerId: string | null | undefined,
 ): UnifiedPluginEntry[] {
-  return agents.map(
-    (agent): UnifiedPluginEntry => ({
+  // A local agent records no account on its link, so any link counts.
+  const localIndexByShare = authorLinkedLocals(
+    agents,
+    (agent) => agent,
+    local.map((agent) => ({ shareRemoteId: agent.sharedRemoteId })),
+    viewerId,
+  );
+  return agents.map((agent): UnifiedPluginEntry => {
+    const index = localIndexByShare.get(agent.id);
+    const linked = index === undefined ? undefined : local[index];
+    const installedEntryId = linked ? localAgentEntryId(linked.id) : undefined;
+    return {
       id: `agent:shared:${agent.id}`,
       kind: 'agent',
       origin: 'shared',
@@ -2157,14 +2299,15 @@ function buildSharedAgentEntries(
       ownershipLabel: sharedOwnershipLabel(agent.owner, agent.shareScope),
       ...sharedWithFromOwner(agent.owner),
       sharedSince: agent.createdAt,
-      availabilityLabel: 'Available',
+      availabilityLabel: installedEntryId ? 'Installed' : 'Available',
       components: { ...emptyComponents(), agents: 1 },
       providerSupport: NEUTRAL_PROVIDER_SUPPORT,
-      state: 'available',
+      state: installedEntryId ? 'installed' : 'available',
+      ...(installedEntryId ? { installedEntryId } : {}),
       recommended: false,
       ref: { type: 'shared-agent', agentId: agent.id },
-    }),
-  );
+    };
+  });
 }
 
 /**
@@ -2172,6 +2315,11 @@ function buildSharedAgentEntries(
  * listing's. Joined on the ref's catalog and plugin name, never on the display
  * name, so a same-named plugin from another catalog lends it nothing.
  */
+interface SharedPluginListing {
+  marketplace: UnifiedMarketplaceInput;
+  plugin: UnifiedMarketplacePluginInput;
+}
+
 function sharedPluginCatalogFacts(
   plugins: readonly SharedPluginSummary[],
   marketplaces: readonly UnifiedMarketplaceInput[],
@@ -2180,14 +2328,8 @@ function sharedPluginCatalogFacts(
 ) => Pick<
   UnifiedPluginEntry,
   'logoUrl' | 'bundledLogo' | 'brandMark' | 'sharedSourceProvider'
-> {
-  const listings = new Map<
-    string,
-    {
-      marketplace: UnifiedMarketplaceInput;
-      plugin: UnifiedMarketplacePluginInput;
-    }
-  >();
+> & { listing?: SharedPluginListing } {
+  const listings = new Map<string, SharedPluginListing>();
   if (plugins.length > 0) {
     for (const marketplace of marketplaces) {
       for (const plugin of marketplace.plugins) {
@@ -2220,19 +2362,38 @@ function sharedPluginCatalogFacts(
         ? marketplacePluginLogo(listing.marketplace.id, listing.plugin)
         : {}),
       ...(provider ? { sharedSourceProvider: provider } : {}),
+      ...(listing ? { listing } : {}),
     };
   };
 }
 
+/**
+ * Shared plugin references. A shared plugin has no author-side link, so the
+ * viewer's own share folds into the catalog listing it names when that
+ * listing is installed and listed (`installedListingIds`).
+ */
 function buildSharedPluginEntries(
   plugins: SharedPluginSummary[],
   marketplaces: readonly UnifiedMarketplaceInput[],
+  viewerId: string | null | undefined,
+  installedListingIds: ReadonlySet<string>,
 ): UnifiedPluginEntry[] {
   const catalogFacts = sharedPluginCatalogFacts(plugins, marketplaces);
-  return plugins.map(
-    (plugin): UnifiedPluginEntry => ({
+  return plugins.map((plugin): UnifiedPluginEntry => {
+    const { listing, ...facts } = catalogFacts(plugin);
+    const listingId = listing
+      ? `mkt:${listing.marketplace.id}/${listing.plugin.name}`
+      : undefined;
+    const installedEntryId =
+      viewerId &&
+      plugin.createdBy.id === viewerId &&
+      listingId &&
+      installedListingIds.has(listingId)
+        ? listingId
+        : undefined;
+    return {
       id: `plugin:shared:${plugin.externalId}`,
-      ...catalogFacts(plugin),
+      ...facts,
       kind: 'plugin',
       origin: 'shared',
       name: plugin.name,
@@ -2244,14 +2405,15 @@ function buildSharedPluginEntries(
       ownershipLabel: sharedOwnershipLabel(plugin.owner, plugin.shareScope),
       ...sharedWithFromOwner(plugin.owner),
       sharedSince: plugin.createdAt,
-      availabilityLabel: 'Available',
+      availabilityLabel: installedEntryId ? 'Installed' : 'Available',
       components: emptyComponents(),
       providerSupport: NEUTRAL_PROVIDER_SUPPORT,
-      state: 'available',
+      state: installedEntryId ? 'installed' : 'available',
+      ...(installedEntryId ? { installedEntryId } : {}),
       recommended: false,
       ref: { type: 'shared-plugin', pluginId: plugin.externalId },
-    }),
-  );
+    };
+  });
 }
 
 function buildCuratedPipelineEntries(
@@ -2411,8 +2573,10 @@ export function pendingSharedAutomationEntry(
  * One row per automation, and the local copy wins. A team share the user
  * published or installed lists only as their local automation, and so does a
  * curated automation they installed; the local row says when its source has
- * changed since. The "Shared by me" facet skips that rule for shares, so an
- * owned share lists beside its local source.
+ * changed since. On every path the user's own share stays in the projection
+ * folded into its local row (`installedEntryId`), so direct links resolve it
+ * and "Shared by me" lists it through ownership rather than as a separate
+ * Browse row.
  */
 function buildAutomationEntries(
   localAutomations: UnifiedLocalAutomationInput[],
@@ -2512,18 +2676,36 @@ function buildAutomationEntries(
     });
   }
 
+  // The author fold follows the shared rule (exactly one local copy links to
+  // the viewer's share); a local automation records no account on its link.
+  // The viewer's own share is never dropped, so an ambiguous one stays listed.
+  const authorIndexByShare = authorLinkedLocals(
+    sharedAutomations,
+    (summary) => summary,
+    localAutomations.map((automation) => ({
+      shareRemoteId: automation.sharedRemoteId,
+    })),
+    viewerId,
+  );
   for (const summary of sharedAutomations) {
+    const authorIndex = authorIndexByShare.get(summary.id);
+    const authorLocal =
+      authorIndex === undefined ? undefined : localAutomations[authorIndex];
+    const authorLinked = authorLocal !== undefined;
+    const installedEntryId = authorLocal
+      ? `automation:local:${authorLocal.id}`
+      : localSharedIds.get(summary.id);
+    const ownShare = viewerId != null && summary.createdBy?.id === viewerId;
     if (
       !retainCatalogEntries &&
       !skipLocalDedupe &&
-      localSharedIds.has(summary.id) &&
-      (!viewerId || summary.createdBy?.id !== viewerId)
+      installedEntryId !== undefined &&
+      !ownShare
     )
       continue;
-    const installedEntryId = localSharedIds.get(summary.id);
     entries.push({
       ...sharedAutomationEntry(summary),
-      ...(retainCatalogEntries && installedEntryId
+      ...((retainCatalogEntries || authorLinked) && installedEntryId
         ? {
             state: 'installed',
             availabilityLabel: 'Installed',
@@ -3269,6 +3451,12 @@ export function buildUnifiedPluginEntries(
     curatedMcpByKey,
     inputs.foldSingleKeyPlugins === true,
   );
+  // Installed listings are pinned through the collapse, so a shared plugin
+  // folds into a listing id that survives it.
+  const marketplacePlugins = collapseDuplicateCapabilities(
+    buildMarketplacePluginEntries(inputs.marketplaces).filter(notOwned),
+    marketplacePackageKeys(inputs.marketplaces),
+  );
   const assembled = [
     ...providerEntries,
     ...curatedPlugins.entries.filter(notOwned),
@@ -3291,6 +3479,7 @@ export function buildUnifiedPluginEntries(
         inputs.pipelines ?? [],
         inputs.ownedPipelineIds ?? new Set(),
       ),
+      inputs.viewerId,
       inputs.pipelineLastRuns,
       inputs.pipelineRunUnavailable,
     ),
@@ -3320,16 +3509,21 @@ export function buildUnifiedPluginEntries(
         inputs.localAgents ?? [],
         inputs.viewerId,
       ),
+      inputs.localAgents ?? [],
+      inputs.viewerId,
     ),
     ...buildSharedBlueprintEntries(inputs.sharedBlueprints ?? []),
-    ...collapseDuplicateCapabilities(
-      buildMarketplacePluginEntries(inputs.marketplaces).filter(notOwned),
-      marketplacePackageKeys(inputs.marketplaces),
-    ),
+    ...marketplacePlugins,
     ...buildPluginSkillEntries(inputs.marketplaces, curatedPlugins.entries),
     ...buildSharedPluginEntries(
       inputs.sharedPlugins ?? [],
       inputs.marketplaces,
+      inputs.viewerId,
+      new Set(
+        marketplacePlugins
+          .filter((entry) => entry.state === 'installed')
+          .map((entry) => entry.id),
+      ),
     ),
     ...buildCuratedPipelineEntries(inputs.curatedPipelines ?? []),
   ];
@@ -3385,6 +3579,13 @@ export function buildUnifiedPluginEntries(
   for (const share of inputs.sharedBlueprints ?? []) {
     creators.set(`blueprint:shared:${share.externalId}`, share.createdBy?.id);
     publications.set(`blueprint:shared:${share.externalId}`, true);
+  }
+  // A shared pipeline names its creator on the row itself, so the viewer's
+  // own share (folded into its local copy or not) lists in "Shared by me".
+  for (const pipeline of inputs.pipelines ?? []) {
+    if (pipeline.source === 'shared' && pipeline.createdBy) {
+      creators.set(`pipeline:shared:${pipeline.id}`, pipeline.createdBy.id);
+    }
   }
   return entries.map((entry) => ({
     ...entry,

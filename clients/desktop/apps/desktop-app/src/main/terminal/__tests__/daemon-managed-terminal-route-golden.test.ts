@@ -35,7 +35,7 @@ import type {
   TerminalPtySpawnOptions,
   WorkerTerminalEvent,
 } from '@canopy/core-runtime/node/terminal';
-import type * as ConfigPathsModule from '@canopy/desktop-shared/pipelines/config-paths';
+import type * as ConfigPathsModule from '@canopy/execution-engine/pipelines/config-paths';
 import type * as PathsModule from '../../lib/paths';
 import { markUnreachable } from '../../canopy-runtime/electron-daemon-connection';
 
@@ -135,9 +135,9 @@ jest.mock('@canopy/core-runtime/node', () => ({
     }),
   ),
 }));
-jest.mock('@canopy/desktop-shared/pipelines/config-paths', () => ({
+jest.mock('@canopy/execution-engine/pipelines/config-paths', () => ({
   ...jest.requireActual<typeof ConfigPathsModule>(
-    '@canopy/desktop-shared/pipelines/config-paths',
+    '@canopy/execution-engine/pipelines/config-paths',
   ),
   getBundledClaudeBinaryPath: (): string => '/opt/claude',
   getEnhancedEnv: (): Record<string, string | undefined> => ({

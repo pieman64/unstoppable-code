@@ -107,6 +107,7 @@ type _QueryNamesAreExact = Expect<
     | 'worker.script.execution.list'
     | 'worker.filesystem.link.resolve'
     | 'worker.pipeline.execution.get'
+    | 'worker.pipeline.execution.list'
     | 'worker.codeGraph.buildQueue.get'
     | 'worker.codeGraph.status.get'
     | 'worker.codeGraph.query'
@@ -191,6 +192,7 @@ type _WorkerNamesAreExact = Expect<
     | 'worker.script.execution.list'
     | 'worker.filesystem.link.resolve'
     | 'worker.pipeline.execution.get'
+    | 'worker.pipeline.execution.list'
     | 'worker.codeGraph.buildQueue.get'
     | 'worker.codeGraph.status.get'
     | 'worker.codeGraph.query'
@@ -1469,6 +1471,7 @@ describe('universal Canopy query registry', () => {
       'worker.script.execution.get',
       'worker.script.execution.list',
       'worker.pipeline.execution.get',
+      'worker.pipeline.execution.list',
       'worker.codeGraph.buildQueue.get',
       'worker.codeGraph.status.get',
       'worker.codeGraph.query',

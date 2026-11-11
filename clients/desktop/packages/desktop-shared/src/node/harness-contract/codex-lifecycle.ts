@@ -24,6 +24,7 @@ export const CODEX_LIFECYCLE = {
     'skills/changed': 'session state',
     'thread/name/updated': 'session state',
     'thread/readState/changed': 'session state',
+    'thread/section/changed': 'session state',
     'thread/attachment/updated': 'session state',
     'thread/goal/updated': 'session state',
     'thread/goal/cleared': 'session state',

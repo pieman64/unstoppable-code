@@ -416,7 +416,7 @@ async function readPipelineFileBounded(
 
 async function listBuiltinSkillNames(): Promise<readonly string[]> {
   const { getBundledSkillsDir } =
-    await import('@canopy/desktop-shared/pipelines/config-paths');
+    await import('@canopy/execution-engine/pipelines/config-paths');
   try {
     const entries = await readdir(getBundledSkillsDir(), {
       withFileTypes: true,

@@ -97,7 +97,7 @@ export function PipelineSummaryBar({
         <SummaryField label="Status">
           <span className="flex flex-wrap items-center gap-1.5">
             <Badge {...pipelineStatusBadge(state.status)}>{state.status}</Badge>
-            {planUpdated && <Badge tone="info">Plan updated</Badge>}
+            {planUpdated && <Badge tone="special">Plan updated</Badge>}
           </span>
         </SummaryField>
         <SummaryField label="Duration">

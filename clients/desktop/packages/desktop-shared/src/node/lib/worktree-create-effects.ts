@@ -1,6 +1,6 @@
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { classifyWorktreeAddFailure } from '@canopy/core-runtime/node/git';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { APP_ADVISOR_PROJECT_ID, APP_ADVISOR_WORKTREE_ID } from '../../types';
 import {
   initializePanelLayoutModeFile,

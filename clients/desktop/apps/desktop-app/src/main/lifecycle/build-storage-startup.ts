@@ -1,7 +1,7 @@
 import { app, dialog } from 'electron';
 import { writeSync } from 'node:fs';
 import { BRAND } from '@canopy/brand/current';
-import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { BuildStorageStartupRefused } from '@canopy/core-runtime/node/build-storage-startup';
 
 // Refuse before import-time services can turn maintenance into a crash dialog.

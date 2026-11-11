@@ -1,3 +1,5 @@
+import { publishAutoDeleteActivity } from '../lib/work-entry-auto-delete/activity';
+import { collectWatcherTargetKeys } from '../lib/auto-archive';
 import { z } from 'zod';
 import {
   newInlineWatcherSchema,
@@ -151,7 +153,7 @@ import { isErrnoException } from '../lib/type-guards';
 import {
   getEnhancedEnv,
   getLoginShellPath,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import {
   DELEGATION_WINDOWS_PROFILE_KEYS,
   buildDelegationCommandEnvironment,
@@ -12975,8 +12977,26 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     );
   }
 
+  /** Generated system notice, with the same steering and terminal bridge as watchers. */
+  async deliverSystemMessage(
+    destination: AppAdvisorWatcherDestination,
+    text: string,
+  ): Promise<void> {
+    await this.deliverWatcherMessageToChat(
+      { id: randomUUID(), destination },
+      {
+        text,
+        hiddenContextText:
+          'System-origin work entry auto-delete notification. This is not a user request.',
+      },
+      randomUUID(),
+      { kind: 'work-entry-auto-delete' },
+      WATCHER_DELIVERY_ACK_TIMEOUT_MS,
+    );
+  }
+
   private async deliverWatcherMessageToChat(
-    watcher: AppAdvisorWatcher,
+    watcher: Pick<AppAdvisorWatcher, 'id' | 'destination'>,
     message: { text: string; hiddenContextText: string },
     deliveryId: string,
     watcherFired?: { kind: string },
@@ -13437,6 +13457,13 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   }
 
   private notifyChange(watchers: AppAdvisorWatcher[]): void {
+    publishAutoDeleteActivity(
+      'watchers',
+      collectWatcherTargetKeys(
+        watchers.map((watcher) => toSummary(watcher)),
+        new Map(),
+      ),
+    );
     const generation = ++this.summaryNotificationGeneration;
     const surfaces = this.surfaces;
     const visible = watchers

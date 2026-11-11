@@ -9,6 +9,7 @@ import {
   Count,
   type CountTone,
   Dot,
+  type DotSize,
   type DotTone,
   Heading,
   StatusGlyph,
@@ -64,9 +65,11 @@ const DOT_TONES: readonly { tone: DotTone; meaning: string }[] = [
   { tone: 'unread', meaning: 'Unread' },
   { tone: 'attention', meaning: 'Waiting on you' },
   { tone: 'filter', meaning: 'Filter on' },
+  { tone: 'working', meaning: 'Working' },
   { tone: 'success', meaning: 'Connected' },
   { tone: 'danger', meaning: 'Offline' },
 ];
+const DOT_SIZES: readonly DotSize[] = ['regular', 'large'];
 const GLYPH_SIZES: readonly StatusGlyphSize[] = [12, 14, 20];
 
 const LONG_LABEL = 'Waiting for the deploy preview to finish building';
@@ -202,16 +205,25 @@ export function CountSection(): JSX.Element {
 
 export function DotSection(): JSX.Element {
   return (
-    <Panel id="dot" title="Dot, 6px">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        {DOT_TONES.map(({ tone, meaning }) => (
-          <Cell key={tone} label={tone}>
-            <span className="flex items-center gap-1.5 text-s fg-primary">
-              <Dot tone={tone} /> {meaning}
-            </span>
-          </Cell>
-        ))}
-      </div>
+    <Panel id="dot" title="Dot">
+      {DOT_SIZES.map((size) => (
+        <div key={size} className="flex flex-col gap-3">
+          <span className="text-xs font-medium fg-secondary">
+            {size === 'regular'
+              ? 'Regular, 6px'
+              : 'Large, 8px, in a leading icon slot'}
+          </span>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
+            {DOT_TONES.map(({ tone, meaning }) => (
+              <Cell key={tone} label={tone}>
+                <span className="flex items-center gap-1.5 text-s fg-primary">
+                  <Dot tone={tone} size={size} /> {meaning}
+                </span>
+              </Cell>
+            ))}
+          </div>
+        </div>
+      ))}
     </Panel>
   );
 }
@@ -392,6 +404,18 @@ export function ContextSection(): JSX.Element {
         <ContextRow label="Build worker">
           <Dot tone="danger" />
           <span className="text-xs fg-secondary">Offline</span>
+        </ContextRow>
+      </Surface>
+
+      <span className="text-xs font-medium fg-secondary">Terminals</span>
+      <Surface variant="group" size="small" className="w-full max-w-160">
+        <ContextRow label="Terminal 1">
+          <Dot tone="working" />
+          <span className="text-xs fg-secondary">node</span>
+        </ContextRow>
+        <ContextRow label="Terminal 2">
+          <Dot tone="unread" />
+          <span className="text-xs fg-secondary">exit 0, not seen</span>
         </ContextRow>
       </Surface>
 

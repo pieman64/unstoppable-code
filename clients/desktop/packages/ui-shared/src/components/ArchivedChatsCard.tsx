@@ -3,6 +3,7 @@ import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { SummaryIcon, UnarchiveIcon } from '../icons/AppIcons';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { Dot } from './Badge';
 import { Button } from './Button';
 import {
   DropdownMenuItem,
@@ -88,13 +89,7 @@ function ArchivedChatsCardRow({
           }`}
         >
           {item.icon ?? (
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                item.unread === true
-                  ? OPERATIONAL_STATUS_COLORS.unread.background
-                  : 'bg-fg-tertiary'
-              }`}
-            />
+            <Dot tone={item.unread === true ? 'unread' : 'filter'} />
           )}
         </span>
         <span className="flex min-w-0 flex-1 flex-col">

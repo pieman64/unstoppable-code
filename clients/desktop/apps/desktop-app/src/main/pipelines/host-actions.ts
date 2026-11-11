@@ -26,15 +26,15 @@ import {
   PipelineHostRefusal,
   type MoveToGroupInputs,
   type MoveToGroupNotGroupedReason,
-} from '@canopy/desktop-shared/pipelines/host-actions';
+} from '@canopy/execution-engine/pipelines/host-actions';
 import type { SidebarItemGroupScope } from '@canopy/protocol/sidebar';
-import { emptyCreateWorktreeOutputs } from '@canopy/desktop-shared/pipelines/host-create-worktree';
+import { emptyCreateWorktreeOutputs } from '@canopy/execution-engine/pipelines/host-create-worktree';
 import {
   emptyCreateBotEntryOutputs,
   emptyCreateProjectEntryOutputs,
-} from '@canopy/desktop-shared/pipelines/host-create-entry';
-import { emptySendAgentMessageOutputs } from '@canopy/desktop-shared/pipelines/host-send-agent-message';
-import { emptyWaitForAgentReplyOutputs } from '@canopy/desktop-shared/pipelines/host-wait-for-agent-reply';
+} from '@canopy/execution-engine/pipelines/host-create-entry';
+import { emptySendAgentMessageOutputs } from '@canopy/execution-engine/pipelines/host-send-agent-message';
+import { emptyWaitForAgentReplyOutputs } from '@canopy/execution-engine/pipelines/host-wait-for-agent-reply';
 import type {
   PipelineHostActionCaller,
   PipelineHostActionControls,

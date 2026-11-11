@@ -29,6 +29,7 @@ import {
 import { formatAskUserAnswers } from '@canopy/desktop-shared/lib/ask-user-answers';
 import {
   setAutoArchiveSchema,
+  setWorkEntryAutoDeleteSchema,
   setBaseBranchSchema,
   askUserQuestionSchema,
   buildOrUpdateCodeGraphSchema,
@@ -371,7 +372,7 @@ export async function executeCanopyInjectedTool(
         };
       return executePreviewVisual(parsed.data, runtime.showVisual, {
         imageBudgetBytes:
-          context?.imageBudgetBytes ?? VISUAL_PREVIEW_BUDGETS.cursorImageBytes,
+          context?.imageBudgetBytes ?? VISUAL_PREVIEW_BUDGETS.acpImageBytes,
         ...(context?.signal ? { signal: context.signal } : {}),
       });
     }
@@ -404,6 +405,8 @@ export async function executeCanopyInjectedTool(
       return executeLocalWatcher(canonicalKey, rawArgs, runtime, context);
     case 'set_auto_archive':
       return executeSetAutoArchive(rawArgs, runtime, context);
+    case 'set_work_entry_auto_delete':
+      return executeSetWorkEntryAutoDelete(rawArgs, runtime);
     case 'set_base_branch':
       return executeSetBaseBranch(rawArgs, runtime, context);
     case 'get_code_graph_context':
@@ -989,12 +992,12 @@ async function executeSetAutoArchive(
 ): Promise<CanopyInjectedToolTextResult> {
   const parsed = setAutoArchiveSchema.safeParse(rawArgs);
   if (!parsed.success) {
-    return invalidArguments('SetAutoArchive');
+    return invalidArguments('SetChatAutoArchive');
   }
   const chat = runtime.autoArchiveChat;
   if (!chat) {
     return {
-      text: 'SetAutoArchive is only available for chats.',
+      text: 'SetChatAutoArchive is only available for chats.',
       isError: true,
     };
   }
@@ -1020,6 +1023,36 @@ async function executeSetAutoArchive(
       ? 'Auto-archive is enabled for this chat when the current agent turn completes.'
       : 'Auto-archive is disabled for this chat; it will stay open when the current agent turn completes.',
   };
+}
+
+async function executeSetWorkEntryAutoDelete(
+  rawArgs: unknown,
+  runtime: CanopyInjectedToolRuntime,
+): Promise<CanopyInjectedToolTextResult> {
+  const parsed = setWorkEntryAutoDeleteSchema.safeParse(rawArgs);
+  if (!parsed.success) return invalidArguments('SetWorkEntryAutoDelete');
+  const chat = runtime.worktreeWatcherRuntime;
+  if (!chat) {
+    return {
+      text: 'SetWorkEntryAutoDelete is only available for chats in a worktree or work entry.',
+      isError: true,
+    };
+  }
+  if (chat.delegationId !== undefined) {
+    return {
+      text: 'SetWorkEntryAutoDelete is only available to the chat that owns this work entry, not to delegates.',
+      isError: true,
+    };
+  }
+  const { setWorkEntryAutoDeleteFromAgent } =
+    await import('../lib/work-entry-auto-delete');
+  const result = await setWorkEntryAutoDeleteFromAgent({
+    workspaceId: chat.projectId,
+    targetId: chat.worktreeId,
+    chatId: chat.chatId,
+    ...parsed.data,
+  });
+  return { text: result.message, isError: !result.ok };
 }
 
 async function executeSetBaseBranch(

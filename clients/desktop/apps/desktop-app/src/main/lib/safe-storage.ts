@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { logMainProcessWarn } from './main-process-logging';
 import { isRecord } from './type-guards';
-import { getLinuxSecretServiceState } from './linux-secret-service';
+import {
+  getLinuxSecretServiceState,
+  getLinuxSecretServiceStateAsync,
+} from './linux-secret-service';
 import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import {
   probeLinuxSafeStorageRecovery,
@@ -147,24 +150,54 @@ export function disableSafeStoragePlainTextEncryption(): void {
   }
   storage.setUsePlainTextEncryption(false);
   if (hostOperatingSystem() === 'linux') {
-    recordProviderState(storage, getLinuxSecretServiceState());
+    if (isReadableSafeStorage(storage)) probeLinuxSecretService(storage);
+    else recordProviderState(storage, getLinuxSecretServiceState());
   }
 }
 
-/** Only background child-environment injection may reuse a recent observation. */
+/** Background child-environment injection additionally reuses recovery outcomes. */
 export interface SafeStorageReadOptions {
   readonly forSpawn?: boolean;
 }
 
-let spawnObservation: {
+/*
+ * Linux keeps the last Secret Service observation in memory (CAN-6087). Each
+ * probe forks the whole main process, three times, so while the remembered
+ * state is secure no read, write, status check or cloud request launches one.
+ * The state is checked again only:
+ * - at startup, and before Chromium's first native initialization (see
+ *   nativeInitialized);
+ * - while it is negative (locked or unavailable), by any operation, read or
+ *   write, at most every NEGATIVE_RECHECK_MS, so sign-in and tunneled reads
+ *   recover after an unlock without Retry;
+ * - after an encrypt or decrypt failure, at most every FAILURE_RECHECK_MS;
+ * - when a secure storage notice is shown, at most every SHOWN_RECHECK_MS,
+ *   and on its explicit Retry, unthrottled (recheckSafeStorage).
+ * Noticing a keyring locked mid-session is a non-goal: Chromium keeps
+ * encrypting with the key it already holds, so saves stay encrypted and
+ * readable after the next launch.
+ */
+const NEGATIVE_RECHECK_MS = 5_000;
+const FAILURE_RECHECK_MS = 30_000;
+const SHOWN_RECHECK_MS = 30_000;
+
+let providerObservation: {
   storage: ReadableSafeStorage;
   state: SafeStorageBackendState;
-  expiresAt: number;
-  nativeReady: boolean;
 } | null = null;
+// Bumped by every synchronous observation and every drop. An asynchronous
+// re-check applies only if none happened while it ran, and only if no newer
+// asynchronous re-check already applied.
+let synchronousObservations = 0;
+let asyncRechecks = 0;
+let appliedAsyncRecheck = 0;
+const negativeRecheckAt = new WeakMap<ReadableSafeStorage, number>();
+const failureRecheckAt = new WeakMap<ReadableSafeStorage, number>();
+const shownRecheckAt = new WeakMap<ReadableSafeStorage, number>();
 
 // Helper readiness is not proof that Chromium in this parent initialized.
 const nativeConfirmed = new WeakSet<object>();
+const nativeAttempted = new WeakSet<object>();
 const recoveryRequired = new WeakSet<object>();
 
 function recordProviderState(
@@ -176,39 +209,121 @@ function recordProviderState(
   }
 }
 
-function observeLinuxSecretService(
+function clearProviderObservation(): void {
+  providerObservation = null;
+  synchronousObservations += 1;
+}
+
+function recordProviderObservation(
   storage: ReadableSafeStorage,
-  options: SafeStorageReadOptions,
-): SafeStorageBackendState {
-  const now = performance.now();
-  if (
-    options.forSpawn &&
-    spawnObservation?.storage === storage &&
-    now < spawnObservation.expiresAt &&
-    (spawnObservation.state !== 'secure' || spawnObservation.nativeReady)
-  ) {
-    return spawnObservation.state;
-  }
-  const state = getLinuxSecretServiceState();
+  state: SafeStorageBackendState,
+  synchronous = true,
+): void {
   recordProviderState(storage, state);
-  // Every live read/write/status supersedes the spawn observation. Never let
-  // a cached positive authorize Chromium's first native initialization.
-  spawnObservation = {
-    storage,
-    state,
-    expiresAt: performance.now() + 1_000,
-    nativeReady:
-      spawnObservation?.storage === storage && spawnObservation.nativeReady,
-  };
+  providerObservation = { storage, state };
+  // Every observation, synchronous or not, opens the negative re-check window.
+  negativeRecheckAt.set(storage, performance.now() + NEGATIVE_RECHECK_MS);
+  if (synchronous) synchronousObservations += 1;
+}
+
+function probeLinuxSecretService(
+  storage: ReadableSafeStorage,
+): SafeStorageBackendState {
+  const state = getLinuxSecretServiceState();
+  recordProviderObservation(storage, state);
   return state;
 }
 
-function recordNativeAvailability(
+/**
+ * Chromium consumes its one-shot native initialization even on failure, so
+ * its first availability call needs a live positive, never a remembered one.
+ * Recovery-routed storage never calls that getter.
+ */
+function nativeInitialized(storage: ReadableSafeStorage): boolean {
+  return nativeAttempted.has(storage) || recoveryRequired.has(storage);
+}
+
+/** The remembered provider state; see the trigger list above. */
+function observeLinuxSecretService(
   storage: ReadableSafeStorage,
-  available: unknown,
-): void {
-  if (spawnObservation?.storage !== storage) return;
-  if (available === true) spawnObservation.nativeReady = true;
+): SafeStorageBackendState {
+  const observation = providerObservation;
+  if (
+    observation?.storage !== storage ||
+    (observation.state === 'secure' && !nativeInitialized(storage)) ||
+    (observation.state !== 'secure' &&
+      performance.now() >= (negativeRecheckAt.get(storage) ?? 0))
+  )
+    return probeLinuxSecretService(storage);
+  return observation.state;
+}
+
+function recheckAfterFailure(storage: ReadableSafeStorage): void {
+  if (hostOperatingSystem() !== 'linux') return;
+  const now = performance.now();
+  if (now < (failureRecheckAt.get(storage) ?? 0)) return;
+  failureRecheckAt.set(storage, now + FAILURE_RECHECK_MS);
+  probeLinuxSecretService(storage);
+}
+
+function readyLinuxStorage(): ReadableSafeStorage | null {
+  if (hostOperatingSystem() !== 'linux') return null;
+  const context = getElectronContext();
+  if (!isAppReady(context?.app)) return null;
+  const storage = context?.safeStorage;
+  return isReadableSafeStorage(storage) ? storage : null;
+}
+
+/**
+ * Re-check the provider after a native encrypt or decrypt failure, so the
+ * error that follows reports the current state. Throttled; Retry is not.
+ */
+export function recheckSafeStorageAfterFailure(): void {
+  const storage = readyLinuxStorage();
+  if (storage) recheckAfterFailure(storage);
+}
+
+/** What asked for a re-check: the notice's Retry, or the notice being shown. */
+export type SafeStorageRecheckTrigger = 'retry' | 'shown';
+
+/**
+ * Re-check the provider off the main thread and report whether its state
+ * changed. `retry` is unthrottled and lifts every throttle and helper backoff,
+ * so the caller's next operation re-routes, through CAN-5422 helper recovery
+ * when the parent's native initialization failed. `shown` keeps a displayed
+ * notice current and runs at most every SHOWN_RECHECK_MS. A newer re-check,
+ * such as a Retry overlapping a shown check, always supersedes an older one.
+ * A no-op on macOS and Windows.
+ */
+export async function recheckSafeStorage(
+  trigger: SafeStorageRecheckTrigger,
+): Promise<boolean> {
+  const storage = readyLinuxStorage();
+  if (!storage) return false;
+  const now = performance.now();
+  if (trigger === 'shown') {
+    if (now < (shownRecheckAt.get(storage) ?? 0)) return false;
+  } else {
+    negativeRecheckAt.delete(storage);
+    failureRecheckAt.delete(storage);
+    recoveryRetryAt.delete(storage);
+  }
+  shownRecheckAt.set(storage, now + SHOWN_RECHECK_MS);
+  const previous =
+    providerObservation?.storage === storage ? providerObservation.state : null;
+  const request = ++asyncRechecks;
+  const synchronousAtStart = synchronousObservations;
+  const state = await getLinuxSecretServiceStateAsync();
+  // A synchronous observation since this request started is at least as
+  // fresh, and a newer request that already applied supersedes this one.
+  if (
+    synchronousObservations === synchronousAtStart &&
+    request > appliedAsyncRecheck
+  ) {
+    appliedAsyncRecheck = request;
+    recordProviderObservation(storage, state, false);
+  }
+  return providerObservation?.state !== previous;
 }
 
 // Readiness metadata only: every actual recovery cipher runs in a fresh helper.
@@ -305,7 +420,6 @@ function recoveryAvailable(
       return false;
     }
   }
-  recordNativeAvailability(storage, true);
   return true;
 }
 
@@ -313,7 +427,7 @@ function invalidateRecovery(storage: ReadableSafeStorage): void {
   spawnDecryptions.delete(storage);
   recoveryReady.delete(storage);
   recoveryRetryAt.set(storage, performance.now() + 1_000);
-  spawnObservation = null;
+  recheckAfterFailure(storage);
 }
 
 function usesRecovery(storage: ReadableSafeStorage): boolean {
@@ -384,20 +498,20 @@ function classifySafeStorage(
     backend: null,
   };
   if (!isAppReady(context?.app)) {
-    spawnObservation = null;
+    clearProviderObservation();
     return unavailable;
   }
 
   const storage = context?.safeStorage;
   if (!isWritableSafeStorage(storage)) {
-    spawnObservation = null;
+    clearProviderObservation();
     return unavailable;
   }
   const platform = hostOperatingSystem();
   if (platform === null) return unavailable;
 
   if (platform === 'linux') {
-    const state = observeLinuxSecretService(storage, options);
+    const state = observeLinuxSecretService(storage);
     if (state !== 'secure')
       return { state, backend: getSelectedStorageBackend(storage) };
     if (recoveryRequired.has(storage)) {
@@ -413,8 +527,8 @@ function classifySafeStorage(
 
   let available: boolean;
   try {
+    if (platform === 'linux') nativeAttempted.add(storage);
     const result: unknown = storage.isEncryptionAvailable();
-    if (platform === 'linux') recordNativeAvailability(storage, result);
     if (platform === 'linux' && result === true) nativeConfirmed.add(storage);
     if (typeof result !== 'boolean') return unavailable;
     available = result;
@@ -443,7 +557,7 @@ function isEncryptionAvailable(
   requireSecureProvider = false,
 ): boolean {
   if (hostOperatingSystem() !== 'linux') return storage.isEncryptionAvailable();
-  const provider = observeLinuxSecretService(storage, options);
+  const provider = observeLinuxSecretService(storage);
   if (provider !== 'secure') {
     if (requireSecureProvider) {
       refuseSafeStorageWrite({
@@ -463,8 +577,8 @@ function isEncryptionAvailable(
     }
     return available;
   }
+  nativeAttempted.add(storage);
   const available = storage.isEncryptionAvailable();
-  recordNativeAvailability(storage, available);
   if (available === true) {
     nativeConfirmed.add(storage);
     recoveryReady.delete(storage);
@@ -473,11 +587,11 @@ function isEncryptionAvailable(
 }
 
 /**
- * Lazily classifies a fresh Electron context without encryption. Only explicit
- * spawn reads may reuse the short-lived Linux observation; defaults stay live.
- * Before app readiness it returns `unavailable`; backend probes run only after
- * readiness. Each facade write independently evaluates the same policy again.
- * Secret consumers use the typed secure-storage policy layer.
+ * Lazily classifies a fresh Electron context without encryption. On Linux it
+ * reads the remembered provider state and launches nothing. Before app
+ * readiness it returns `unavailable`; backend probes run only after readiness.
+ * Each facade write independently evaluates the same policy again. Secret
+ * consumers use the typed secure-storage policy layer.
  */
 export function getSafeStorageStatus(
   options: SafeStorageReadOptions = {},

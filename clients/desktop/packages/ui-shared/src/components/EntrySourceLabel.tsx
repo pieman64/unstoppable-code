@@ -1,5 +1,7 @@
+import type { ShareScope } from '@canopy/protocol/sharing';
 import type { JSX, ReactNode } from 'react';
 import { ClaudeLogo, CodexLogo } from '../icons';
+import { shareAudienceLabelText } from '../lib/share-audience-label';
 import {
   parseProviderSourceLabel,
   sourceLabelProvider,
@@ -106,17 +108,52 @@ export function EntrySourceLabel({
   );
 }
 
-/** Routine workflow provenance, shared by desktop and paired Portal pickers. */
+/** Where a workflow comes from, in the vocabulary of the desktop picker. */
+export type PipelineOrigin =
+  | 'bundled'
+  | 'user'
+  | 'project'
+  | 'shared'
+  | 'curated';
+
+const PIPELINE_ORIGIN_LABELS: Record<PipelineOrigin, string> = {
+  bundled: 'Bundled',
+  user: 'Custom',
+  project: 'Project',
+  shared: 'Shared',
+  curated: 'Curated',
+};
+
+/** The label desktop and paired Portal pickers show for a workflow origin. */
+export function pipelineOriginLabel(origin: PipelineOrigin): string {
+  return PIPELINE_ORIGIN_LABELS[origin];
+}
+
+/**
+ * The audience of a local item the viewer shared, for its source or ownership
+ * label. A public-link share is stored as `private`, so it reads `Shared`.
+ */
+export function ownShareAudienceText(audience: ShareScope): string {
+  return audience === 'private' ? 'Shared' : shareAudienceLabelText(audience);
+}
+
+/**
+ * Routine workflow provenance, shared by desktop and paired Portal pickers.
+ * `audience` marks a local row the viewer shared: `Custom · Organization`.
+ */
 export function PipelineSourceLabel({
   children,
+  audience,
   'data-testid': testId,
 }: {
   readonly children: ReactNode;
+  readonly audience?: ShareScope;
   readonly 'data-testid'?: string;
 }): JSX.Element {
   return (
     <span data-testid={testId} className="shrink-0 text-2xs fg-tertiary">
       {children}
+      {audience ? ` · ${ownShareAudienceText(audience)}` : null}
     </span>
   );
 }

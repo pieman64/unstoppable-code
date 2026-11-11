@@ -4,7 +4,7 @@ import {
   getBundledBinaryMember,
   getEnhancedEnv,
   resolveBundledBinary,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import type { McpServer } from '@agentclientprotocol/sdk';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';

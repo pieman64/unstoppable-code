@@ -26,6 +26,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { isWorkEntryWorkspace } from '../lib/workspace-registry';
 import { validateId } from '../lib/validation';
+import { canonicalizePanelAuxWindowBounds } from '../panels/aux-window-service';
 import { defaultPanelLayoutStore } from '../panels/default-layout-persistence';
 import { panelLayoutPersistenceStore } from '../panels/persistence';
 import { registerIpcHandler } from './register';
@@ -79,13 +80,13 @@ export function registerPanelLayoutHandlers(
 
   registerIpcHandler<[SaveWorktreePanelLayoutRequest], void>(
     IPC_CHANNELS.panelLayoutSave,
-    (_event, request): Promise<void> => {
+    (event, request): Promise<void> => {
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
       panelLayoutPersistenceStore.saveWorktreeLayout(
         request.projectId,
         request.worktreeId,
-        request.layout,
+        canonicalizePanelAuxWindowBounds(request.layout, event.sender),
         request.hasUserChanges !== false,
       );
       if (request.hasUserChanges !== false) {

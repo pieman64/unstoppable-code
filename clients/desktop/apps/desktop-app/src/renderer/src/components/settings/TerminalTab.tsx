@@ -47,9 +47,9 @@ import {
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import {
-  TerminalDefaultShellBadge,
+  TerminalDefaultShellNote,
   TERMINAL_DEFAULT_SHELL_TOOLTIP,
-} from '@/components/terminal/TerminalDefaultShellBadge';
+} from '@/components/terminal/TerminalDefaultShellNote';
 import { useTerminalPresetColorMode } from '@/hooks/useTerminalPresetColorMode';
 import {
   resolveTerminalPresetImageDataUrl,
@@ -436,7 +436,8 @@ export function TerminalTab(): JSX.Element {
                   <>
                     {option.isDefault ? (
                       <Tooltip label={TERMINAL_DEFAULT_SHELL_TOOLTIP}>
-                        <TerminalDefaultShellBadge
+                        {/* Focusable so the keyboard reaches the tooltip. */}
+                        <TerminalDefaultShellNote
                           testId="terminal-shell-default-badge"
                           focusable
                         />

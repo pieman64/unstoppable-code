@@ -56,6 +56,7 @@ export const internalRootCleanupCategories = [
   'os-metadata',
   'prunable-git-worktree',
   'inert-archive-staging',
+  'abandoned-archive',
   'orphaned-worktree-data',
   'unrecognized-workspace-file',
 ] as const;
@@ -100,6 +101,26 @@ function isCleanupCandidate(value: unknown): boolean {
       (isString(value.worktreePath) && isAbsolute(value.worktreePath)))
   );
 }
+function isCleanupTotals(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (total: unknown): total is Record<string, unknown> =>
+        isRecord(total) &&
+        hasOnlyKeys(total, ['category', 'entries', 'bytes']) &&
+        isCleanupCategory(total.category) &&
+        isNonnegativeInteger(total.entries) &&
+        isNonnegativeInteger(total.bytes),
+    ) &&
+    new Set(value.map((total) => total.category)).size === value.length &&
+    // Version 1 reports written before CAN-6119 omit this zero total.
+    internalRootCleanupCategories.every(
+      (category) =>
+        category === 'abandoned-archive' ||
+        value.some((total) => total.category === category),
+    )
+  );
+}
 export function isInternalRootCleanupReport(
   value: unknown,
   path: string,
@@ -129,16 +150,7 @@ export function isInternalRootCleanupReport(
       isNonnegativeInteger(value.restoreSource.bytes)) &&
     Array.isArray(value.entries) &&
     value.entries.every(isCleanupCandidate) &&
-    Array.isArray(value.totals) &&
-    value.totals.length === internalRootCleanupCategories.length &&
-    value.totals.every(
-      (total: unknown) =>
-        isRecord(total) &&
-        hasOnlyKeys(total, ['category', 'entries', 'bytes']) &&
-        isCleanupCategory(total.category) &&
-        isNonnegativeInteger(total.entries) &&
-        isNonnegativeInteger(total.bytes),
-    ) &&
+    isCleanupTotals(value.totals) &&
     isNonnegativeInteger(value.reclaimableBytes) &&
     Array.isArray(value.warnings) &&
     value.warnings.every(isString)
@@ -276,12 +288,16 @@ function isLifecycleJournalEvidence(
 ): value is InternalRootLifecycleJournalEvidence {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, [
-      'name',
-      'raw',
-      'workspaceIdentity',
-      'ownedIdentities',
-    ]) &&
+    hasOnlyKeys(
+      value,
+      ['name', 'raw', 'workspaceIdentity', 'ownedIdentities'],
+      ['abandoned'],
+    ) &&
+    (value.abandoned === undefined ||
+      (isRecord(value.abandoned) &&
+        hasOnlyKeys(value.abandoned, ['workspaceId', 'worktreeId']) &&
+        isString(value.abandoned.workspaceId) &&
+        isString(value.abandoned.worktreeId))) &&
     isString(value.name) &&
     isString(value.raw) &&
     isNullableString(value.workspaceIdentity) &&
@@ -294,14 +310,23 @@ function isRepairPlan(value: unknown): value is InternalRootRepairPlan {
     hasOnlyKeys(
       value,
       ['transition', 'gitPlan', 'ownedPaths', 'workspaces'],
-      ['lifecycleJournals'],
+      ['lifecycleJournals', 'abandonedPaths'],
     ) &&
+    (value.abandonedPaths === undefined ||
+      isArrayOf(
+        value.abandonedPaths,
+        (path): path is string =>
+          isString(path) && isAbsolute(path) && resolve(path) === path,
+      )) &&
     isTransition(value.transition) &&
     isGitPlan(value.gitPlan) &&
     isArrayOf(value.ownedPaths, isString) &&
     isArrayOf(value.workspaces, isWorkspace) &&
     (value.lifecycleJournals === undefined ||
-      isArrayOf(value.lifecycleJournals, isLifecycleJournalEvidence))
+      (isArrayOf(value.lifecycleJournals, isLifecycleJournalEvidence) &&
+        (!value.lifecycleJournals.some((entry) => entry.abandoned) ||
+          (Array.isArray(value.abandonedPaths) &&
+            value.abandonedPaths.length > 0))))
   );
 }
 function isSnapshot(value: unknown): value is InternalRootExternalSnapshot {

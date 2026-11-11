@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { access, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getCursorRuntimeRootDir } from '../../pipelines/config-paths';
+import { getCursorRuntimeRootDir } from '@canopy/execution-engine/pipelines/config-paths';
 import {
   CURSOR_RUNTIME_VERSION,
   getCursorRuntimeTargetForHost,

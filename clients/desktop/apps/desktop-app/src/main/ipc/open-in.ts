@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import {
   getEnhancedEnv,
   getLoginShellPath,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import {
   APP_LAUNCH_NO_LONGER_AVAILABLE_MESSAGE,
   IPC_CHANNELS,

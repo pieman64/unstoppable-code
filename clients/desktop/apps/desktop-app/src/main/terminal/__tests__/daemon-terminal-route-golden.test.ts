@@ -280,6 +280,13 @@ jest.mock('../../lib/slow-action-tracker', () => ({
 jest.mock('../../lib/main-process-logging', () => ({
   logMainProcessWarn: (): void => undefined,
 }));
+// CAN-5093: the route outcome each terminal decision records.
+const mockRouteRecords: [string, string][] = [];
+jest.mock('../../canopy-runtime/daemon-route-telemetry', () => ({
+  recordDaemonRoute: (family: string, reason: string): void => {
+    mockRouteRecords.push([family, reason]);
+  },
+}));
 
 const handlers = new Map<string, Parameters<typeof ipcMain.handle>[1]>();
 let main: BrowserWindow;
@@ -347,6 +354,7 @@ afterAll(() => {
   rmSync(mockState.root, { recursive: true, force: true });
 });
 beforeEach(() => {
+  mockRouteRecords.length = 0;
   mockState.daemon = undefined;
   mockState.failure = undefined;
   mockState.failureAfterCreate = false;
@@ -446,6 +454,7 @@ describe('terminal:spawn and terminal:restore default daemon placement (CAN-5718
     ).resolves.toMatchObject({ id: 'engine-1' });
     expect([...mockState.local.keys()]).toEqual(['engine-1']);
     expect([...mockState.hosted.keys()]).toEqual([]);
+    expect(mockRouteRecords).toEqual([['terminals', 'caller']]);
   });
 
   it.each([
@@ -471,6 +480,11 @@ describe('terminal:spawn and terminal:restore default daemon placement (CAN-5718
     ).resolves.toMatchObject({ id: 'engine-1' });
     expect([...mockState.local.keys()]).toEqual(['engine-1']);
     expect([...mockState.hosted.keys()]).toEqual([]);
+    // Each decision is counted once, as the fallback it took.
+    expect(mockRouteRecords).toHaveLength(1);
+    expect(mockRouteRecords[0]?.[1]).toMatch(
+      /^(unreachable|host_unavailable)$/,
+    );
   });
 
   it.each([
@@ -491,6 +505,8 @@ describe('terminal:spawn and terminal:restore default daemon placement (CAN-5718
     });
     expect([...mockState.local.keys()]).toEqual([]);
     expect(mockState.hosted.size).toBe(mockState.failureAfterCreate ? 1 : 0);
+    // Each decision is counted once, refusals included.
+    expect(mockRouteRecords).toEqual([['terminals', 'refused']]);
   });
 });
 

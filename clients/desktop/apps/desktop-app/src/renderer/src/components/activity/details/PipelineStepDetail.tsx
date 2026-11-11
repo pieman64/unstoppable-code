@@ -26,7 +26,7 @@ import {
 import {
   DEFAULT_SHELL,
   DEFAULT_TIMEOUT_MINUTES,
-} from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+} from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { AnsiOutput } from '../AnsiOutput';
 import { TranscriptViewer } from '../../chat/TranscriptViewer';
 import { LoadingSpinner } from '../../shared/loading/spinners/LoadingSpinner';

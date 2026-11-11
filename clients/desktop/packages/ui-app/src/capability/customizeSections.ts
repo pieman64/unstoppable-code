@@ -599,11 +599,15 @@ export function buildCustomizeTabModel(
     const installedKeys = searchActive
       ? canonicalInstallsOf(tabEntries)
       : canonicalInstalls;
+    // When Shared by me is shown, the viewer's own share folded into its
+    // local Collection lists only there; the local row stands for it under
+    // Installed.
     const installedCollectionShares = entries.filter(
       (entry) =>
         entry.ref.type === 'shared-collection' &&
         entry.origin === 'shared' &&
-        isInstalled(entry),
+        isInstalled(entry) &&
+        !(input.ownershipAvailable && ownedByViewer(entry)),
     );
     const browse = marketplaceBrowseEntries(
       entries,

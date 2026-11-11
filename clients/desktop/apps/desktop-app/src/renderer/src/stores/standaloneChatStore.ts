@@ -475,6 +475,8 @@ interface StandaloneChatState {
     projectId: string,
     entryId: string,
   ) => Promise<void>;
+  /** Leave a work entry that is being removed if it is the active one. */
+  leaveRemovedWorkEntry: (projectId: string, entryId: string) => Promise<void>;
   /**
    * New chat tab within the ACTIVE Work Entry. Reuses the entry's empty
    * active tab instead of creating a duplicate. CoworkTopBar's New-chat
@@ -1959,22 +1961,26 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       set((state) => ({
         workEntries: state.workEntries.filter((entry) => entry.id !== entryId),
       }));
+      await get().leaveRemovedWorkEntry(resolvedProjectId, entryId);
+    },
 
-      if (get().activeWorkEntryId === entryId) {
-        set({ activeWorkEntryId: null });
-        const selected = chatStore.selectedWorktree;
-        if (
-          selected?.projectId === resolvedProjectId &&
-          selected.worktreeId === entryId
-        ) {
-          chatStore.deselectWorktree();
-        }
-        const next = get().workEntries[0];
-        if (next) {
-          await get().selectWorkEntry(next.id);
-        } else {
-          await get().createWorkEntry();
-        }
+    leaveRemovedWorkEntry: async (projectId, entryId): Promise<void> => {
+      if (
+        projectId !== get().activeChatProjectId ||
+        get().activeWorkEntryId !== entryId
+      )
+        return;
+      set({ activeWorkEntryId: null });
+      const chatStore = useChatStore.getState();
+      const selected = chatStore.selectedWorktree;
+      if (selected?.projectId === projectId && selected.worktreeId === entryId)
+        chatStore.deselectWorktree();
+      // The entry may still be listed while its removal runs.
+      const next = get().workEntries.find((entry) => entry.id !== entryId);
+      if (next) {
+        await get().selectWorkEntry(next.id);
+      } else {
+        await get().createWorkEntry();
       }
     },
 

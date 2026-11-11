@@ -6,7 +6,7 @@ import { Tooltip } from '@canopy/ui-shared';
 import { Button } from '@canopy/ui-shared/components';
 import type { TelemetryHeadlineCard } from '@canopy/protocol/telemetry';
 import { formatCardValue } from './format';
-import { TrendChip, type TrendColorScheme } from './TrendChip';
+import { TrendIndicator, type TrendColorScheme } from './TrendIndicator';
 import { Surface } from '@canopy/ui-shared/components';
 
 export type { TrendColorScheme };
@@ -124,7 +124,7 @@ export function HeadlineCards({
             {detail?.caption !== undefined ? (
               <p className="mt-1 text-xs fg-secondary">{detail.caption}</p>
             ) : (
-              <TrendChip
+              <TrendIndicator
                 current={card.value}
                 previous={card.previousValue}
                 scheme={trendColorScheme}

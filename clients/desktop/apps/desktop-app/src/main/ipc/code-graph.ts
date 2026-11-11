@@ -55,7 +55,10 @@ import {
 } from '../code-graph/daemon-code-graph-route-context';
 import {
   combinedCodeGraphBuildState,
+  noteDaemonCodeGraphBuildExcluded,
+  noteDaemonCodeGraphBuildSettled,
   selectDaemonCodeGraph,
+  selectDaemonCodeGraphExclusion,
   type DaemonCodeGraphRouteContext,
 } from '../code-graph/daemon-code-graph-route';
 import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
@@ -769,14 +772,17 @@ export function registerCodeGraphHandlers(
       };
       try {
         // The dispatcher's build takes the daemon route when it is selected.
+        const exclusion = selectDaemonCodeGraphExclusion(routeContext(event));
+        if (exclusion !== null) noteDaemonCodeGraphBuildExcluded(exclusion);
         const { daemon } = await withDaemonCodeGraphRoute(
-          selectDaemonCodeGraph(routeContext(event)),
+          exclusion === null,
           () =>
             buildCodeGraphThroughWorker(
               runtime.dispatcher,
               runtime.resolveCaller(event),
               graphScope,
             ),
+          noteDaemonCodeGraphBuildSettled,
         );
         return await loadWorktreeSummary(request, daemon);
       } catch (error) {

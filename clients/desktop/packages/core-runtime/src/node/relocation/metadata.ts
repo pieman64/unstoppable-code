@@ -23,7 +23,7 @@ export interface RelocationWorkspaceEvidence {
   readonly ownedPaths?: readonly string[];
 }
 
-type PathProjection = (path: unknown) => string;
+type PathProjection = (path: unknown, field: string) => string;
 
 function pathFields(
   value: unknown,
@@ -34,9 +34,9 @@ function pathFields(
   if (!isJsonObject(value))
     throw new RelocationRefusedError('invalid-worktree-path-record');
   const next = { ...value };
-  for (const key of required) next[key] = project(value[key]);
+  for (const key of required) next[key] = project(value[key], key);
   for (const key of optional)
-    if (value[key] !== undefined) next[key] = project(value[key]);
+    if (value[key] !== undefined) next[key] = project(value[key], key);
   return next;
 }
 
@@ -143,6 +143,7 @@ function worktreePaths(
 /** Enumerate exactly the list owner's named path fields, not arbitrary JSON strings. */
 export function relocationWorktreeOwnedPaths(
   raw: string | null,
+  options: { readonly checkoutsOnly?: boolean } = {},
 ): readonly string[] {
   if (raw === null) return [];
   const document: unknown = JSON.parse(raw);
@@ -152,10 +153,21 @@ export function relocationWorktreeOwnedPaths(
   for (const row of document.worktrees) {
     if (!isWorkspaceWorktreeReadRow(row))
       throw new RelocationRefusedError('invalid-worktree-path-record');
-    worktreePaths(row, (path) => {
+    worktreePaths(row, (path, field) => {
       if (typeof path !== 'string')
         throw new RelocationRefusedError('invalid-worktree-path');
-      paths.add(path);
+      // Relocation references include shared repositories, not just checkout ownership.
+      if (
+        !options.checkoutsOnly ||
+        [
+          'checkoutPath',
+          'newWorktreePath',
+          'oldWorktreePath',
+          'worktreePath',
+          'path',
+        ].includes(field)
+      )
+        paths.add(path);
       return path;
     });
   }

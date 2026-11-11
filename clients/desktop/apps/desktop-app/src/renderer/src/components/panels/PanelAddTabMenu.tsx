@@ -75,9 +75,9 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import {
-  TerminalDefaultShellBadge,
+  TerminalDefaultShellNote,
   TERMINAL_DEFAULT_SHELL_TOOLTIP,
-} from '@/components/terminal/TerminalDefaultShellBadge';
+} from '@/components/terminal/TerminalDefaultShellNote';
 import { useTerminalPresetColorMode } from '@/hooks/useTerminalPresetColorMode';
 import { resolveTerminalPresetImageDataUrl } from '@/lib/terminalPresetIcons';
 import { usePlansAddMenuSection } from './usePlansAddMenuSection';
@@ -503,7 +503,7 @@ export function PanelAddTabMenu({
                               : `panel-add-menu-item-terminal-${profile.id}`,
                             label,
                             accessory: profile.isDefault ? (
-                              <TerminalDefaultShellBadge testId="panel-add-menu-item-terminal-default-badge" />
+                              <TerminalDefaultShellNote testId="panel-add-menu-item-terminal-default-badge" />
                             ) : undefined,
                             tooltip: profile.isDefault
                               ? TERMINAL_DEFAULT_SHELL_TOOLTIP

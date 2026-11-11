@@ -3,6 +3,7 @@
 import { type JSX, type ReactNode } from 'react';
 import { CHAT_UNIT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
+  Badge,
   Button,
   DagProgressBar,
   ExecutionActionButton,
@@ -19,6 +20,8 @@ import {
   computeDagTiers,
   hasRerunReplayData,
   statusBadgeClassName,
+  statusBadgeTone,
+  type BadgeTone,
   type ExecutionTreeNode,
   type PipelineStatusReason,
   type StatusBadgeTone,
@@ -37,7 +40,7 @@ import {
   FileIcon as AppCatalogFileIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
-  HookTriggerBadge,
+  HookTriggerIndicator,
   type PipelineHookTriggerSource,
 } from './PipelineQueuedCards';
 import { Surface } from '@canopy/ui-shared/components';
@@ -267,35 +270,20 @@ export function getPipelineExecutionStatusBadgeClassName(
   return statusBadgeClassName(tone, { muted });
 }
 
-function getPipelineExecutionMutedStatusBadgeClassName(
-  status: PipelineRunStatus,
-): string {
-  const { tone } = getPipelineExecutionStatusBadgeTone(status);
-  return statusBadgeClassName(tone, { muted: true });
-}
-
 /**
- * The execution status pill at the head of a run row. Completed rows render
- * it `muted` beside their deemphasized timestamp; the geometry is identical.
+ * The execution status at the head of a run row, as the shared `Badge`'s
+ * tone and quiet state; the badge's label is the raw status. Completed rows
+ * pass `muted` to quiet it beside their deemphasized timestamp.
  */
-export function PipelineRunStatusPill({
-  status,
-  muted = false,
-}: {
-  status: PipelineRunStatus;
-  muted?: boolean;
-}): JSX.Element {
-  return (
-    <span
-      className={
-        muted
-          ? getPipelineExecutionMutedStatusBadgeClassName(status)
-          : getPipelineExecutionStatusBadgeClassName(status)
-      }
-    >
-      {status}
-    </span>
-  );
+export function pipelineRunStatusBadge(
+  status: PipelineRunStatus,
+  options: { readonly muted?: boolean } = {},
+): { tone: BadgeTone; muted: boolean } {
+  const { tone, muted } = getPipelineExecutionStatusBadgeTone(status);
+  return {
+    tone: statusBadgeTone(tone),
+    muted: options.muted === true || muted,
+  };
 }
 
 function getStepProgress(
@@ -368,21 +356,6 @@ export function PipelineRunDagProgressBar({
   );
 }
 
-export function PlanModifiedBadge(): JSX.Element {
-  return <span className={statusBadgeClassName('merged')}>Plan updated</span>;
-}
-
-export function InputRequiredBadge(): JSX.Element {
-  return (
-    <span
-      aria-label="Workflow input required"
-      className={statusBadgeClassName('warning')}
-    >
-      Input required
-    </span>
-  );
-}
-
 export function RerunLineageLabel({
   summary,
   summaryLookup,
@@ -406,7 +379,7 @@ export function RerunLineageLabel({
   );
 }
 
-export function SubPipelineBadge({
+export function SubPipelineButton({
   count,
   expanded,
   onClick,
@@ -518,14 +491,22 @@ export function ActiveRunRow({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <PipelineRunStatusPill status={summary.status} />
+              <Badge {...pipelineRunStatusBadge(summary.status)}>
+                {summary.status}
+              </Badge>
               <PipelineDispatchedTime
                 startedAt={summary.started_at}
                 testId={`pipeline-run-dispatched-${summary.id}`}
               />
-              <HookTriggerBadge triggerSource={hookTriggerSource} />
-              {summary.plan_modified === true && <PlanModifiedBadge />}
-              {inputRequested && <InputRequiredBadge />}
+              <HookTriggerIndicator triggerSource={hookTriggerSource} />
+              {summary.plan_modified === true && (
+                <Badge tone="special">Plan updated</Badge>
+              )}
+              {inputRequested && (
+                <Badge tone="warning" aria-label="Workflow input required">
+                  Input required
+                </Badge>
+              )}
               {renderAdvisorBadge?.(summary)}
               {renderWatcherButton?.(summary)}
             </div>
@@ -706,13 +687,17 @@ export function CompletedRunRow({
           }}
         >
           <div className="flex flex-wrap items-center gap-2">
-            <PipelineRunStatusPill status={summary.status} muted />
+            <Badge {...pipelineRunStatusBadge(summary.status, { muted: true })}>
+              {summary.status}
+            </Badge>
             <PipelineDispatchedTime
               startedAt={summary.started_at}
               testId={`pipeline-run-dispatched-${summary.id}`}
             />
-            <HookTriggerBadge triggerSource={hookTriggerSource} />
-            {summary.plan_modified === true && <PlanModifiedBadge />}
+            <HookTriggerIndicator triggerSource={hookTriggerSource} />
+            {summary.plan_modified === true && (
+              <Badge tone="special">Plan updated</Badge>
+            )}
             {renderAdvisorBadge?.(summary)}
             {renderWatcherButton?.(summary)}
           </div>
@@ -942,7 +927,7 @@ export function PipelineRunTreeRow({
   const childrenSection =
     children.length > 0 ? (
       <>
-        <SubPipelineBadge
+        <SubPipelineButton
           count={children.length}
           expanded={isExpanded}
           onClick={() => onToggleExpand(summary.id)}

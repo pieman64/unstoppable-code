@@ -168,6 +168,10 @@ export function buildWorktreeInjectedToolPrompt(
   );
   const deleteWatchersToolName = injectedToolName('delete_watchers', provider);
   const setAutoArchiveToolName = injectedToolName('set_auto_archive', provider);
+  const setWorkEntryAutoDeleteToolName = injectedToolName(
+    'set_work_entry_auto_delete',
+    provider,
+  );
   const setBaseBranchToolName = injectedToolName('set_base_branch', provider);
   const forkToolName = injectedToolName('start_forked_agent', provider);
   const branchToolName = injectedToolName('start_branched_agent', provider);
@@ -203,7 +207,8 @@ export function buildWorktreeInjectedToolPrompt(
     `- Use ${deleteWatchersToolName} to delete agent-created watchers owned by this same chat. Pass only watcher ids returned by ${searchWatchersToolName}, ${setupWatchersToolName}, or ${watchGitHubItemsToolName}; user-created and other-chat watchers are out of scope.`,
     `- Pipeline and hook watchers are scoped to this same worktree; ${appName} fills in their projectId/worktreeId server-side. Use ${dispatchToolName} with pipeline.execution_list or pipeline.execution_get once to discover execution ids and confirm a specific execution is not already terminal before arming a watcher. automation_run watchers target a global automation by automationId and fire when a dispatched chat turn ends or a dispatched pipeline completes, never stranding on failed or skipped runs; automation.create and automation.run_now also accept an inline watchers array to arm atomically. Never provide destination ids or session ids to ${setupWatchersToolName}; the destination is always this chat.`,
     `- pipeline.execution_get reports pending pipeline status reasons and input requests with checkpoint, job, step, and field details. When the user has authorized you to manage the pipeline, use ${dispatchToolName} with pipeline.execution_resume and include the exact observed statusReasonIds or pauseResponses. Every answer must include the exact checkpoint id; the resume is recorded as automation-initiated and is not proof of human approval.`,
-    `- Use ${setAutoArchiveToolName} to enable or disable auto-archive for this current chat session. Set enabled to true to archive it after the active agent turn completes, or false to keep it open. It does not affect any other chat, worktree, project, or future session.`,
+    `- Use ${setAutoArchiveToolName} to enable or disable chat auto-archive for this current chat session. Set enabled to true to archive it after the active agent turn completes, or false to keep it open. It does not affect any other chat, worktree, project, or future session.`,
+    `- Use ${setWorkEntryAutoDeleteToolName} to arm removal of this chat’s own worktree or work entry when all agents, workflows, and background work are idle; archive: true keeps an archive until the user deletes it. Root chats only, not delegates.`,
     ...(!includeDeferredTools || provider === 'cursor'
       ? []
       : [buildDeferredToolsGuidance(provider)]),
@@ -348,6 +353,10 @@ export function buildCoworkInjectedToolPrompt(
     provider,
   );
   const setAutoArchiveToolName = injectedToolName('set_auto_archive', provider);
+  const setWorkEntryAutoDeleteToolName = injectedToolName(
+    'set_work_entry_auto_delete',
+    provider,
+  );
   const forkToolName = injectedToolName('start_forked_agent', provider);
 
   const appName = BRAND.displayName;
@@ -385,7 +394,8 @@ export function buildCoworkInjectedToolPrompt(
       pullRequestStatusToolName,
     ),
     `- GitHub watchers read from GitHub, not from this folder. When this project folder is not a GitHub checkout, name the repository in every ${watchGitHubItemsToolName} item: pass a pull request or run URL, or add "repository":"owner/repository".`,
-    `- Use ${setAutoArchiveToolName} to enable or disable auto-archive for this current chat session. Set enabled to true to archive it after the active agent turn completes, or false to keep it open. It does not affect any other chat or project.`,
+    `- Use ${setAutoArchiveToolName} to enable or disable chat auto-archive for this current chat session. Set enabled to true to archive it after the active agent turn completes, or false to keep it open. It does not affect any other chat or project.`,
+    `- Use ${setWorkEntryAutoDeleteToolName} to arm removal of this chat’s own worktree or work entry when all agents, workflows, and background work are idle; archive: true keeps an archive until the user deletes it. Root chats only, not delegates.`,
     ...(provider === 'cursor'
       ? []
       : [

@@ -15,7 +15,7 @@ import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { OperationRecord } from '@canopy/protocol/canopy-core';
 import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import { GOLDEN_INVALID_PIPELINE_YAML } from '@canopy/desktop-shared/node/pipelines/__tests__/golden-fixtures';

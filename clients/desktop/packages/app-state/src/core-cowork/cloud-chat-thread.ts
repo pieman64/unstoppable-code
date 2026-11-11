@@ -9,6 +9,10 @@ import {
   type CanopyErrorPayload,
   type CanopyStreamCursor,
 } from '@canopy/protocol/canopy-core';
+import {
+  parseAgentTaskRows,
+  type AgentTaskRow,
+} from '@canopy/protocol/cloud-session';
 import type {
   PortalAskUserQuestion,
   PortalAskUserQuestionAnswer,
@@ -39,12 +43,14 @@ export interface CloudChatThreadTarget {
 
 /**
  * Projects transcript messages (the persisted message shape both cores
- * serve) to the shared transcript. Hosts inject it: this package carries no
+ * serve) to the shared transcript, with the chat's agent tasks for its
+ * subagent cards (CAN-5976). Hosts inject it: this package carries no
  * transcript projection of its own.
  */
 export type ProjectCloudChatMessages = (input: {
   readonly chatKey: string;
   readonly messages: readonly unknown[];
+  readonly tasks: readonly AgentTaskRow[];
 }) => PortalChatMessage[];
 
 export interface CloudChatSendInput {
@@ -62,6 +68,9 @@ export interface CloudChatThread {
   /** The chat's unanswered questions, as the shared question cards read them. */
   getQuestions(): readonly PortalAskUserQuestionState[];
   subscribeQuestions(listener: () => void): () => void;
+  /** The chat's agent tasks (subagents and background work), as they stand. */
+  getAgentTasks(): readonly AgentTaskRow[];
+  subscribeAgentTasks(listener: () => void): () => void;
   answerQuestion(
     requestId: string,
     answers: readonly PortalAskUserQuestionAnswer[],
@@ -218,11 +227,15 @@ export function bindCloudChatThread(
   let transcriptGeneration = 0;
   /** A per-message revision that moves forward whenever its content changes. */
   const revisions = new Map<string, number>();
+  /** Each row's subagent cards as last published, to see them change. */
+  const agentCards = new Map<string, string>();
   /** Prompts this client sent, by canonical message id, for queued rows. */
   const sentPrompts = new Map<string, { text: string; at: number }>();
   let queuedMessageIds: readonly string[] = [];
   let questions: readonly PortalAskUserQuestionState[] = [];
   const questionListeners = new Set<() => void>();
+  let agentTasks: readonly AgentTaskRow[] = [];
+  const agentTaskListeners = new Set<() => void>();
   /** Provisional replies by turn id, oldest first (CAN-5984). */
   const liveReplies = new Map<string, LiveReply>();
   let live: CoreCoworkStream | null = null;
@@ -379,24 +392,43 @@ export function bindCloudChatThread(
       }));
   }
 
+  /**
+   * A subagent card changes with its own rows and its task, not its spawn
+   * row: move the row's revision when the card does, so the store takes it.
+   */
+  function noteAgentCards(message: PortalChatMessage): void {
+    const cards = message.parts?.filter((part) => part.kind === 'agent') ?? [];
+    const fingerprint = cards.length === 0 ? '' : JSON.stringify(cards);
+    const known = agentCards.get(message.messageId);
+    agentCards.set(message.messageId, fingerprint);
+    if (known === undefined || known === fingerprint) return;
+    revisions.set(
+      message.messageId,
+      Math.max((revisions.get(message.messageId) ?? 0) + 1, Date.now()),
+    );
+  }
+
   function publish(replaceMessages: boolean): void {
     if (closed) return;
     // The web core's transcript order is authoritative; keep it in the store.
-    const projected = project({ chatKey: target.key, messages: raw }).map(
-      (message, presentationOrder) => {
-        const revision = revisions.get(message.messageId);
-        return revision === undefined
-          ? { ...message, presentationOrder }
-          : {
-              ...message,
-              presentationOrder,
-              updatedAtMs: Math.max(
-                message.updatedAtMs ?? message.createdAtMs,
-                revision,
-              ),
-            };
-      },
-    );
+    const projected = project({
+      chatKey: target.key,
+      messages: raw,
+      tasks: agentTasks,
+    }).map((message, presentationOrder) => {
+      noteAgentCards(message);
+      const revision = revisions.get(message.messageId);
+      return revision === undefined
+        ? { ...message, presentationOrder }
+        : {
+            ...message,
+            presentationOrder,
+            updatedAtMs: Math.max(
+              message.updatedAtMs ?? message.createdAtMs,
+              revision,
+            ),
+          };
+    });
     const provisional = liveMessages(projected.length);
     const shown = new Set(provisional.map((each) => each.messageId));
     // The store keeps rows a merge omits: a provisional row that went away
@@ -578,6 +610,12 @@ export function bindCloudChatThread(
     for (const listener of questionListeners) listener();
   }
 
+  function setAgentTasks(next: readonly AgentTaskRow[]): void {
+    if (next.length === 0 && agentTasks.length === 0) return;
+    agentTasks = next;
+    for (const listener of agentTaskListeners) listener();
+  }
+
   function toQuestionState(question: {
     readonly requestId: string;
     readonly questions: readonly unknown[];
@@ -674,6 +712,11 @@ export function bindCloudChatThread(
           setQuestions(
             questions.filter((each) => each.requestId !== change.requestId),
           );
+        continue;
+      }
+      if (change.type === 'agent_tasks.replaced') {
+        if (change.chatId === target.chatId)
+          setAgentTasks(parseAgentTaskRows(change.tasks));
         continue;
       }
       if (!('chatId' in change) || change.chatId !== target.chatId) continue;
@@ -781,6 +824,7 @@ export function bindCloudChatThread(
           .filter((question) => question.chatId === target.chatId)
           .map(toQuestionState),
       );
+      setAgentTasks(parseAgentTaskRows(snapshot.data.tasks ?? []));
       failed = false;
       publish(true);
       const cursor: CanopyStreamCursor | null =
@@ -1033,6 +1077,8 @@ export function bindCloudChatThread(
     live = null;
     if (following !== null) void following.close();
     liveReplies.clear();
+    setAgentTasks([]);
+    agentTaskListeners.clear();
     chatStore.getState().reset(target.key);
   }
 
@@ -1047,6 +1093,13 @@ export function bindCloudChatThread(
       questionListeners.add(listener);
       return () => {
         questionListeners.delete(listener);
+      };
+    },
+    getAgentTasks: () => agentTasks,
+    subscribeAgentTasks: (listener) => {
+      agentTaskListeners.add(listener);
+      return () => {
+        agentTaskListeners.delete(listener);
       };
     },
     answerQuestion,

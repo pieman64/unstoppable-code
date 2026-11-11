@@ -1,6 +1,6 @@
 'use client';
 
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
 import {
   SPACE_ROLE_GAP_CLASS,
   type SpaceRole,
@@ -233,16 +233,14 @@ function groupStepsByRepo(steps: readonly PullRequestSectionCreationStep[]): {
   return { repos, skipped };
 }
 
-function CreationStatusBadge(phase: PullRequestCreationPhase): JSX.Element {
-  return (
-    <Badge
-      tone={
-        phase === 'error' ? 'danger' : phase === 'done' ? 'success' : 'info'
-      }
-    >
-      {phase === 'error' ? 'Failed' : phase === 'done' ? 'Created' : 'Creating'}
-    </Badge>
-  );
+/** A pull request creation phase as the shared `Badge`'s tone and label. */
+function creationStatusBadge(phase: PullRequestCreationPhase): {
+  tone: BadgeTone;
+  label: string;
+} {
+  if (phase === 'error') return { tone: 'danger', label: 'Failed' };
+  if (phase === 'done') return { tone: 'success', label: 'Created' };
+  return { tone: 'info', label: 'Creating' };
 }
 
 function CreationProgressFeed({
@@ -265,10 +263,11 @@ function CreationProgressFeed({
   );
 
   if (isMultiRepo) {
+    const creationStatus = creationStatusBadge(progress.currentPhase);
     return (
       <Stack gap="inline">
         <div className="flex items-center gap-2">
-          {CreationStatusBadge(progress.currentPhase)}
+          <Badge tone={creationStatus.tone}>{creationStatus.label}</Badge>
         </div>
         {repos.length > 0 && (
           <Stack gap="item">
@@ -583,6 +582,9 @@ export function PullRequestSectionBody({
               const repoDone =
                 creationGroup.currentPhase === 'done' ||
                 creationGroup.currentPhase === 'error';
+              const creationStatus = creationStatusBadge(
+                creationGroup.currentPhase,
+              );
               return (
                 <Stack gap="tight" key={repo.repoId}>
                   <div className="flex items-center gap-1.5">
@@ -595,7 +597,9 @@ export function PullRequestSectionBody({
                     {creationGroup.currentPhase === 'error' && (
                       <span className="text-3xs fg-destructive">{'✗'}</span>
                     )}
-                    {CreationStatusBadge(creationGroup.currentPhase)}
+                    <Badge tone={creationStatus.tone}>
+                      {creationStatus.label}
+                    </Badge>
                   </div>
                   <div className="pl-2">
                     <PhaseList

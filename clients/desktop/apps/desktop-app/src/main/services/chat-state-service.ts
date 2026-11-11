@@ -606,7 +606,10 @@ export interface ChatStateServiceOptions {
   claudeToolNames?: ReadonlySet<string>;
   /** Exact Codex dynamic tool names; defaults empty (fail closed). */
   codexToolNames?: ReadonlySet<string>;
-  /** Trusted Cursor session ledger lookup; absent by default (fail closed). */
+  /**
+   * Trusted ACP (Cursor and OpenCode) session ledger lookup; absent by
+   * default (fail closed).
+   */
   cursorToolUse?: (target: VisualToolTarget, toolUseId: string) => boolean;
 }
 
@@ -717,6 +720,14 @@ function cursorPatchHasToolResult(data: Record<string, unknown>): boolean {
   );
 }
 
+/**
+ * The ACP harnesses whose sessions record trusted ShowVisual invocations in
+ * a turn ledger.
+ */
+function isAcpVisualProvider(provider: unknown): boolean {
+  return provider === 'cursor' || provider === 'opencode';
+}
+
 /** True only for native provider result events that can safely admit visuals. */
 export function isNativeVisualToolResultEvent(event: {
   providerType?: string;
@@ -750,7 +761,10 @@ export function isNativeVisualToolResultEvent(event: {
       item.status !== 'error'
     );
   }
-  if (event.providerType !== 'cursor' && data.provider !== 'cursor')
+  if (
+    !isAcpVisualProvider(event.providerType) &&
+    !isAcpVisualProvider(data.provider)
+  )
     return false;
   if (data.type === 'canopy_assistant_patch')
     return cursorPatchHasToolResult(data);
@@ -782,8 +796,9 @@ function visualResolverForEvent(
         ? SHOW_VISUAL_TOOL_KEY
         : undefined;
   if (
-    (input.providerType === 'cursor' ||
-      (input.providerType === undefined && data.provider === 'cursor')) &&
+    (isAcpVisualProvider(input.providerType) ||
+      (input.providerType === undefined &&
+        isAcpVisualProvider(data.provider))) &&
     (data.type === 'canopy_assistant_patch' || data.type === 'assistant')
   ) {
     const target = {

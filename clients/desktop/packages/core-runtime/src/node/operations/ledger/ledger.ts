@@ -752,6 +752,9 @@ export class OperationLedger {
         .get(targetId, this.runEpoch)?.record_json;
       if (held !== undefined)
         return parseColumn(DelegationLeaseRecordSchema, asText(held));
+      // A run's lease is never granted again, so it carries no lease epoch
+      // or renewal, and ends only with `process-ended`. Rows stay readable
+      // by builds from before the remote executor fields (ADR 31).
       const lease = DelegationLeaseRecordSchema.parse({
         leaseId: randomUUID(),
         targetId,

@@ -25,7 +25,7 @@ import {
   createPreferencesGenerationPath,
   createPreferencesLastGoodPath,
 } from './preferences-file-paths';
-import { getResolvedCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
+import { getResolvedCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { pruneDamagedCopies } from '@canopy/execution-engine/node/lib/damaged-copies';
 import { commitSuggestionsGate } from './suggestions-gate';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';

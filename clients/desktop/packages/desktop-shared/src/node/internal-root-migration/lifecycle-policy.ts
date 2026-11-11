@@ -88,3 +88,41 @@ export async function inertArchiveGroup(
     return null;
   }
 }
+
+export function archiveName(record: DestructiveRecoveryRecord): string | null {
+  return record.operation === 'worktree-archive' &&
+    record.state !== 'completed' &&
+    /^[A-Za-z0-9_-]+$/.test(record.workspaceId) &&
+    record.worktreeId &&
+    /^[A-Za-z0-9_-]+$/.test(record.worktreeId)
+    ? `${record.workspaceId}/${record.worktreeId}`
+    : null;
+}
+
+export function isAbandonedArchive(
+  record: DestructiveRecoveryRecord,
+  names: readonly string[],
+): boolean {
+  const name = archiveName(record);
+  return name !== null && names.includes(name);
+}
+
+export function assertAbandonedArchivesMatch(
+  records: readonly { readonly record: DestructiveRecoveryRecord }[],
+  names: readonly string[],
+): void {
+  for (const name of names)
+    if (!records.some(({ record }) => archiveName(record) === name))
+      throw new Error(
+        `--abandon-archive ${name} does not match an unfinished worktree archive.`,
+      );
+}
+
+export function abandonArchiveSuggestion(
+  record: DestructiveRecoveryRecord,
+): string {
+  const name = archiveName(record);
+  return name === null
+    ? ''
+    : `; if no longer needed, opt in with --abandon-archive ${name}`;
+}

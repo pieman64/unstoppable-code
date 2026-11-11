@@ -11,7 +11,7 @@ import {
   type WorkerFilesystemLinkResolveParams,
   type WorkerFilesystemLinkResolveResult,
 } from '@canopy/protocol/canopy-core';
-import { isSafePortableRelativePath } from '@canopy/protocol/safe-relative-path';
+import { isSafeFilesystemRelativePath } from './relative-path';
 import { CanopyOperationError } from '../../runtime/errors';
 import { createCatalogRevision } from './catalog-revision';
 import {
@@ -160,7 +160,7 @@ export async function listFilesystemScopeDirectory(
   if (
     params.relativePath.includes('\0') ||
     (params.relativePath !== '' &&
-      !isSafePortableRelativePath(params.relativePath))
+      !isSafeFilesystemRelativePath(params.relativePath))
   )
     throw filesystemScopeError('directory', 'invalidState');
   const initial = await snapshot(params.scope, dependencies, 'directory');

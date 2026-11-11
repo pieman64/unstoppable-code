@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { createInitialState } from '../pipeline-executor';
 import {
   deleteExecutionState,

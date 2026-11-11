@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 
 /**
  * Directory holding a single worktree's code-graph database (and any sqlite

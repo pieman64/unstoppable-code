@@ -67,10 +67,9 @@ import { SharedContainerForkModal } from './SharedContainerForkModal';
 import { forkRevisionFromReplica } from './useSharedContainerForkRevision';
 import { SharedContainerRunPanel } from './SharedContainerRunPanel';
 import { useSharedContainerRun } from './useSharedContainerRun';
-import { ViewOnlyPill } from './ViewOnlyPill';
 import { ForkedContainerNotice } from './ForkedContainerNotice';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { Surface } from '@canopy/ui-shared/components';
+import { Badge, Surface } from '@canopy/ui-shared/components';
 
 const TERMINAL_HYDRATION_RETRY_MS = 1_000;
 
@@ -553,7 +552,8 @@ function SharedContainerTopBar({
       >
         {title}
       </span>
-      <ViewOnlyPill />
+      {/* Read-only state the recipient reads, not a control: a quiet Badge. */}
+      <Badge data-testid="shared-container-read-only-badge">View only</Badge>
       {ownerName !== undefined && (
         <span className="shrink-0 text-xs fg-quaternary">
           {/* The publisher is a person: replay records a box for the name. */}

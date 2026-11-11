@@ -9,7 +9,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import {
   executePipeline,
@@ -22,6 +22,7 @@ import type {
   PipelineHostActionCaller,
   PipelineHostActionRequest,
   PipelineHostActionResult,
+  PipelineHostActionSupport,
 } from '../types';
 import {
   normalizeGoldenValue,
@@ -42,7 +43,10 @@ let answer: (
   request: PipelineHostActionRequest,
 ) => PipelineHostActionResult = () => ({ status: 'success', outputs: {} });
 
-function runtime(withHost = true): ExecutionRuntime {
+function runtime(
+  withHost = true,
+  support?: PipelineHostActionSupport,
+): ExecutionRuntime {
   return {
     isModelBlockedByOrgPolicy: () => Promise.resolve(false),
     isOrgModelPolicyActive: () => Promise.resolve(false),
@@ -55,6 +59,7 @@ function runtime(withHost = true): ExecutionRuntime {
     ...(withHost
       ? {
           pipelineHostActions: {
+            ...(support && { support }),
             run: async (request, caller): Promise<PipelineHostActionResult> => {
               calls.push({ request, caller });
               await Promise.resolve();
@@ -170,10 +175,11 @@ async function run(
   yaml: string,
   executionId: string,
   withHost = true,
+  support?: PipelineHostActionSupport,
 ): Promise<ExecutionState> {
   const handle = await executePipeline(parsePipelineText(yaml), {
     cwd: join(root, 'work'),
-    runtime: runtime(withHost),
+    runtime: runtime(withHost, support),
     executionId,
     pipelineId: 'host-steps-golden',
     initiationSource: 'user',
@@ -323,4 +329,68 @@ it('returns typed refusals, invalid inputs and the needs-desktop failure', async
       needsDesktopCalls: takeCalls(),
     }),
   ).toMatchSnapshot();
+});
+
+// CAN-6082: a port raises only the host actions it declares. An undeclared
+// action with a Node fallback runs it, as it does without a port; one with
+// no fallback fails with needs_host, naming the action and the host.
+it('routes actions the host port does not declare', async () => {
+  const yaml = [
+    'pipeline:',
+    '  name: Golden host support',
+    '  on: dispatch',
+    '  jobs:',
+    '    host:',
+    '      steps:',
+    '        - id: create',
+    '          uses: builtin/create-worktree',
+    '          continue_on_error: true',
+    '          with:',
+    '            project_id: ws-1',
+    '        - id: move',
+    '          uses: builtin/move-to-group',
+    '          continue_on_error: true',
+    '          with:',
+    '            project_id: ws-1',
+    '            task_id: wt-1',
+    '            group: Review',
+    '',
+  ].join('\n');
+  const withoutPort = await run(yaml, 'golden-host-support-none', false);
+  expect(takeCalls()).toEqual([]);
+
+  const moveOnly = await run(yaml, 'golden-host-support-move', true, {
+    hostName: 'the golden host',
+    actions: new Set(['move-to-group']),
+  });
+  const moveOnlyCalls = calls.map(({ request }) => request.action);
+  takeCalls();
+  // create-worktree ran its Node fallback, exactly as without a port.
+  expect(moveOnlyCalls).toEqual(['move-to-group']);
+  expect(moveOnly.jobs.host?.steps.create).toMatchObject({
+    outcome: withoutPort.jobs.host?.steps.create?.outcome,
+    error: withoutPort.jobs.host?.steps.create?.error,
+    outputs: withoutPort.jobs.host?.steps.create?.outputs,
+  });
+  expect(moveOnly.jobs.host?.steps.move).toMatchObject({
+    outcome: 'success',
+    outputs: { grouped: 'true', failure_reason: '' },
+  });
+
+  const createOnly = await run(yaml, 'golden-host-support-create', true, {
+    hostName: 'the golden host',
+    actions: new Set(['create-worktree']),
+  });
+  const createOnlyCalls = calls.map(({ request }) => request.action);
+  takeCalls();
+  expect(createOnlyCalls).toEqual(['create-worktree']);
+  expect(createOnly.jobs.host?.steps.create).toMatchObject({
+    outcome: 'success',
+    outputs: { worktree_id: 'wt-new', failure_reason: '' },
+  });
+  expect(createOnly.jobs.host?.steps.move).toMatchObject({
+    outcome: 'failure',
+    error: "The move-to-group step can't run in the golden host.",
+    outputs: { grouped: 'false', failure_reason: 'needs_host' },
+  });
 });

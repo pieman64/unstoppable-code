@@ -533,6 +533,7 @@ export function getToolCategory(
     canopyKey === 'get_file_comments' ||
     canopyKey === 'respond_to_file_comment' ||
     canopyKey === 'set_auto_archive' ||
+    canopyKey === 'set_work_entry_auto_delete' ||
     canopyKey === 'start_forked_agent' ||
     canopyKey === 'start_branched_agent' ||
     canopyKey === 'set_base_branch' ||

@@ -44,6 +44,8 @@ import {
   Notice,
   ProviderRowLabel,
   ProviderStatusDot,
+  Dot,
+  type DotTone,
   ErrorBanner,
   StatusLabel,
   TextInput,
@@ -257,7 +259,19 @@ function TerminalProviderAuthPanel({
     authenticated && status?.planType
       ? subscriptionLabelForPlanType(provider, status.planType)
       : null;
-  const detailText = subscriptionLabel ?? status?.detail ?? null;
+  const planText = subscriptionLabel ?? status?.detail ?? null;
+  // Codex reports which ChatGPT workspace the account uses (Codex 0.165+).
+  const workspaceName = authenticated ? status?.workspaceName : null;
+  // Workspace names can name a person, so replay blocks that part only.
+  const detailText: ReactNode =
+    planText && workspaceName ? (
+      <>
+        {planText} ·{' '}
+        <span className={POSTHOG_REPLAY_BLOCK_CLASS}>{workspaceName}</span>
+      </>
+    ) : (
+      planText
+    );
 
   useEffect(() => {
     onStatusChange?.(authenticated);
@@ -1081,10 +1095,10 @@ function githubPermissionsErrorCopy(error: string | null): string | null {
   return error;
 }
 
-function permissionDotClass(state: PermissionState, required: boolean): string {
-  if (state === 'granted') return 'bg-success';
-  if (state === 'unknown') return 'bg-fg-tertiary';
-  return required ? 'bg-destructive' : 'bg-warning';
+function permissionDotTone(state: PermissionState, required: boolean): DotTone {
+  if (state === 'granted') return 'success';
+  if (state === 'unknown') return 'filter';
+  return required ? 'danger' : 'attention';
 }
 
 function permissionStatusLabel(
@@ -1105,11 +1119,9 @@ function PermissionRow({ permission }: PermissionRowProps): JSX.Element {
   return (
     <li className="flex items-start gap-2.5">
       <span className="flex h-5 w-2 shrink-0 items-center" aria-hidden="true">
-        <span
-          className={`block h-2 w-2 rounded-full ${permissionDotClass(
-            permission.state,
-            permission.required,
-          )}`}
+        <Dot
+          size="large"
+          tone={permissionDotTone(permission.state, permission.required)}
         />
       </span>
       <div className="min-w-0 flex-1">

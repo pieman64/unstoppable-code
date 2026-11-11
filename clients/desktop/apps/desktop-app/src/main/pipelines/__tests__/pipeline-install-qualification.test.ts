@@ -11,13 +11,13 @@ import type * as SyncFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import * as pipelinePaths from '@canopy/desktop-shared/pipelines/config-paths';
+import * as pipelinePaths from '@canopy/execution-engine/pipelines/config-paths';
 import {
   getStoredPipelineText,
   listStoredPipelines,
   saveStoredPipeline,
 } from '@canopy/desktop-shared/pipelines/store';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
 import type { InstallReceipt } from '@canopy/execution-engine/lib/resource-context-policy';
 import type { PipelinePackageInstallRecordV1 } from '@canopy/execution-engine/types/pipeline';

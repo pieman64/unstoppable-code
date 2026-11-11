@@ -451,6 +451,8 @@ function ConnectedSetup({
         </p>
       )}
       {navigationError && (
+        // Opening the new project failed: a failure interrupts, so it keeps
+        // an assertive announcement even in the neutral look.
         <Notice role="alert">
           Your project is ready. Open it from Projects.
         </Notice>

@@ -5,7 +5,7 @@ import { STORAGE_OWNERSHIP } from '@canopy/core-runtime/storage';
 import {
   admittedStorageRowForPath,
   isAdmittedStorageCandidate,
-} from '../admitted-storage-paths';
+} from '@canopy/execution-engine/node/lib/admitted-storage-paths';
 import { writeFileAtomicallySync } from '../atomic-file';
 
 // Reads the planning census, so the desktop public export excludes this suite.

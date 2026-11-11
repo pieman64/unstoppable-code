@@ -1,3 +1,8 @@
+import type {
+  WorkEntryAutoDeleteWorkspaceSnapshot,
+  WorkEntryAutoDeleteDisarmRequest,
+  WorkEntryAutoDeleteResolveBranchRequest,
+} from '@canopy/protocol';
 import type { FeedbackReportClient } from '@canopy/protocol/feedback-report';
 import type { SharedMultiRepoClient } from './shared-multi-repo-client';
 import type {
@@ -905,6 +910,22 @@ export interface CanopyClient {
   readonly settings?: AccountOrganizationSettingsClient;
   /** Fixed capability set describing what this host can do. */
   readonly capabilities: CanopyCapabilities;
+
+  /** Optional agent-armed removal metadata; absent on unsupported hosts. */
+  listWorkEntryAutoDelete?(): Promise<WorkEntryAutoDeleteWorkspaceSnapshot[]>;
+  subscribeWorkEntryAutoDelete?(
+    listener: (snapshot: WorkEntryAutoDeleteWorkspaceSnapshot) => void,
+  ): Unsubscribe;
+  /**
+   * User controls are gated by workEntryAutoDelete === 'manage'. Resolves
+   * false when no arm was left to remove (a removal already finished).
+   */
+  disarmWorkEntryAutoDelete?(
+    request: WorkEntryAutoDeleteDisarmRequest,
+  ): Promise<boolean>;
+  resolveWorkEntryAutoDeleteBranch?(
+    request: WorkEntryAutoDeleteResolveBranchRequest,
+  ): Promise<void>;
 
   /**
    * Notify synchronously after the host holding tip dismissals is replaced or

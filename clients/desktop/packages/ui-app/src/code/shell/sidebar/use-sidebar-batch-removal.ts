@@ -7,7 +7,9 @@ import type { SidebarBatchUnitLabel } from '@canopy/ui-shared/components';
  * and Work Entries. Hosts supply one awaitable per-row removal; confirmed
  * batches append to one serial queue that runs one item at a time, so
  * removals in one repository never contend for git worktree or ref locks and
- * a host's serial command queue stays honest.
+ * a host's serial command queue stays honest. A host that reports its row
+ * hidden (`onRowHidden`) finishes the item there and completes the rest in
+ * the background, like a single-row removal.
  */
 
 export type { SidebarBatchUnitLabel } from '@canopy/ui-shared/components';
@@ -23,6 +25,14 @@ export interface SidebarBatchRemovalOptions {
    * branch identity refuses one whose branch changed while it waited.
    */
   readonly expectedBranchName?: string;
+  /**
+   * Supplied by the queue. A host that calls it once the row has left the
+   * rail finishes the item there: the queue counts it done and starts the
+   * next one while the host's promise settles in the background, and a later
+   * rejection fails the item as a late failure. A host that never calls it
+   * is awaited to the end, as before.
+   */
+  readonly onRowHidden?: () => void;
 }
 
 /** One row of a batch; `key` is its selection key. */
@@ -77,6 +87,18 @@ export interface SidebarBatchItem<T extends SidebarBatchTarget> {
    * never runs; a later batch may queue its key again.
    */
   readonly dropped?: true;
+  /**
+   * The host's background work after the row was hidden (`onRowHidden`):
+   * `running` while it continues, `failed` when it rejected late (the item
+   * is then `failed` too). Absent when the host finished in one step.
+   */
+  readonly cleanup?: 'running' | 'succeeded' | 'failed';
+  /**
+   * Its batch was dismissed or finished while its cleanup still ran. It no
+   * longer counts in the current outcome; a late failure reports it under
+   * its own batch.
+   */
+  readonly retired?: true;
 }
 
 /** One batch's outcome: only that batch's items. */
@@ -144,8 +166,13 @@ export interface SidebarRemovalQueue<T extends SidebarBatchTarget> {
   ) => Promise<SidebarBatchResult<T>>;
   /** Drops every not-started item (all batches) once the in-flight one finishes. */
   readonly stop: () => void;
-  /** Forgets settled items. No-op while running. */
+  /**
+   * Forgets settled items. No-op while running. Items whose cleanup still
+   * runs, and late failures not yet dismissed, are kept as `retired`.
+   */
   readonly reset: () => void;
+  /** Forgets one batch's retired items, except those whose cleanup still runs. */
+  readonly dismissRetired: (batchId: string) => void;
 }
 
 export interface CreateSidebarRemovalQueueInput<T extends SidebarBatchTarget> {
@@ -162,6 +189,11 @@ export interface CreateSidebarRemovalQueueInput<T extends SidebarBatchTarget> {
   readonly blockedReasonFor: (target: T) => string | undefined;
   readonly onChange?: (state: SidebarRemovalQueueState<T>) => void;
 }
+
+type RemovalOutcome =
+  | { readonly kind: 'hidden' }
+  | { readonly kind: 'succeeded' }
+  | { readonly kind: 'failed'; readonly error: unknown };
 
 interface QueuedBatch<T extends SidebarBatchTarget> {
   readonly batchId: string;
@@ -197,7 +229,8 @@ function batchResult<T extends SidebarBatchTarget>(
  * queue stays ordered. Stop (or a host withdrawing its removal) ends the
  * drain after the in-flight item; dropped items stay `pending`, marked
  * `dropped`. A batch resolves as soon as its own items have settled or been
- * dropped.
+ * dropped. An item whose host reported its row hidden settles `done` there;
+ * its background cleanup is tracked on `cleanup` and may still fail it.
  */
 export function createSidebarRemovalQueue<T extends SidebarBatchTarget>({
   remove,
@@ -218,7 +251,7 @@ export function createSidebarRemovalQueue<T extends SidebarBatchTarget>({
   // again and queued in a later one, so the key alone is not unique.
   const update = (
     item: SidebarBatchItem<T>,
-    patch: Pick<SidebarBatchItem<T>, 'status' | 'reason'>,
+    patch: Partial<Pick<SidebarBatchItem<T>, 'status' | 'reason' | 'cleanup'>>,
   ): void => {
     items = items.map((current) =>
       current.batchId === item.batchId && current.target.key === item.target.key
@@ -275,13 +308,52 @@ export function createSidebarRemovalQueue<T extends SidebarBatchTarget>({
           update(item, { status: 'skipped', reason: blockedReason });
         } else {
           update(item, { status: 'running' });
-          await hostRemove(
-            target,
-            target.branchName === undefined
-              ? options
-              : { ...options, expectedBranchName: target.branchName },
+          let markHidden = (): void => undefined;
+          const hidden = new Promise<RemovalOutcome>((resolve) => {
+            markHidden = (): void => resolve({ kind: 'hidden' });
+          });
+          // Never rejects, so a late failure is never unhandled.
+          const settled = hostRemove(target, {
+            ...options,
+            ...(target.branchName === undefined
+              ? {}
+              : { expectedBranchName: target.branchName }),
+            onRowHidden: () => markHidden(),
+          }).then(
+            (): RemovalOutcome => ({ kind: 'succeeded' }),
+            (error: unknown): RemovalOutcome => ({ kind: 'failed', error }),
           );
-          update(item, { status: 'done' });
+          const outcome = await Promise.race([settled, hidden]);
+          if (outcome.kind === 'failed') throw outcome.error;
+          if (outcome.kind === 'succeeded') {
+            update(item, { status: 'done' });
+          } else {
+            // The row is gone: count it done and move on while the host
+            // finishes in the background.
+            update(item, { status: 'done', cleanup: 'running' });
+            void settled.then((late) => {
+              if (late.kind === 'failed') {
+                offerLifecycleJournalQuarantine(late.error);
+                update(item, {
+                  status: 'failed',
+                  cleanup: 'failed',
+                  reason: sidebarBatchFailureReason(
+                    late.error,
+                    options.mode,
+                    unit,
+                  ),
+                });
+              } else {
+                update(item, { cleanup: 'succeeded' });
+                // A retired success has nothing left to report.
+                items = items.filter(
+                  (current) =>
+                    current.retired !== true || current.cleanup !== 'succeeded',
+                );
+                emit();
+              }
+            });
+          }
         }
       } catch (error) {
         offerLifecycleJournalQuarantine(error);
@@ -338,7 +410,24 @@ export function createSidebarRemovalQueue<T extends SidebarBatchTarget>({
     },
     reset: (): void => {
       if (running) return;
-      items = [];
+      // A cleanup still running may yet fail, and a retired late failure
+      // stays until its own notice is dismissed.
+      items = items
+        .filter(
+          (item) =>
+            item.cleanup === 'running' ||
+            (item.retired === true && item.status === 'failed'),
+        )
+        .map((item) => ({ ...item, retired: true }));
+      emit();
+    },
+    dismissRetired: (batchId): void => {
+      items = items.filter(
+        (item) =>
+          item.retired !== true ||
+          item.batchId !== batchId ||
+          item.cleanup === 'running',
+      );
       emit();
     },
   };
@@ -354,8 +443,9 @@ export interface SidebarBatchRemoval<T extends SidebarBatchTarget> {
     input: SidebarBatchRemovalStart<T>,
   ) => Promise<SidebarBatchResult<T> | undefined>;
   readonly stop: () => void;
-  /** Forgets settled items. No-op while running. */
+  /** Forgets settled items, retiring cleanups still running. No-op while running. */
   readonly reset: () => void;
+  readonly dismissRetired: (batchId: string) => void;
 }
 
 export interface UseSidebarBatchRemovalInput<T extends SidebarBatchTarget> {
@@ -425,7 +515,13 @@ export function useSidebarBatchRemoval<T extends SidebarBatchTarget>({
     [queue],
   );
 
-  return { ...state, enqueue, stop: queue.stop, reset: queue.reset };
+  return {
+    ...state,
+    enqueue,
+    stop: queue.stop,
+    reset: queue.reset,
+    dismissRetired: queue.dismissRetired,
+  };
 }
 
 // Worktree rows: the shapes hosts implement.

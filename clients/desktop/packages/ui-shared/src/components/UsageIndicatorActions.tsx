@@ -13,17 +13,6 @@ export const USAGE_DISCLOSURE_ROW_CLASS = `group focus-ring flex rounded-sm text
 export const USAGE_DISCLOSURE_INK_CLASS =
   'fg-secondary transition-colors group-hover:fg-primary';
 
-/** Compatibility glyph slot; its 16px artwork and public export stay stable. */
-export function UsageDisclosureChevron({
-  open,
-}: {
-  open: boolean;
-}): JSX.Element {
-  return (
-    <DisclosureChevron direction={open ? 'up' : 'down'} size="md" animated />
-  );
-}
-
 /**
  * An expandable row with its body further down the popover (Context, Cost):
  * the name left, then the value and the chevron at the right edge. A bar can

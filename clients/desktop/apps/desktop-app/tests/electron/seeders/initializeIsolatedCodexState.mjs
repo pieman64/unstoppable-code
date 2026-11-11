@@ -4,7 +4,7 @@ import path from 'node:path';
 import { tsImport } from 'tsx/esm/api';
 
 const configPathsModule = await tsImport(
-  '../../../../../packages/desktop-shared/src/pipelines/config-paths.ts',
+  '../../../../../packages/execution-engine/src/pipelines/config-paths.ts',
   import.meta.url,
 );
 const { getBundledCodexBinaryPath } =

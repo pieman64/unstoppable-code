@@ -2,12 +2,33 @@ import { z } from 'zod';
 
 export type OpenCodeAccountMethod = 'key' | 'oauth' | 'external' | 'env';
 
+export interface OpenCodeUsageWindow {
+  id: 'rolling' | 'weekly' | 'monthly';
+  percent: number;
+  resetsAt: string;
+}
+
+/** The runtime schema requires all usage fields for ready and strips them on failure. */
+export interface OpenCodeAccountUsage {
+  status:
+    | 'unsupported'
+    | 'not-selected'
+    | 'sign-in-required'
+    | 'unavailable'
+    | 'ready';
+  plan?: 'OpenCode Go';
+  checkedAt?: string;
+  windows?: OpenCodeUsageWindow[];
+}
+
 export interface OpenCodeAccount {
   label: string;
   method: OpenCodeAccountMethod;
   /** Reported by the native active-connection API, never inferred from order. */
   selected: boolean;
   needsSignIn: boolean;
+  /** Read from the selected provider's usage API, never derived from chat tokens. */
+  usage?: OpenCodeAccountUsage;
 }
 
 export interface OpenCodeAccountProvider {
@@ -24,11 +45,39 @@ export interface OpenCodeAccountSnapshot {
 }
 
 /** Display metadata only. Never accepts credential values or provider settings. */
+const usageSchema: z.ZodType<OpenCodeAccountUsage> = z.union([
+  z.object({
+    status: z.enum([
+      'unsupported',
+      'not-selected',
+      'sign-in-required',
+      'unavailable',
+    ]),
+  }),
+  z.object({
+    status: z.literal('ready'),
+    plan: z.literal('OpenCode Go'),
+    checkedAt: z.string().datetime({ offset: true }),
+    windows: z
+      .array(
+        z.object({
+          id: z.enum(['rolling', 'weekly', 'monthly']),
+          percent: z.number().finite().min(0).max(100),
+          resetsAt: z.string().datetime({ offset: true }),
+        }),
+      )
+      .length(3)
+      .refine(
+        (windows) => new Set(windows.map((window) => window.id)).size === 3,
+      ),
+  }),
+]);
 const accountSchema = z.object({
   label: z.string().max(320),
   method: z.enum(['key', 'oauth', 'external', 'env']),
   selected: z.boolean(),
   needsSignIn: z.boolean(),
+  usage: usageSchema.optional(),
 });
 const providerSchema = z.object({
   id: z.string().min(1).max(320),

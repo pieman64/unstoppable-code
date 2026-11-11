@@ -8,7 +8,7 @@ import {
   getBundledRtkBinaryPath,
   getEnhancedEnv,
   getRtkManagedEnv,
-} from '../../pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import { hasAnySelections } from '../../types';
 import { createHash, randomUUID } from 'node:crypto';
@@ -43,12 +43,12 @@ import type {
 } from '../opencode/runtime';
 import { headlessOpenCodeDecision } from '../opencode/headless-policy';
 import { extractProposedPlan } from '@canopy/execution-engine/codex-plan-mode';
-import { getPipelineExecutionOpenCodeSessionsDir } from '../lib/paths';
+import { getPipelineExecutionOpenCodeSessionsDir } from '@canopy/execution-engine/node/lib/paths';
 import {
   createSetupWithdrawal,
   SETUP_WITHDRAWN,
   stepTimedOutMessage,
-} from './step-timeout';
+} from '@canopy/execution-engine/node/pipelines/step-timeout';
 import type {
   OpenCodePromptRunnerRequest,
   OpenCodePromptRunnerResult,

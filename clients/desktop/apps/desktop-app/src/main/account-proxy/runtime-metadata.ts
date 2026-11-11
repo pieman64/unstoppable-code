@@ -15,7 +15,10 @@ export interface AccountProxyRuntimeArtifact extends ManagedRuntimeArtifact {
 
 interface AccountProxyRuntimeConfig {
   version: string;
-  artifacts: Record<string, Omit<AccountProxyRuntimeArtifact, 'version'>>;
+  artifacts: Record<
+    string,
+    Omit<AccountProxyRuntimeArtifact, 'version'> & { version?: string }
+  >;
 }
 
 declare const __CANOPY_CLIPROXYAPI__: AccountProxyRuntimeConfig | undefined;
@@ -35,6 +38,9 @@ function isRuntimeConfig(value: unknown): value is AccountProxyRuntimeConfig {
   return Object.values(value.artifacts).every(
     (artifact) =>
       isRecord(artifact) &&
+      (artifact.version === undefined ||
+        (typeof artifact.version === 'string' &&
+          /^\d+\.\d+\.\d+$/.test(artifact.version))) &&
       typeof artifact.url === 'string' &&
       (artifact.archive === 'tgz' || artifact.archive === 'zip') &&
       typeof artifact.integrity === 'string' &&
@@ -68,7 +74,9 @@ export function getAccountProxyRuntimeArtifact(
 ): AccountProxyRuntimeArtifact | undefined {
   metadata ??= config();
   const artifact = metadata.artifacts[`${platform}-${arch}`];
-  return artifact ? { version: metadata.version, ...artifact } : undefined;
+  return artifact
+    ? { ...artifact, version: artifact.version ?? metadata.version }
+    : undefined;
 }
 
 /** The executable name inside the release archive and on disk. */

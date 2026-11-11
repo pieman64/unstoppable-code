@@ -192,7 +192,7 @@ export function createDesktopCapabilityPackagePort(
             await deps.readPipelineShareSource(sourcePipeline);
           if (sourcePipeline.kind === 'project') {
             const { parsePipelineText } =
-              await import('@canopy/desktop-shared/pipelines/parse-pipeline');
+              await import('@canopy/execution-engine/pipelines/parse-pipeline');
             const content = parsePipelineText(rawPipeline);
             pipeline = {
               info: {

@@ -10,8 +10,6 @@ Quick commands:
 pnpm run perf:desktop:smoke
 pnpm run perf:desktop --profile counters
 pnpm run build && node --import tsx apps/desktop-app/tests/performance/run.mjs --release-like --profile baseline --scenarios stress-transcript
-pnpm run perf:desktop:chat-state-journal-phase1 --profile smoke
-pnpm run perf:desktop:chat-state-journal-phase1 --profile nightingale
 pnpm run perf:desktop:capture-field-load --data-dir <app data directory> --app-pid <main pid>
 pnpm run perf:desktop:chat-storage-field-load --profile smoke
 pnpm run perf:desktop:chat-storage-field-load --profile field

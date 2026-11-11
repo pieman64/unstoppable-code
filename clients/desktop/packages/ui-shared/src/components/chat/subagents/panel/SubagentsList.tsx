@@ -13,10 +13,7 @@ import type {
   SubagentTree,
 } from '@canopy/agent-transcript';
 import { isSubagentChatKind } from '@canopy/agent-transcript';
-import {
-  ArrowUpRightIcon,
-  ChevronDownMediumIcon,
-} from '../../../../icons/AppIcons';
+import { ArrowUpRightIcon } from '../../../../icons/AppIcons';
 import {
   DataTableBody,
   DataTableCell,
@@ -26,6 +23,7 @@ import {
   DataTableRow,
 } from '../../../DataTable';
 import { Button } from '../../../Button';
+import { DisclosureChevron, DisclosureToggle } from '../../../Disclosure';
 import { formatSubagentElapsed } from '../common/subagent-format';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
 import { SubagentHarnessMark } from '../common/SubagentHarnessMark';
@@ -259,26 +257,25 @@ export const SubagentsListRow = memo(function SubagentsListRow({
       <TaskCell>
         <Indent depth={depth} absoluteDepth={absoluteDepth} />
         {hasChildren && onToggleCollapsed ? (
-          <button
-            type="button"
-            aria-expanded={!collapsed}
+          <DisclosureToggle
+            variant="tree"
+            open={!collapsed}
             aria-labelledby={`${toggleLabelId} ${titleId}`}
             data-testid={`subagents-list-toggle-${node.id}`}
             onClick={(event): void => {
               event.stopPropagation();
               onToggleCollapsed(node);
             }}
-            className="focus-ring inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm fg-secondary hover:fg-primary"
           >
-            <ChevronDownMediumIcon
+            <DisclosureChevron
+              direction={collapsed ? 'right' : 'down'}
               size="sm"
-              aria-hidden
-              className={`transition-[rotate] ${collapsed ? '-rotate-90' : 'rotate-0'}`}
+              animated
             />
             <span id={toggleLabelId} className="sr-only">
               {subagentsToggleRowLabel(collapsed)}
             </span>
-          </button>
+          </DisclosureToggle>
         ) : (
           <span className="w-4 shrink-0" />
         )}
@@ -399,26 +396,25 @@ function WorkflowGroupToggle({
 }): JSX.Element {
   const labelId = useId();
   return onToggleCollapsed ? (
-    <button
-      type="button"
-      aria-expanded={!collapsed}
+    <DisclosureToggle
+      variant="tree"
+      open={!collapsed}
       aria-labelledby={`${labelId} ${titleId}`}
       data-testid={`subagents-list-toggle-${node.id}`}
       onClick={(event): void => {
         event.stopPropagation();
         onToggleCollapsed(node);
       }}
-      className="focus-ring inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm fg-secondary hover:fg-primary"
     >
-      <ChevronDownMediumIcon
+      <DisclosureChevron
+        direction={collapsed ? 'right' : 'down'}
         size="sm"
-        aria-hidden
-        className={`transition-[rotate] ${collapsed ? '-rotate-90' : 'rotate-0'}`}
+        animated
       />
       <span id={labelId} className="sr-only">
         {subagentsToggleRowLabel(collapsed)}
       </span>
-    </button>
+    </DisclosureToggle>
   ) : (
     <span className="w-4 shrink-0" />
   );

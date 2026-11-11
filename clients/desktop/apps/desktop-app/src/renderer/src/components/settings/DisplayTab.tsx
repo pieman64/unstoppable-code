@@ -545,9 +545,12 @@ export function DisplayTab(): JSX.Element {
                           aria-hidden="true"
                           data-testid={`theme-color-dot-${name}`}
                           data-theme={name}
-                          className={`h-1.5 w-1.5 shrink-0 rounded-full bg-accent ${
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
                             mode === 'dark' ? 'dark' : ''
                           }`}
+                          // A swatch of the theme's own accent: the variable
+                          // resolves under this element's `data-theme`.
+                          style={{ background: 'var(--bg-accent)' }}
                         />
                       ),
                   };

@@ -12,7 +12,7 @@ import type {
   SharedPipelineSummary,
   SharedPipelineTriggerType,
 } from '@canopy/execution-engine/types/pipeline';
-import { DEFAULT_PIPELINE_SCOPES } from '@canopy/desktop-shared/pipelines/scope';
+import { DEFAULT_PIPELINE_SCOPES } from '@canopy/execution-engine/pipelines/scope';
 import { buildSharedPipelineId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 import {
@@ -69,7 +69,28 @@ export function buildSharedPipelineInfo(args: {
     shareScope: summary.shareScope ?? 'private',
     publicShare: summary.publicShare ?? null,
     ...(summary.owner ? { owner: summary.owner } : {}),
+    ...(summary.createdBy ? { createdBy: summary.createdBy } : {}),
   };
+}
+
+/**
+ * Append `next` to `prev`, skipping rows whose remote id (else pipeline id)
+ * is already listed, so a server that returns one row twice never renders
+ * two rows or duplicate React keys. Distinct remote ids are kept as they are.
+ */
+export function appendUniqueSharedRows(
+  prev: readonly PipelineInfo[],
+  next: readonly PipelineInfo[],
+): PipelineInfo[] {
+  const seen = new Set<string>();
+  const rows: PipelineInfo[] = [];
+  for (const row of [...prev, ...next]) {
+    const key = row.remoteId ?? row.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(row);
+  }
+  return rows;
 }
 
 export interface SharedCloudListState {
@@ -268,14 +289,17 @@ export function useSharedPipelineList(
         }
 
         const responseData = result.data;
-        const newRows = responseData.data.map((summary) =>
-          buildSharedPipelineInfo({ summary }),
+        const newRows = appendUniqueSharedRows(
+          [],
+          responseData.data.map((summary) =>
+            buildSharedPipelineInfo({ summary }),
+          ),
         );
         const newCursor = responseData.nextCursor ?? null;
         setLoading(false);
         setLoadingMore(false);
         setRows((prev) =>
-          mode === 'refresh' ? newRows : [...prev, ...newRows],
+          mode === 'refresh' ? newRows : appendUniqueSharedRows(prev, newRows),
         );
         setNextCursor(newCursor);
         setError(null);

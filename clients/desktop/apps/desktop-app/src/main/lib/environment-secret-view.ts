@@ -2,7 +2,7 @@ import type {
   EnvironmentConfigData,
   EnvironmentConfigView,
   UserEnvironmentEntryView,
-} from '@canopy/desktop-shared/types/user-environment';
+} from '@canopy/execution-engine/types/user-environment';
 import {
   createStoredSecretResolver,
   StoredSecretError,

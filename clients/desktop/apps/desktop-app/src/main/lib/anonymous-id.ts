@@ -10,7 +10,7 @@ import type { PostHogInstallLaunch } from '@canopy/execution-engine/types/observ
 import {
   getCanopyDataDir,
   hasCanopyInstallData,
-} from '@canopy/desktop-shared/canopy-paths';
+} from '@canopy/execution-engine/canopy-paths';
 
 const CONTEXT_FILE_NAME = 'feature-flags-context.json';
 

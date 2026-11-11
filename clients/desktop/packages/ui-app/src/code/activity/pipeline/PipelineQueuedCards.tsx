@@ -70,7 +70,7 @@ function getHookTriggerTooltip(source: PipelineHookTriggerSource): string {
   return `Triggered by hook: ${source.hook_label} at ${formatTimingTimestamp(source.triggered_at)}`;
 }
 
-export function HookTriggerBadge({
+export function HookTriggerIndicator({
   triggerSource,
 }: {
   readonly triggerSource: PipelineTriggerSourceLike | undefined;
@@ -103,7 +103,7 @@ export function QueuedHookPipelineCard({
             <span className="truncate text-s font-medium fg-primary">
               {entry.pipelineName}
             </span>
-            <HookTriggerBadge triggerSource={entry.trigger_source} />
+            <HookTriggerIndicator triggerSource={entry.trigger_source} />
           </div>
           <div className="truncate text-2xs fg-secondary">
             Queued — waiting for active workflow runs to finish
@@ -134,7 +134,7 @@ export function FailedQueuedHookPipelineCard({
           <span className="truncate text-s font-medium fg-primary">
             {entry.pipelineName}
           </span>
-          <HookTriggerBadge triggerSource={entry.trigger_source} />
+          <HookTriggerIndicator triggerSource={entry.trigger_source} />
         </div>
         <div className="truncate">
           <StatusLabel size="2xs" title={entry.error}>

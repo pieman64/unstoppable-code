@@ -8,7 +8,7 @@ import {
   resolveEnvironmentForRuntime,
   resolveEnvironmentSecretSlots,
 } from '@canopy/desktop-shared/lib/user-environment';
-import type { EnvironmentConfigData } from '@canopy/desktop-shared/types/user-environment';
+import type { EnvironmentConfigData } from '@canopy/execution-engine/types/user-environment';
 
 jest.mock('../../lib/user-environment-store', () => ({
   readEnvironmentConfig: jest.fn(),

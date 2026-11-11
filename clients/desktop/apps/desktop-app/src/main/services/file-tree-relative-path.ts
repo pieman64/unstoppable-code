@@ -1,4 +1,4 @@
-import { posix, win32 } from 'node:path';
+import { posix, sep, win32 } from 'node:path';
 import { PortalServiceError } from './portal-service-error';
 
 /**
@@ -10,11 +10,14 @@ export function normalizeFileTreeRelativePath(value: string): string {
   if (win32.isAbsolute(value) || /^[a-zA-Z]:/.test(value)) {
     throw new PortalServiceError('invalid_target', 'Path must be relative.');
   }
-  const normalizedInput = value.replace(/\\/g, '/');
+  const normalizedInput = sep === '\\' ? value.replace(/\\/g, '/') : value;
   if (posix.isAbsolute(normalizedInput)) {
     throw new PortalServiceError('invalid_target', 'Path must be relative.');
   }
-  if (normalizedInput.split('/').some((segment) => segment === '..')) {
+  if (
+    normalizedInput.split('/').some((segment) => segment === '..') ||
+    value.split('\\').includes('..')
+  ) {
     throw new PortalServiceError(
       'invalid_target',
       'Path cannot traverse outside the worktree.',

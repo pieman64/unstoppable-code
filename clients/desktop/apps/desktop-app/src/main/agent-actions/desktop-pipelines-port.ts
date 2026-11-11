@@ -20,7 +20,7 @@ import type { ExecutePipelineRequestOptions } from '@canopy/desktop-shared/node/
 import {
   DEFAULT_PIPELINE_SCOPES,
   executionContextSatisfies,
-} from '@canopy/desktop-shared/pipelines/scope';
+} from '@canopy/execution-engine/pipelines/scope';
 import type {
   AppAdvisorActionErrorCode,
   AppAdvisorWatcherDestination,

@@ -141,6 +141,7 @@ export {
 } from './code/ChatMessageAuthorContext';
 export {
   ChatPartView,
+  ToolNamespaceContext,
   type ChatPartViewProps,
   AskUserQuestionInteractionProvider,
   DeliverableInteractionProvider,
@@ -399,7 +400,7 @@ export {
 export {
   FailedPendingExecutionCard,
   FailedQueuedHookPipelineCard,
-  HookTriggerBadge,
+  HookTriggerIndicator,
   PendingExecutionCard,
   QueuedHookPipelineCard,
   type FailedPendingExecutionCardEntry,
@@ -417,11 +418,9 @@ export {
 // when it consumes more.
 export {
   FollowUpButton,
-  InputRequiredBadge,
   isPipelineExecutionActiveStatus,
-  PipelineRunStatusPill,
+  pipelineRunStatusBadge,
   PipelineRunTreeRow,
-  PlanModifiedBadge,
   type ActiveRunRowProps,
   type CompletedRunRowProps,
   type PipelineRunBreadcrumbEntry,
@@ -813,6 +812,10 @@ export * from './feedback/ReportThisAction';
 
 export {
   ChatMessageAttachments,
+  ChatMessageMedia,
+  useChatMessageAttachmentSplit,
+  type ChatMessageAttachmentSplit,
+  type ChatMessageMediaItem,
   ChatAssetImage,
   type ChatAssetImageReference,
   type ChatAssetImageSource,
@@ -1045,3 +1048,9 @@ export {
   type DelegationRowBlocksProps,
   type DelegationBlockRenderer,
 } from './code/DelegationRowBlocks';
+
+export {
+  useSidebarAutoDelete,
+  SidebarAutoDeleteProvider,
+  SidebarAutoDeleteNotice,
+} from './code/shell/SidebarAutoDelete';

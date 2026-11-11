@@ -14,7 +14,11 @@ import {
 } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { withDaemonCodeGraphRoute } from './daemon-code-graph-route-context';
-import { selectDaemonCodeGraphForMain } from './daemon-code-graph-route';
+import {
+  noteDaemonCodeGraphBuildExcluded,
+  noteDaemonCodeGraphBuildSettled,
+  selectDaemonCodeGraphForMainExclusion,
+} from './daemon-code-graph-route';
 
 /*
  * Electron main's client of `worker.codeGraph.build` for the agent build
@@ -74,8 +78,10 @@ export async function buildWorktreeCodeGraphForAgent(
   // No runtime means the app is starting or quitting: the build is canceled.
   if (active === null) throw codeGraphBuildCanceledError();
   const dispatcher = options.via === undefined ? active : options.via(active);
+  const exclusion = selectDaemonCodeGraphForMainExclusion(scope.projectId);
+  if (exclusion !== null) noteDaemonCodeGraphBuildExcluded(exclusion);
   const { value: result } = await withDaemonCodeGraphRoute(
-    selectDaemonCodeGraphForMain(scope.projectId),
+    exclusion === null,
     () =>
       dispatcher.instruction(
         'worker.codeGraph.build',
@@ -93,6 +99,7 @@ export async function buildWorktreeCodeGraphForAgent(
           metadata: { idempotencyKey: randomUUID() },
         },
       ),
+    noteDaemonCodeGraphBuildSettled,
   );
   if (result.kind !== 'worktree')
     throw codeGraphBuildFailedError('malformed_response');

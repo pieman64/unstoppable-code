@@ -89,7 +89,7 @@ import {
   ArchivedNavListSkeleton,
 } from './ArchivedContainerViewSkeletons';
 import { PipelineExecutionDetailModal } from '@/components/activity/PipelineExecutionDetailModal';
-import { DiffBadge } from '@/components/worktree/DiffBadge';
+import { DiffCounts } from '@/components/worktree/DiffCounts';
 import { ChatIcon } from '@canopy/ui-shared/icons';
 import {
   ArchiveIcon,
@@ -877,7 +877,7 @@ export function ArchivedContainerView({
             aria-label={getArchivedGitChangesTooltip(changesBadge)}
             className="shrink-0"
           >
-            <DiffBadge
+            <DiffCounts
               stats={{
                 insertions: changesBadge.insertions,
                 deletions: changesBadge.deletions,

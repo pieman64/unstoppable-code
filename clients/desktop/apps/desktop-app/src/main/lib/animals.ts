@@ -1,4 +1,4 @@
-import { getCanopyRuntimeMode } from '@canopy/desktop-shared/canopy-paths';
+import { getCanopyRuntimeMode } from '@canopy/execution-engine/canopy-paths';
 import { pickUniqueAnimalName } from '@canopy/protocol/worktree-branch-names';
 
 export { ANIMAL_NAMES } from '@canopy/protocol/worktree-branch-names';

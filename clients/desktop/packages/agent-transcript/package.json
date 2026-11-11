@@ -12,6 +12,7 @@
     "./types": "./src/types.ts",
     "./portal": "./src/portal/persisted-chat-projection.ts",
     "./turn": "./src/turn/index.ts",
+    "./agent-tasks": "./src/agent-tasks/index.ts",
     "./*": "./src/*",
     "./lib/command-read-display": "./src/lib/command-read-display.ts",
     "./lib/plan-tool-input": "./src/lib/plan-tool-input.ts",

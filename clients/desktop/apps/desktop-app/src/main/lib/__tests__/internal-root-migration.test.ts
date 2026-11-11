@@ -9,7 +9,11 @@ import {
   type DestructiveRecoveryRecord,
 } from '@canopy/desktop-shared/node/w5-destructive-journal';
 import { createFreshInternalRoot } from '@canopy/desktop-shared/node/internal-root-migration/fresh-start';
-import { parseInternalRootMigrationOptions } from '@canopy/desktop-shared/node/internal-root-migration/operator-options';
+import {
+  parseInternalRootMigrationOptions,
+  selectInternalRootArchiveAbandonments,
+} from '@canopy/desktop-shared/node/internal-root-migration/operator-options';
+import { scanInterruptedWork } from '../interrupted-work-scan-worker';
 import { defineComposedMigrationCases } from './fixtures/composed-internal-root-migration';
 import {
   chmod,
@@ -533,6 +537,43 @@ describe('cold inert archive classification', () => {
       }
     },
   );
+  test.each(['completed', 'worktree-delete', 'workspace-delete'] as const)(
+    'abandonment refuses a name matching only %s history',
+    async (kind) => {
+      const root = await realpath(
+        await mkdtemp(join(tmpdir(), 'ir-abandon-refuse-')),
+      );
+      try {
+        const item = await strandedArchiveFixture(root, 'P0', 'crow');
+        if (kind === 'completed') item.record.state = 'completed';
+        else item.record.operation = kind;
+        await writeFile(item.path, JSON.stringify(item.record));
+        await expect(
+          freezeInternalRootJournals(root, ['fixture/crow']),
+        ).rejects.toThrow('does not match an unfinished worktree archive');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+  test('abandonment does not admit an unnamed blocking archive', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'ir-abandon-unnamed-')),
+    );
+    try {
+      const named = await strandedArchiveFixture(root, 'P0', 'crow');
+      const unnamed = await strandedArchiveFixture(root, 'P0', 'other');
+      for (const item of [named, unnamed]) {
+        item.record.state = 'active';
+        await writeFile(item.path, JSON.stringify(item.record));
+      }
+      await expect(
+        freezeInternalRootJournals(root, ['fixture/crow']),
+      ).rejects.toThrow('Unsettled lifecycle journal evidence');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   test.each([
     'active',
     'worktree-delete',
@@ -606,6 +647,44 @@ describe('cold inert archive classification', () => {
 });
 
 describe('offline operator option admission', () => {
+  test('inventory and resume preserve frozen abandonment with no flags', () => {
+    const frozen = ['fixture/crow', 'fixture/gnat-2', 'fixture/crow'];
+    expect(selectInternalRootArchiveAbandonments([], frozen)).toEqual([
+      'fixture/crow',
+      'fixture/gnat-2',
+    ]);
+    expect(
+      selectInternalRootArchiveAbandonments(
+        ['fixture/gnat-2', 'fixture/crow'],
+        frozen,
+      ),
+    ).toEqual(['fixture/crow', 'fixture/gnat-2']);
+    for (const requested of [['fixture/crow'], ['fixture/sunbird-2']])
+      expect(() =>
+        selectInternalRootArchiveAbandonments(requested, frozen),
+      ).toThrow('all original opt-ins (fixture/crow, fixture/gnat-2)');
+    expect(() =>
+      selectInternalRootArchiveAbandonments(['fixture/crow'], []),
+    ).toThrow('already frozen');
+    expect(selectInternalRootArchiveAbandonments(['fixture/crow'])).toEqual([
+      'fixture/crow',
+    ]);
+  });
+
+  test.each(['--inventory', '--apply'])(
+    'accepts repeated abandonment for %s',
+    (mode) => {
+      expect(
+        parseInternalRootMigrationOptions([
+          '--brand=canopy',
+          mode,
+          '--abandon-archive',
+          'fixture/crow',
+          '--abandon-archive=fixture/gnat-2',
+        ]).abandonArchives,
+      ).toEqual(['fixture/crow', 'fixture/gnat-2']);
+    },
+  );
   test.each([
     ['--skip-migration', '--source-dir=/selected'],
     ['--skip-migration', '--apply'],
@@ -615,6 +694,11 @@ describe('offline operator option admission', () => {
     ['--source-dir='],
     ['--source-dir=/one', '--source-dir=/two'],
     ['--apply', '--apply'],
+    ['--abandon-archive'],
+    ['--abandon-archive='],
+    ['--abandon-archive', '../crow'],
+    ['--abandon-archive', 'fixture/crow', '--abandon-archive=fixture/crow'],
+    ['--skip-migration', '--abandon-archive', 'fixture/crow'],
   ])('refuses conflicting or ambiguous options %j', (...args) => {
     expect(() =>
       parseInternalRootMigrationOptions(['--brand=canopy', ...args]),
@@ -1399,6 +1483,23 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     }
     await rm(temporaryHome, { recursive: true, force: true });
   });
+  async function checkInstalledShape(): Promise<void> {
+    // At 262435a30d32, only isRepairPlan differs: its key set is exact.
+    const raw = validateInternalRootJournal(
+      JSON.parse(
+        await readFile(join(identity.coordination, 'journal.json'), 'utf8'),
+      ),
+      identity,
+    );
+    if (raw.repairPlan)
+      expect(Object.keys(raw.repairPlan).sort()).toEqual([
+        'gitPlan',
+        'ownedPaths',
+        'transition',
+        'workspaces',
+      ]);
+  }
+
   async function source(): Promise<void> {
     await createPrivateMigrationDirectory(identity.source, host);
     await writeFile(
@@ -2719,6 +2820,7 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     'wrong-transaction',
     'wrong-plan',
     'invalid-record',
+    'invalid-abandoned-path',
     'missing',
     'journal-replace-failure',
   ])(
@@ -2737,20 +2839,6 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
       });
       const save = worker.saveJournal.bind(worker);
       const journalPath = join(identity.coordination, 'journal.json');
-      const checkInstalledShape = async (): Promise<void> => {
-        // At 262435a30d32, only isRepairPlan differs: its key set is exact.
-        const raw = validateInternalRootJournal(
-          JSON.parse(await readFile(journalPath, 'utf8')),
-          identity,
-        );
-        if (raw.repairPlan)
-          expect(Object.keys(raw.repairPlan).sort()).toEqual([
-            'gitPlan',
-            'ownedPaths',
-            'transition',
-            'workspaces',
-          ]);
-      };
       worker.saveJournal = async (journal): Promise<void> => {
         await save(journal);
         await checkInstalledShape();
@@ -2812,6 +2900,9 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
                   : {}),
                 ...(fault === 'invalid-record'
                   ? { lifecycleJournals: [{}] }
+                  : {}),
+                ...(fault === 'invalid-abandoned-path'
+                  ? { abandonedPaths: ['../outside'] }
                   : {}),
               }),
         );
@@ -3476,6 +3567,17 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
             journal: null,
             cleanupCandidates: savedReport,
           });
+          expect(
+            result.stderr
+              .split('\n')
+              .filter((line) => line.startsWith('Migration: ')),
+          ).toEqual([
+            'Migration: Walking source',
+            'Migration: Cold proof',
+            'Migration: W5 diagnosis',
+            'Migration: Git checks',
+            'Migration: Cleanup report',
+          ]);
           expect(result.stderr).toContain('Cleanup candidates\n');
           expect(result.stderr).toContain('Removal is your choice.');
           expect(result.stderr).toContain(
@@ -3491,6 +3593,36 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
             join(identity.coordination, 'cleanup-candidates.json'),
             'file',
             0o600,
+          );
+          expect(await worker.readJournal(identity)).toBeNull();
+          const applyError: unknown = await execute(
+            process.execPath,
+            [
+              '--import',
+              'tsx',
+              join(__dirname, '../../../../scripts/internal-root-migration.ts'),
+              `--brand=${brand.id}`,
+              `--source-dir=${join(home, 'missing-source')}`,
+              '--apply',
+              '--declare-internal',
+            ],
+            { env: environment, timeout: 45_000, maxBuffer: 8 * 1024 * 1024 },
+          ).then(
+            () => {
+              throw new Error('Expected missing-source refusal');
+            },
+            (error: unknown) => error,
+          );
+          expect(applyError).toMatchObject({ code: 1, stdout: '' });
+          if (
+            typeof applyError !== 'object' ||
+            applyError === null ||
+            !('stderr' in applyError) ||
+            typeof applyError.stderr !== 'string'
+          )
+            throw new Error('Operator refusal lacked string stderr.');
+          expect(applyError.stderr).toMatch(
+            /^Migration: Walking source\n.*"reason":"source-missing"/ms,
           );
           expect(await worker.readJournal(identity)).toBeNull();
         }
@@ -6943,6 +7075,53 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
     },
   );
 
+  test('refreshes a pre-abandonment version-1 cleanup report through inventory and apply', async () => {
+    await source();
+    worker.diagnose = diagnoseInternalRootW5;
+    repairs = createInternalRootRelocationRepairs({
+      ...nativeRepairOptions(),
+      durability: desktopW5Durability,
+    });
+    const report = await reportInternalRootCleanup(identity, false, host);
+    const legacy = {
+      ...report,
+      totals: report.totals.filter(
+        (total) => total.category !== 'abandoned-archive',
+      ),
+    };
+    expect(legacy.totals).toHaveLength(7);
+    const saveLegacy = (): Promise<void> =>
+      writeFile(report.reportPath, JSON.stringify(legacy), { mode: 0o600 });
+    await saveLegacy();
+    await expect(worker.readJournal(identity)).resolves.toBeNull();
+    await expect(
+      migrateInternalRoot(
+        worker,
+        identity,
+        { apply: false, declareInternal: true },
+        repairs,
+      ),
+    ).resolves.toMatchObject({
+      kind: 'inventory',
+      preflight: { kind: 'ready' },
+    });
+    const refreshed = await reportInternalRootCleanup(identity, false, host);
+    expect(refreshed.totals).toContainEqual({
+      category: 'abandoned-archive',
+      entries: 0,
+      bytes: 0,
+    });
+    await saveLegacy();
+    await expect(run()).resolves.toMatchObject({ kind: 'complete' });
+    const applied = await reportInternalRootCleanup(identity, true, host);
+    expect(applied.totals).toContainEqual({
+      category: 'abandoned-archive',
+      entries: 0,
+      bytes: 0,
+    });
+    expect(startup).not.toThrow();
+  });
+
   test('cleanup report handles empty roots and refuses to infer absence from corrupt membership', async () => {
     await source();
     const empty = await reportInternalRootCleanup(identity, false, host);
@@ -7674,6 +7853,552 @@ describe('offline filesystem transaction (fixture cold proof)', () => {
           db.close();
         }
       }
+    },
+  );
+
+  test.each(['active', 'mid-quarantine', 'post-Git-removal'])(
+    'explicitly abandons %s without replay or payload deletion',
+    async (shape) => {
+      await source();
+      const item = await strandedArchiveFixture(identity.source, 'P0', 'crow');
+      if (shape === 'active') item.record.state = 'active';
+      else
+        item.record.steps = [
+          { phase: 'live-state-teardown', state: 'done' },
+          { phase: 'retained-payload-capture', state: 'done' },
+          { phase: 'git-capture', state: 'done' },
+          { phase: 'provider-capture', state: 'done' },
+          { phase: 'checkout-quarantine', state: 'done' },
+          {
+            phase: 'git-worktree-removal',
+            state: shape === 'mid-quarantine' ? 'pending' : 'done',
+          },
+        ];
+      await writeFile(item.path, JSON.stringify(item.record));
+      const originalJournal = await readFile(item.path, 'utf8');
+      const workspace = join(identity.source, 'workspaces/fixture');
+      const checkout = join(workspace, 'worktrees/crow');
+      const repository = join(home, 'shared-repository');
+      await mkdir(repository, { recursive: true });
+      const git = async (...args: string[]): Promise<string> =>
+        (
+          await promisify(execFile)('git', args, { cwd: repository })
+        ).stdout.trim();
+      await git('init');
+      await git(
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.test',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'fixture',
+      );
+      await mkdir(dirname(checkout), { recursive: true });
+      await git('worktree', 'add', '-b', 'crow', checkout);
+      const snapshotRef = 'refs/app/archived-containers/fixture/crow/repo';
+      await git('update-ref', snapshotRef, 'HEAD');
+      const snapshotOid = await git('rev-parse', snapshotRef);
+      const protectedRef = `refs/canopy-migration-abandoned/archived-containers/fixture/crow/repo/${snapshotOid}`;
+      const quarantine = join(workspace, 'worktrees/.crow.archive-quarantine');
+      if (shape === 'mid-quarantine') {
+        await git(
+          'worktree',
+          'lock',
+          '--reason',
+          'canopy: removing stale registration',
+          checkout,
+        );
+        await rename(checkout, quarantine);
+        await writeFile(
+          join(quarantine, '.git'),
+          'gitdir: /missing/stale-record\n',
+        );
+      } else if (shape === 'post-Git-removal') {
+        await git('worktree', 'remove', '--force', checkout);
+        await mkdir(checkout);
+        await writeFile(
+          join(checkout, '.git'),
+          'gitdir: /missing/stale-record\n',
+        );
+      } else {
+        await mkdir(quarantine);
+        await writeFile(join(quarantine, 'sentinel'), 'quarantine payload');
+      }
+      await writeFile(
+        join(shape === 'mid-quarantine' ? quarantine : checkout, 'sentinel'),
+        'checkout payload',
+      );
+      const registration = join(repository, '.git/worktrees/crow');
+      const registrationBefore =
+        shape === 'post-Git-removal'
+          ? null
+          : await readFile(join(registration, 'gitdir'), 'utf8');
+      if (shape === 'active') {
+        const nested = join(quarantine, 'repos/secondary');
+        await git('worktree', 'add', '-b', 'secondary', nested);
+        await git(
+          'worktree',
+          'lock',
+          '--reason',
+          'canopy: removing stale registration',
+          nested,
+        );
+        await rm(nested, { recursive: true });
+      }
+      await mkdir(join(workspace, 'worktree-data/crow'), { recursive: true });
+      await writeFile(
+        join(workspace, 'worktree-data/crow/chat'),
+        'chat payload',
+      );
+      for (const folder of [
+        'chats',
+        'chat-storage-manifests',
+        'chat-storage-v2/crow',
+      ])
+        await mkdir(join(workspace, folder), { recursive: true });
+      await writeFile(
+        join(workspace, 'chats/crow.json'),
+        'legacy chat payload',
+      );
+      await writeFile(
+        join(workspace, 'chat-storage-v2/crow/transcript'),
+        'canonical transcript',
+      );
+      await writeFile(
+        join(workspace, 'chat-storage-v2/crow/live-index.json'),
+        JSON.stringify({
+          version: 2,
+          tabs: [],
+          runtimeByChatId: { chat: { status: 'streaming' } },
+        }),
+      );
+      const keepChat = JSON.stringify({
+        tabs: [{ id: 'keep-chat', claudeTerminal: { turnState: 'running' } }],
+      });
+      await writeFile(join(workspace, 'chats/keep.json'), keepChat);
+      const chatManifest = JSON.stringify({ version: 2, scopeId: 'crow' });
+      await writeFile(
+        join(workspace, 'chat-storage-manifests/crow.json'),
+        chatManifest,
+      );
+      await writeFile(
+        join(workspace, 'chat-storage-manifests/crow.json.last-good'),
+        chatManifest,
+      );
+      await mkdir(join(workspace, 'chat-journals'), { recursive: true });
+      const chatJournal =
+        JSON.stringify({
+          mutations: [
+            {
+              type: 'runtime.patched',
+              chatId: 'chat',
+              runtime: { status: 'streaming' },
+            },
+          ],
+        }) + '\n';
+      await writeFile(join(workspace, 'chat-journals/crow.jsonl'), chatJournal);
+      const compatibilityLink = '../archived-containers/crow/partial-payload';
+      if (!windows && shape === 'post-Git-removal') {
+        await mkdir(join(workspace, 'chat-archives'), { recursive: true });
+        await symlink(
+          compatibilityLink,
+          join(workspace, 'chat-archives/crow.json'),
+        );
+      }
+      await writeFile(
+        join(workspace, 'archived-containers/crow/git-state.staged.json'),
+        '{"unfinished":true}',
+      );
+      for (const folder of ['attachments', 'script-runs', 'cost']) {
+        await mkdir(join(workspace, folder, 'crow'), { recursive: true });
+        await writeFile(join(workspace, folder, 'crow/sentinel'), folder);
+      }
+      for (const folder of [
+        'summaries',
+        'plans',
+        'detected-plans',
+        'split-maps',
+      ]) {
+        await mkdir(join(workspace, folder), { recursive: true });
+        await writeFile(join(workspace, folder, 'crow.json.bak'), folder);
+      }
+      const beforeScan = await scanInterruptedWork(
+        [join(identity.source, 'workspaces')],
+        join(identity.source, 'pipeline-executions'),
+      );
+      expect(beforeScan.chatScopes).toContainEqual({
+        projectId: 'fixture',
+        worktreeId: 'crow',
+      });
+      await writeFile(
+        join(identity.source, 'workspaces/index.json'),
+        JSON.stringify({
+          version: 1,
+          workspaces: [
+            {
+              id: 'fixture',
+              name: 'Fixture',
+              type: 'multi-repo',
+              color: 'blue',
+            },
+          ],
+        }),
+      );
+      await writeFile(
+        join(workspace, 'workspace.json'),
+        JSON.stringify({
+          version: 1,
+          id: 'fixture',
+          type: 'multi-repo',
+          repos: [{ id: 'repo', name: 'Repo', repoPath: repository }],
+        }),
+      );
+      const list = JSON.stringify({
+        version: 1,
+        worktrees: [
+          {
+            id: 'crow',
+            branchName: 'crow',
+            createdAt: item.record.createdAt,
+            path: checkout,
+            creation: {
+              checkouts: [
+                { repositoryPath: repository, checkoutPath: checkout },
+              ],
+            },
+          },
+          { id: 'keep', branchName: 'keep', createdAt: item.record.createdAt },
+        ],
+      });
+      await writeFile(join(workspace, 'worktrees.json'), list);
+      const workspaceImage = async (): Promise<unknown[]> => {
+        const image: unknown[] = [];
+        const visit = async (path: string): Promise<void> => {
+          const stat = await lstat(path);
+          if (stat.isDirectory())
+            for (const name of (await readdir(path)).sort())
+              await visit(join(path, name));
+          else
+            image.push([
+              relative(workspace, path),
+              stat.isSymbolicLink()
+                ? await readlink(path)
+                : await readFile(path),
+            ]);
+        };
+        await visit(workspace);
+        return image;
+      };
+      const sourceBefore = await workspaceImage();
+      const entry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
+      let names: readonly string[] = [];
+      worker = createInternalRootMigrationWorker({
+        filesystemHost: host,
+        ...filesystemOptions,
+        ...(process.platform === 'darwin' && shape === 'post-Git-removal'
+          ? { cloneTree: undefined }
+          : {}),
+        proveCold: () => Promise.resolve(),
+        diagnose: (root) => diagnoseInternalRootW5(root, names),
+        recoverW5: async (root, qualification) => {
+          await settleInternalRootW5(
+            root,
+            entry,
+            windows
+              ? { ...qualification, assertCold: qualification.assertHeld }
+              : qualification,
+            {
+              ownedChildPath: filesystemOptions.ownedChildPath,
+              windowsProcessPath: resolve(
+                '.cache/bin/win32-x64/canopy-process-identity.exe',
+              ),
+              abandonArchives: names,
+            },
+          );
+        },
+      });
+      const inventory = await migrateInternalRoot(
+        worker,
+        identity,
+        { apply: false, declareInternal: true },
+        repairs,
+      );
+      expect(inventory).toMatchObject({
+        kind: 'inventory',
+        preflight: { kind: 'refused' },
+      });
+      expect(await diagnoseInternalRootW5(identity.source)).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('--abandon-archive fixture/crow'),
+        ]),
+      );
+      await expect(run()).rejects.toThrow('--abandon-archive fixture/crow');
+      await expect(
+        diagnoseInternalRootW5(identity.source, ['fixture/typo']),
+      ).rejects.toThrow('does not match');
+      names = ['fixture/crow'];
+      repairs = createInternalRootRelocationRepairs({
+        ...nativeRepairOptions(),
+        durability: desktopW5Durability,
+        abandonArchives: names,
+      });
+      const ready = await migrateInternalRoot(
+        worker,
+        identity,
+        { apply: false, declareInternal: true },
+        repairs,
+      );
+      expect(ready).toMatchObject({
+        kind: 'inventory',
+        preflight: { kind: 'ready' },
+      });
+      const persist = worker.saveJournal.bind(worker);
+      worker.saveJournal = async (journal): Promise<void> => {
+        await persist(journal);
+        await checkInstalledShape();
+        expect((await readFixtureJournal(identity))?.repairPlan).toEqual(
+          journal.repairPlan,
+        );
+      };
+      if (shape === 'active') {
+        const save = worker.saveJournal.bind(worker);
+        worker.saveJournal = async (journal): Promise<void> => {
+          await save(journal);
+          if (journal.phase === 'source-settled')
+            throw new Error('after frozen abandonment');
+        };
+        await expect(run()).rejects.toThrow('after frozen abandonment');
+        const evidenceName = (await readdir(identity.coordination)).find(
+          (name) => /^lifecycle-journals-.*\.json$/.test(name),
+        );
+        if (!evidenceName) throw new Error('Missing abandonment sidecar');
+        const evidencePath = join(identity.coordination, evidenceName);
+        const original = await readFile(evidencePath, 'utf8');
+        const evidence: unknown = JSON.parse(original);
+        if (!evidence || typeof evidence !== 'object')
+          throw new Error('Missing abandonment evidence');
+        for (const abandonedPaths of [undefined, []]) {
+          await writeFile(
+            evidencePath,
+            JSON.stringify({ ...evidence, abandonedPaths }),
+          );
+          await expect(readFixtureJournal(identity)).rejects.toMatchObject({
+            reason: 'journal-unsupported',
+          });
+        }
+        await writeFile(evidencePath, original);
+        worker.saveJournal = save;
+        names = [];
+        repairs = createInternalRootRelocationRepairs({
+          ...nativeRepairOptions(),
+          durability: desktopW5Durability,
+        });
+      }
+      const completed = await run();
+      expect(completed).toMatchObject({ kind: 'complete' });
+      expect(await workspaceImage()).toEqual(sourceBefore);
+      expect(await readFile(item.path, 'utf8')).toBe(originalJournal);
+      expect(await readFile(join(workspace, 'worktrees.json'), 'utf8')).toBe(
+        list,
+      );
+      const destinationWorkspace = join(
+        identity.destination,
+        'workspaces/fixture',
+      );
+      const copiedList: unknown = JSON.parse(
+        await readFile(join(destinationWorkspace, 'worktrees.json'), 'utf8'),
+      );
+      expect(copiedList).toEqual({
+        version: 1,
+        worktrees: [
+          { id: 'keep', branchName: 'keep', createdAt: item.record.createdAt },
+        ],
+      });
+      expect(
+        await statIfPresent(
+          join(identity.destination, relative(identity.source, item.path)),
+        ),
+      ).toBeNull();
+      const retainedFiles = [
+        ...(shape === 'mid-quarantine'
+          ? [
+              [
+                'worktrees/.crow.archive-quarantine/sentinel',
+                'checkout payload',
+              ],
+            ]
+          : []),
+        [
+          'archived-containers/crow/git-state.staged.json',
+          '{"unfinished":true}',
+        ],
+        ...(shape === 'mid-quarantine'
+          ? []
+          : [['worktrees/crow/sentinel', 'checkout payload']]),
+        ...(shape === 'active'
+          ? [
+              [
+                'worktrees/.crow.archive-quarantine/sentinel',
+                'quarantine payload',
+              ],
+            ]
+          : []),
+        ['worktree-data/crow/chat', 'chat payload'],
+        ['chats/keep.json', keepChat],
+        ['chat-storage-v2/crow/transcript', 'canonical transcript'],
+        ['archived-containers/crow/partial-payload', 'preserve staged bytes'],
+      ];
+      for (const [path, contents] of retainedFiles) {
+        if (!path) throw new Error('Missing fixture path');
+        expect(await readFile(join(workspace, path), 'utf8')).toBe(contents);
+        if (path === 'chats/keep.json')
+          expect(await readFile(join(destinationWorkspace, path), 'utf8')).toBe(
+            contents,
+          );
+        else
+          expect(
+            await statIfPresent(join(destinationWorkspace, path)),
+          ).toBeNull();
+      }
+      for (const [path, contents] of [
+        ['chats/crow.json', 'legacy chat payload'],
+        ['chat-storage-manifests/crow.json', chatManifest],
+        ['chat-storage-manifests/crow.json.last-good', chatManifest],
+        ['chat-journals/crow.jsonl', chatJournal],
+      ]) {
+        if (!path) throw new Error('Missing fixture path');
+        expect(await readFile(join(workspace, path), 'utf8')).toBe(contents);
+        expect(
+          await statIfPresent(join(destinationWorkspace, path)),
+        ).toBeNull();
+      }
+      const afterScan = await scanInterruptedWork(
+        [join(identity.destination, 'workspaces')],
+        join(identity.destination, 'pipeline-executions'),
+      );
+      expect(afterScan.chatScopes).not.toContainEqual({
+        projectId: 'fixture',
+        worktreeId: 'crow',
+      });
+      expect(afterScan.chatScopes).toContainEqual({
+        projectId: 'fixture',
+        worktreeId: 'keep',
+      });
+      expect(afterScan.errors).toEqual([]);
+      if (!windows && shape === 'post-Git-removal') {
+        expect(await readlink(join(workspace, 'chat-archives/crow.json'))).toBe(
+          compatibilityLink,
+        );
+        expect(
+          await statIfPresent(
+            join(destinationWorkspace, 'chat-archives/crow.json'),
+          ),
+        ).toBeNull();
+      }
+      const report = await reportInternalRootCleanup(
+        identity,
+        true,
+        host,
+        undefined,
+        ['fixture/crow'],
+      );
+      expect(
+        report.entries.filter(
+          (row) =>
+            row.copy === 'new-root' && row.category === 'abandoned-archive',
+        ),
+      ).toEqual([]);
+      for (const copy of ['old-root']) {
+        const entries = report.entries.filter(
+          (row) => row.copy === copy && row.category === 'abandoned-archive',
+        );
+        expect(entries.length).toBeGreaterThanOrEqual(
+          shape === 'active' ? 7 : 5,
+        );
+        expect(
+          entries.some((row) =>
+            row.path.endsWith(join('chat-storage-v2', 'crow')),
+          ),
+        ).toBe(true);
+        expect(
+          entries.some((row) =>
+            row.path.endsWith(join('chat-storage-manifests', 'crow.json')),
+          ),
+        ).toBe(true);
+
+        expect(
+          entries.every(
+            (row) =>
+              row.disposition === 'review before deleting' &&
+              row.reason.includes('fixture/crow'),
+          ),
+        ).toBe(true);
+      }
+      if (registrationBefore !== null)
+        expect(report.entries).toContainEqual(
+          expect.objectContaining({
+            path: registration,
+            category: 'abandoned-archive',
+          }),
+        );
+      expect(await git('rev-parse', snapshotRef)).toBe(snapshotOid);
+      expect(await git('rev-parse', protectedRef)).toBe(snapshotOid);
+      if (registrationBefore !== null)
+        expect(await readFile(join(registration, 'gitdir'), 'utf8')).toBe(
+          registrationBefore,
+        );
+      if (shape === 'mid-quarantine')
+        expect(await readFile(join(registration, 'locked'), 'utf8')).toContain(
+          'canopy: removing stale registration',
+        );
+      const refCandidate = report.entries.find(
+        (row) => row.path === `${join(repository, '.git')}#${protectedRef}`,
+      );
+      expect(refCandidate).toMatchObject({
+        category: 'abandoned-archive',
+        disposition: 'review before deleting',
+      });
+      expect(refCandidate?.reason).toContain('fixture/crow');
+      for (const path of [
+        'worktrees/crow',
+        'worktrees/.crow.archive-quarantine',
+        'archived-containers/crow',
+        'worktree-data/crow',
+        'chat-storage-v2/crow',
+        'attachments/crow',
+        'script-runs/crow',
+        'cost/crow',
+        'summaries/crow.json.bak',
+        'plans/crow.json.bak',
+        'detected-plans/crow.json.bak',
+        'split-maps/crow.json.bak',
+      ])
+        expect(
+          await statIfPresent(join(destinationWorkspace, path)),
+        ).toBeNull();
+      const previousRoot = process.env.CANOPY_DATA_DIR;
+      process.env.CANOPY_DATA_DIR = identity.destination;
+      try {
+        expect(await hasUnresolvedDestructiveRecovery('fixture', 'crow')).toBe(
+          false,
+        );
+        const {
+          reconcileArchivedGitRefsForWorkspace,
+          recoverArchivedGitTeardownsForWorkspace,
+        } = await import('../archived-container-git');
+        await recoverArchivedGitTeardownsForWorkspace('fixture');
+        await reconcileArchivedGitRefsForWorkspace('fixture');
+        expect(await git('rev-parse', protectedRef)).toBe(snapshotOid);
+        await expect(
+          git('show-ref', '--verify', snapshotRef),
+        ).rejects.toThrow();
+      } finally {
+        if (previousRoot === undefined) delete process.env.CANOPY_DATA_DIR;
+        else process.env.CANOPY_DATA_DIR = previousRoot;
+      }
+      expect(startup).not.toThrow();
     },
   );
 
@@ -9074,12 +9799,37 @@ lsofParserFixture(
       for (const fd of ['cwd', '3'])
         expect(() =>
           assertInternalRootColdOpenFiles(
-            `${self}p200\0f${fd}\0n${root}/entry\0`,
+            `${self}p200\0ccloudflared\0f${fd}\0n${root}/entry\0`,
             '',
             roots,
             new Set([100]),
           ),
-        ).toThrow('writer-active');
+        ).toThrow(
+          `Internal root migration refused (writer-active): Process 200 (cloudflared) has an open file or working directory under an affected tree: ${JSON.stringify(`${root}/entry`)}.`,
+        );
+    const blockers =
+      'p200\0ccloudflared\0fcwd\0n/example/source/entry\0f3\0n/example/source/other\0' +
+      'p300\0cnode\0f3\0n/example/destination/file\0';
+    const refusal =
+      'Process 200 (cloudflared) has an open file or working directory under an affected tree: "/example/source/entry". ' +
+      'Process 300 (node) has an open file or working directory under an affected tree: "/example/destination/file".';
+    for (const output of [
+      `${self}${blockers}`,
+      blockers,
+      `${self}${blockers}pbad\0`,
+      `${self}${blockers}zunknown\0`,
+    ])
+      expect(() =>
+        assertInternalRootColdOpenFiles(output, '', roots, new Set([100])),
+      ).toThrow(`Internal root migration refused (writer-active): ${refusal}`);
+    expect(() =>
+      assertInternalRootColdOpenFiles(
+        `${self}pbad\0${blockers}`,
+        '',
+        roots,
+        new Set([100]),
+      ),
+    ).toThrow('Invalid lsof PID');
     expect(
       assertInternalRootColdOpenFiles(
         `${self}p200\0fcwd\0n/example/source-other\0`,
@@ -9175,6 +9925,7 @@ lsofParserFixture.each(['EIO', 'ENOENT', 'ELOOP'])(
     const failure = Object.assign(new Error('Injected observation failure'), {
       code,
     });
+    const observe = storageObservation.observeStoragePathSync;
     const observation = jest
       .spyOn(storageObservation, 'observeStoragePathSync')
       .mockImplementation(() => {
@@ -9197,8 +9948,80 @@ lsofParserFixture.each(['EIO', 'ENOENT', 'ELOOP'])(
         ).toThrow(failure);
         expect(observation).toHaveBeenCalledTimes(1);
       }
+      observation.mockImplementation((path) => {
+        if (path === '/unrelated/file') throw failure;
+        return observe(path);
+      });
+      expect(() =>
+        assertInternalRootColdOpenFiles(
+          'p100\0n/elsewhere\0p200\0ccloudflared\0fcwd\0n/example/source/first\0' +
+            'p250\0cnode\0f3\0n/unrelated/file\0' +
+            'p300\0cnode\0f3\0n/example/source/second\0',
+          '',
+          ['/example/source'],
+          new Set([100]),
+        ),
+      ).toThrow(
+        'Internal root migration refused (writer-active): Process 200 (cloudflared) has an open file or working directory under an affected tree: "/example/source/first". ' +
+          'Process 300 (node) has an open file or working directory under an affected tree: "/example/source/second".',
+      );
     } finally {
       observation.mockRestore();
+    }
+  },
+);
+
+test.each([
+  canopy,
+  unstoppableCode,
+  { displayName: "Brand's [test]+", cliName: 'test-brand' },
+])(
+  'crash reporter stop pattern is shell-safe and scoped to the $displayName bundle',
+  (brand) => {
+    for (const channel of ['', ' (Internal)', ' (RC)']) {
+      const executable = `/Applications/Owner's apps/${brand.displayName}${channel}.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler`;
+      const secondExecutable = `/Volumes/Second copy/${brand.displayName}${channel}.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler`;
+      try {
+        assertInternalRootColdProcesses(
+          `100 90 /path/to/node\n90 1 /bin/zsh\n55 1 ${executable}\n56 1 ${secondExecutable}`,
+          100,
+          90,
+          [brand],
+        );
+        throw new Error('Expected crash reporter refusal');
+      } catch (error) {
+        if (!(error instanceof InternalRootMigrationRefused)) throw error;
+        expect(error.reason).toBe('writer-active');
+        const command = error.recovery.split('run: ')[1];
+        expect(command).toMatch(/^pkill -f '/);
+        if (!command) throw new Error('Missing crash reporter stop command');
+        const quoted = command.slice('pkill -f '.length);
+        expect(quoted).toContain("'\\''");
+        const pattern = quoted.slice(1, -1).replaceAll("'\\''", "'");
+        const regex = new RegExp(pattern);
+        expect(regex.test(`${executable} --database=/tmp/crashes`)).toBe(true);
+        expect(regex.test(secondExecutable)).toBe(true);
+        expect(
+          regex.test(
+            '/Applications/Other.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler',
+          ),
+        ).toBe(false);
+        expect(regex.test(command)).toBe(false);
+        if (!windows) {
+          const shellPattern = execFileSync(
+            '/bin/sh',
+            ['-c', `printf '%s' ${quoted}`],
+            { encoding: 'utf8' },
+          );
+          expect(shellPattern).toBe(pattern);
+          expect(
+            execFileSync('grep', ['-E', '--', shellPattern], {
+              encoding: 'utf8',
+              input: `${executable}\n${secondExecutable}\n/Applications/Other.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler\n${command}\n`,
+            }),
+          ).toBe(`${executable}\n${secondExecutable}\n`);
+        }
+      }
     }
   },
 );
@@ -9215,6 +10038,6 @@ test('orphaned crash reporter refusal names the reporter and exact manual stop c
       [canopy],
     ),
   ).toThrow(
-    "Crash reporter remains (PIDs 55). After quitting the app, run: pkill -f '[c]hrome_crashpad_handler'",
+    String.raw`Crash reporter remains (PIDs 55). After quitting the app, run: pkill -f '/Applications/Canopy \(Internal\)\.app/Contents/Frameworks/Electron Framework\.framework/Helpers/[c]hrome_crashpad_handler'`,
   );
 });

@@ -44,6 +44,7 @@ export type AppAdvisorCoreExecutor =
   | 'catalog'
   | 'sharing'
   | 'file-tree'
+  | 'records'
   | 'credentials'
   | 'remote-access'
   | 'settings-surface'
@@ -205,20 +206,32 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'write',
     grants: Object.freeze(['core.config.write'] as const),
   }),
-  'archived.list': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'archived.list': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'records',
+  }),
   'archived.open': Object.freeze({ kind: 'presentation' }),
   'archived.open_empty_trash': Object.freeze({ kind: 'presentation' }),
   'archived.open_overview': Object.freeze({ kind: 'presentation' }),
-  'archived.read_chat': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'archived.read_chat': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'records',
+  }),
   'archived.restore': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'records',
     grants: Object.freeze(['core.archive.write'] as const),
+    revision: 'none',
   }),
   'archived.set_locked': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'records',
     grants: Object.freeze(['core.archive.write'] as const),
+    revision: 'none',
   }),
   'automation.create': Object.freeze({
     kind: 'core',
@@ -897,15 +910,9 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   'file.save_active': Object.freeze({ kind: 'presentation' }),
   'file.send_selection_to_chat': Object.freeze({ kind: 'presentation' }),
   'github.resolve_base_branch_alignment': Object.freeze({
-    kind: 'legacy',
-    access: 'write',
-    grants: Object.freeze(['worker.git.write'] as const),
+    kind: 'presentation',
   }),
-  'github.split_pr': Object.freeze({
-    kind: 'legacy',
-    access: 'write',
-    grants: Object.freeze(['worker.git.write'] as const),
-  }),
+  'github.split_pr': Object.freeze({ kind: 'presentation' }),
   'home.set_execution_harness': Object.freeze({ kind: 'presentation' }),
   'hook.pause': Object.freeze({
     kind: 'core',
@@ -941,12 +948,18 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     revision: 'none',
   }),
   'ledger.add_entry': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'records',
     grants: Object.freeze(['core.ledger.write'] as const),
+    revision: 'none',
   }),
   'ledger.open': Object.freeze({ kind: 'presentation' }),
-  'ledger.search': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'ledger.search': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'records',
+  }),
   'mcp.account_connect': Object.freeze({
     kind: 'core',
     access: 'write',
@@ -1858,12 +1871,22 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   'usage.open_resume_modal': Object.freeze({ kind: 'presentation' }),
   'usage.open_resume_queue': Object.freeze({ kind: 'presentation' }),
   'watcher.delete': Object.freeze({
-    kind: 'legacy',
+    kind: 'core',
     access: 'write',
+    executor: 'records',
     grants: Object.freeze(['core.initiatedWork.write'] as const),
+    revision: 'none',
   }),
-  'watcher.get': Object.freeze({ kind: 'legacy', access: 'read' }),
-  'watcher.list': Object.freeze({ kind: 'legacy', access: 'read' }),
+  'watcher.get': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'records',
+  }),
+  'watcher.list': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'records',
+  }),
   'workspace.add_org_project': Object.freeze({
     kind: 'legacy',
     access: 'write',

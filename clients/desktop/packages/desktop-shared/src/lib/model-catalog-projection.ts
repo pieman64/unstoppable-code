@@ -102,7 +102,7 @@ function harnessChoiceFields(
           provider: harness,
           supportedThinkingLevels: [],
           contextWindow: route.contextWindow,
-          supportsImages: false,
+          supportsImages: route.supportsImages === true,
           supportsFastMode: false,
           funding:
             route.origin === 'org-gateway' ? 'org-gateway' : 'ai-credits',

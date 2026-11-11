@@ -7,7 +7,7 @@ import {
   DEFAULT_PIPELINE_SCOPES,
   executionContextSatisfies,
   isPipelineExecutionScope,
-} from '@canopy/desktop-shared/pipelines/scope';
+} from '@canopy/execution-engine/pipelines/scope';
 
 /**
  * Renderer-side scope-filter helper shared by every trigger surface.

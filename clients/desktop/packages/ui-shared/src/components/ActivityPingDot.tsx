@@ -1,5 +1,6 @@
-import type { JSX } from 'react';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
+import type { JSX } from 'react';
+import { Dot } from './Badge';
 
 export interface ActivityPingDotProps {
   /** Accessible label and native tooltip text for the dot. */
@@ -36,11 +37,9 @@ export function ActivityPingDot({
       data-testid={testId}
     >
       <span
-        className={`absolute inline-flex h-full w-full animate-ping rounded-full motion-reduce:animate-none ${OPERATIONAL_STATUS_COLORS.active.backgroundPing}`}
+        className={`absolute inline-flex h-full w-full animate-ping rounded-full motion-reduce:animate-none ${OPERATIONAL_STATUS_COLORS.success.backgroundPing}`}
       />
-      <span
-        className={`relative inline-flex h-1.5 w-1.5 rounded-full ${OPERATIONAL_STATUS_COLORS.active.background}`}
-      />
+      <Dot tone="working" className="relative" />
     </span>
   );
 }

@@ -194,12 +194,12 @@ export function flattenToolJsonSchema(
         if (memberSchema === undefined) {
           continue;
         }
-        members[memberName] = flattenToolJsonSchema(memberSchema);
+        setOwn(members, memberName, flattenToolJsonSchema(memberSchema));
       }
-      result[key] = members;
+      setOwn(result, key, members);
       continue;
     }
-    result[key] = flattenToolJsonSchema(value);
+    setOwn(result, key, flattenToolJsonSchema(value));
   }
   return result;
 }

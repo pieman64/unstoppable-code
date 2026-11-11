@@ -68,7 +68,7 @@ const { hostOperatingSystem } = createRequire(import.meta.url)(
 // tolerating the CJS `default`-vs-namespace interop. Import and resolution
 // failures surface rather than falling back.
 const configPaths =
-  await import('../../../../packages/desktop-shared/src/pipelines/config-paths.ts');
+  await import('../../../../packages/execution-engine/src/pipelines/config-paths.ts');
 const { getBundledCodexBinaryPath } = configPaths.default ?? configPaths;
 
 const { buildCodexDelegationPermissionProfiles } = profileModule;

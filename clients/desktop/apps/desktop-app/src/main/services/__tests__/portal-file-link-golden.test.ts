@@ -6,9 +6,16 @@
  * else, including a file that overlapping roots both contain, answers `null`.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { FileBrowserRoot } from '../../lib/file-browser-roots';
 
@@ -21,7 +28,7 @@ jest.mock('../../lib/file-browser-roots', () => ({
 }));
 
 import { getFileBrowserRoots } from '../../lib/file-browser-roots';
-import { resolvePortalFileLink } from '../files-service';
+import { readPortalFilePreview, resolvePortalFileLink } from '../files-service';
 
 const mockedGetFileBrowserRoots = jest.mocked(getFileBrowserRoots);
 const posix = process.platform === 'win32' ? describe.skip : describe;
@@ -65,12 +72,59 @@ let tempRoot = '';
 
 beforeEach(async () => {
   tempRoot = await mkdtemp(join(tmpdir(), 'portal-file-link-golden-'));
-  tempRoot = execFileSync('realpath', [tempRoot], { encoding: 'utf8' }).trim();
+  tempRoot = await realpath(tempRoot);
   mockedGetFileBrowserRoots.mockReset();
 });
 
 afterEach(async () => {
   await rm(tempRoot, { recursive: true, force: true });
+});
+
+it('opens the intended file from a transcript resolution through the Portal read', async () => {
+  const repo = join(tempRoot, 'repo');
+  await put(join(repo, 'foo', 'bar.ts'), 'directory-path contents');
+  if (sep !== '\\') {
+    await put(join(repo, 'foo\\bar.ts'), 'literal-backslash contents');
+  }
+  setRoots([root('repo', repo)]);
+
+  // Preserve the completion's exact identity across the JSON transport.
+  const resolution = await resolveLink('foo%5Cbar.ts');
+  expect(resolution).toEqual({
+    fileRootLocalId: 'repo',
+    relativePath: sep === '\\' ? 'foo/bar.ts' : 'foo\\bar.ts',
+  });
+  if (!resolution) throw new Error('Transcript fixture did not resolve.');
+  const transported: unknown = JSON.parse(JSON.stringify(resolution));
+  if (
+    typeof transported !== 'object' ||
+    transported === null ||
+    !('fileRootLocalId' in transported) ||
+    typeof transported.fileRootLocalId !== 'string' ||
+    !('relativePath' in transported) ||
+    typeof transported.relativePath !== 'string'
+  ) {
+    throw new Error('Transcript completion did not survive JSON transport.');
+  }
+  const readRequest = {
+    projectId: 'project-1',
+    worktreeId: 'wt-1',
+    fileRootLocalId: transported.fileRootLocalId,
+    relativePath: transported.relativePath,
+  };
+  await expect(readPortalFilePreview(readRequest)).resolves.toMatchObject({
+    path: resolution.relativePath,
+    content:
+      sep === '\\' ? 'directory-path contents' : 'literal-backslash contents',
+  });
+  for (const relativePath of ['../foo/bar.ts', '..\\foo\\bar.ts']) {
+    await expect(
+      readPortalFilePreview({
+        ...readRequest,
+        relativePath,
+      }),
+    ).rejects.toThrow('Path cannot traverse outside the worktree.');
+  }
 });
 
 posix('single-repository worktree', () => {
@@ -116,6 +170,24 @@ posix('single-repository worktree', () => {
       relativePath: 'src/space file.ts',
     });
     await expect(resolveLink('src/%E0%A4%A.ts')).resolves.toBeNull();
+
+    // Raw separators retain transcript syntax; encoded backslashes name
+    // literal POSIX characters even when the directory spelling also exists.
+    await put(join(repo, 'src\\only.ts'), 'literal');
+    await put(join(repo, 'src', 'literal\\name.ts'), 'nested literal');
+    await put(join(repo, 'src', 'literal', 'name.ts'), 'directory decoy');
+    for (const [href, relativePath] of [
+      ['src\\only.ts', 'src/only.ts'],
+      ['src%5Conly.ts', 'src\\only.ts'],
+      ['src\\literal%5Cname.ts', 'src/literal\\name.ts'],
+      [join(repo, 'src\\only.ts'), 'src\\only.ts'],
+      [pathToFileURL(join(repo, 'src\\only.ts')).href, 'src\\only.ts'],
+    ]) {
+      await expect(resolveLink(href)).resolves.toEqual({
+        fileRootLocalId: 'repo',
+        relativePath,
+      });
+    }
   });
 
   it('resolves absolute paths and local file URLs inside one root', async () => {

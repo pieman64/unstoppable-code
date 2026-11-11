@@ -45,7 +45,7 @@ function loadReplayModule(): Record<string, unknown> {
         `export { readDeltaJournal, readCheckpointState, assertJournalCovers, recordsAfter, replayIndexMetadata } from ${from('chat-delta-journal/replay.ts')};`,
         `export { assertChatStorageIndexes } from ${from('chat-storage-v2.ts')};`,
         `export { ChatTranscriptLog } from ${from('chat-transcript-log.ts')};`,
-        `export { getCanopyDataDir } from ${JSON.stringify(join(repoRoot, 'packages/desktop-shared/src/canopy-paths.ts'))};`,
+        `export { getCanopyDataDir } from ${JSON.stringify(join(repoRoot, 'packages/execution-engine/src/canopy-paths.ts'))};`,
         `export { chatDisplayLabel } from ${JSON.stringify(join(repoRoot, 'packages/protocol/src/chat-title.ts'))};`,
       ].join('\n'),
       resolveDir: repoRoot,

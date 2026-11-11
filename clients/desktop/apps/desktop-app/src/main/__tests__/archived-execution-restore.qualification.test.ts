@@ -1,4 +1,10 @@
-import { promises as fs } from 'node:fs';
+import {
+  promises as fs,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import * as fileOps from 'node:fs/promises';
@@ -116,6 +122,16 @@ import { getArchivedContainerExecutionsDir } from '../lib/paths';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
+
+// Test the fixture volume rather than assuming macOS/Windows case behavior.
+const caseProbe = mkdtempSync(join(tmpdir(), 'archive-case-'));
+let caseSensitive: boolean;
+try {
+  writeFileSync(join(caseProbe, 'A.ts'), 'upper');
+  caseSensitive = !existsSync(join(caseProbe, 'a.ts'));
+} finally {
+  rmSync(caseProbe, { recursive: true, force: true });
+}
 
 describe('archived-containers:restore execution qualification', () => {
   let dir: string;
@@ -337,6 +353,68 @@ describe('archived-containers:restore execution qualification', () => {
       fs.access(join(dir, 'archive', `${id}.json`)),
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  (process.platform === 'win32' ? it.skip : it)(
+    'restores exact POSIX artifact names and contents without aliasing directory decoys',
+    async () => {
+      const names = [
+        '日本語 🌲.ts',
+        "space and apostrophe's.ts",
+        'literal\\name.ts',
+        'literal/name.ts',
+        'report:12.ts',
+      ];
+      for (const name of names) {
+        const source = join(dir, 'archive', id, 'logs', name);
+        await fs.mkdir(join(source, '..'), { recursive: true });
+        await fs.writeFile(source, `archived:${name}`);
+      }
+      const result = await restoreArchivedContainer('workspace-1', 'archive-1');
+      expect(result.warnings).toEqual([]);
+      for (const name of names) {
+        expect(
+          await fs.readFile(
+            join(runtime.executionsDir, id, 'logs', name),
+            'utf8',
+          ),
+        ).toBe(`archived:${name}`);
+      }
+      expect(await fs.readdir(join(runtime.executionsDir, id, 'logs'))).toEqual(
+        expect.arrayContaining([
+          '日本語 🌲.ts',
+          "space and apostrophe's.ts",
+          'literal\\name.ts',
+          'literal',
+          'report:12.ts',
+        ]),
+      );
+      await expect(fs.access(join(dir, 'archive', id))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(
+        fs.access(join(dir, 'archive', `${id}.json`)),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
+  (caseSensitive ? it : it.skip)(
+    'restores both real case-neighbor artifacts without overwriting either',
+    async () => {
+      await fs.writeFile(join(dir, 'archive', id, 'logs', 'A.ts'), 'upper');
+      await fs.writeFile(join(dir, 'archive', id, 'logs', 'a.ts'), 'lower');
+      const result = await restoreArchivedContainer('workspace-1', 'archive-1');
+      expect(result.warnings).toEqual([]);
+      const logs = join(runtime.executionsDir, id, 'logs');
+      expect(await fs.readdir(logs)).toEqual(
+        expect.arrayContaining(['A.ts', 'a.ts']),
+      );
+      expect(await fs.readFile(join(logs, 'A.ts'), 'utf8')).toBe('upper');
+      expect(await fs.readFile(join(logs, 'a.ts'), 'utf8')).toBe('lower');
+      await expect(fs.access(join(dir, 'archive', id))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    },
+  );
 
   it('restores an artifact whose valid filename is near the filesystem limit', async () => {
     const name = `${'a'.repeat(240)}.log`;

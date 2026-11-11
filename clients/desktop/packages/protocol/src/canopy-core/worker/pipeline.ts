@@ -4,8 +4,12 @@ import {
   WORKER_EXECUTION_SECRET_ERROR_CODES,
 } from './execution-secrets';
 
-import { CanopyQueryRequestMetadataSchema } from '../common';
 import {
+  CanopyQueryRequestMetadataSchema,
+  CanopyWorkspaceScopeSchema,
+} from '../common';
+import {
+  CanopyStreamCursorSchema,
   CanopyStreamEndSchema,
   defineCanopyInstruction,
   defineCanopyInstructionRegistry,
@@ -35,6 +39,11 @@ import {
   WORKER_PIPELINE_OWNER_REQUEST_MEMBERS,
   WorkerPipelineOwnerResultSchema,
 } from './pipeline-owner-requests';
+import {
+  WORKER_PIPELINE_STATUS_REASON_KINDS,
+  WorkerPipelineExecutionDetailSchema,
+} from './pipeline-detail';
+import { WorkerPipelinePortableLaunchSchema } from './pipeline-portable-launch';
 
 /*
  * `worker.pipeline.execution.*` (CAN-4140): start, status, cancel and bounded
@@ -119,6 +128,15 @@ export const WorkerPipelineExecutionSchema = z.strictObject({
   completedAt: timestamp.nullable(),
   /** Pause checkpoints a resume may answer. */
   pendingPauseCount: z.number().int().min(0),
+  /**
+   * The kinds of the run's active status reasons, each once; absent when it
+   * has none (CAN-6102).
+   */
+  statusReasonKinds: z
+    .array(z.enum(WORKER_PIPELINE_STATUS_REASON_KINDS))
+    .min(1)
+    .max(WORKER_PIPELINE_STATUS_REASON_KINDS.length)
+    .optional(),
   error: z.string().max(WORKER_PIPELINE_ERROR_MAX_LENGTH).nullable(),
 });
 
@@ -133,6 +151,12 @@ export const WorkerPipelineExecutionStartParamsSchema = z.strictObject({
   owner: PipelineRunOwnerSchema,
   initiationSource: z.enum(WORKER_PIPELINE_INITIATION_SOURCES),
   secrets: ExecutionSecretBindingsSchema.optional(),
+  /**
+   * What a remote primary asks a cloud runner to run (CAN-6161): the launch
+   * without host paths. Only a worker that maps portable starts to its own
+   * paths accepts it, and never beside a host-local `_execution.pipelineLaunch`.
+   */
+  portableLaunch: WorkerPipelinePortableLaunchSchema.optional(),
 });
 
 export const WorkerPipelineExecutionResultSchema = z.strictObject({
@@ -141,7 +165,66 @@ export const WorkerPipelineExecutionResultSchema = z.strictObject({
 
 export const WorkerPipelineExecutionGetParamsSchema = z.strictObject({
   executionId: id,
+  /** Also return the execution's detail projection (CAN-6117). */
+  detail: z.literal(true).optional(),
   _meta: CanopyQueryRequestMetadataSchema.optional(),
+});
+
+/** The summary, and the detail when the request asked for it. */
+export const WorkerPipelineExecutionViewSchema = z.strictObject({
+  execution: WorkerPipelineExecutionSchema,
+  detail: WorkerPipelineExecutionDetailSchema.optional(),
+});
+
+export const WorkerPipelineExecutionGetResultSchema =
+  WorkerPipelineExecutionViewSchema;
+
+/** The most executions one list page carries. */
+export const WORKER_PIPELINE_LIST_LIMIT_MAX = 100;
+export const WORKER_PIPELINE_LIST_LIMIT_DEFAULT = 50;
+
+/**
+ * `worker.pipeline.execution.list` (CAN-6117): the executions this worker
+ * holds, newest first (by start time, then execution id), one bounded page
+ * at a time. Every filter narrows; an absent one matches everything.
+ */
+export const WorkerPipelineExecutionListParamsSchema = z.strictObject({
+  /**
+   * The workspace and worktree to list, and the execution target that must
+   * serve the call. A worker refuses a `targetId` it isn't.
+   */
+  scope: CanopyWorkspaceScopeSchema.pick({
+    workspaceId: true,
+    worktreeId: true,
+    targetId: true,
+  }).optional(),
+  /** Runs this owner owns; a run that recorded none is `personal`. */
+  owner: PipelineRunOwnerSchema.optional(),
+  pipelineId: id.optional(),
+  runScopes: z
+    .array(z.enum(WORKER_PIPELINE_RUN_SCOPES))
+    .min(1)
+    .max(WORKER_PIPELINE_RUN_SCOPES.length)
+    .optional(),
+  statuses: z
+    .array(z.enum(WORKER_PIPELINE_EXECUTION_STATUSES))
+    .min(1)
+    .max(WORKER_PIPELINE_EXECUTION_STATUSES.length)
+    .optional(),
+  /** Also return each execution's detail projection. */
+  detail: z.literal(true).optional(),
+  /** The previous page's `nextCursor`; absent for the first page. */
+  cursor: z.string().min(1).max(2048).optional(),
+  limit: z.number().int().min(1).max(WORKER_PIPELINE_LIST_LIMIT_MAX).optional(),
+  _meta: CanopyQueryRequestMetadataSchema.optional(),
+});
+
+export const WorkerPipelineExecutionListResultSchema = z.strictObject({
+  executions: z
+    .array(WorkerPipelineExecutionViewSchema)
+    .max(WORKER_PIPELINE_LIST_LIMIT_MAX),
+  /** `null` on the last page. */
+  nextCursor: z.string().min(1).max(2048).nullable(),
 });
 
 export const WORKER_PIPELINE_CANCEL_MODES = ['finalize', 'drain'] as const;
@@ -159,14 +242,20 @@ export const WorkerPipelineExecutionCancelParamsSchema = z.strictObject({
 
 export const WorkerPipelineExecutionEventsParamsSchema = z.strictObject({
   executionId: id,
-  /** The stream doesn't resume; every subscription starts from a snapshot. */
-  cursor: z.null().optional(),
+  /**
+   * The last cursor the caller received, to resume after it (CAN-6161). A
+   * worker that keeps an event journal replays what followed; any other
+   * answers `worker.pipeline.snapshotRequired`, as it does for another
+   * epoch's cursor or one older than its journal. Without one the stream
+   * starts from a snapshot.
+   */
+  cursor: CanopyStreamCursorSchema.nullable().optional(),
   _meta: CanopyQueryRequestMetadataSchema.optional(),
 });
 
 export const WorkerPipelineExecutionEventsOpenResultSchema = z.strictObject({
   subscriptionId: id,
-  acceptedCursor: z.null(),
+  acceptedCursor: CanopyStreamCursorSchema.nullable(),
 });
 
 /**
@@ -250,9 +339,36 @@ export const WorkerPipelineExecutionQueryErrorSchema =
     retry: CanopyQueryRetryDirectiveSchema,
   });
 
+export const WorkerPipelineExecutionListErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    code: z
+      .enum([
+        'worker.pipeline.invalidCursor',
+        'worker.pipeline.targetUnavailable',
+        'worker.pipeline.hostUnavailable',
+        'worker.pipeline.hostLost',
+      ])
+      .optional(),
+    retry: CanopyQueryRetryDirectiveSchema,
+  });
+
+/** The events stream's errors: the query errors, and a cursor it cannot resume (CAN-6161). */
+export const WorkerPipelineExecutionEventsErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    code: z
+      .enum([
+        'worker.pipeline.executionNotFound',
+        'worker.pipeline.hostUnavailable',
+        'worker.pipeline.hostLost',
+        'worker.pipeline.snapshotRequired',
+      ])
+      .optional(),
+    retry: CanopyQueryRetryDirectiveSchema,
+  });
+
 export const WorkerPipelineExecutionEventsEndSchema =
   CanopyStreamEndSchema.extend({
-    error: WorkerPipelineExecutionQueryErrorSchema.nullable(),
+    error: WorkerPipelineExecutionEventsErrorSchema.nullable(),
   });
 
 /*
@@ -451,6 +567,7 @@ export const WORKER_PIPELINE_HOST_FAILURE_REASONS = [
   'unsupported_action',
   'authorization_conflict',
   'needs_desktop',
+  'needs_host',
   'setup_failed',
   'setup_timed_out',
   'reply_timed_out',
@@ -677,8 +794,10 @@ export const WorkerPipelineHostRequestsParamsSchema = z.strictObject({
   _meta: CanopyQueryRequestMetadataSchema.optional(),
 });
 
-export const WorkerPipelineHostRequestsOpenResultSchema =
-  WorkerPipelineExecutionEventsOpenResultSchema;
+export const WorkerPipelineHostRequestsOpenResultSchema = z.strictObject({
+  subscriptionId: id,
+  acceptedCursor: z.null(),
+});
 
 export const WorkerPipelineHostRequestRespondParamsSchema = z.strictObject({
   executionId: id,
@@ -731,6 +850,15 @@ export type WorkerPipelineExecutionResult = z.output<
 export type WorkerPipelineExecutionGetParams = z.output<
   typeof WorkerPipelineExecutionGetParamsSchema
 >;
+export type WorkerPipelineExecutionView = z.output<
+  typeof WorkerPipelineExecutionViewSchema
+>;
+export type WorkerPipelineExecutionListParams = z.output<
+  typeof WorkerPipelineExecutionListParamsSchema
+>;
+export type WorkerPipelineExecutionListResult = z.output<
+  typeof WorkerPipelineExecutionListResultSchema
+>;
 export type WorkerPipelineExecutionCancelParams = z.output<
   typeof WorkerPipelineExecutionCancelParamsSchema
 >;
@@ -781,8 +909,19 @@ export const WORKER_PIPELINE_QUERY_DEFINITIONS = defineCanopyQueryRegistry(
       version: 1,
       placement: 'target-selectable',
       params: WorkerPipelineExecutionGetParamsSchema,
-      result: WorkerPipelineExecutionResultSchema,
+      result: WorkerPipelineExecutionGetResultSchema,
       error: WorkerPipelineExecutionQueryErrorSchema,
+      idempotency: 'inherent',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.read],
+    }),
+    'worker.pipeline.execution.list': defineCanopyQuery({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineExecutionListParamsSchema,
+      result: WorkerPipelineExecutionListResultSchema,
+      error: WorkerPipelineExecutionListErrorSchema,
       idempotency: 'inherent',
       requiredGrants: [WORKER_PIPELINE_GRANTS.read],
     }),
@@ -906,7 +1045,7 @@ export const WORKER_PIPELINE_STREAM_DEFINITIONS = defineCanopyStreamRegistry(
       openResult: WorkerPipelineExecutionEventsOpenResultSchema,
       item: WorkerPipelineExecutionEventsItemSchema,
       end: WorkerPipelineExecutionEventsEndSchema,
-      error: WorkerPipelineExecutionQueryErrorSchema,
+      error: WorkerPipelineExecutionEventsErrorSchema,
     }),
     'worker.pipeline.hostRequests': defineCanopyStream({
       plane: 'worker',

@@ -1915,8 +1915,8 @@ function handleRequest(message) {
             thread.dynamicTools.some((tool) =>
               tool.name.startsWith('canopy_app_advisor_'),
             )
-            ? 'canopy_app_advisor_set_auto_archive'
-            : 'canopy_set_auto_archive',
+            ? 'canopy_app_advisor_set_chat_auto_archive'
+            : 'canopy_set_chat_auto_archive',
           { enabled: !serializedInput.includes('Disable using tool') },
           mode === 'auto-archive-held'
             ? 'auto-archive-held'

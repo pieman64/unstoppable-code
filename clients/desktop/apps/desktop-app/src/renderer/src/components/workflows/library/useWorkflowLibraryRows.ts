@@ -81,6 +81,10 @@ export function useWorkflowLibraryRows(
     !pipelines.shared.loaded &&
     !pipelines.shared.loading;
   const refreshSharedPipelines = pipelines.refreshSharedList;
+  const pipelineCloudAccount = pipelines.shared.cloudAccount;
+  const viewerId = isCanopyCloudConnected(pipelineCloudAccount)
+    ? (pipelineCloudAccount?.account?.id ?? null)
+    : null;
   useEffect(() => {
     if (pipelineSharesReady) void refreshSharedPipelines();
   }, [pipelineSharesReady, refreshSharedPipelines]);
@@ -146,6 +150,7 @@ export function useWorkflowLibraryRows(
     );
     const rows = projectLibraryRows({
       activities: scopedActivities,
+      viewerId,
       installedRemoteIds: new Set(
         allActivities.flatMap((activity) =>
           activity.installedFrom ? [activity.installedFrom.remoteId] : [],
@@ -169,6 +174,7 @@ export function useWorkflowLibraryRows(
           triggerKind: share.triggerKind,
           actionType: share.actionType,
           sharer: sharerOf(share.owner),
+          createdById: share.createdBy?.id,
           updatedAt: share.updatedAt,
         }),
       ),
@@ -195,6 +201,7 @@ export function useWorkflowLibraryRows(
       refreshSharedAutomations,
     };
   }, [
+    viewerId,
     automations.loading,
     executions,
     now,

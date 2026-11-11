@@ -9,6 +9,19 @@ import type * as CorePlatform from '@canopy/core-platform';
 
 const mockGet = jest.fn<Promise<{ client: unknown }>, [unknown, unknown]>();
 let mockDataRoot = '';
+// CAN-5093: the route outcome labels each script decision sends.
+const mockRouteLabels: unknown[] = [];
+jest.mock('@canopy/desktop-instrumentation/electron/main', () => ({
+  ...jest.requireActual<object>(
+    '@canopy/desktop-instrumentation/electron/main',
+  ),
+  succeedDesktopOperation: (
+    name: string,
+    options: { readonly context?: unknown },
+  ): void => {
+    if (name === 'canopy.daemon_route') mockRouteLabels.push(options.context);
+  },
+}));
 jest.mock('../../canopy-runtime/electron-daemon-access', () => ({
   getElectronDaemonConnections: (): unknown => ({
     get: (caller: unknown, signal: unknown) => mockGet(caller, signal),
@@ -120,9 +133,9 @@ import {
   IPC_CHANNELS,
   type ScriptRunResponse,
 } from '@canopy/desktop-shared/types';
-import { resetResolvedCanopyDataDirForTests } from '@canopy/desktop-shared/canopy-paths';
+import { resetResolvedCanopyDataDirForTests } from '@canopy/execution-engine/canopy-paths';
 import { createDefaultEnvironmentConfig } from '@canopy/desktop-shared/lib/user-environment';
-import { registerSecretsEnvInjector } from '@canopy/desktop-shared/pipelines/config-paths';
+import { registerSecretsEnvInjector } from '@canopy/execution-engine/pipelines/config-paths';
 import {
   createCoreOperationAdapter,
   type CoreOperationAdapter,
@@ -503,6 +516,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  mockRouteLabels.length = 0;
   mockPlatform = 'darwin';
   mockLabsSnapshot.mockClear();
   mockBridge = false;
@@ -842,6 +856,14 @@ describePosix('daemon script route (CAN-5087)', () => {
     expect(result.success).toBe(true);
     expect(double.spawns).toBe(0);
     expect(mockNoteFallback).toHaveBeenCalledWith('scripts', 'connection_lost');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockRouteLabels).toEqual([
+      {
+        route_family: 'scripts',
+        route_host: 'in_process',
+        route_reason: 'unreachable',
+      },
+    ]);
   });
 
   it('a renderer stop cancels the daemon run', async () => {
@@ -864,6 +886,11 @@ describePosix('daemon script route (CAN-5087)', () => {
       ({ name }) => name === 'worker.script.execution.cancel',
     );
     expect(cancel?.params).toMatchObject({ executionId: run.runId });
+    // Started in the daemon, so it counts as served once however it ends.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockRouteLabels).toEqual([
+      { route_family: 'scripts', route_host: 'daemon', route_reason: 'served' },
+    ]);
   });
 
   it("worktree removal drains a routed daemon run's whole tree", async () => {

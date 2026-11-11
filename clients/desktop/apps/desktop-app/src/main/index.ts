@@ -1,5 +1,6 @@
 import './lifecycle/build-storage-startup';
 import { prepareCanopySecureStorage } from '@canopy/desktop-shared/node/build-storage-startup';
+import { startWorkEntryAutoDeleteScheduler } from './lib/work-entry-auto-delete';
 import { replayHookChatPlaceholders } from './lib/hook-chat-placeholders';
 import { BRAND } from '@canopy/brand/current';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
@@ -195,7 +196,7 @@ import {
   suspendPostHogMain,
 } from '@canopy/desktop-instrumentation/electron/main';
 import { getPostHogEmailDomain } from '@canopy/desktop-instrumentation/posthog-account';
-import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import {
   appAdvisorWindowButtonPosition,
@@ -208,7 +209,7 @@ import { installWorkCountersQuery } from '@canopy/desktop-shared/node/work-count
 import {
   prewarmLoginShellPath,
   setLoginShellProbe,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { createPortLoginShellProbe } from '@canopy/desktop-shared/node/execution-host/login-shell-probe';
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import {
@@ -905,6 +906,9 @@ let uninstallFeatureFlagRecoveryTriggers: (() => void) | null = null;
 let disposeTurnFeedbackFlush: (() => void) | null = null;
 let disposeSharedItemSubscriptionFlush: (() => void) | null = null;
 let stopArchivedContainerRetention: (() => void) | null = null;
+let workEntryAutoDeleteScheduler: ReturnType<
+  typeof startWorkEntryAutoDeleteScheduler
+> | null = null;
 let autoArchiveScheduler: ReturnType<typeof startAutoArchiveScheduler> | null =
   null;
 let disposeCuratedMcpRefresh: (() => void) | null = null;
@@ -1901,6 +1905,9 @@ function unlockStartupWork(): void {
   startupUnlocked = true;
 
   recordRealisticStartupPerformanceEvent('startup:unlock');
+  // Persisted auto-delete arms wait for startup recovery: the resume queue
+  // starts just before this, so interrupted turns count as busy first.
+  workEntryAutoDeleteScheduler ??= startWorkEntryAutoDeleteScheduler();
 
   recordRealisticStartupPerformanceEvent('startup:automations:requested');
   // Rebind items of projects moved before rebinding existed, before the
@@ -2236,6 +2243,11 @@ async function cleanupRuntimeResources(
     // Auto Delete begins shutting down. Activity subscriptions stay attached
     // until producers have emitted their final inactivity watermarks below.
     await deferPreparationFailure(
+      stages.run('work-entry-auto-delete', () =>
+        workEntryAutoDeleteScheduler?.stop(),
+      ),
+    );
+    await deferPreparationFailure(
       stages.run('auto-archive', () => autoArchiveScheduler?.stopScheduling()),
     );
     // Stream repair owns the same durable ports as live delegation actors.
@@ -2259,6 +2271,13 @@ async function cleanupRuntimeResources(
       await deferPreparationFailure(
         stages.run('startup-recovery', () => startupRecoveryPromise),
       );
+    // Before chat and runtime teardown can end or fail a daemon host step in
+    // flight, such as an agent-reply wait: its run should pause, not settle
+    // on a quit (CAN-6033).
+    await stages.bestEffort('daemon-host-steps', async (): Promise<void> => {
+      const owner = await import('./pipelines/daemon-pipeline-owner');
+      owner.stopDaemonPipelineOwnerSettlement();
+    });
     // The checkpoint goes through core while its runtime still runs; with
     // none, nothing could have started a run, so only admission closes.
     const pipelinePause = stages.run('pipeline-recovery', () =>
@@ -2490,6 +2509,7 @@ async function cleanupRuntimeResources(
     await stages.run('workspace-touches', flushWorkspaceTargetTouches);
     autoArchiveScheduler?.disposeActivitySubscriptions();
     autoArchiveScheduler = null;
+    workEntryAutoDeleteScheduler = null;
     setAutoArchiveResultListener(null);
     await codeGraphWorkerTeardown;
     await codeGraphReadTeardown;

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 
-import { getEnhancedEnv } from '../../pipelines/config-paths';
+import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import type {
   DiffFileEntry,
   DiffHunk,

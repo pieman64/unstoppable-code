@@ -293,6 +293,43 @@ const OPENCODE_READY: OpenCodeAccountSnapshot = {
         { label: '', method: 'external', selected: false, needsSignIn: false },
       ],
     },
+    {
+      id: 'opencode-go',
+      name: 'OpenCode Go',
+      accounts: [
+        {
+          label: 'Go personal',
+          method: 'key',
+          selected: true,
+          needsSignIn: false,
+          usage: {
+            status: 'ready',
+            plan: 'OpenCode Go',
+            checkedAt: OPENCODE_UPDATED_AT,
+            windows: [
+              {
+                id: 'rolling',
+                percent: 25,
+                resetsAt: '2030-01-01T00:00:00.000Z',
+              },
+              {
+                id: 'weekly',
+                percent: 85,
+                resetsAt: '2030-01-07T00:00:00.000Z',
+              },
+              { id: 'monthly', percent: 100, resetsAt: OPENCODE_UPDATED_AT },
+            ],
+          },
+        },
+        {
+          label: 'Other Go account',
+          method: 'key',
+          selected: false,
+          needsSignIn: false,
+          usage: { status: 'not-selected' },
+        },
+      ],
+    },
     { id: 'groq', name: 'Groq', accounts: [] },
   ],
 };

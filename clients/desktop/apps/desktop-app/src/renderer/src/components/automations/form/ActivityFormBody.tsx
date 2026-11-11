@@ -80,6 +80,7 @@ import {
   Stack,
   AutomationPipelineTargetFields,
   Button,
+  DateField,
   Disclosure,
   ErrorBanner,
   FORM_FIELD_LABEL_CLASS,
@@ -89,12 +90,15 @@ import {
   Notice,
   NoticeButton,
   SegmentedControl as SharedSegmentedControl,
+  Select,
   Surface,
   TextArea,
   TextInput,
   ToggleSwitch,
   FieldError,
+  toIsoDateValue,
 } from '@canopy/ui-shared/components';
+import { buildTimeSlotOptions, passedTimeOn } from '@/lib/timeSlotOptions';
 import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import { automationDestinationExecutionScope } from '@canopy/pipeline-interop/automation-target';
 import type { AutomationTargetResolution } from '@canopy/pipeline-interop/automation-target';
@@ -212,17 +216,17 @@ export interface ActivityFormBodyProps {
  * bordered pill with a primary-filled active segment and visible labels next
  * to the icons.
  */
-interface WorkspaceActionModePillProps {
+interface WorkspaceActionModeControlProps {
   value: WorkspaceActionMode;
   onChange: (value: WorkspaceActionMode) => void;
   disabled?: boolean;
 }
 
-function WorkspaceActionModePill({
+function WorkspaceActionModeControl({
   value,
   onChange,
   disabled = false,
-}: WorkspaceActionModePillProps): JSX.Element {
+}: WorkspaceActionModeControlProps): JSX.Element {
   const options: Array<{
     value: WorkspaceActionMode;
     label: string;
@@ -261,7 +265,7 @@ function WorkspaceActionModePill({
   );
 }
 
-function InterfaceModePill({
+function InterfaceModeControl({
   value,
   onChange,
 }: {
@@ -682,6 +686,24 @@ export function ActivityFormBody({
     state.triggerKind,
   ]);
 
+  // The time picker lists every quarter hour, plus the time the form opened
+  // with and the current one, so a saved time off the quarter hour (9:07)
+  // stays selectable. Earlier today has passed: those slots can't be chosen.
+  const [openedOneTimeTime, setOpenedOneTimeTime] = useState(state.oneTimeTime);
+  if (!openedOneTimeTime && state.oneTimeTime) {
+    setOpenedOneTimeTime(state.oneTimeTime);
+  }
+  const today = toIsoDateValue(new Date());
+  const passedOneTimeTime = passedTimeOn(state.oneTimeDate);
+  const timeOptions = useMemo(
+    () =>
+      buildTimeSlotOptions({
+        keep: [openedOneTimeTime, state.oneTimeTime],
+        passed: passedOneTimeTime,
+      }),
+    [openedOneTimeTime, passedOneTimeTime, state.oneTimeTime],
+  );
+
   const cronError = useMemo(() => {
     if (state.triggerKind !== 'cron') return null;
     const error = validateAutomationTrigger({
@@ -1076,22 +1098,23 @@ export function ActivityFormBody({
                   <div className="grid grid-cols-2 gap-2">
                     <Field label="Date">
                       {(control) => (
-                        <TextInput
+                        <DateField
                           {...control}
-                          type="date"
                           value={state.oneTimeDate}
-                          readOnly
+                          onValueChange={ignoreReadOnlyChange}
+                          disabled
                           data-testid="automations-form-date"
                         />
                       )}
                     </Field>
                     <Field label="Time">
                       {(control) => (
-                        <TextInput
+                        <Select
                           {...control}
-                          type="time"
-                          value={state.oneTimeTime}
-                          readOnly
+                          options={timeOptions}
+                          value={state.oneTimeTime || null}
+                          onValueChange={ignoreReadOnlyChange}
+                          disabled
                           data-testid="automations-form-time"
                         />
                       )}
@@ -1221,12 +1244,12 @@ export function ActivityFormBody({
               <Stack gap="inline">
                 <Field label="Date">
                   {(control) => (
-                    <TextInput
+                    <DateField
                       {...control}
-                      type="date"
                       value={state.oneTimeDate}
-                      onChange={(event): void =>
-                        update('oneTimeDate', event.target.value)
+                      min={today}
+                      onValueChange={(next): void =>
+                        update('oneTimeDate', next)
                       }
                       data-testid="automations-form-date"
                     />
@@ -1234,12 +1257,13 @@ export function ActivityFormBody({
                 </Field>
                 <Field label="Time">
                   {(control) => (
-                    <TextInput
+                    <Select
                       {...control}
-                      type="time"
-                      value={state.oneTimeTime}
-                      onChange={(event): void =>
-                        update('oneTimeTime', event.target.value)
+                      options={timeOptions}
+                      value={state.oneTimeTime || null}
+                      placeholder="Choose a time"
+                      onValueChange={(next): void =>
+                        update('oneTimeTime', next)
                       }
                       data-testid="automations-form-time"
                     />
@@ -1438,7 +1462,7 @@ export function ActivityFormBody({
                   </Notice>
                 )}
                 {selectedProject && (
-                  <WorkspaceActionModePill
+                  <WorkspaceActionModeControl
                     value={workspaceActionMode}
                     onChange={handleWorkspaceActionModeChange}
                     disabled={destinationOnlyEdit}
@@ -1627,7 +1651,7 @@ export function ActivityFormBody({
                         <span className="text-2xs font-medium fg-secondary">
                           Claude Code mode
                         </span>
-                        <InterfaceModePill
+                        <InterfaceModeControl
                           value={state.interfaceMode}
                           onChange={(nextMode) =>
                             update('interfaceMode', nextMode)
@@ -1827,6 +1851,9 @@ export function ActivityFormBody({
     </>
   );
 }
+
+/** The read-only schedule's pickers are disabled, so they never change. */
+function ignoreReadOnlyChange(): void {}
 
 /**
  * One labelled field of the automation form. A single control takes the

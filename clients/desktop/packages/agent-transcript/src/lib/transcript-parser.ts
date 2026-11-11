@@ -14,6 +14,7 @@ import {
 } from './claude-content-normalizers';
 import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
 import { CANOPY_DELEGATION_EVENT_TYPE } from '@canopy/protocol/delegation';
+import { claudeSessionWritesLostMessage } from './claude-session-writes-lost';
 import { parseCursorReportedUsage } from './cursor-usage';
 import { LAYOUT_BLOCK_TYPES } from './transcript-fingerprint';
 import { applyAssistantPatches } from './assistant-snapshot';
@@ -2311,6 +2312,28 @@ function handleClaudeSystemEvent(
     return appendCompactionBlock(state, block, options);
   }
 
+  // Sent as the CLI exits, after the last result: report it as its own row.
+  if (data.subtype === 'session_writes_lost') {
+    const text = `Error: ${claudeSessionWritesLostMessage(data)}`;
+    const last = state.messages[state.messages.length - 1];
+    if (last?.role === 'system' && messageHasTextBlock(last, text)) {
+      return { ...state, lastEventAt: options.now };
+    }
+    return {
+      ...state,
+      messages: [
+        ...state.messages,
+        {
+          id: createUnusedMessageId(state.messages, options),
+          role: 'system',
+          blocks: [{ type: 'text', text }],
+          timestamp: options.now,
+        },
+      ],
+      lastEventAt: options.now,
+    };
+  }
+
   if (
     (data.subtype === 'task_progress' ||
       data.subtype === 'task_notification') &&
@@ -3182,6 +3205,32 @@ function handleClaudeResultEvent(
     );
   }
 
+  if (
+    data.is_error === true &&
+    typeof data.canopy_provider_error_details === 'string' &&
+    data.canopy_provider_error_details.length > 0
+  ) {
+    messagesWithAuthRecovery = [
+      ...messagesWithAuthRecovery,
+      {
+        id: resolveClaudeEventMessageId(
+          messagesWithAuthRecovery,
+          data,
+          options,
+        ),
+        role: 'system',
+        blocks: [
+          {
+            type: 'text',
+            text: claudeResultErrorMessage(data),
+            providerErrorDetails: data.canopy_provider_error_details,
+          },
+        ],
+        timestamp: options.now,
+      },
+    ];
+  }
+
   return {
     ...state,
     status:
@@ -3291,7 +3340,16 @@ function handleClaudeErrorEvent(
           {
             id: options.createMessageId(),
             role: 'system',
-            blocks: [{ type: 'text', text: `Error: ${displayError}` }],
+            blocks: [
+              typeof data.canopy_provider_error_details === 'string' &&
+              data.canopy_provider_error_details.length > 0
+                ? {
+                    type: 'text',
+                    text: error,
+                    providerErrorDetails: data.canopy_provider_error_details,
+                  }
+                : { type: 'text', text: `Error: ${displayError}` },
+            ],
             timestamp: options.now,
           },
         ],

@@ -2,8 +2,8 @@ import { realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import type { PlatformOperatingSystem } from '@canopy/core-runtime';
 import type { WorkerPipelineHostLaunch } from '@canopy/protocol/canopy-core';
-import { getCanopyDataDir } from '../../canopy-paths';
-import { getEnhancedEnv } from '../../pipelines/config-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
+import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import { isInheritedSensitiveEnv } from './executor/step-runner';
 
 /*

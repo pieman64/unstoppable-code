@@ -44,7 +44,7 @@ import type {
   ListCuratedPipelinesRequest,
   ListCuratedPipelinesResult,
 } from '@canopy/desktop-shared/types/curated-pipelines';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { validateCuratedPipeline } from '@canopy/pipeline-interop';
 import {
   requestCanopyCloudBinary,

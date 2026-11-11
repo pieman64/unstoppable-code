@@ -1540,9 +1540,12 @@ const defaultDeps: DesktopEnvironmentPortDeps = {
       : undefined;
     const { resolveCatalogAgentDefaultModel } =
       await import('../agents/agent-default-model');
+    // The same harness rows the Portal and Orchestrator project, so a
+    // chat.create can name any model a person could pick there.
     const models = buildProjectedModelCatalog(undefined, {
       cursor: true,
       copilot: true,
+      opencode: true,
       owner,
       agentDefaultModel: call.scope
         ? await resolveCatalogAgentDefaultModel(call.scope.workspaceId)

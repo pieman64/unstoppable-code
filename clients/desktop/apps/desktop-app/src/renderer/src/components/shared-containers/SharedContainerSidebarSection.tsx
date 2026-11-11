@@ -23,13 +23,13 @@ import {
   SIDEBAR_ROW_TEXT_INSET_CLASSNAME,
   SharedContainerInvitationDialog,
   SidebarOverviewNavLink,
+  Badge,
 } from '@canopy/ui-shared/components';
 import {
   ChevronDownMediumIcon,
   RetryIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { LoadingSpinner } from '@/components/shared/loading';
-import { ViewOnlyPill } from './ViewOnlyPill';
 import { SharedContainerRecipientActionsMenu } from './SharedContainerRecipientActionsMenu';
 import { useScopedSharedContainerEntries } from './useScopedSharedContainerEntries';
 import { useSharedContainerRecipientActions } from './useSharedContainerRecipientActions';
@@ -620,7 +620,8 @@ function SharedContainerAcceptedRow({
             </span>
           )}
         </span>
-        <ViewOnlyPill />
+        {/* Read-only state the recipient reads, not a control: a quiet Badge. */}
+        <Badge data-testid="shared-container-read-only-badge">View only</Badge>
       </button>
       <div className="absolute right-1 top-1/2 -translate-y-1/2">
         <SharedContainerRecipientActionsMenu entry={entry} />

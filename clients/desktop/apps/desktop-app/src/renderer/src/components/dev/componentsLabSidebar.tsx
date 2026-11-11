@@ -2,6 +2,7 @@ import { useState, type JSX } from 'react';
 import {
   Button,
   SettingsSaveStatus,
+  SidebarBatchCleanupFailureNotice,
   SidebarBatchRemovalDialog,
   SidebarBatchRemovalNotice,
   SidebarNavMarker,
@@ -176,7 +177,73 @@ const NOTICE_CASES: readonly { label: string; props: Partial<NoticeProps> }[] =
         failed: 2,
       },
     },
+    {
+      label: 'failed, background cleanup still running',
+      props: { done: 4, failed: 2, cleanupRunning: 2, lateFailed: 1 },
+    },
+    {
+      label: 'failed, background cleanup finished',
+      props: { done: 4, failed: 2, lateFailed: 1 },
+    },
   ];
+
+type CleanupNoticeProps = Parameters<
+  typeof SidebarBatchCleanupFailureNotice
+>[0];
+
+const CLEANUP_NOTICE_CASES: readonly {
+  label: string;
+  props: Pick<CleanupNoticeProps, 'verb' | 'failedLabels' | 'cleanupRunning'>;
+}[] = [
+  {
+    label: 'one failed, cleanup still running',
+    props: {
+      verb: 'archive',
+      failedLabels: ['fix-login-redirect'],
+      cleanupRunning: 2,
+    },
+  },
+  {
+    label: 'several failed, cleanup finished',
+    props: {
+      verb: 'delete',
+      failedLabels: ['fix-login-redirect', 'docs-refresh'],
+      cleanupRunning: 0,
+    },
+  },
+  {
+    label: 'long name',
+    props: {
+      verb: 'archive',
+      failedLabels: [
+        'feature/very-long-branch-name-that-keeps-going-and-going-to-wrap',
+      ],
+      cleanupRunning: 1,
+    },
+  },
+];
+
+function SidebarBatchCleanupFailureNoticeSection(): JSX.Element {
+  return (
+    <SpecimenPanel title="SidebarBatchCleanupFailureNotice (a closed batch whose background cleanup failed)">
+      <SpecimenGrid min={320}>
+        {CLEANUP_NOTICE_CASES.map(({ label, props }) => (
+          <SpecimenCell key={label} label={label}>
+            <div className="w-80">
+              <SidebarBatchCleanupFailureNotice
+                {...props}
+                unitLabel={WORKTREE_BATCH_UNIT}
+                onShowDetails={noop}
+                onDismiss={noop}
+                testId={`batch-cleanup-notice-${label}`}
+              />
+            </div>
+          </SpecimenCell>
+        ))}
+      </SpecimenGrid>
+    </SpecimenPanel>
+  );
+}
 
 function SidebarBatchRemovalNoticeSection(): JSX.Element {
   return (
@@ -487,6 +554,7 @@ export function SidebarPartsSpecimen(): JSX.Element {
       <SidebarNavMarkerSection />
       <SidebarStylePickerSection />
       <SidebarBatchRemovalNoticeSection />
+      <SidebarBatchCleanupFailureNoticeSection />
       <SidebarBatchRemovalDialogSection />
       <SettingsSaveStatusSection />
       <SidebarGroupMenuSection />

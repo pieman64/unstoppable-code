@@ -35,6 +35,8 @@ export type WorktreeRemovalCapability = false | 'archive' | 'delete';
  * readonly: capabilities are fixed for the lifetime of a client instance.
  */
 export interface CanopyCapabilities {
+  /** Host can disarm agent-armed work entry removal and answer branch questions. Default-deny. */
+  readonly workEntryAutoDelete?: 'manage';
   /** Error reports; absent means false. Enable only with a complete adapter. */
   readonly feedbackReports?: boolean;
   /**
@@ -141,6 +143,16 @@ export interface CanopyCapabilities {
   readonly settingsScope: SettingsScope;
   /** Pipeline affordances the host exposes. */
   readonly pipelines: PipelineCapability;
+  /**
+   * Where {@link pipelines} can run: whether shared UI may offer "Run on:
+   * Cloud" (CAN-6085). A host sets it only from its web core manifest, with
+   * `pipelineCloudRunsFromManifest`, never from its runtime kind.
+   * Optional and default-deny: unset is the confirmed default for
+   * unconfigured and configured-but-unavailable hosts. No host sets it yet:
+   * desktop alone and canopy-server have no web core reporting the cloud run
+   * operations, and the browser has no web core connection (CAN-4095).
+   */
+  readonly pipelineCloudRuns?: boolean;
   /** Navigation model the host's `NavigationController` adapter implements. */
   readonly routing: RoutingMode;
   /** Host can supply overview notifications (local on desktop or relayed). */

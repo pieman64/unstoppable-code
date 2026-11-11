@@ -20,6 +20,7 @@ import {
   type AgentProviderAuthStatus,
   type CanopyCloudAccountPublicState,
   type CanopyCloudAiCreditsState,
+  type SecureStorageRecheckResult,
   type CanopyCloudEntitlementsState,
   type CloudDigestPreferences,
   type CloudDigestPreferencesState,
@@ -199,6 +200,7 @@ import { writeFileAtomically } from '../lib/atomic-file';
 import {
   getSecretStoragePolicy,
   getSecureStorageFailure,
+  recheckSecretStorage,
 } from '../lib/secure-storage-policy';
 import {
   authorizeModelGatewayCredential,
@@ -2630,6 +2632,16 @@ export function registerSettingsHandlers(runtime: {
     IPC_CHANNELS.settingsRefreshCanopyCloudEnforcedSettings,
     async (): Promise<CanopyCloudAccountPublicState> =>
       refreshCanopyCloudEnforcedSettings(),
+  );
+
+  registerIpcHandler(
+    IPC_CHANNELS.secureStorageRecheck,
+    async (_event, request: unknown): Promise<SecureStorageRecheckResult> => ({
+      // Only an explicit Retry skips the throttle; anything else is `shown`.
+      changed: await recheckSecretStorage(
+        isRecord(request) && request.trigger === 'retry' ? 'retry' : 'shown',
+      ),
+    }),
   );
 
   registerIpcHandler(

@@ -8,7 +8,7 @@ import {
   ensurePrivateLockDirectory,
   withOwnerLockFile,
 } from '@canopy/execution-engine/node/lib/owner-lock-file';
-import { isKnownOrphanedExecution } from './owner-fence';
+import { isKnownOrphanedExecution } from '@canopy/execution-engine/node/pipelines/executor/owner-fence';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import {
@@ -53,17 +53,17 @@ import type {
   PipelineModelAliasPreference,
   RetryMatrixJobRequest,
 } from '@canopy/execution-engine/types/pipeline';
-import { isPipelineJsonValue } from '@canopy/desktop-shared/pipelines/json-values';
+import { isPipelineJsonValue } from '@canopy/execution-engine/pipelines/json-values';
 import { encodeMatrixIpcErrorMessage } from '@canopy/execution-engine/types/pipeline';
 import {
   refreshAllJobGroups,
   rematerializeJobDefinitions,
-} from './job-scheduler';
+} from '@canopy/execution-engine/node/pipelines/executor/job-scheduler';
 
 import {
   endExecutionPause,
   resetExecutionPauseClock,
-} from './execution-pause-clock';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-pause-clock';
 
 export const CURRENT_EXECUTION_STATE_VERSION = 10;
 export type ExecutionStateWriteRefusal =
@@ -462,12 +462,26 @@ const UUID_PATTERN =
 // eslint-disable-next-line no-control-regex
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
+/**
+ * A pause that stopped work at a checkpoint rather than on a provider error:
+ * shutdown, sign-in, or a lost remote owner (CAN-6102). Resume picks each up
+ * the same way.
+ */
+function isCheckpointPauseReason(kind: PipelineStatusReasonKind): boolean {
+  return (
+    kind === 'app_shutdown' ||
+    kind === 'provider_sign_in' ||
+    kind === 'owner_lost'
+  );
+}
+
 function isPipelineStatusReasonKind(
   value: unknown,
 ): value is PipelineStatusReasonKind {
   switch (value) {
     case 'provider_sign_in':
     case 'app_shutdown':
+    case 'owner_lost':
     case 'input_required':
     case 'action_paused':
     case 'provider_authentication_required':
@@ -499,6 +513,7 @@ function isPipelineStatusReasonCode(
   switch (value) {
     case 'provider_sign_in':
     case 'app_shutdown':
+    case 'owner_lost':
     case 'input_requested':
     case 'action_requested_pause':
     case 'authentication_failed':
@@ -3364,7 +3379,7 @@ function applyExecutionResumeSelection(
       );
     }
     if (
-      (reason.kind === 'app_shutdown' || reason.kind === 'provider_sign_in') &&
+      isCheckpointPauseReason(reason.kind) &&
       step.status === 'paused' &&
       step.log_format_hint === 'agent' &&
       !step.agent_recovery &&
@@ -3375,7 +3390,7 @@ function applyExecutionResumeSelection(
       );
     }
     if (
-      ((reason.kind === 'app_shutdown' || reason.kind === 'provider_sign_in') &&
+      (isCheckpointPauseReason(reason.kind) &&
         step.status === 'paused' &&
         (step.agent_recovery || reason.source.child_execution_id)) ||
       reason.kind === 'provider_authentication_required' ||

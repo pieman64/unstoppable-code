@@ -452,6 +452,7 @@ export interface AiGatewayModelEntry extends ConfiguredModelBillingMetadata {
   recommendedHarness: AiGatewayHarness;
   contextWindow: number;
   supportsPromptCaching: boolean;
+  supportsImages?: boolean;
   supportedThinkingLevels: ThinkingLevel[];
   toolSchemaProfile: GatewayModelConfig['toolSchemaProfile'];
   family?: string;

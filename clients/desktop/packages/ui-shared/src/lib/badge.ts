@@ -11,9 +11,10 @@
  *   waiting on you. On an icon it caps at 99+.
  * - Badge `compact`: a 16px square tag at 10px for dense views only
  *   (diagrams, code views, schema tags such as PK or added).
- * - Dot: 6px, with five meanings only: unread (blue), waiting on you
- *   (orange), filter on (grey), connected or working (green), and offline or
- *   failed (red).
+ * - Dot: 6px (8px `large` in a leading icon slot), with six meanings only:
+ *   unread (blue), waiting on you (orange), filter on (grey), working (green,
+ *   something is running), connected (green, a live connection), and offline
+ *   or failed (red).
  *
  * Every marker composes these builders so the app cannot drift back into a
  * mix of heights, radii, rings and weights.
@@ -164,21 +165,43 @@ export function iconCountClassName(tone: CountTone): string {
 }
 
 /**
- * `success` is connected or working, `danger` offline or failed; both take
- * the solid status roles, never a raw hue.
+ * `working` is something running (a terminal, a script, an agent), `success`
+ * a live connection, `danger` offline or failed. `working` and `success` share
+ * the green status role but stay separate tones so a run never borrows the
+ * connection meaning. All take the solid status roles, never a raw hue.
  */
-export type DotTone = 'unread' | 'attention' | 'filter' | 'success' | 'danger';
+export type DotTone =
+  | 'unread'
+  | 'attention'
+  | 'filter'
+  | 'working'
+  | 'success'
+  | 'danger';
 
 export const DOT_BASE_CLASS = 'inline-block size-1.5 shrink-0 rounded-full';
+
+/**
+ * `regular` is the 6px dot. `large` is 8px, only where the dot stands in for
+ * a row's leading icon (a permission's state, a chat with no provider icon).
+ */
+export type DotSize = 'regular' | 'large';
+
+export const DOT_LARGE_BASE_CLASS = 'inline-block size-2 shrink-0 rounded-full';
+
+const DOT_BASE_CLASS_BY_SIZE: Readonly<Record<DotSize, string>> = {
+  regular: DOT_BASE_CLASS,
+  large: DOT_LARGE_BASE_CLASS,
+};
 
 export const DOT_TONE_CLASS: Readonly<Record<DotTone, string>> = {
   unread: 'bg-fg-info',
   attention: 'bg-fg-warning',
   filter: 'bg-fg-quaternary',
+  working: 'bg-fg-success-strong',
   success: 'bg-fg-success-strong',
   danger: 'bg-fg-destructive-strong',
 };
 
-export function dotClassName(tone: DotTone): string {
-  return `${DOT_BASE_CLASS} ${DOT_TONE_CLASS[tone]}`;
+export function dotClassName(tone: DotTone, size: DotSize = 'regular'): string {
+  return `${DOT_BASE_CLASS_BY_SIZE[size]} ${DOT_TONE_CLASS[tone]}`;
 }

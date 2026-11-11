@@ -34,7 +34,7 @@ import { toOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models'
 import {
   getProjectActionsDir,
   getProjectActionsDirCandidates,
-} from '../config-paths';
+} from '@canopy/execution-engine/node/pipelines/config-paths';
 import {
   classifyDaemonPipeline,
   type DaemonPipelineClassifierContext,
@@ -281,7 +281,7 @@ describe('classifyDaemonPipeline with model steps', () => {
     ).toEqual({ eligible: true, modelSteps: 1, modelHarnesses: ['codex'] });
     // An alias the core could not resolve, one on an action that does not
     // resolve aliases, one naming a provider the daemon does not run, and
-    // one that adds plugins stay in process.
+    // one that adds plugins to a Codex step stay in process.
     expect(
       classifyDaemonPipeline(
         oneStep(agentPrompt('fast'), { model_aliases }),
@@ -309,10 +309,97 @@ describe('classifyDaemonPipeline with model steps', () => {
     expect(
       classifyDaemonPipeline(
         oneStep(agentPrompt('agent'), { model_aliases }),
-        resolved({ agent: { base: DEFAULT_CLAUDE_MODEL, plugins: true } }),
+        resolved({ agent: { base: DEFAULT_CODEX_MODEL, plugins: true } }),
         ADMIT,
       ),
     ).toMatchObject({ eligible: false, reason: 'plugin_collections' });
+  });
+
+  it('admits plugin collections the core resolved, on Claude steps only', () => {
+    // CAN-5832: collections resolve in the run's core at launch; Codex
+    // plugins stay in process (CAN-6012).
+    const plugin_collections = [{ id: 'review', name: 'Review', defaults: [] }];
+    const withCollections: DaemonPipelineClassifierContext = {
+      ...context,
+      pluginCollections: new Set(['review']),
+      modelAliases: {
+        fast: { base: DEFAULT_CLAUDE_MODEL, plugins: true },
+      },
+    };
+    const step = (model?: string): Step => ({
+      uses: 'builtin/agent-prompt',
+      with: {
+        prompt: 'x',
+        plugin_collection_id: 'review',
+        ...(model !== undefined ? { model } : {}),
+      },
+    });
+    expect(
+      classifyDaemonPipeline(
+        oneStep(step(), { plugin_collections }),
+        withCollections,
+        ADMIT,
+      ),
+    ).toEqual({ eligible: true, modelSteps: 1, modelHarnesses: ['claude'] });
+    // An alias that adds plugins runs on Claude too.
+    expect(
+      classifyDaemonPipeline(
+        oneStep(agentPrompt('fast'), {
+          plugin_collections,
+          model_aliases: [
+            {
+              id: 'fast',
+              name: 'Fast',
+              defaults: {
+                base: DEFAULT_CLAUDE_MODEL,
+                plugin_collection_id: 'review',
+              },
+            },
+          ],
+        }),
+        withCollections,
+        ADMIT,
+      ),
+    ).toEqual({ eligible: true, modelSteps: 1, modelHarnesses: ['claude'] });
+    // The core keys its snapshots by the trimmed id the executor looks up.
+    expect(
+      classifyDaemonPipeline(
+        oneStep(step(), {
+          plugin_collections: [
+            { id: ' review ', name: 'Review', defaults: [] },
+          ],
+        }),
+        withCollections,
+        ADMIT,
+      ),
+    ).toEqual({ eligible: true, modelSteps: 1, modelHarnesses: ['claude'] });
+    // A Codex step with a collection, a collection the core did not resolve
+    // (or one naming an MCP server, which it leaves out), and a collection on
+    // an action that loads none stay in process.
+    for (const [candidate, ctx] of [
+      [
+        oneStep(step(DEFAULT_CODEX_MODEL), { plugin_collections }),
+        withCollections,
+      ],
+      [oneStep(step(), { plugin_collections }), context],
+      [
+        oneStep(
+          {
+            uses: 'builtin/router',
+            with: {
+              model: DEFAULT_CLAUDE_MODEL,
+              plugin_collection_id: 'review',
+            },
+          },
+          { plugin_collections },
+        ),
+        withCollections,
+      ],
+    ] as const)
+      expect(classifyDaemonPipeline(candidate, ctx, ADMIT)).toMatchObject({
+        eligible: false,
+        reason: 'plugin_collections',
+      });
   });
 
   it('refuses expression models and plugin collections', () => {

@@ -59,7 +59,7 @@ import {
   CancelActionButton,
   RunningActionIcon,
 } from '@/components/shared/CancelableActionButton';
-import { DiffBadge } from '@/components/worktree/DiffBadge';
+import { DiffCounts } from '@/components/worktree/DiffCounts';
 import { getStandaloneRowLabel } from '@/components/standalone-chat/standaloneChatRowHelpers';
 import {
   getArchivedContainerDiskUsageBytes,
@@ -821,7 +821,7 @@ function ArchivedOverviewRow({
               aria-label={getArchivedGitChangesTooltip(changesBadge)}
               className="shrink-0"
             >
-              <DiffBadge
+              <DiffCounts
                 compact
                 stats={{
                   insertions: changesBadge.insertions,

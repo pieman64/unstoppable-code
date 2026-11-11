@@ -25,7 +25,7 @@ import {
   type HookAction,
 } from '@canopy/desktop-shared/hooks';
 import { getModelDisplayName } from '@canopy/desktop-shared/types';
-import { resolvePipelineModelAliasLenient } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { resolvePipelineModelAliasLenient } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import type {
   HookRunResponse,
   HookSourceInfoRequest,

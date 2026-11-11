@@ -95,9 +95,16 @@ export function versionFrom(sizeBytes: number, modifiedAtMs: number): string {
 }
 
 /** The path's segments as {@link joinRootPath} joins them; `..` is rejected. */
-export function rootRelativeSegments(relativePath: string): string[] {
+export function rootRelativeSegments(
+  relativePath: string,
+  rootAbsolutePath: string,
+): string[] {
+  const windowsRoot =
+    /^[a-z]:[\\/]/i.test(rootAbsolutePath) ||
+    rootAbsolutePath.startsWith('\\\\') ||
+    rootAbsolutePath.startsWith('//');
   const segments = relativePath
-    .split(/[\\/]+/)
+    .split(windowsRoot ? /[\\/]+/ : /\/+/)
     .filter((segment) => segment.length > 0 && segment !== '.');
   if (segments.some((segment) => segment === '..')) {
     throw new Error(
@@ -120,7 +127,7 @@ export function joinRootPath(
     return rootAbsolutePath;
   }
   const root = rootAbsolutePath.replace(/[\\/]+$/, '');
-  return `${root}/${rootRelativeSegments(relativePath).join('/')}`;
+  return `${root}/${rootRelativeSegments(relativePath, rootAbsolutePath).join('/')}`;
 }
 
 /**

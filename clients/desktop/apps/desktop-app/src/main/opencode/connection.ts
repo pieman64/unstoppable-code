@@ -39,7 +39,7 @@ import {
 import {
   getOpenCodeRuntimeRootDir,
   getOpenCodeRuntimeStateDir,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import {
   getOpenCodeRuntimeArtifact,
   opencodeExecutableName,

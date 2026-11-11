@@ -4,7 +4,7 @@ import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { BRAND } from '@canopy/brand/current';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { PROJECT_COLORS } from '../../constants/project-colors';
 import { getDefaultWorkspaceClaudeMd } from '../../constants/workspace-templates';
 import { getGitExecutableCommand } from '../../lib/git-executable';

@@ -3,7 +3,7 @@ import type {
   NormalizedStep,
   StepResult,
 } from '@canopy/execution-engine/types/pipeline';
-import { MATRIX_JOB_ID_PREFIX } from '@canopy/desktop-shared/pipelines/matrix';
+import { MATRIX_JOB_ID_PREFIX } from '@canopy/execution-engine/pipelines/matrix';
 import { isStepDefaultExpanded } from '@/lib/pipelineDetailsView';
 import type { SelectedStepSource } from '@/lib/pipelineAttemptTimeline';
 import { pipelineStatusBadge, pipelineStatusGlyphState } from '../utils';

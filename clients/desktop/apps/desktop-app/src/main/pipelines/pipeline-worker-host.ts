@@ -15,6 +15,7 @@ import { CanopyOperationError } from '@canopy/core-runtime';
 import {
   cancelPipelineExecution,
   executePipeline,
+  listExecutionSummaries,
   loadExecutionState,
   rerunPipelineExecution,
   resumePipeline,
@@ -32,7 +33,11 @@ import type {
   Pipeline,
 } from '@canopy/execution-engine/types/pipeline';
 import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
-import { projectPipelineExecution } from '@canopy/desktop-shared/node/pipelines/execution-projection';
+import {
+  projectPipelineExecution,
+  projectPipelineExecutionView,
+} from '@canopy/execution-engine/node/pipelines/execution-projection';
+import { listPipelineExecutionPage } from '@canopy/desktop-shared/node/pipelines/execution-list';
 import { getDaemonPipelineExecutionHandle } from './daemon-pipeline-execution';
 import type {
   DaemonPipelineLaunch,
@@ -41,7 +46,7 @@ import type {
 export {
   definitionSourceOf,
   projectPipelineExecution,
-} from '@canopy/desktop-shared/node/pipelines/execution-projection';
+} from '@canopy/execution-engine/node/pipelines/execution-projection';
 import {
   getActiveExecutionHandle,
   getInProcessPipelineExecutionCount,
@@ -550,6 +555,18 @@ const TERMINAL_STATUSES: ReadonlySet<ExecutionState['status']> = new Set<
   ExecutionState['status']
 >(['success', 'failure', 'cancelled']);
 
+/** The stored state, or the live handle's while the run isn't terminal. */
+async function currentState(
+  executionId: string,
+  executionsDir: string,
+): Promise<ExecutionState | null> {
+  const stored = await loadExecutionState(executionId, executionsDir);
+  // A forced cancel persists a terminal state while the handle still runs.
+  return stored && TERMINAL_STATUSES.has(stored.status)
+    ? stored
+    : (liveHandle(executionId)?.getState() ?? stored);
+}
+
 /*
  * The execution runtime, resource monitor and Ledger load on first use: the
  * pipeline handlers import this module through the dispatch path, and the
@@ -769,16 +786,28 @@ export const desktopPipelineWorker: PipelineExecutionWorker = {
     return { checkpointedCount };
   },
   async get(executionId) {
-    const stored = await loadExecutionState(
+    const state = await currentState(
       executionId,
       (await monitoredRuntime()).executionsDir,
     );
-    // A forced cancel persists a terminal state while the handle still runs.
-    const state =
-      stored && TERMINAL_STATUSES.has(stored.status)
-        ? stored
-        : (liveHandle(executionId)?.getState() ?? stored);
     return state === null ? null : projectPipelineExecution(state);
+  },
+  async inspect(executionId) {
+    const state = await currentState(
+      executionId,
+      (await monitoredRuntime()).executionsDir,
+    );
+    return state === null
+      ? null
+      : projectPipelineExecutionView(state, { detail: true });
+  },
+  async list(query) {
+    const { executionsDir } = await monitoredRuntime();
+    return listPipelineExecutionPage(
+      await listExecutionSummaries(executionsDir),
+      (executionId) => currentState(executionId, executionsDir),
+      query,
+    );
   },
   async cancel(executionId, mode) {
     if (mode === 'drain') {

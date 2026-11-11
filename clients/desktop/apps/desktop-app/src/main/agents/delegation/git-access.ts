@@ -8,7 +8,7 @@ import { delegationToolchainReadRoots } from '@canopy/desktop-shared/node/delega
 import {
   getCanopyDataDir,
   getCanopySecureDataDir,
-} from '@canopy/desktop-shared/canopy-paths';
+} from '@canopy/execution-engine/canopy-paths';
 import { getResolvedGitExecutableForSpawn } from '../../lib/git-executable';
 
 const execute = promisify(execFile);

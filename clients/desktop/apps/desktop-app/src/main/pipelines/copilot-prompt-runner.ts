@@ -1,4 +1,4 @@
-import { discoverCopilotHomeCapabilities } from '../copilot/home-capabilities';
+import { discoverHomeCapabilities } from '../plugins/home-capabilities';
 import {
   runCopilotPipelinePrompt,
   type CopilotPipelineCapabilities,
@@ -87,7 +87,7 @@ export async function runDesktopCopilotPipelinePrompt(
           pluginRefs: [],
         };
         const { inherited, inheritedPluginRefs } =
-          await discoverCopilotHomeCapabilities({
+          await discoverHomeCapabilities({
             cwd: request.cwd,
             selections,
             signal,

@@ -40,6 +40,7 @@ import {
   DEFAULT_MARKDOWN_OVERRIDES,
   extractExitPlanModePlan,
   Markdown,
+  ErrorBanner,
   MarkdownCodeBlock,
   markdownOptions,
   type MarkdownOverrides,
@@ -133,6 +134,8 @@ import { AuthRecoveryCard } from './AuthRecoveryCard';
 import { CanopyProxyErrorNotice } from './CanopyProxyErrorNotice';
 import { AiCreditsStopLine } from '@canopy/ui-shared/components';
 import { CodexAccountModelNoticeAction } from './CodexAccountModelNoticeAction';
+import { AccountProxyFailureNoticeAction } from './AccountProxyFailureNoticeAction';
+import { isAccountProxySettingsFailure } from '@canopy/protocol/auth-recovery';
 import { APPROVAL_MODE_PROSE_LABELS } from './approval-mode-labels';
 import {
   getHarnessConnectionProvider,
@@ -1294,6 +1297,17 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
       );
 
     case 'text': {
+      if (block.providerErrorDetails !== undefined) {
+        return (
+          <div data-chat-notice>
+            <ErrorBanner
+              error={block.text}
+              details={block.providerErrorDetails}
+              testId="chat-provider-error"
+            />
+          </div>
+        );
+      }
       if (isClaudeAiCreditsFallbackErrorCode(block.errorCode)) {
         return <ClaudeAiCreditsFallbackError />;
       }
@@ -1372,6 +1386,10 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
       // case must not fall through to a provider sign-in CTA. A body without
       // the proxy marker parses to `null` and keeps today's rendering, so this
       // is the single switch between the two paths.
+      // The desktop's own account proxy failure: only proxy settings fix it.
+      if (isSystemMessage && isAccountProxySettingsFailure(text)) {
+        return <AccountProxyFailureNoticeAction text={text} />;
+      }
       const proxyError = isSystemMessage ? parseCanopyProxyError(text) : null;
       // Nothing could pay for the message (CAN-5160). The composer's No
       // billing source banner is where the user chooses how to pay, so the

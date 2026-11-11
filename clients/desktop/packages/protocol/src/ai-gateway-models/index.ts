@@ -1,6 +1,6 @@
 import { THINKING_LEVELS, type ThinkingLevel } from '../thinking/index';
 
-export const AI_GATEWAY_MODEL_CATALOG_VERSION = 9 as const;
+export const AI_GATEWAY_MODEL_CATALOG_VERSION = 10 as const;
 /** First clients that honor exact thinking sets without adding legacy Off. */
 export const AI_GATEWAY_EXACT_THINKING_CATALOG_VERSION = 9 as const;
 export const AI_GATEWAY_MODEL_CATALOG_MAX_MODELS = 500;
@@ -42,6 +42,8 @@ export interface AiGatewayModel {
   recommendedHarness: AiGatewayHarness;
   contextWindow: number;
   supportsPromptCaching: boolean;
+  /** v10: gateway image input, explicitly declared by its operator. Absent is unsupported. */
+  supportsImages?: boolean;
   /** Only surface this model when the local package config declares its gateway ID. */
   requiresLocalHarnessSupport: boolean;
   /** Place this model in the nested More menu for its family. */
@@ -69,6 +71,7 @@ const MODEL_FIELDS = new Set([
   'recommendedHarness',
   'contextWindow',
   'supportsPromptCaching',
+  'supportsImages',
   'requiresLocalHarnessSupport',
   'showMoreOnly',
   'supportedThinkingLevels',
@@ -143,6 +146,8 @@ export function isAiGatewayModel(value: unknown): value is AiGatewayModel {
     !Number.isInteger(value.contextWindow) ||
     value.contextWindow <= 0 ||
     typeof value.supportsPromptCaching !== 'boolean' ||
+    (value.supportsImages !== undefined &&
+      typeof value.supportsImages !== 'boolean') ||
     typeof value.requiresLocalHarnessSupport !== 'boolean' ||
     typeof value.showMoreOnly !== 'boolean' ||
     (value.toolSchemaProfile !== 'standard' &&
@@ -228,6 +233,16 @@ export function parseAiGatewayModelCatalogResponse(
     Array.isArray(value.models) &&
     value.models.every(
       (model) => isPlainRecord(model) && !('thinkingLevelsExact' in model),
+    )
+  ) {
+    value = { ...value, version: 9 };
+  }
+  if (
+    isPlainRecord(value) &&
+    value.version === 9 &&
+    Array.isArray(value.models) &&
+    value.models.every(
+      (model) => isPlainRecord(model) && !('supportsImages' in model),
     )
   ) {
     value = { ...value, version: AI_GATEWAY_MODEL_CATALOG_VERSION };

@@ -2,9 +2,10 @@
 // canonical engine reads `-z` output once; these rebuild, from the same
 // records, the text the legacy commands printed (`core.quotePath=false`,
 // newline-separated, trimmed by runGit, empty on failure or past its 8 MiB
-// limit) and run the unchanged legacy parse over it, so the legacy lists stay
-// byte for byte: C-quoted and edge-trimmed paths, dropped rename and copy
-// counts, the silent 200-file untracked cut and the desktop status names.
+// limit). CAN-3224 intentionally supersedes CAN-4103's C-quoted filename
+// parity: the builders now decode those fields to real filename identity,
+// including before untracked estimation. Edge trimming, dropped rename/copy
+// counts, the silent 200-file untracked cut and desktop status names remain.
 import type { ChangedFileInfo } from '@canopy/desktop-shared/types';
 import {
   parseGitNameStatusZ,

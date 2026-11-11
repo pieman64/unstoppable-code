@@ -243,6 +243,7 @@ interface HostOptions {
   hostedChat?: false;
   /** The signed-in account key; an account with a user ID by default. */
   signedInAccount?: string;
+  invokeResult?: unknown;
   settings?: Partial<RemoteControlFile>;
   portalReads?: PortalOptInRead[];
   portalEnabled?: boolean;
@@ -422,7 +423,7 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
         invoke: (channel: string, args: unknown[]): Promise<unknown> => {
           bridge.invokes.push(channel);
           bridge.invokeArgs.push(args);
-          return Promise.resolve('ok');
+          return Promise.resolve(options.invokeResult ?? 'ok');
         },
         post: (channel: string): void => {
           bridge.posts.push(channel);
@@ -519,6 +520,7 @@ interface Controller {
   endpoint: Endpoint;
   sessions: RemoteSessionManager;
   pushes: string[];
+  pushPayloads: unknown[];
 }
 
 function addController(
@@ -553,6 +555,7 @@ function addController(
     endpoint,
     sessions,
     pushes: [],
+    pushPayloads: [],
   };
 }
 
@@ -582,6 +585,7 @@ function rpcFor(controller: Controller, session: SecureSession): RpcPeer {
         typeof payload.channel === 'string'
       ) {
         controller.pushes.push(payload.channel);
+        controller.pushPayloads.push(payload);
       }
     },
   });
@@ -702,6 +706,55 @@ function delegate(
 // ---------------------------------------------------------------------------
 
 describe('controller profiles', () => {
+  it.each(['mobile', 'desktop'] as const)(
+    'keeps renewal status readable on %s account-proxy reads and pushes',
+    async (kind) => {
+      const hub = new Hub();
+      const controller = addController(hub, kind);
+      const status = {
+        accounts: [
+          { authIndex: 'a1f3c2d4a1f3c2d4', status: 'sign-in-required' },
+        ],
+        signIn: {
+          provider: 'claude',
+          phase: 'failed',
+          authIndex: 'a1f3c2d4a1f3c2d4',
+        },
+      };
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(controller)] },
+        invokeResult: status,
+      });
+      const { rpc } = await control(host, controller);
+      await hello(rpc);
+      const expected =
+        kind === 'mobile'
+          ? {
+              ...status,
+              accounts: [
+                {
+                  authIndex: 'a1f3c2d4a1f3c2d4',
+                  status: 'error',
+                  signInRequired: true,
+                },
+              ],
+            }
+          : status;
+      expect(
+        await rpc.request(REMOTE_METHODS.invoke, {
+          channel: 'account-proxy:status',
+          args: [],
+        }),
+      ).toEqual(expected);
+      host.mainPush('account-proxy:changed', [status]);
+      await until(() => controller.pushPayloads.length > 0);
+      expect(controller.pushPayloads).toEqual([
+        { channel: 'account-proxy:changed', args: [expected] },
+      ]);
+      expect(status.accounts[0].status).toBe('sign-in-required');
+    },
+  );
+
   it('keeps every tunneled channel for desktop controllers and advertises enforced features', async () => {
     const hub = new Hub();
     const desktop = addController(hub, 'desktop');
@@ -738,7 +791,66 @@ describe('controller profiles', () => {
       'remote_channel_unavailable',
     );
     expect(await invokeCode(rpc, MOBILE_CHANNEL)).toBe('ok');
-    expect(host.bridge.invokes).toEqual([MOBILE_CHANNEL]);
+    // A report in the phone's Files list needs both reads, including images
+    // relative to the report. The bridge receives the scope unchanged.
+    const scope = { projectId: 'project', worktreeId: 'worktree' };
+    const rootsArgs = [scope];
+    const reportArgs = [
+      {
+        absolutePath: '/workspace/.playwright/report/report.md',
+        workspaceTarget: scope,
+      },
+    ];
+    const imageArgs = [
+      {
+        absolutePath: '/workspace/.playwright/report/screenshot.png',
+        workspaceTarget: scope,
+      },
+    ];
+    for (const [channel, args] of [
+      [IPC_CHANNELS.fileTreeRoots, rootsArgs],
+      [IPC_CHANNELS.fileReadContent, reportArgs],
+      [IPC_CHANNELS.fileReadContent, imageArgs],
+    ] satisfies [string, unknown[]][]) {
+      expect(await rpc.request(REMOTE_METHODS.invoke, { channel, args })).toBe(
+        'ok',
+      );
+    }
+    for (const request of [
+      { absolutePath: '/outside/secret.txt' },
+      { absolutePath: '/outside/secret.txt', workspaceTarget: null },
+      { absolutePath: '/outside/secret.txt', workspaceTarget: {} },
+      {
+        absolutePath: '/outside/secret.txt',
+        workspaceTarget: scope,
+        allowedRoot: 'codex-generated-images',
+      },
+    ]) {
+      await expect(
+        rpc.request(REMOTE_METHODS.invoke, {
+          channel: IPC_CHANNELS.fileReadContent,
+          args: [request],
+        }),
+      ).rejects.toMatchObject({ code: 'remote_channel_unavailable' });
+    }
+    for (const channel of [
+      IPC_CHANNELS.fileSaveContent,
+      IPC_CHANNELS.fileTreeMutate,
+    ]) {
+      expect(await invokeCode(rpc, channel)).toBe('remote_channel_unavailable');
+    }
+    expect(host.bridge.invokes).toEqual([
+      MOBILE_CHANNEL,
+      IPC_CHANNELS.fileTreeRoots,
+      IPC_CHANNELS.fileReadContent,
+      IPC_CHANNELS.fileReadContent,
+    ]);
+    expect(host.bridge.invokeArgs).toEqual([
+      [],
+      rootsArgs,
+      reportArgs,
+      imageArgs,
+    ]);
     // Sends and pushes follow the same allowlist.
     rpc.notify(REMOTE_EVENTS.ipcSend, { channel: 'terminal:write', args: [] });
     rpc.notify(REMOTE_EVENTS.ipcSend, { channel: 'chat:cancel', args: [] });
@@ -1420,12 +1532,19 @@ describe('hosted delegation', () => {
         length: 2,
       }),
     ).toBe('remote_controller_refused');
-    // Mobile controllers are not given uploads.
+    // Mobile controllers are not given uploads or the unscoped file method.
     const fromPhone = await control(host, phone);
     await hello(fromPhone.rpc, {
       version: VERSION,
       controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
     });
+    expect(
+      await methodCode(fromPhone.rpc, REMOTE_METHODS.fileRead, {
+        absolutePath: path,
+        offset: 0,
+        length: 2,
+      }),
+    ).toBe('remote_controller_refused');
     expect(
       await methodCode(fromPhone.rpc, REMOTE_METHODS.uploadPut, upload),
     ).toBe('remote_controller_refused');

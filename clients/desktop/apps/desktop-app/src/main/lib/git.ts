@@ -72,7 +72,7 @@ import {
   estimateUntrackedInsertions,
   MAX_UNTRACKED_FILES,
 } from './untracked-line-estimate';
-import { getEnhancedEnv } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import { withGitRequestContextEnv } from '@canopy/desktop-shared/node/git-request-context';
 import {
   getCurrentBranch,
@@ -2855,6 +2855,46 @@ async function readBranchListWorktrees(
   return { output, checkoutPath: worktreePath };
 }
 
+/** Read-only equivalent of branch -d's upstream-or-main-HEAD merge gate. */
+export async function readLocalBranchMergeState(
+  repoPath: string,
+  branchName: string,
+): Promise<{ exists: boolean; merged: boolean }> {
+  const ref = `refs/heads/${branchName}`;
+  const rows = await runGit(
+    ['for-each-ref', '--format=%(refname) %(objectname) %(upstream)', ref],
+    repoPath,
+  );
+  const row = rows.split('\n').find((line) => line.split(' ')[0] === ref);
+  if (!row) return { exists: false, merged: true };
+  const [, tip, upstream] = row.split(' ');
+  if (!tip) throw new Error('Cannot resolve the local branch tip.');
+  // Like branch -d, a configured upstream that no longer resolves (pruned
+  // after its remote branch was deleted) falls back to HEAD.
+  const configuredBase = upstream
+    ? await runGit(
+        ['rev-parse', '--verify', '--quiet', upstream],
+        repoPath,
+      ).catch(() => '')
+    : '';
+  const base =
+    configuredBase ||
+    (await runGit(['rev-parse', '--verify', 'HEAD'], repoPath));
+  try {
+    await runGit(['merge-base', '--is-ancestor', tip, base], repoPath);
+    return { exists: true, merged: true };
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 1
+    )
+      return { exists: true, merged: false };
+    throw error;
+  }
+}
+
 /** The Git reads `worker.git.branch.list` runs in one checkout. */
 export function gitBranchListReads(worktreePath: string): {
   readBranchRefs(): Promise<string>;
@@ -3431,7 +3471,7 @@ export async function getDiffStatsAgainst(
 }
 
 export { parseDiffOutput } from './git-diff-parser';
-import { parseDiffOutput } from './git-diff-parser';
+import { decodeGitPath, parseDiffOutput } from './git-diff-parser';
 
 export async function getChangedFilesList(
   worktreePath: string,
@@ -3440,7 +3480,8 @@ export async function getChangedFilesList(
   // `getCommittedFilesList` below: git's default C-quotes and octal-escapes
   // non-ASCII paths, and `ls-files` does it too. The unmerged listing omits
   // `-z` so paths containing backslashes, quotes, or control characters use
-  // the same C-quoted keys as `diff`; quoted tabs and newlines stay on one line.
+  // the same C-quoted fields as `diff`; quoted tabs and newlines stay on one
+  // line. The builders decode those fields to actual filename identity.
   //
   // This helper feeds display surfaces — the activity panel and the
   // shared-container share preview — which rendered `"caf\303\251.md"`
@@ -3528,7 +3569,7 @@ export async function buildChangedFilesList(
   for (const entry of unmergedOutput.split('\n').filter(Boolean)) {
     const pathStart = entry.indexOf('\t');
     if (pathStart === -1) continue;
-    unmergedPaths.add(entry.slice(pathStart + 1));
+    unmergedPaths.add(decodeGitPath(entry.slice(pathStart + 1)));
   }
 
   unmergedPaths.forEach((path: string) => {
@@ -3544,7 +3585,8 @@ export async function buildChangedFilesList(
   const untrackedFiles = untrackedOutput
     .split('\n')
     .filter(Boolean)
-    .slice(0, MAX_UNTRACKED_FILES);
+    .slice(0, MAX_UNTRACKED_FILES)
+    .map(decodeGitPath);
   const untrackedChanges = await estimate(worktreePath, untrackedFiles);
 
   untrackedFiles.forEach((path, index) => {
@@ -3581,13 +3623,12 @@ export async function getCommittedFilesBetween(
   toSha: string,
 ): Promise<ChangedFileInfo[]> {
   // `core.quotePath=false` keeps non-ASCII paths as raw UTF-8. Git's default
-  // renders them C-quoted and octal-escaped (`"caf\303\251.md"`), which no
-  // consumer here unquotes: the activity panel showed the escaped form, and
+  // renders them C-quoted and octal-escaped (`"caf\303\251.md"`): before
+  // CAN-2551, the activity panel showed the escaped form, and
   // shared-container publishing rejected the quotes outright and dropped every
   // accented, CJK, or emoji-named committed file from the manifest with no
-  // disclosure (CAN-2551). Paths containing a quote, newline, or control
-  // character are still quoted, and are still correctly rejected downstream as
-  // non-portable.
+  // disclosure. Other C-quoted fields are decoded by the builder (CAN-3224);
+  // downstream portability validation remains responsible for publication.
   const [statusOutput, numstatOutput] = await Promise.all([
     runGit(
       [

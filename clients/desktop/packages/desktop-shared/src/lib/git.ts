@@ -3,7 +3,7 @@ import { open, readFile, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { withGitRequestContextEnv } from '../node/git-request-context';
-import { getEnhancedEnv } from '../pipelines/config-paths';
+import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import { getGitExecutableCommand } from './git-executable';
 
 const execFileAsync = promisify(execFile);

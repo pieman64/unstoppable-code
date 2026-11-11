@@ -285,7 +285,10 @@ async function deliverWithinScope(
     ...(delivery.projectId === APP_ADVISOR_PROJECT_ID
       ? { assistantMode: 'app-advisor' }
       : {}),
-    initiationSource: 'user',
+    initiationSource:
+      delivery.watcherFired?.kind === 'work-entry-auto-delete'
+        ? 'unknown'
+        : 'user',
   };
 
   const target = { ...scope, chatId: delivery.chatId };

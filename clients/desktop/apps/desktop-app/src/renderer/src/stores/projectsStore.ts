@@ -218,6 +218,12 @@ export interface ArchiveWorktreeOptions {
    * still missing. Main retains normally if the path has been recreated.
    */
   deleteWithoutRetentionIfMissing?: boolean;
+  /**
+   * Called once the row has left the sidebar, after teardown and before
+   * main's removal. Renderer-only: never sent to main. A rejection after it
+   * still restores the row.
+   */
+  onUiRemoved?: () => void;
 }
 
 /**
@@ -3265,8 +3271,80 @@ async function beginArchiveUiRemoval(
   };
 }
 
+/**
+ * The current projects with the archived worktree put back where it was.
+ * Only that row returns: removals that overlap it (a bulk batch moves on once
+ * a row is hidden) keep their own rows hidden or gone.
+ */
+function projectsWithRestoredWorktree(
+  current: SidebarItem[],
+  snapshot: ArchiveUiSnapshot,
+): SidebarItem[] {
+  const { projectId, worktreeId } = snapshot;
+  const previousIndex = snapshot.previousProjects.findIndex(
+    (project) => project.id === projectId,
+  );
+  const previous = snapshot.previousProjects[previousIndex];
+  if (!previous || previous.type === 'cowork') return current;
+  const restored = previous.worktrees.find(
+    (worktree) => worktree.id === worktreeId,
+  );
+  if (!restored) return current;
+  const currentProject = current.find((project) => project.id === projectId);
+  if (!currentProject) {
+    // The project left the sidebar meanwhile: put it back as it was.
+    const next = [...current];
+    next.splice(Math.min(previousIndex, next.length), 0, previous);
+    return next;
+  }
+  if (
+    currentProject.type === 'cowork' ||
+    currentProject.worktrees.some((worktree) => worktree.id === worktreeId)
+  ) {
+    return current;
+  }
+  // After the nearest earlier row still listed; failing that, before the
+  // nearest later one (an overlapping removal may have hidden the earlier
+  // rows); failing both, last.
+  const previousAt = previous.worktrees.findIndex(
+    (worktree) => worktree.id === worktreeId,
+  );
+  const earlierIds = new Set(
+    previous.worktrees.slice(0, previousAt).map((worktree) => worktree.id),
+  );
+  const laterIds = new Set(
+    previous.worktrees.slice(previousAt + 1).map((worktree) => worktree.id),
+  );
+  let insertAt = -1;
+  currentProject.worktrees.forEach((worktree, index) => {
+    if (earlierIds.has(worktree.id)) insertAt = index + 1;
+  });
+  if (insertAt < 0) {
+    const laterAt = currentProject.worktrees.findIndex((worktree) =>
+      laterIds.has(worktree.id),
+    );
+    insertAt = laterAt < 0 ? currentProject.worktrees.length : laterAt;
+  }
+  const worktrees = [...currentProject.worktrees];
+  worktrees.splice(insertAt, 0, restored);
+  return current.map((project) =>
+    project === currentProject ? { ...currentProject, worktrees } : project,
+  );
+}
+
+/** `current` with `key` set back to its value in `previous`, if it had one. */
+function withRestoredKey<V>(
+  current: Record<string, V>,
+  previous: Record<string, V>,
+  key: string,
+): Record<string, V> {
+  if (!(key in previous)) return current;
+  return { ...current, [key]: previous[key] };
+}
+
 function rollbackArchiveUiRemoval(
   snapshot: ArchiveUiSnapshot,
+  get: () => ProjectsState,
   set: (state: Partial<ProjectsState>) => void,
 ): void {
   unmarkArchiveSuppressedWorktree(
@@ -3285,23 +3363,91 @@ function rollbackArchiveUiRemoval(
       createDiffStatsKey(snapshot.projectId, snapshot.worktreeId),
     );
   }
+  // Row-scoped: overlapping removals took their snapshots at other moments,
+  // so restoring a whole snapshot would revive or re-hide their rows.
+  const key = createDiffStatsKey(snapshot.projectId, snapshot.worktreeId);
+  const driftKey = createWorkspaceDriftKey(
+    snapshot.projectId,
+    snapshot.worktreeId,
+  );
+  const state = get();
   set({
-    projects: snapshot.previousProjects,
-    diffStats: snapshot.previousDiffStats,
-    commitsAhead: snapshot.previousCommitsAhead,
-    baseBranches: snapshot.previousBaseBranches,
-    defaultBranches: snapshot.previousDefaultBranches,
-    uncommittedChanges: snapshot.previousUncommittedChanges,
-    hasRemoteTracking: snapshot.previousHasRemoteTracking,
-    hasOriginRemote: snapshot.previousHasOriginRemote,
-    hasBranchBeenPushed: snapshot.previousHasBranchBeenPushed,
-    hasUnpushedCommits: snapshot.previousHasUnpushedCommits,
-    hasUnpulledCommits: snapshot.previousHasUnpulledCommits,
-    repoBranches: snapshot.previousRepoBranches,
-    baseBranchExistsLocally: snapshot.previousBaseBranchExistsLocally,
-    baseBranchExistsInRemote: snapshot.previousBaseBranchExistsInRemote,
-    workspaceDrift: snapshot.previousWorkspaceDrift,
-    pendingTaskBranchNamings: snapshot.previousPendingTaskBranchNamings,
+    projects: projectsWithRestoredWorktree(state.projects, snapshot),
+    diffStats: withRestoredKey(
+      state.diffStats,
+      snapshot.previousDiffStats,
+      key,
+    ),
+    commitsAhead: withRestoredKey(
+      state.commitsAhead,
+      snapshot.previousCommitsAhead,
+      key,
+    ),
+    baseBranches: withRestoredKey(
+      state.baseBranches,
+      snapshot.previousBaseBranches,
+      key,
+    ),
+    defaultBranches: withRestoredKey(
+      state.defaultBranches,
+      snapshot.previousDefaultBranches,
+      key,
+    ),
+    uncommittedChanges: withRestoredKey(
+      state.uncommittedChanges,
+      snapshot.previousUncommittedChanges,
+      key,
+    ),
+    hasRemoteTracking: withRestoredKey(
+      state.hasRemoteTracking,
+      snapshot.previousHasRemoteTracking,
+      key,
+    ),
+    hasOriginRemote: withRestoredKey(
+      state.hasOriginRemote,
+      snapshot.previousHasOriginRemote,
+      key,
+    ),
+    hasBranchBeenPushed: withRestoredKey(
+      state.hasBranchBeenPushed,
+      snapshot.previousHasBranchBeenPushed,
+      key,
+    ),
+    hasUnpushedCommits: withRestoredKey(
+      state.hasUnpushedCommits,
+      snapshot.previousHasUnpushedCommits,
+      key,
+    ),
+    hasUnpulledCommits: withRestoredKey(
+      state.hasUnpulledCommits,
+      snapshot.previousHasUnpulledCommits,
+      key,
+    ),
+    repoBranches: withRestoredKey(
+      state.repoBranches,
+      snapshot.previousRepoBranches,
+      key,
+    ),
+    baseBranchExistsLocally: withRestoredKey(
+      state.baseBranchExistsLocally,
+      snapshot.previousBaseBranchExistsLocally,
+      key,
+    ),
+    baseBranchExistsInRemote: withRestoredKey(
+      state.baseBranchExistsInRemote,
+      snapshot.previousBaseBranchExistsInRemote,
+      key,
+    ),
+    workspaceDrift: withRestoredKey(
+      state.workspaceDrift,
+      snapshot.previousWorkspaceDrift,
+      driftKey,
+    ),
+    pendingTaskBranchNamings: withRestoredKey(
+      state.pendingTaskBranchNamings,
+      snapshot.previousPendingTaskBranchNamings,
+      key,
+    ),
   });
 }
 
@@ -5285,6 +5431,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
               get,
               set,
             );
+            options?.onUiRemoved?.();
             await performArchive(
               projectId,
               worktreeId,
@@ -5336,6 +5483,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
               get,
               set,
             );
+            options?.onUiRemoved?.();
             await performArchive(
               projectId,
               worktreeId,
@@ -5348,7 +5496,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           }
         } catch (error) {
           if (archiveSnapshot) {
-            rollbackArchiveUiRemoval(archiveSnapshot, set);
+            rollbackArchiveUiRemoval(archiveSnapshot, get, set);
           }
           archivedContainersStore.clearPendingContainer(projectId, worktreeId);
           // Every desktop worktree removal funnels here or through
@@ -5463,7 +5611,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           );
         } catch (error) {
           if (archiveSnapshot) {
-            rollbackArchiveUiRemoval(archiveSnapshot, set);
+            rollbackArchiveUiRemoval(archiveSnapshot, get, set);
           }
           offerLifecycleJournalQuarantine(error);
           throw error;
@@ -6642,7 +6790,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         return response;
       } catch (error) {
         pendingSplitCompletions.delete(completionKey);
-        rollbackArchiveUiRemoval(snapshot, set);
+        rollbackArchiveUiRemoval(snapshot, get, set);
         throw error;
       } finally {
         set({

@@ -92,7 +92,7 @@ import type { PipelineExecutionScope } from '@canopy/protocol/pipelines';
 import {
   DEFAULT_PIPELINE_SCOPES,
   executionContextSatisfies,
-} from '@canopy/desktop-shared/pipelines/scope';
+} from '@canopy/execution-engine/pipelines/scope';
 import {
   listDesktopPipelines,
   PIPELINE_DEFINITION_AGENT_CALLER,

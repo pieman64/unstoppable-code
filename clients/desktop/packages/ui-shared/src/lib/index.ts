@@ -83,6 +83,7 @@ export * from './useAlwaysVisibleScrollbars';
 export * from './useHorizontalOverflowScroll';
 export * from './useWordBoundaryTruncation';
 export * from './fit-text-at-word-boundary';
+export * from './media-files';
 export * from './measure-text-width';
 export * from './scroll-picker-option-into-view';
 export * from './mcp-endpoint-key';

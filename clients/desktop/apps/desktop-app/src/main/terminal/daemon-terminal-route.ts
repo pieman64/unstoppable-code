@@ -29,6 +29,7 @@ import {
 import type { ElectronDaemonClient } from '../canopy-runtime/electron-daemon-host';
 import { getDaemonScopeResolver } from '../canopy-runtime/daemon-scope-resolver';
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
+import { recordDaemonRoute } from '../canopy-runtime/daemon-route-telemetry';
 import {
   RemoteTerminals,
   type RemoteTerminalFrame,
@@ -93,17 +94,33 @@ export const DAEMON_TERMINAL_LIMIT = 48;
 export function isDaemonTerminalRouteEligible(
   input: DaemonTerminalRouteInput,
 ): boolean {
+  return daemonTerminalRouteExclusion(input) === null;
+}
+
+/** Why a renderer terminal stays in process, or `null` when it may go to the daemon. */
+export function daemonTerminalRouteExclusion(
+  input: DaemonTerminalRouteInput,
+):
+  | 'platform'
+  | 'caller'
+  | 'shared_container'
+  | 'managed'
+  | 'relative_cwd'
+  | 'latched'
+  | 'capacity'
+  | null {
   const { platform, context, request } = input;
-  return (
-    platform !== null &&
-    DAEMON_TERMINAL_PLATFORMS[platform] &&
-    context?.localWindow === true &&
-    request.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID &&
-    request.managedCommand === undefined &&
-    (request.relativeCwd === undefined || request.relativeCwd === '') &&
-    !input.daemonLatched &&
-    input.daemonTerminals < DAEMON_TERMINAL_LIMIT
-  );
+  if (platform === null || !DAEMON_TERMINAL_PLATFORMS[platform])
+    return 'platform';
+  if (context?.localWindow !== true) return 'caller';
+  if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID)
+    return 'shared_container';
+  if (request.managedCommand !== undefined) return 'managed';
+  if (request.relativeCwd !== undefined && request.relativeCwd !== '')
+    return 'relative_cwd';
+  if (input.daemonLatched) return 'latched';
+  if (input.daemonTerminals >= DAEMON_TERMINAL_LIMIT) return 'capacity';
+  return null;
 }
 
 /** Where a selected terminal starts, in the daemon's terms. */
@@ -176,14 +193,20 @@ export async function selectDaemonTerminalTarget(
   context: DaemonTerminalRouteContext | undefined,
 ): Promise<DaemonTerminalTarget | null> {
   const health = getElectronDaemonHealth();
-  const eligible = isDaemonTerminalRouteEligible({
+  const exclusion = daemonTerminalRouteExclusion({
     platform: hostPlatform(),
     context,
     request,
     daemonLatched: health.isLatched(),
     daemonTerminals: workerTerminal.daemonTerminals?.count() ?? 0,
   });
-  return eligible ? resolveTarget(request) : null;
+  if (exclusion !== null) {
+    recordDaemonRoute('terminals', exclusion);
+    return null;
+  }
+  const target = await resolveTarget(request);
+  if (!target) recordDaemonRoute('terminals', 'root');
+  return target;
 }
 
 /** The managed kinds main places in the daemon terminal host (CAN-5097). */
@@ -213,17 +236,34 @@ export interface DaemonManagedTerminalRouteInput {
 export function isDaemonManagedTerminalRouteEligible(
   input: DaemonManagedTerminalRouteInput,
 ): boolean {
+  return daemonManagedTerminalRouteExclusion(input) === null;
+}
+
+/** Why a managed Claude terminal stays in process, or `null` when it may go to the daemon. */
+export function daemonManagedTerminalRouteExclusion(
+  input: DaemonManagedTerminalRouteInput,
+):
+  | 'platform'
+  | 'managed_kind'
+  | 'remote_bridge'
+  | 'shared_container'
+  | 'relative_cwd'
+  | 'latched'
+  | 'capacity'
+  | null {
   const { platform, request } = input;
-  return (
-    platform !== null &&
-    DAEMON_TERMINAL_PLATFORMS[platform] &&
-    DAEMON_MANAGED_TERMINAL_KINDS.has(request.managedKind) &&
-    !request.fromRemoteBridge &&
-    request.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID &&
-    (request.relativeCwd === undefined || request.relativeCwd === '') &&
-    !input.daemonLatched &&
-    input.daemonTerminals < DAEMON_TERMINAL_LIMIT
-  );
+  if (platform === null || !DAEMON_TERMINAL_PLATFORMS[platform])
+    return 'platform';
+  if (!DAEMON_MANAGED_TERMINAL_KINDS.has(request.managedKind))
+    return 'managed_kind';
+  if (request.fromRemoteBridge) return 'remote_bridge';
+  if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID)
+    return 'shared_container';
+  if (request.relativeCwd !== undefined && request.relativeCwd !== '')
+    return 'relative_cwd';
+  if (input.daemonLatched) return 'latched';
+  if (input.daemonTerminals >= DAEMON_TERMINAL_LIMIT) return 'capacity';
+  return null;
 }
 
 /** The daemon placement for a managed Claude terminal, or `null` to keep it in process. */
@@ -231,23 +271,34 @@ export async function selectDaemonManagedTerminalTarget(
   request: DaemonManagedTerminalRouteRequest,
 ): Promise<DaemonTerminalTarget | null> {
   const health = getElectronDaemonHealth();
-  const eligible = isDaemonManagedTerminalRouteEligible({
+  const exclusion = daemonManagedTerminalRouteExclusion({
     platform: hostPlatform(),
     request,
     daemonLatched: health.isLatched(),
     daemonTerminals: workerTerminal.daemonTerminals?.count() ?? 0,
   });
-  if (!eligible) return null;
+  if (exclusion !== null) {
+    recordDaemonRoute('terminals', exclusion);
+    return null;
+  }
   const target = await resolveTarget({
     projectId: request.projectId,
     worktreeId: request.worktreeId,
     selectedRepoId: request.selectedRepoId,
   });
-  if (!target) return null;
+  if (!target) {
+    recordDaemonRoute('terminals', 'root');
+    return null;
+  }
   const cwd = await canonical(request.cwd);
-  return cwd !== null && cwd === (await canonical(target.rootPath))
-    ? target
-    : null;
+  if (cwd !== null && cwd === (await canonical(target.rootPath))) return target;
+  recordDaemonRoute('terminals', 'cwd');
+  return null;
+}
+
+/** A selected terminal started in the daemon (CAN-5093 field evidence). */
+export function noteDaemonTerminalServed(): void {
+  recordDaemonRoute('terminals', 'served');
 }
 
 const SWEEP_TIMEOUT_MS = 5_000;
@@ -341,16 +392,22 @@ export function noteDaemonTerminalFallback(error: unknown): boolean {
   const reason = daemonUnreachableReason(error);
   if (reason !== null) {
     getElectronDaemonHealth().noteFallback('terminals', reason);
+    recordDaemonRoute('terminals', 'unreachable');
     return true;
   }
   // Only the worker's definitive refusal: an `unavailable` the client may
   // retry with its key has an unknown outcome, and the daemon may already
   // hold that terminal.
   const { kind, retry } = errorPayload(error);
-  if (kind !== 'unavailable' || retry !== 'never') return false;
+  if (kind !== 'unavailable' || retry !== 'never') {
+    // A reached daemon refused it; the caller propagates the refusal.
+    recordDaemonRoute('terminals', 'refused');
+    return false;
+  }
   // The daemon itself is reachable, so its health and Files reads stay as
   // they are; only this terminal opens in process.
   logMainProcessWarn('Daemon terminal host unavailable; opening in process.');
+  recordDaemonRoute('terminals', 'host_unavailable');
   return true;
 }
 

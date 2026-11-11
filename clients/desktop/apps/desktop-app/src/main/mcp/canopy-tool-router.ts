@@ -731,8 +731,9 @@ export class CanopyToolRouter {
         ...(canonicalKey === 'preview_visual'
           ? {
               imageBudgetBytes:
-                route.providerType === 'cursor'
-                  ? VISUAL_PREVIEW_BUDGETS.cursorImageBytes
+                route.providerType === 'cursor' ||
+                route.providerType === 'opencode'
+                  ? VISUAL_PREVIEW_BUDGETS.acpImageBytes
                   : VISUAL_PREVIEW_BUDGETS.claudeImageBytes,
             }
           : {}),
@@ -951,7 +952,8 @@ export class CanopyToolRouter {
       canonicalKey === 'dispatch_action' ||
       // set_auto_archive reads the chat identity to say when the archive waits
       // for the chat's live delegates.
-      canonicalKey === 'set_auto_archive'
+      canonicalKey === 'set_auto_archive' ||
+      canonicalKey === 'set_work_entry_auto_delete'
         ? {
             worktreeWatcherRuntime: {
               projectId: route.projectId,

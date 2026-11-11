@@ -26,6 +26,8 @@ export interface GatewayModelConfig {
   gatewayOnly: boolean;
   contextWindow: number;
   supportsPromptCaching: boolean;
+  /** Explicit gateway capability; never inferred from the native harness. */
+  supportsImages?: boolean;
   /**
    * Canonical thinking levels for the merged runtime entry. Wire catalog rows
    * keep `off` implicit; the merge materializes it, so a non-empty set here

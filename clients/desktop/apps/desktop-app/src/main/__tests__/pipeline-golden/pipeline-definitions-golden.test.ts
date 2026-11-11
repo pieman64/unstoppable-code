@@ -42,7 +42,7 @@ import {
   setUserPipelineOwnerAutomation,
 } from '../../pipelines/pipeline-local-metadata-store';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import {
   createDesktopRuntime,

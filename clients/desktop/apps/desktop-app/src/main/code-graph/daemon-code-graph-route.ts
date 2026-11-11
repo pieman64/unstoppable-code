@@ -25,6 +25,8 @@ import {
 } from '../canopy-runtime/electron-daemon-access';
 import type { ElectronDaemonClient } from '../canopy-runtime/electron-daemon-host';
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
+import { recordDaemonRoute } from '../canopy-runtime/daemon-route-telemetry';
+import type { DaemonCodeGraphRouteOutcome } from './daemon-code-graph-route-context';
 import { getDaemonCodeGraphQueue } from '../canopy-runtime/daemon-code-graph-queue';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isCodeGraphAvailableForWorkspace } from '../lib/code-graph-availability';
@@ -71,15 +73,21 @@ export interface DaemonCodeGraphRouteInput {
   readonly daemonLatched: boolean;
 }
 
+/** Why a renderer code-graph request stays in process, or `null` when it may go to the daemon. */
+export function daemonCodeGraphRouteExclusion(
+  input: DaemonCodeGraphRouteInput,
+): 'platform' | 'caller' | 'latched' | null {
+  if (!isDaemonCodeGraphPlatformEligible(input.platform)) return 'platform';
+  if (input.context?.localWindow !== true) return 'caller';
+  if (input.daemonLatched) return 'latched';
+  return null;
+}
+
 /** Whether a renderer code-graph request may go to the daemon, as code. */
 export function isDaemonCodeGraphRouteEligible(
   input: DaemonCodeGraphRouteInput,
 ): boolean {
-  return (
-    isDaemonCodeGraphPlatformEligible(input.platform) &&
-    input.context?.localWindow === true &&
-    !input.daemonLatched
-  );
+  return daemonCodeGraphRouteExclusion(input) === null;
 }
 
 function isDaemonCodeGraphPlatformEligible(
@@ -96,15 +104,22 @@ function hostPlatform(): PlatformOperatingSystem | null {
   }
 }
 
-/** Whether this renderer request goes to the daemon. Reads only local state. */
-export function selectDaemonCodeGraph(
+/** Why this renderer request stays in process, or `null`. Reads only local state. */
+export function selectDaemonCodeGraphExclusion(
   context: DaemonCodeGraphRouteContext | undefined,
-): boolean {
-  return isDaemonCodeGraphRouteEligible({
+): 'platform' | 'caller' | 'latched' | null {
+  return daemonCodeGraphRouteExclusion({
     platform: hostPlatform(),
     context,
     daemonLatched: getElectronDaemonHealth().isLatched(),
   });
+}
+
+/** Whether this renderer request goes to the daemon. Reads only local state. */
+export function selectDaemonCodeGraph(
+  context: DaemonCodeGraphRouteContext | undefined,
+): boolean {
+  return selectDaemonCodeGraphExclusion(context) === null;
 }
 
 /**
@@ -117,12 +132,38 @@ export function selectDaemonCodeGraph(
  * resolve, so they stay in process too.
  */
 export function selectDaemonCodeGraphForMain(workspaceId: string): boolean {
-  return (
-    isDaemonCodeGraphPlatformEligible(hostPlatform()) &&
-    !getElectronDaemonHealth().isLatched() &&
-    workspaceId !== PLAN_EXPLORE_CHAT_PROJECT_ID &&
-    workspaceId !== CODE_REVIEW_CHAT_PROJECT_ID &&
-    isCodeGraphAvailableForWorkspace(workspaceId)
+  return selectDaemonCodeGraphForMainExclusion(workspaceId) === null;
+}
+
+/** Why a build Electron main starts stays in process, or `null` (see above). */
+export function selectDaemonCodeGraphForMainExclusion(
+  workspaceId: string,
+): 'platform' | 'latched' | 'workspace' | 'unavailable' | null {
+  if (!isDaemonCodeGraphPlatformEligible(hostPlatform())) return 'platform';
+  if (getElectronDaemonHealth().isLatched()) return 'latched';
+  if (
+    workspaceId === PLAN_EXPLORE_CHAT_PROJECT_ID ||
+    workspaceId === CODE_REVIEW_CHAT_PROJECT_ID
+  )
+    return 'workspace';
+  if (!isCodeGraphAvailableForWorkspace(workspaceId)) return 'unavailable';
+  return null;
+}
+
+/** A renderer or agent build the route excluded (CAN-5093 field evidence). */
+export function noteDaemonCodeGraphBuildExcluded(
+  exclusion: 'platform' | 'caller' | 'latched' | 'workspace' | 'unavailable',
+): void {
+  recordDaemonRoute('code_graph', exclusion);
+}
+
+/** How a selected renderer or agent build settled, success or failure. */
+export function noteDaemonCodeGraphBuildSettled(
+  outcome: DaemonCodeGraphRouteOutcome,
+): void {
+  recordDaemonRoute(
+    'code_graph',
+    outcome === 'fallback' ? 'unreachable' : outcome,
   );
 }
 

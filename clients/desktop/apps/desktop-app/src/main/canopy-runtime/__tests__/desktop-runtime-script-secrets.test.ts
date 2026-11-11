@@ -1,4 +1,4 @@
-import type * as CanopyPaths from '@canopy/desktop-shared/canopy-paths';
+import type * as CanopyPaths from '@canopy/execution-engine/canopy-paths';
 import type * as NodePath from 'node:path';
 import {
   mkdtempSync,
@@ -23,12 +23,12 @@ import { createDefaultEnvironmentConfig } from '@canopy/desktop-shared/lib/user-
 import {
   registerSecretsEnvInjector,
   registerUserEnvironmentInjector,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 
 let mockRoot: string;
-jest.mock('@canopy/desktop-shared/canopy-paths', () => {
+jest.mock('@canopy/execution-engine/canopy-paths', () => {
   const actual = jest.requireActual<typeof CanopyPaths>(
-    '@canopy/desktop-shared/canopy-paths',
+    '@canopy/execution-engine/canopy-paths',
   );
   const path = jest.requireActual<typeof NodePath>('node:path');
   return {

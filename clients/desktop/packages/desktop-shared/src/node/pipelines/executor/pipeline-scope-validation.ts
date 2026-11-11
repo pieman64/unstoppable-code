@@ -10,8 +10,8 @@ import {
   executionContextSatisfies,
   reachableExecutionContexts,
   scopesOverlap,
-} from '@canopy/desktop-shared/pipelines/scope';
-import { normalizePipeline } from './normalize-pipeline';
+} from '@canopy/execution-engine/pipelines/scope';
+import { normalizePipeline } from '@canopy/execution-engine/node/pipelines/executor/normalize-pipeline';
 import { resolveActionRuntime } from '../action-resolver';
 import { resolveChildPipeline } from './child-pipeline-resolver';
 import type { ExecutionRuntime } from './types';

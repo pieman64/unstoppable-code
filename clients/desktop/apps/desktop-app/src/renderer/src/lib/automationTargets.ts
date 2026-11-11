@@ -11,7 +11,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import type { AutomationSessionTargetKind } from '@canopy/desktop-shared/lib/automation-target';
 import type { AutomationPipelineResolution } from '@canopy/pipeline-interop/automation-target';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import {
   loadAutomationPipelineDocument,
   loadPipelineDocument,

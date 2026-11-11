@@ -13,7 +13,7 @@ export {
 } from './worktree-create-legacy';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import * as path from 'node:path';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import type {
   ArchiveWorktreeResponse,
   WorktreeData,

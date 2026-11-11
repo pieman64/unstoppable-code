@@ -17,14 +17,22 @@
  * `RECORD_CHAT_STORAGE_GOLDEN=1 npm test -- chat-storage-commit-golden`.
  */
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import type {
   ChatCoreMutation,
   PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
 import * as workCounters from '@canopy/desktop-shared/node/work-counters';
+import { serializeVisibleReadMessage } from '@canopy/desktop-shared/lib/chat-history-serialization';
 import {
   ChatStorageV2,
   type ChatMigrationEntry,
@@ -34,7 +42,7 @@ import { ChatStorageTransactions } from '../lib/chat-storage-transactions';
 import * as cooperativeJson from '../lib/cooperative-json';
 import * as directorySync from '../lib/fsync-directory';
 import { ChatStateV2Backend } from '../services/chat-state-v2-backend';
-import { isRecord } from '../lib/type-guards';
+import { isErrnoException, isRecord } from '../lib/type-guards';
 
 const FIXTURE = join(__dirname, 'fixtures', 'chat-storage-commit-golden.json');
 const RECORD = process.env.RECORD_CHAT_STORAGE_GOLDEN === '1';
@@ -168,6 +176,112 @@ describe('chat storage commit golden', () => {
     jest.restoreAllMocks();
     await rm(root, { recursive: true, force: true });
     await rm(sourceRoot, { recursive: true, force: true });
+  });
+
+  it('restores exact file identities and visible references from a committed transcript', async () => {
+    // Probe the real temporary volume, not the OS default: insensitive volumes
+    // cannot represent both targets. Keep all other names covered there.
+    await writeFile(join(sourceRoot, 'A.ts'), 'upper-case target\n', {
+      flag: 'wx',
+    });
+    let caseSensitive = true;
+    try {
+      await writeFile(join(sourceRoot, 'a.ts'), 'lower-case target\n', {
+        flag: 'wx',
+      });
+    } catch (error) {
+      if (!isErrnoException(error) || error.code !== 'EEXIST') throw error;
+      expect(await readFile(join(sourceRoot, 'a.ts'), 'utf8')).toBe(
+        'upper-case target\n',
+      );
+      caseSensitive = false;
+    }
+    const fixtures = [
+      { path: 'A.ts', label: 'A.ts', bytes: 'upper-case target\n' },
+      ...(caseSensitive
+        ? [{ path: 'a.ts', label: 'a.ts', bytes: 'lower-case target\n' }]
+        : []),
+      { path: '資料/雪🌲.ts', label: '雪🌲.ts', bytes: 'Unicode target\n' },
+      {
+        path: "folder with spaces/it's here.ts",
+        label: "it's here.ts",
+        bytes: 'spaces and apostrophe target\n',
+      },
+      { path: 'literal/name.ts', label: 'name.ts', bytes: 'nested target\n' },
+      // Win32 treats backslash as a separator and colon as a stream delimiter;
+      // neither can represent these literal POSIX filenames.
+      ...(process.platform === 'win32'
+        ? []
+        : [
+            {
+              path: 'literal\\name.ts',
+              label: 'literal\\name.ts',
+              bytes: 'literal backslash target\n',
+            },
+            {
+              path: 'colon:name.ts',
+              label: 'colon:name.ts',
+              bytes: 'literal colon target\n',
+            },
+          ]),
+    ];
+    for (const fixture of fixtures) {
+      const path = join(sourceRoot, fixture.path);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, fixture.bytes);
+    }
+    const references = fixtures.map((fixture) => ({
+      displayPath: fixture.path,
+      absolutePath: join(sourceRoot, fixture.path),
+    }));
+    const prompt: PersistedChatMessage = {
+      ...message('file-prompt', 'Inspect these files.', 'user'),
+      blocks: [
+        { type: 'text', text: 'Inspect these files.' },
+        { type: 'file_references', references },
+      ],
+    };
+    const store = new ChatStorageV2(root, 'scope');
+    await store.migrate(scopeSource([{ id: 'chat', messages: [] }]));
+    const backend = new ChatStateV2Backend(store);
+    await backend.load();
+    await backend.transact(
+      () => [{ type: 'message.upserted', chatId: 'chat', message: prompt }],
+      {
+        source: 'renderer-command',
+        mutationId: 'file-prompt',
+        chatIds: ['chat'],
+      },
+    );
+
+    // Neither the backend nor the transcript reader may retain the writer's
+    // in-memory message: a new storage owner must recover the committed row.
+    const restored = new ChatStateV2Backend(new ChatStorageV2(root, 'scope'));
+    await restored.load();
+    const page = await restored.page('chat');
+    expect(page.totalMessages).toBe(1);
+    expect(page.messages).toEqual([prompt]);
+    const row = page.messages[0];
+    if (!row) throw new Error('Missing restored file-reference prompt');
+    const block = row.blocks.find((entry) => entry.type === 'file_references');
+    if (!block || block.type !== 'file_references')
+      throw new Error('Missing restored file references');
+    expect(block.references).toEqual(references);
+    expect(
+      new Set(block.references.map((entry) => entry.absolutePath)).size,
+    ).toBe(fixtures.length);
+    for (const [index, reference] of block.references.entries()) {
+      expect(await readFile(reference.absolutePath)).toEqual(
+        Buffer.from(fixtures[index].bytes),
+      );
+    }
+    expect(serializeVisibleReadMessage(row)).toEqual({
+      messageId: 'file-prompt',
+      role: 'user',
+      timestamp: '1970-01-01T00:00:00.001Z',
+      text: `Inspect these files.\n\n${fixtures.map((fixture) => `[file] ${fixture.label}`).join('\n')}`,
+      truncated: false,
+    });
   });
 
   it('writes byte-identical files, in the same order, with the same syncs', async () => {

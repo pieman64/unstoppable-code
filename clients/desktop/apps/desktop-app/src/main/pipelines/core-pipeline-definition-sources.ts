@@ -33,7 +33,7 @@ import {
   localPipelineNormalizeOptions,
 } from '@canopy/desktop-shared/node/pipelines/definition-sources';
 import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/automation-context-copy';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isPathInside } from '../lib/path-safety';

@@ -19,7 +19,10 @@ import {
   UNPORTABLE_HOST_RESULT,
   type SendHostPaths,
 } from '@canopy/desktop-shared/node/pipelines/host-request-portable';
-import { PIPELINE_NEEDS_DESKTOP_MESSAGE } from '@canopy/desktop-shared/pipelines/host-actions';
+import {
+  EVERY_PIPELINE_HOST_ACTION,
+  PIPELINE_NEEDS_DESKTOP_MESSAGE,
+} from '@canopy/execution-engine/pipelines/host-actions';
 import type { PipelineChatSendRecord } from '@canopy/execution-engine/types/pipeline';
 import { peekDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
 
@@ -78,6 +81,10 @@ export function createWorkerPipelineHostActions(
   host: PipelineHostActions,
 ): PipelineHostActions {
   return {
+    support: {
+      hostName: 'the desktop app',
+      actions: EVERY_PIPELINE_HOST_ACTION,
+    },
     async run(
       request,
       caller,

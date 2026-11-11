@@ -22,6 +22,7 @@ import {
 } from '../canopy-tools/core';
 import {
   SET_AUTO_ARCHIVE_DESCRIPTION,
+  SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION,
   SET_BASE_BRANCH_DESCRIPTION,
   START_FORKED_AGENT_DESCRIPTION,
   START_BRANCHED_AGENT_DESCRIPTION,
@@ -54,6 +55,7 @@ import {
   WATCH_GITHUB_ITEMS_DESCRIPTION,
   GET_GITHUB_PULL_REQUEST_STATUS_DESCRIPTION,
   setAutoArchiveJsonSchema,
+  setWorkEntryAutoDeleteJsonSchema,
   setBaseBranchJsonSchema,
   askUserQuestionJsonSchema,
   deleteWatchersJsonSchema,
@@ -400,6 +402,12 @@ export function buildCanopyDynamicToolSpecs(options: {
       name: CANOPY_INJECTED_TOOL_REGISTRY.set_auto_archive.codexToolName,
       description: SET_AUTO_ARCHIVE_DESCRIPTION,
       inputSchema: setAutoArchiveJsonSchema,
+    }),
+    defineCodexFunctionToolSpec({
+      name: CANOPY_INJECTED_TOOL_REGISTRY.set_work_entry_auto_delete
+        .codexToolName,
+      description: SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION,
+      inputSchema: setWorkEntryAutoDeleteJsonSchema,
     }),
   ];
   if (mode === 'cowork') {

@@ -12,7 +12,7 @@ import {
 } from '../../builtin-actions/agent-prompt/logic';
 import { validateAgainstSchema } from '../../lib/ajv-schema-validator';
 import { describeJsonParseFailure } from '@canopy/execution-engine/lib/redaction';
-import { stepTimedOutMessage } from './step-timeout';
+import { stepTimedOutMessage } from '@canopy/execution-engine/node/pipelines/step-timeout';
 import { getRawCursorModelId } from '@canopy/execution-engine/lib/cursor-models';
 import type { CursorRuntimeTarget } from '../../lib/cursor-runtime-targets';
 import { buildPipelineGlobalInstructionsBlock } from '@canopy/execution-engine/lib/global-instructions';
@@ -22,7 +22,7 @@ import {
   getCursorRuntimeStateDir,
   getEnhancedEnv,
   getRtkManagedEnv,
-} from '../../pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import {
   createHeadlessCursorHost,
   extractProposedPlan,
@@ -43,7 +43,7 @@ import {
   getPipelineExecutionCursorProfileDir,
   getPipelineExecutionCursorSessionEntryPath,
   getPipelineExecutionCursorSessionIndexDir,
-} from '../lib/paths';
+} from '@canopy/execution-engine/node/lib/paths';
 import type {
   CursorPromptRunnerRequest,
   CursorPromptRunnerResult,

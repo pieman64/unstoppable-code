@@ -72,6 +72,7 @@ import {
   connectProviderLabel,
   ModelPickerMenu,
   MODEL_PICKER_AUTO_REASONS,
+  managedOpenCodeAutoUnavailableReason,
   MODEL_PICKER_ROW_CUE_COPY,
   modelLibraryUnlockHint,
   modelLibraryUnlockLabel,
@@ -1734,12 +1735,24 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
    */
   const autoOption = useMemo<ModelPickerAutoOption | undefined>(() => {
     if (!auto) return undefined;
-    if (hostedHarness === 'opencode' || currentProvider === 'opencode')
+    if (hostedHarness === 'opencode' || currentProvider === 'opencode') {
+      const reason =
+        auto.unavailableReason ??
+        managedOpenCodeAutoUnavailableReason(
+          catalog.find((option) => option.id === currentModel),
+          catalog.filter((option) => {
+            const state = getOptionState(option, { harness: 'opencode' });
+            return !state.disabled && !state.locked;
+          }),
+        );
       return {
         ...auto,
-        unavailableReason: MODEL_PICKER_AUTO_REASONS.unsupportedHarness,
-        unavailableAction: undefined,
+        unavailableReason: reason,
+        unavailableAction: auto.unavailableReason
+          ? auto.unavailableAction
+          : undefined,
       };
+    }
     const candidateCount = catalog.filter(
       (option) =>
         option.kind !== 'agent' &&
@@ -1761,7 +1774,15 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         : {}),
       ...(auto.hideWhenUnavailable ? { hideWhenUnavailable: true } : {}),
     };
-  }, [auto, catalog, currentProvider, hostedHarness, rowById]);
+  }, [
+    auto,
+    catalog,
+    currentProvider,
+    currentModel,
+    getOptionState,
+    hostedHarness,
+    rowById,
+  ]);
 
   /**
    * A recoverable row was clicked. Close the dropdown (not via `closeMenu` —

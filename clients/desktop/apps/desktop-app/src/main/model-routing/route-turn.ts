@@ -28,6 +28,7 @@ import {
   resolveGatewayModelEntry,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isCodexModelAvailableToAccount } from '@canopy/desktop-shared/lib/default-model-lane';
+import { isOpenCodeGatewayRouteSupported } from '@canopy/desktop-shared/lib/opencode-gateway-models';
 import { isProviderNativelyAuthenticatedForRouting } from '../auth/provider-auth-state';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import { buildDesktopRoutingCandidateSet } from './candidates';
@@ -58,6 +59,7 @@ function defaultsForSurface(
   return {
     claude: defaults.claude.model,
     codex: defaults.codex.model,
+    opencode: defaults.opencode?.model,
   };
 }
 
@@ -114,17 +116,20 @@ export async function routeDesktopAutoTurn(input: {
   /** Owner bound to the chat session; sent with the resolve call (CAN-3462). */
   workOwner?: WorkOwner;
 }): Promise<DesktopAutoTurnResolution | null> {
-  // Auto currently negotiates Claude/Codex routes. Never spend routing credits
-  // or change the provider underneath an explicit OpenCode selection.
-  if (
+  const openCode =
     input.tab.executionHarness === 'opencode' ||
     input.tab.providerType === 'opencode' ||
-    input.request.executionHarness === 'opencode'
-  )
+    input.request.executionHarness === 'opencode';
+  const currentRoute = input.request.model
+    ? resolveGatewayModelEntry(input.request.model)
+    : undefined;
+  // Native accounts and customer gateways never enter the hosted credits lane.
+  if (openCode && (!currentRoute || currentRoute.origin === 'org-gateway'))
     return null;
-  const lane: ModelExecutionLane = input.request.aiCreditsRouting
-    ? 'ai_credits'
-    : 'provider_subscription';
+  const lane: ModelExecutionLane =
+    openCode || input.request.aiCreditsRouting
+      ? 'ai_credits'
+      : 'provider_subscription';
   const priorConversation = hasPriorConversation(
     input.tab,
     input.request.userMessageId,
@@ -138,8 +143,11 @@ export async function routeDesktopAutoTurn(input: {
         ? getExecutionHarnessForModel(input.tab.model)
         : undefined))
     : undefined;
-  const capturedHarness =
-    captured === 'claude' || captured === 'codex' ? captured : undefined;
+  const capturedHarness = openCode
+    ? 'opencode'
+    : captured === 'claude' || captured === 'codex'
+      ? captured
+      : undefined;
   const harnesses: ModelRoutingHarness[] = capturedHarness
     ? [capturedHarness]
     : ['claude', 'codex'];
@@ -147,6 +155,7 @@ export async function routeDesktopAutoTurn(input: {
   if (lane === 'provider_subscription') {
     await Promise.all(
       harnesses.map(async (harness) => {
+        if (harness === 'opencode') return;
         if (
           await isProviderNativelyAuthenticatedForRouting(
             harness,
@@ -170,10 +179,35 @@ export async function routeDesktopAutoTurn(input: {
     input.request.modelConfig?.thinkingLevel ??
     input.request.thinkingLevel ??
     'high';
+  const state = buildDesktopAutoRoutingState({
+    request: input.request,
+    tab: input.tab,
+    workspace: input.workspace,
+  });
+  if (openCode) {
+    // Managed OpenCode does not advertise a native effort or speed setting.
+    delete state.mode.thinkingLevel;
+    state.mode.fast = false;
+  }
   const models = await Promise.all(
     uniqueModels().map(async (id) => {
-      const harness = getExecutionHarnessForModel(id);
-      if (harness !== 'claude' && harness !== 'codex') return null;
+      const route = resolveGatewayModelEntry(id);
+      const harness = openCode ? 'opencode' : getExecutionHarnessForModel(id);
+      if (harness !== 'claude' && harness !== 'codex' && harness !== 'opencode')
+        return null;
+      // Outside OpenCode, Auto negotiates only Claude/Codex routes. A gateway
+      // model assigned the OpenCode harness must not join that candidate set.
+      if (!openCode && harness === 'opencode') return null;
+      // The picker's managed Auto check cannot see attachments, so it may offer
+      // Auto with fewer eligible routes here. Too few keeps the current model.
+      if (
+        openCode &&
+        (!route ||
+          route.origin === 'org-gateway' ||
+          !isOpenCodeGatewayRouteSupported(route) ||
+          (state.attachmentCounts.images > 0 && route.supportsImages !== true))
+      )
+        return null;
       const source = getModelSource(id);
       return {
         id,
@@ -187,16 +221,19 @@ export async function routeDesktopAutoTurn(input: {
         description: getModelDescription(id),
         harness,
         native:
+          !openCode &&
           source === `${harness}-managed` &&
           (harness !== 'codex' ||
             isCodexModelAvailableToAccount(id, codexAccountModels)),
         gateway: isGatewayRoutableModel(id),
-        supportsThinking: getEffectiveSupportedThinkingLevelsForModel(
-          id,
-          lane === 'ai_credits',
-          harness,
-          harness,
-        ).includes(thinkingLevel),
+        supportsThinking:
+          openCode ||
+          getEffectiveSupportedThinkingLevelsForModel(
+            id,
+            lane === 'ai_credits',
+            harness,
+            harness,
+          ).includes(thinkingLevel),
         blocked: await isModelBlockedByStoredPolicy(id, input.workOwner),
       };
     }),
@@ -279,11 +316,7 @@ export async function routeDesktopAutoTurn(input: {
     ...(capturedHarness ? { capturedHarness } : {}),
     executionLane: lane,
     candidates: candidateSet.candidates,
-    state: buildDesktopAutoRoutingState({
-      request: input.request,
-      tab: input.tab,
-      workspace: input.workspace,
-    }),
+    state,
   };
   const resolved = await resolveDesktopAutoModel(routingRequest, {
     ...(input.signal ? { signal: input.signal } : {}),

@@ -14,8 +14,8 @@ function placeholder(value: string): string {
 
 /**
  * Replace each image entry with a text placeholder in the provider's own
- * text-item shape: Codex reads only `inputText` items, Claude and Cursor
- * `text`.
+ * text-item shape: Codex reads only `inputText` items, Claude, Cursor and
+ * OpenCode `text`.
  */
 function removeImages(
   value: unknown,
@@ -154,10 +154,11 @@ export function projectPreviewVisualResult(
     };
   }
   // The Cursor session attaches this host-authored list after the ACP
-  // invocation hook has verified providerIdentifier and toolName.
+  // invocation hook has verified providerIdentifier and toolName; the
+  // OpenCode session after its native pre-tool gate authorized the call.
   if (
     event.type === 'canopy_assistant_patch' &&
-    event.provider === 'cursor' &&
+    (event.provider === 'cursor' || event.provider === 'opencode') &&
     'canopyTrustedPreviewToolIds' in event &&
     Array.isArray(event.patches)
   ) {

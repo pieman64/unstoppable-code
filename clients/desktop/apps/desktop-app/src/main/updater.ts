@@ -2,7 +2,7 @@ import { load } from 'js-yaml';
 import { app } from 'electron';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { linuxUpdateCopy } from '@canopy/desktop-shared/lib/linux-update-copy';
-import { restoreStartupEnvironmentForRelaunch } from '@canopy/desktop-shared/pipelines/config-paths';
+import { restoreStartupEnvironmentForRelaunch } from '@canopy/execution-engine/pipelines/config-paths';
 import {
   detectLinuxInstallSource,
   installedLinuxPackageArchitecture,

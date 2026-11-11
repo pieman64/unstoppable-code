@@ -4,7 +4,7 @@ import { BRAND } from '@canopy/brand/current';
 import {
   getBrandOwnedDataDirRoots,
   getCanopySecureDataDir,
-} from '@canopy/desktop-shared/canopy-paths';
+} from '@canopy/execution-engine/canopy-paths';
 import { isPathInside } from '../lib/path-safety';
 import { getDataDir } from '../lib/paths';
 import { isRecord } from '../lib/type-guards';

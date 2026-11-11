@@ -9,7 +9,8 @@ export function isOpenCodeGatewayRouteSupported(
   >,
 ): boolean {
   return (
-    entry.toolSchemaProfile === 'standard' &&
+    (entry.toolSchemaProfile === 'standard' ||
+      entry.toolSchemaProfile === 'flat') &&
     (entry.recommendedHarness === 'claude' ||
       entry.recommendedHarness === 'codex') &&
     isSyntacticallyValidModelId(entry.gatewayId) &&

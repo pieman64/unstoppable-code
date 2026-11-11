@@ -4,7 +4,7 @@ import { basename, join, win32 } from 'node:path';
 import { parseDn } from 'builder-util-runtime';
 import { ElectronAppAdapter } from 'electron-updater/out/ElectronAppAdapter';
 import type { VerifyUpdateCodeSignature } from 'electron-updater';
-import { getEnhancedEnv } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import { drainOwnedProcess } from '../lib/process-kill';
 import {
   logMainProcessError,

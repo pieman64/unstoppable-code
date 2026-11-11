@@ -34,7 +34,7 @@ import { runRtkRewrite } from '@canopy/execution-engine/node/rtk/rewrite';
 import {
   getBundledRtkBinaryPath,
   getRtkManagedEnv,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
@@ -49,7 +49,10 @@ import {
   type ApprovalMode,
 } from '@canopy/desktop-shared/types';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
-import { cursorCanopyMcpServerNames } from '@canopy/desktop-shared/lib/cursor-mcp-tool-call';
+import {
+  cursorCanopyMcpServerNames,
+  resolveCursorCanopyToolKey,
+} from '@canopy/desktop-shared/lib/cursor-mcp-tool-call';
 import {
   emptyCursorCapabilityProjection,
   expandLeadingCursorCommand,
@@ -77,8 +80,28 @@ import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
 import {
   buildCoworkInjectedToolPrompt,
   buildDeferredToolsGuidance,
+  buildLedgerPlanModeInstruction,
   buildWorktreeInjectedToolPrompt,
 } from '../canopy-tools/prompting';
+import {
+  mayExposeLedgerTools,
+  openLedgerChatTools,
+  type LedgerChatSettings,
+  type LedgerChatTarget,
+  type LedgerChatToolsSession,
+} from '../canopy-tools/ledger-tools-runtime';
+import { chatVisualsPromptEligible } from '../lib/chat-visuals-feature-flag';
+import {
+  openTurnLedger,
+  type TurnVisualLedger,
+} from '../services/visual-tool-identity';
+import {
+  createPreviewVisualTracker,
+  projectPreviewVisualResult,
+} from '@canopy/desktop-shared/lib/preview-visual-projection';
+import { discoverHomeCapabilities } from '../plugins/home-capabilities';
+import { requestChatTombstones } from '../plugins/request-chat-tombstones';
+import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inventory-service';
 import { CursorEventBuffer } from './cursor-event-buffer';
 import {
   buildSessionKey,
@@ -86,13 +109,25 @@ import {
   registerSession,
 } from './session-manager';
 import { createOwnedTurnState } from './owned-turn-state';
-import type { AgentProvider, AgentSession, AgentSessionOptions } from './types';
+import type {
+  AgentProvider,
+  AgentSession,
+  AgentSessionOptions,
+  AgentSessionTurnSettings,
+} from './types';
 import type { TurnBinding } from '@canopy/protocol/canopy-core';
 import {
   getTurnLifecycleProducer,
   releaseTurnLifecycleProducer,
 } from './provider-turn-lifecycle';
 import { observeRoutedTurnBinding } from './session-event-router';
+
+/** The home-folder set the slash menu last listed for an OpenCode chat. */
+let lastInheritedFingerprint: string | undefined;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 function hasToolKey<T extends object>(
   registry: T,
@@ -157,10 +192,41 @@ export class OpenCodeProvider implements AgentProvider {
     let planMode = opts.planMode === true;
     let approvalMode: ApprovalMode = opts.approvalMode ?? 'ask';
     let approval: ApprovalSessionHandle | undefined;
+    // The settings the current or last turn applied. Setters change only
+    // `model` and `thinking`, which the next send snapshots.
+    let turnSettings: AgentSessionTurnSettings | undefined;
     const announcedNotices = new Set<string>();
     lifetime.signal.addEventListener('abort', () => active?.abort.abort(), {
       once: true,
     });
+    // The chat's Ledger tools, decided once per session when a default-mode
+    // turn first registers the app's route, as for Cursor: the tool list is
+    // part of the captured capability snapshot, so later turns neither add
+    // nor drop them and each call re-checks the flag and the setting.
+    const ledgerTarget: LedgerChatTarget = {
+      projectId: opts.projectId,
+      worktreeId: opts.worktreeId,
+      chatId: opts.chatId,
+      ...(opts.assistantMode ? { assistantMode: opts.assistantMode } : {}),
+    };
+    const ledger: { decided: boolean; tools: LedgerChatToolsSession | null } = {
+      decided: false,
+      tools: null,
+    };
+    // An entry's author details: the settings the current turn runs with.
+    let ledgerSettings: LedgerChatSettings = {
+      model: model ?? null,
+      thinkingEffort: null,
+      planMode,
+    };
+    lifetime.signal.addEventListener(
+      'abort',
+      () => {
+        ledger.tools?.dispose();
+        ledger.tools = null;
+      },
+      { once: true },
+    );
     const emit = (
       data: Record<string, unknown>,
       userMessageId?: string,
@@ -197,6 +263,8 @@ export class OpenCodeProvider implements AgentProvider {
       prompt: string,
       turnId: string,
       abort: AbortController,
+      requested: AgentSessionTurnSettings,
+      visualLedger: TurnVisualLedger,
       userMessageId?: string,
       attachments?: OpenCodeAttachmentSelection,
     ): Promise<Record<string, unknown>> => {
@@ -252,7 +320,7 @@ export class OpenCodeProvider implements AgentProvider {
         if (lifetime.signal.aborted) created.detach();
         else managedDelegation = created;
       }
-      const turnModel = model;
+      const turnModel = requested.model;
       if (
         !turnModel ||
         (getRawOpenCodeModelId(turnModel) && opts.aiCreditsRouting?.active)
@@ -282,8 +350,38 @@ export class OpenCodeProvider implements AgentProvider {
           attribution: () => resolveSessionAiCreditsAttribution(opts),
         },
       );
-      const turnEmit = (event: Record<string, unknown>): void | Promise<void> =>
-        emit(event, userMessageId);
+      // App visual calls this turn's pre-tool gate allowed, by ACP call, and
+      // the transcript blocks of the allowed PreviewVisual calls.
+      const visualCalls = new Map<string, 'show_visual' | 'preview_visual'>();
+      const previewToolIds = new Set<string>();
+      const previewTracker = createPreviewVisualTracker();
+      const turnEmit = (
+        event: Record<string, unknown>,
+      ): void | Promise<void> => {
+        if (
+          event.type !== 'canopy_assistant_patch' ||
+          !Array.isArray(event.patches)
+        )
+          return emit(event, userMessageId);
+        const trustedIds = event.patches.flatMap((patch: unknown): string[] =>
+          isRecord(patch) &&
+          isRecord(patch.block) &&
+          typeof patch.block.toolUseId === 'string' &&
+          previewToolIds.has(patch.block.toolUseId)
+            ? [patch.block.toolUseId]
+            : [],
+        );
+        // Strip any preview screenshot before the first delivery.
+        const projected = projectPreviewVisualResult(
+          {
+            ...event,
+            provider: 'opencode',
+            canopyTrustedPreviewToolIds: trustedIds,
+          },
+          previewTracker,
+        );
+        return emit(isRecord(projected) ? projected : event, userMessageId);
+      };
       const closeTurn = async (): Promise<void> => {
         let failure: Error | undefined;
         const recordFailure = (error: unknown): void => {
@@ -324,12 +422,24 @@ export class OpenCodeProvider implements AgentProvider {
         const profile = getOpenCodeSessionProfile(opts);
         await mkdir(profile, { recursive: true, mode: 0o700 });
         const turnThinking =
-          thinking !== undefined && runtime.supportedThinkingLevels?.length
+          requested.thinkingLevel !== undefined &&
+          runtime.supportedThinkingLevels?.length
             ? clampThinkingLevelToDeclared(
-                thinking,
+                requested.thinkingLevel,
                 runtime.supportedThinkingLevels,
               )
             : undefined;
+        turnSettings = {
+          ...(turnModel ? { model: turnModel } : {}),
+          ...(turnThinking !== undefined
+            ? { thinkingLevel: turnThinking }
+            : {}),
+        };
+        ledgerSettings = {
+          model: turnModel,
+          thinkingEffort: turnThinking ?? null,
+          planMode,
+        };
         let contextReset = contextResetPending;
         const bindingFile = join(profile, 'host-session.json');
         let contextAppliedSessionId: string | undefined;
@@ -418,15 +528,58 @@ export class OpenCodeProvider implements AgentProvider {
           promptTimeoutMs: 60_000,
         });
         approval = currentApproval;
+        // OpenCode layers Claude Code's plugins on top of the selection, so it
+        // needs the chat's opt-outs even when no default layer applies.
         const context = await resolveEffectiveChatPluginContext(
           opts.pluginSelections,
           opts,
-          opts.applyGlobalPluginDefaults,
+          requestChatTombstones(opts.applyGlobalPluginDefaults),
         );
         const preferences =
           context.preferences ?? (await readPreferencesFile());
+        // The user's own home-folder skills and commands, and the plugins
+        // enabled in Claude Code, read the way Cursor and Copilot chats read
+        // them (design: 2026-10-05-cursor-inherited-capabilities). They are
+        // materialized into this chat's private capability root below, so
+        // the native runtime still reads no ambient configuration. A broken
+        // home folder must not stop the chat: a failed discovery inherits
+        // nothing.
+        const { inherited, inheritedPluginRefs } =
+          await discoverHomeCapabilities({
+            cwd: opts.cwd,
+            selections: context.selections,
+            tombstones: context.chatTombstones,
+            signal: abort.signal,
+          });
+        for (const entry of inherited.skipped)
+          logMainProcessWarn(
+            '[opencode-session] Inherited capability skipped',
+            `${entry.label}: ${entry.reason}`,
+          );
+        const inheritedNotices = inherited.skipped.length
+          ? [
+              `Skills or commands from your home folders could not be loaded: ${inherited.skipped
+                .map((entry) => entry.label)
+                .join(', ')}.`,
+            ]
+          : [];
+        if (inherited.fingerprint !== lastInheritedFingerprint) {
+          lastInheritedFingerprint = inherited.fingerprint;
+          refreshInvocableInventoryAfterMutation(
+            'opencode-inherited-capabilities',
+          );
+        }
+        // Plugins enabled in Claude Code join resolution as inherited refs,
+        // each read from the folder Claude Code installed, so their MCP
+        // servers keep going through the proxy, snapshot and approvals.
+        const hasInherited =
+          inherited.skills.length > 0 ||
+          inherited.commands.length > 0 ||
+          inheritedPluginRefs.length > 0;
         const resolved =
-          hasAnySelections(context.selections) || opts.packageOverlay
+          hasAnySelections(context.selections) ||
+          hasInherited ||
+          opts.packageOverlay
             ? await resolvePlugins(
                 context.selections,
                 opts.projectId,
@@ -440,6 +593,10 @@ export class OpenCodeProvider implements AgentProvider {
                   sessionId: key,
                   packageOverlay: opts.packageOverlay,
                   preferences: context.preferences,
+                  inheritedCursorCapabilities: inherited,
+                  ...(inheritedPluginRefs.length > 0
+                    ? { inheritedPluginRefs }
+                    : {}),
                 },
               )
             : undefined;
@@ -457,9 +614,11 @@ export class OpenCodeProvider implements AgentProvider {
           );
         const notices = Array.from(
           new Set(
-            [...(resolved?.cursorNotices ?? []), ...prepared.warnings].map(
-              (warning) => warning.split('Cursor').join('OpenCode'),
-            ),
+            [
+              ...inheritedNotices,
+              ...(resolved?.cursorNotices ?? []),
+              ...prepared.warnings,
+            ].map((warning) => warning.split('Cursor').join('OpenCode')),
           ),
         );
         const unannounced = notices.filter(
@@ -555,6 +714,38 @@ export class OpenCodeProvider implements AgentProvider {
           }
           return checkMcp(server, tool, args, callId);
         };
+        if (!ledger.decided && serverMode === 'default') {
+          ledger.decided = true;
+          // The Cowork OpenCode route does not list the Ledger tools.
+          // Decided once, as for Cursor: a failed open leaves this session
+          // without Feed tools rather than failing the turn.
+          const opened =
+            !cowork && mayExposeLedgerTools(ledgerTarget)
+              ? await openLedgerChatTools({
+                  target: ledgerTarget,
+                  harness: 'opencode',
+                  readSettings: () => ledgerSettings,
+                  ...(opts.selectedRepoId
+                    ? { selectedRepoId: opts.selectedRepoId }
+                    : {}),
+                }).catch((error: unknown) => {
+                  logMainProcessWarn(
+                    '[opencode-session] Feed tools unavailable',
+                    error,
+                  );
+                  return null;
+                })
+              : null;
+          // A session that ended while they opened never uses them.
+          if (lifetime.signal.aborted) opened?.dispose();
+          else ledger.tools = opened;
+        }
+        const ledgerTools = serverMode === 'default' ? ledger.tools : null;
+        // A normal turn opens with a bounded hint when entries assigned to
+        // this chat changed.
+        const ledgerHint = ledgerTools
+          ? await ledgerTools.assignmentHint()
+          : undefined;
         const token = randomBytes(32).toString('base64url');
         await proxy.registerCanopyWorktreeSessionRoute({
           sessionKey: key,
@@ -575,7 +766,17 @@ export class OpenCodeProvider implements AgentProvider {
           createdAt: Date.now(),
           hookHandler: () => undefined,
           toolSurface,
-          pluginSelections: context.selections,
+          // Inherited Claude Code plugins count as loaded for this chat.
+          pluginSelections: {
+            ...context.selections,
+            pluginRefs: [
+              ...context.selections.pluginRefs,
+              ...inheritedPluginRefs.map(({ marketplaceId, pluginName }) => ({
+                marketplaceId,
+                pluginName,
+              })),
+            ],
+          },
           deferredToolsAllowed: opts.deferredToolsAllowed !== false,
           ...(managedDelegation
             ? {
@@ -616,6 +817,7 @@ export class OpenCodeProvider implements AgentProvider {
               }
             : {}),
           codeGraphToolsAdvertised,
+          ...(ledgerTools ? { ledgerTools } : {}),
           onAwaitingUser: () => {
             turnState.markTurnAwaitingUser();
             awaitingUser = true;
@@ -751,16 +953,17 @@ export class OpenCodeProvider implements AgentProvider {
                 : cowork
                   ? buildCoworkInjectedToolPrompt(
                       'opencode',
-                      false,
+                      chatVisualsPromptEligible('opencode', 'cowork'),
                       opts.deferredToolsAllowed !== false,
                     )
                   : buildWorktreeInjectedToolPrompt(
                       'opencode',
                       codeGraphToolsAdvertised,
                       true,
-                      false,
+                      chatVisualsPromptEligible('opencode', 'worktree'),
                       opts.deferredToolsAllowed !== false,
                     ),
+              ledgerTools?.systemPrompt(),
               serverMode === 'default'
                 ? buildLocalMemoryPromptNudge(
                     preferences.localMemoryEnabled === true,
@@ -776,9 +979,15 @@ export class OpenCodeProvider implements AgentProvider {
                       'use the supplied Ask User Question tool',
                     ),
                     'To revise a plan in this mode, return the complete updated <proposed_plan> block. Do not edit the saved plan file.',
+                    // The bookkeeping exception authorizeCursorMcpTool applies.
+                    ...(ledgerTools
+                      ? [buildLedgerPlanModeInstruction('opencode')]
+                      : []),
                   ].join('\n')
                 : DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
               'Use the supplied app tools directly. Native subagents, background scheduling, remote sessions, and plugin installation are unavailable. Do not work around denied operations.',
+              // Last, so it sits next to the text of the turn it opens.
+              ledgerHint,
             ]
               .filter(Boolean)
               .join('\n\n'),
@@ -801,6 +1010,16 @@ export class OpenCodeProvider implements AgentProvider {
                 : openCodeToolDisplay(tool, opts.cwd);
             },
             emit: turnEmit,
+            onToolBlock: ({ toolUseId, toolCallId }) => {
+              // A block not yet tied to a gated call keeps its current trust:
+              // it was never recorded, or an earlier update recorded it.
+              if (toolCallId === undefined) return;
+              const key = visualCalls.get(toolCallId);
+              if (key === 'show_visual') visualLedger.record(toolUseId);
+              else visualLedger.forget(toolUseId);
+              if (key === 'preview_visual') previewToolIds.add(toolUseId);
+              else previewToolIds.delete(toolUseId);
+            },
             onSessionCleared: () => {
               sessionId = undefined;
               contextResetPending = true;
@@ -836,6 +1055,19 @@ export class OpenCodeProvider implements AgentProvider {
                   input.toolArgs,
                   input.toolCallId,
                 );
+                // Only the main app server's own visual tools render, and
+                // only for the call this gate allowed.
+                const visualKey =
+                  allowed && serverMode === 'default'
+                    ? resolveCursorCanopyToolKey(identity, toolSurface)
+                    : null;
+                if (
+                  identity.server === names.main &&
+                  (visualKey === 'show_visual' ||
+                    visualKey === 'preview_visual')
+                )
+                  visualCalls.set(input.toolCallId, visualKey);
+                else visualCalls.delete(input.toolCallId);
                 if (allowed && identity.http) {
                   if (approved.size >= 1024) return { decision: 'deny' };
                   const key = copilotMcpCallIdentity(
@@ -924,6 +1156,9 @@ export class OpenCodeProvider implements AgentProvider {
           type: 'result',
           is_error: result.isError || Boolean(failure),
           result: failure?.message || result.message || result.responseText,
+          ...(!failure && result.providerErrorDetails
+            ? { canopy_provider_error_details: result.providerErrorDetails }
+            : {}),
           ...openCodeFailureStatus(failure),
           ...(result.cancelled && !failure ? { subtype: 'cancelled' } : {}),
           usage: result.usage,
@@ -945,6 +1180,14 @@ export class OpenCodeProvider implements AgentProvider {
           throw new Error('Wait for the current OpenCode turn to finish.');
         const planningTurn = planMode;
         const planningModel = model;
+        // The turn applies the settings current at send. A later setter only
+        // records the value for the next turn (`settingApplication`).
+        const requested: AgentSessionTurnSettings = {
+          ...(model ? { model } : {}),
+          ...(thinking !== undefined ? { thinkingLevel: thinking } : {}),
+        };
+        // Unknown until the turn clamps the effort to the model's levels.
+        turnSettings = undefined;
         const abort = new AbortController();
         const turnId = sendOptions?.userMessageId ?? randomUUID();
         currentTurn = turnId;
@@ -1019,10 +1262,18 @@ export class OpenCodeProvider implements AgentProvider {
               paths: [...sendOptions.attachments.paths],
             }
           : undefined;
+        // Trusted ShowVisual calls of this turn; closed after its final drain.
+        const visualLedger = openTurnLedger({
+          projectId: opts.projectId,
+          worktreeId: opts.worktreeId,
+          chatId: opts.chatId,
+        });
         const done = run(
           text,
           turnId,
           abort,
+          requested,
+          visualLedger,
           sendOptions?.userMessageId,
           attachments,
         )
@@ -1038,12 +1289,16 @@ export class OpenCodeProvider implements AgentProvider {
             ...(abort.signal.aborted ? { subtype: 'cancelled' } : {}),
           }))
           .then(async (result) => {
-            await buffer.flush();
-            await drainChatSessionEvents(
-              opts.projectId,
-              opts.worktreeId,
-              opts.chatId,
-            );
+            try {
+              await buffer.flush();
+              await drainChatSessionEvents(
+                opts.projectId,
+                opts.worktreeId,
+                opts.chatId,
+              );
+            } finally {
+              visualLedger.close();
+            }
             const isCurrent = (): boolean =>
               !abort.signal.aborted &&
               !lifetime.signal.aborted &&
@@ -1112,6 +1367,12 @@ export class OpenCodeProvider implements AgentProvider {
                 ? {
                     type: 'error',
                     error: result.result,
+                    ...(typeof result.canopy_provider_error_details === 'string'
+                      ? {
+                          canopy_provider_error_details:
+                            result.canopy_provider_error_details,
+                        }
+                      : {}),
                     ...openCodeFailureStatus(result),
                   }
                 : result,
@@ -1160,6 +1421,11 @@ export class OpenCodeProvider implements AgentProvider {
         approval?.setMode(mode);
         return Promise.resolve();
       },
+      // Each turn selects and acknowledges its model and effort before its
+      // prompt, so a change cannot reach a turn that is already running.
+      settingApplication: { model: 'next_turn', thinkingLevel: 'next_turn' },
+      getAppliedTurnSettings: () =>
+        turnSettings ? { ...turnSettings } : undefined,
       setThinkingLevel: (level): Promise<void> => {
         thinking = level;
         return Promise.resolve();

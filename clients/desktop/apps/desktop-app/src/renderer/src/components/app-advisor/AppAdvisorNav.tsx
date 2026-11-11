@@ -1,3 +1,8 @@
+import {
+  useSidebarAutoDelete,
+  SidebarAutoDeleteProvider,
+  SidebarAutoDeleteNotice,
+} from '@canopy/ui-app';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 /**
@@ -164,6 +169,11 @@ function AppAdvisorNavEntryRow({
   onRemove,
   selectionBinding,
 }: AppAdvisorNavEntryRowProps): JSX.Element {
+  const autoDelete = useSidebarAutoDelete({
+    workspaceId: APP_ADVISOR_PROJECT_ID,
+    targetId: entry.id,
+    name: entry.title,
+  });
   const rowTestId = `${NAV_ROW_TEST_ID_PREFIX}-${entry.id}`;
   const selectionKey = workEntryRowKey(APP_ADVISOR_PROJECT_ID, entry.id);
   const batchRemoving = selectionBinding?.isRemoving(selectionKey) === true;
@@ -215,6 +225,8 @@ function AppAdvisorNavEntryRow({
       }
       return (
         <WorkEntryRowMenuItems
+          autoDelete={autoDelete.autoDelete}
+          onAutoDeleteDisarm={autoDelete.onAutoDeleteDisarm}
           menu={menu}
           pinned={pinned}
           onTogglePin={(next): void => onSetPinned(entry.id, next)}
@@ -246,6 +258,8 @@ function AppAdvisorNavEntryRow({
       );
     },
     [
+      autoDelete.autoDelete,
+      autoDelete.onAutoDeleteDisarm,
       pinned,
       onSetPinned,
       entry.id,
@@ -260,6 +274,7 @@ function AppAdvisorNavEntryRow({
   );
   return (
     <WorkEntryRow
+      {...autoDelete}
       title={entry.title}
       testId={rowTestId}
       entryId={entry.id}
@@ -285,9 +300,17 @@ export interface AppAdvisorNavProps {
   collapsed: boolean;
 }
 
-export const AppAdvisorNav = memo(function AppAdvisorNav({
-  collapsed,
-}: AppAdvisorNavProps): JSX.Element {
+export const AppAdvisorNav = memo(function AppAdvisorNav(
+  props: AppAdvisorNavProps,
+): JSX.Element {
+  return (
+    <SidebarAutoDeleteProvider>
+      <AppAdvisorNavContent {...props} />
+    </SidebarAutoDeleteProvider>
+  );
+});
+
+function AppAdvisorNavContent({ collapsed }: AppAdvisorNavProps): JSX.Element {
   const workEntries = useStandaloneChatStore((s) => s.workEntries);
   // Advisor chats key as `(app-advisor, <workEntryId>)`, so a waiting
   // question's worktreeId is its entry. Joined to keep the selection stable.
@@ -895,6 +918,7 @@ export const AppAdvisorNav = memo(function AppAdvisorNav({
           }}
         />
       )}
+      <SidebarAutoDeleteNotice />
     </nav>
   );
-});
+}

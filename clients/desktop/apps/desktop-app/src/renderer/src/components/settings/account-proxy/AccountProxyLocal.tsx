@@ -431,12 +431,15 @@ function PendingSignInRow({
               data-testid="account-proxy-sign-in-retry"
               onClick={(): void => {
                 onError(null);
-                signIn({ action: 'start', provider: pending.provider }).catch(
-                  (caught: unknown) =>
-                    onError(
-                      extractIpcErrorMessage(caught) ||
-                        'Sign-in did not start. Try again.',
-                    ),
+                signIn({
+                  action: 'start',
+                  provider: pending.provider,
+                  authIndex: pending.authIndex,
+                }).catch((caught: unknown) =>
+                  onError(
+                    extractIpcErrorMessage(caught) ||
+                      'Sign-in did not start. Try again.',
+                  ),
                 );
               }}
             >

@@ -16,7 +16,7 @@ import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-loo
 import { buildCmdCommandLine } from '@canopy/execution-engine/node/lib/windows-process';
 import type { ScriptRunResponse } from '@canopy/desktop-shared/types';
 import { MAX_SCRIPT_TIMEOUT_SECONDS } from '@canopy/desktop-shared/scripts';
-import { getResolvedCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
+import { getResolvedCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { CANOPY_IN_PROCESS_WORKER_TARGET_ID } from '@canopy/protocol/canopy-core';
 import type { ScriptRunLogRef } from './script-log-store';
 import {

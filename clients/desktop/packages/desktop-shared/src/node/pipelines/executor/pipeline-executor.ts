@@ -1,8 +1,11 @@
-import { APP_SHUTDOWN, pauseInterruptedExecution } from './shutdown-recovery';
+import {
+  APP_SHUTDOWN,
+  pauseInterruptedExecution,
+} from '@canopy/execution-engine/node/pipelines/executor/shutdown-recovery';
 import {
   beginExecutionPause,
   endExecutionPause,
-} from './execution-pause-clock';
+} from '@canopy/execution-engine/node/pipelines/executor/execution-pause-clock';
 import { createHash, randomUUID } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
@@ -15,7 +18,7 @@ import {
   brandEnvCandidates,
   setBrandEnv,
 } from '@canopy/execution-engine/brand/env';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import {
   buildExpressionAssets,
   buildExpressionContext,
@@ -58,36 +61,37 @@ import {
   rematerializeJobDefinitions,
   refreshAllJobGroups,
   refreshJobGroup,
-} from './job-scheduler';
-import { applyPauseResponses, sortPauseCheckpoints } from './pause-checkpoints';
+} from '@canopy/execution-engine/node/pipelines/executor/job-scheduler';
+import {
+  applyPauseResponses,
+  sortPauseCheckpoints,
+} from '@canopy/execution-engine/node/pipelines/executor/pause-checkpoints';
 import { isStepTerminal } from './retry-utils';
-import { normalizePipeline } from './normalize-pipeline';
-import { getDefaultShellTypeForCurrentProcess } from '../default-shell';
-import { MAX_ITERATIONS_LIMIT } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/node/pipelines/executor/normalize-pipeline';
+import { getDefaultShellTypeForCurrentProcess } from '@canopy/execution-engine/node/pipelines/default-shell';
+import { MAX_ITERATIONS_LIMIT } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
   expandStaticMatrix,
   MAX_MATRIX_VARIANTS,
   resolveMatrixDefinition,
-} from '@canopy/desktop-shared/pipelines/matrix';
-import { stripBaseBranchEnv } from '@canopy/desktop-shared/pipelines/base-branch-env';
+} from '@canopy/execution-engine/pipelines/matrix';
+import { stripBaseBranchEnv } from '@canopy/execution-engine/pipelines/base-branch-env';
 import {
   executionContextSatisfies,
   normalizePipelineScopes,
-} from '@canopy/desktop-shared/pipelines/scope';
-import { normalizePipelinePluginCollectionPreferences } from '../plugin-collection-store';
-import { loadPipelinePluginCollectionPreferences } from '../plugin-collection-store';
+} from '@canopy/execution-engine/pipelines/scope';
 import {
   filterModelAliasPreferencesToPipeline,
   normalizeExecutionModelAliasPreferences,
   resolveExecutionModelAliasPreferences,
 } from './model-alias-preferences';
-import { resolvePipelinePluginCollections } from '../plugin-collection-resolver';
+import { resolveExecutionPluginCollections } from './plugin-collection-resolution';
 import {
   buildPipelinePackageOverlay,
   copyPipelinePackageExecutionSnapshot,
   loadPipelinePackageExecutionOverlay,
   snapshotPipelinePackageForExecution,
-} from '../package-runtime';
+} from '@canopy/execution-engine/node/pipelines/package-runtime';
 import type {
   CanopyEventData,
   CanopyEventInput,
@@ -112,10 +116,8 @@ import type {
   PipelinePauseResponse,
   PipelineAssetExecutionContext,
   PipelinePackageCapabilityOverlay,
-  PipelinePluginCollectionPreference,
   RetryMatrixJobRequest,
   ResolvedPipelineExecutionTarget,
-  ResolvedPipelinePluginCollectionSnapshot,
 } from '@canopy/execution-engine/types/pipeline';
 
 export class MatrixExecutorInactiveError extends Error {
@@ -131,7 +133,10 @@ import {
   validateResolvedExecutionTarget,
 } from './pipeline-target-resolver';
 import { validatePipelineScopes } from './pipeline-scope-validation';
-import { claimPipelineOwner, pipelineOwnerFields } from './owner-fence';
+import {
+  claimPipelineOwner,
+  pipelineOwnerFields,
+} from '@canopy/execution-engine/node/pipelines/executor/owner-fence';
 import {
   consumedStatusReasonIds,
   notePipelineLedgerResuming,
@@ -398,7 +403,7 @@ async function loadSharedPipelineSnapshotFromCache(
   return parsePipelineText(rawPipeline);
 }
 
-export { isKnownOrphanedExecution } from './owner-fence';
+export { isKnownOrphanedExecution } from '@canopy/execution-engine/node/pipelines/executor/owner-fence';
 
 function isJobTerminal(job: JobResult): boolean {
   return ['success', 'failure', 'cancelled', 'skipped'].includes(job.status);
@@ -1171,53 +1176,6 @@ export function createPipelineExecutionId(): string {
   return randomUUID();
 }
 
-async function resolveExecutionPluginCollections(
-  normalizedPipeline: NormalizedPipeline,
-  options: ExecutionOptions,
-): Promise<
-  | {
-      preferences: Record<string, PipelinePluginCollectionPreference>;
-      snapshots: Record<string, ResolvedPipelinePluginCollectionSnapshot>;
-    }
-  | undefined
-> {
-  if (!normalizedPipeline.plugin_collections) {
-    return undefined;
-  }
-
-  const storedPreferences = options.pipelinePreferenceLocator
-    ? loadPipelinePluginCollectionPreferences(options.pipelinePreferenceLocator)
-    : {};
-  const draftPreferences =
-    options.pluginCollectionPreferences !== undefined
-      ? normalizePipelinePluginCollectionPreferences(
-          options.pluginCollectionPreferences,
-        )
-      : {};
-  const preferences = {
-    ...storedPreferences,
-    ...draftPreferences,
-  };
-  const resolveCollections =
-    options.runtime.resolvePipelinePluginCollections ??
-    resolvePipelinePluginCollections;
-  const resolution = await resolveCollections(
-    normalizedPipeline.plugin_collections,
-    preferences,
-  );
-  const blockingErrors = Object.values(resolution.snapshots).flatMap(
-    (snapshot) => snapshot.unresolvedRequiredDefaults,
-  );
-  if (blockingErrors.length > 0) {
-    throw new Error(blockingErrors.map((entry) => entry.error).join('\n'));
-  }
-
-  return {
-    preferences,
-    snapshots: resolution.snapshots,
-  };
-}
-
 function overlayModelAliasPreferences(
   normalizedPipeline: NormalizedPipeline,
   basePreferences: Record<string, PipelineModelAliasPreference> | undefined,
@@ -1423,6 +1381,8 @@ function executeState(
   let authenticationPause:
     | { attemptId: string; existingReasons: Set<string> }
     | undefined;
+  /** Reasons that predate an owner-loss pause; the rest it relabels (CAN-6102). */
+  let ownerLossPause: { existingReasons: Set<string> } | undefined;
   const abortExecution = (): void => {
     acceptingLiveResumes = false;
     abortController.abort();
@@ -1784,6 +1744,17 @@ function executeState(
           currentState.status_reasons.map((reason) => reason.id),
         ),
       };
+      if (!handle.pauseForShutdown) throw new Error('Pipeline cannot pause.');
+      return handle.pauseForShutdown();
+    },
+    pauseForOwnerLoss: async () => {
+      // A pause already under way keeps its own reason.
+      if (acceptingLiveResumes && !abortController.signal.aborted)
+        ownerLossPause ??= {
+          existingReasons: new Set(
+            currentState.status_reasons.map((reason) => reason.id),
+          ),
+        };
       if (!handle.pauseForShutdown) throw new Error('Pipeline cannot pause.');
       return handle.pauseForShutdown();
     },
@@ -2369,6 +2340,17 @@ function executeState(
 
       if (shutdownJobs) {
         pauseInterruptedExecution(currentState, shutdownJobs);
+        if (ownerLossPause && !authenticationPause) {
+          const { existingReasons } = ownerLossPause;
+          for (const reason of currentState.status_reasons)
+            if (
+              !existingReasons.has(reason.id) &&
+              reason.kind === 'app_shutdown'
+            ) {
+              reason.kind = 'owner_lost';
+              reason.code = 'owner_lost';
+            }
+        }
         if (authenticationPause) {
           const { attemptId, existingReasons } = authenticationPause;
           const added = currentState.status_reasons.filter(

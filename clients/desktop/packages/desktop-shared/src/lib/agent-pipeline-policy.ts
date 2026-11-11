@@ -1,6 +1,6 @@
 import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
-import { parsePipelineText } from '../pipelines/parse-pipeline';
-import { SEND_AGENT_MESSAGE_AUTHORITY_INPUTS } from '../pipelines/host-send-agent-message';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
+import { SEND_AGENT_MESSAGE_AUTHORITY_INPUTS } from '@canopy/execution-engine/pipelines/host-send-agent-message';
 
 export const AGENT_PIPELINE_RUN_STEP_POLICY_ERROR =
   'Agent-authored pipeline definitions cannot include shell run steps. Use an existing trusted action through uses, or configure shell pipelines manually in the pipeline editor.';

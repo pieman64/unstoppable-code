@@ -9,11 +9,15 @@ import { BRAND } from '@canopy/brand/current';
 
 type Rename = readonly [before: string, now: string];
 
-/** The Agent Ledger tools' display names before and after they took the Feed's. */
+/**
+ * Display names before and after a rename: the Agent Ledger tools took the
+ * Feed's names, and chat auto-archive took its chat-scoped name.
+ */
 const DISPLAY_NAME_RENAMES: readonly Rename[] = [
   ['AddLedgerEntry', 'AddFeedEntry'],
   ['SearchLedgerEntries', 'SearchFeedEntries'],
   ['UpdateLedgerEntry', 'UpdateFeedEntry'],
+  ['SetAutoArchive', 'SetChatAutoArchive'],
 ];
 
 /** The same renames in the snake case Codex tool names end with. */
@@ -21,6 +25,7 @@ const CODEX_NAME_RENAMES: readonly Rename[] = [
   ['add_ledger_entry', 'add_feed_entry'],
   ['search_ledger_entries', 'search_feed_entries'],
   ['update_ledger_entry', 'update_feed_entry'],
+  ['set_auto_archive', 'set_chat_auto_archive'],
 ];
 
 const RENAMED_ENDINGS: readonly string[] = [

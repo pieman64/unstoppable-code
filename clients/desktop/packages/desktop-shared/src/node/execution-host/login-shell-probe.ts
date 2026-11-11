@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import type { LoginShellProbe } from '../../pipelines/config-paths';
+import type { LoginShellProbe } from '@canopy/execution-engine/pipelines/config-paths';
 import type { ExecutionHostPort } from './port';
 
 /**

@@ -6,7 +6,7 @@ import {
   leasePipelinePackage,
 } from '@canopy/desktop-shared/node';
 import { AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE } from '@canopy/desktop-shared/lib/automation-install';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type {
   AutomationCapabilityPackageRequest,
   AutomationExistingPipelineInstall,

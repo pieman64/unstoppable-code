@@ -77,9 +77,9 @@ export function CanopyProxyErrorSummary({
   return (
     <CanopyProxyErrorPresentation
       state="unresolved"
-      role="status"
       dataTestId={dataTestId}
       diagnostics="supporting"
+      announcement="replay"
       correlationId={error.correlationId}
     >
       {summaryTitle(error.code)}

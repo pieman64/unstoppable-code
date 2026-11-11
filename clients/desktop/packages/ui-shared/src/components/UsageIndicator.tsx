@@ -34,7 +34,6 @@ import {
 export {
   UsageActionRow,
   UsageExpandableRow,
-  UsageDisclosureChevron,
   UsageSectionHeader,
   UsageTextAction,
   USAGE_DISCLOSURE_ROW_CLASS,

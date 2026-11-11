@@ -44,6 +44,7 @@ export * from './installed-items';
 export * from './file-save-conflict';
 
 export * from './archive-retention';
+export * from './work-entry-auto-delete';
 export * from './resource-owner';
 export * from './marketplace';
 

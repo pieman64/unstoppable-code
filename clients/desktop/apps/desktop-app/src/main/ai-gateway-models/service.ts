@@ -3,7 +3,7 @@ import {
   readAiGatewayModelCatalogCache,
   refreshAiGatewayModelCatalog,
 } from '@canopy/desktop-shared/node/ai-gateway-model-catalog';
-import { getAiGatewayModelCatalogCacheFilePath } from '@canopy/desktop-shared/canopy-paths';
+import { getAiGatewayModelCatalogCacheFilePath } from '@canopy/execution-engine/canopy-paths';
 import type { AiGatewayModelCatalogResponse } from '@canopy/protocol/ai-gateway-models';
 import type { AiGatewayCatalogStatus } from '@canopy/desktop-shared/types';
 

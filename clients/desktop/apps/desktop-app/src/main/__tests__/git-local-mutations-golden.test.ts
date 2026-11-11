@@ -40,7 +40,7 @@ import {
   getEnhancedEnv,
   registerUserEnvironmentInjector,
   registerSecretsEnvInjector,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
 import { registerActivityGoldenHandlers } from './helpers/activity-golden-registration';
 

@@ -23,7 +23,7 @@ import {
   getLinuxProbeEnv,
   getLoginShellPath,
   prewarmLoginShellPath,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import type {
   GitExecutableInstallProgress,
   GitExecutableSource,

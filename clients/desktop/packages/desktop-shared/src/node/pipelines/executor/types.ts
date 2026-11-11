@@ -55,15 +55,16 @@ import type {
 import type { PipelineShareInstallPin } from '@canopy/protocol/pipelines';
 import type {
   MoveToGroupInputs,
+  PipelineHostActionId,
   PipelineHostFailureReason,
-} from '@canopy/desktop-shared/pipelines/host-actions';
-import type { CreateWorktreeInputs } from '@canopy/desktop-shared/pipelines/host-create-worktree';
+} from '@canopy/execution-engine/pipelines/host-actions';
+import type { CreateWorktreeInputs } from '@canopy/execution-engine/pipelines/host-create-worktree';
 import type {
   CreateBotEntryInputs,
   CreateProjectEntryInputs,
-} from '@canopy/desktop-shared/pipelines/host-create-entry';
-import type { ResolvedSendAgentMessageInputs } from '@canopy/desktop-shared/pipelines/host-send-agent-message';
-import type { WaitForAgentReplyInputs } from '@canopy/desktop-shared/pipelines/host-wait-for-agent-reply';
+} from '@canopy/execution-engine/pipelines/host-create-entry';
+import type { ResolvedSendAgentMessageInputs } from '@canopy/execution-engine/pipelines/host-send-agent-message';
+import type { WaitForAgentReplyInputs } from '@canopy/execution-engine/pipelines/host-wait-for-agent-reply';
 import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import type { AgentActionFailureMetadata } from '@canopy/execution-engine/agent-failures';
 import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
@@ -413,9 +414,11 @@ export interface ExecutionRuntime {
    */
   pipelineLedger?: PipelineLedgerPort;
   /**
-   * Host steps (`runs.using: host`). Only the desktop host supplies it;
-   * without it (the CLI, tests) a host step runs its declared Node
-   * `runs.fallback`, or fails with `needs_desktop` when it has none.
+   * Host steps (`runs.using: host`), supplied by the desktop app, the daemon
+   * pipeline host and the routed CLI. Without it (the legacy CLI, tests) a
+   * host step runs its declared Node `runs.fallback`, or fails with
+   * `needs_desktop` when it has none. A step whose action the port doesn't
+   * declare in `support` does the same, failing with `needs_host` instead.
    */
   pipelineHostActions?: PipelineHostActions;
   /**
@@ -626,8 +629,25 @@ export interface PipelineHostActionControls {
   ): void;
 }
 
+/**
+ * The host actions a port answers (CAN-6082). The executor raises only these;
+ * any other host step runs its Node `runs.fallback`, or fails with
+ * `needs_host` when it has none.
+ */
+export interface PipelineHostActionSupport {
+  /** The host as the `needs_host` message names it, such as "the desktop app". */
+  readonly hostName: string;
+  readonly actions: ReadonlySet<PipelineHostActionId>;
+}
+
 /** Worker-to-core request: the executor raises it, the host applies policy. */
 export interface PipelineHostActions {
+  /**
+   * What the port answers. Every executor-facing host port declares it;
+   * omitted (an in-process host behind such a port, or a test port), the
+   * port answers every host action.
+   */
+  readonly support?: PipelineHostActionSupport;
   /**
    * Resolves with a typed result; throws only for unexpected host errors,
    * which fail the step with the message and no `failure_reason`.
@@ -1150,6 +1170,8 @@ export interface ExecutionHandle {
   /** Stop active work and retain checkpoints for explicit resume after app restart. */
   pauseForShutdown?(): Promise<ExecutionState>;
   pauseForAuthentication?(attemptId: string): Promise<ExecutionState>;
+  /** As {@link pauseForShutdown}, recording `owner_lost`: a remote owner is gone (CAN-6102). */
+  pauseForOwnerLoss?(): Promise<ExecutionState>;
   getState(): ExecutionState;
   /** Add observers to an execution that was already active when a caller attached. */
   addObservers?(observers: {

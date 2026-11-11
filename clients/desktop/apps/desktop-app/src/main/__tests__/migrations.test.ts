@@ -7,7 +7,7 @@ import type * as LedgerModule from '../lib/migrations';
 const mockDataDir = jest.fn<string, []>();
 const mockWriteFailure = jest.fn<Error | undefined, [string]>();
 
-jest.mock('@canopy/desktop-shared/canopy-paths', () => ({
+jest.mock('@canopy/execution-engine/canopy-paths', () => ({
   getCanopyDataDir: (): string => mockDataDir(),
 }));
 jest.mock('../lib/paths', () => ({

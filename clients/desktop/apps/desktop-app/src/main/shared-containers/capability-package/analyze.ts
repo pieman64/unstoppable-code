@@ -27,7 +27,7 @@ import {
   type CapabilityPackageRequest,
   type PipelinePackageSourceDescriptor,
 } from '@canopy/desktop-shared/node';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
 import type {

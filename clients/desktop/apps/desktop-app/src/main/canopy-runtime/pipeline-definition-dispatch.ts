@@ -25,7 +25,7 @@ import {
   getStoredPipelineIndexEntry,
   listStoredPipelines,
 } from '@canopy/desktop-shared/pipelines/store';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
 import { withPipelineEnablementCommit } from '../pipelines/pipeline-enablement-commit';

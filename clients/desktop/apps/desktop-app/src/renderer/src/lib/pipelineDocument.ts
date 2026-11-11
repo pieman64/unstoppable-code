@@ -20,7 +20,7 @@
 import * as yaml from 'js-yaml';
 import type { PipelineRepairShareTarget } from '@canopy/protocol/capability-package-repair';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type {
   Pipeline,
   PipelineData,

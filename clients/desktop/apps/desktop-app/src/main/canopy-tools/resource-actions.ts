@@ -47,8 +47,8 @@ import {
   pipelineAutomationTargetSummary,
 } from '@canopy/desktop-shared/lib/automation-pipeline-target';
 import { validateAgentPipelineMutationPolicy } from '@canopy/desktop-shared/lib/agent-pipeline-policy';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
-import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import type {
   AppAdvisorActionError,

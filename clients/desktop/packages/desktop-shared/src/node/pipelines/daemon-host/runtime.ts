@@ -5,7 +5,7 @@ import {
   getProjectActionsDirCandidates,
   getProjectPipelinesDir,
   getProjectPipelinesDirCandidates,
-} from '../config-paths';
+} from '@canopy/execution-engine/node/pipelines/config-paths';
 import type {
   ExecutionResourceMonitor,
   ExecutionRuntime,
@@ -17,6 +17,8 @@ import type {
 import type { CodexRuntimeService } from '../../codex-runtime';
 import { runCodexPipelinePromptWith } from '../codex-pipeline-prompt';
 import type { DaemonPipelineOwnerPorts } from './owner-ports';
+import { launchPluginCollectionResolver } from './plugin-collections';
+import type { ResolvedPipelinePluginCollectionSnapshot } from '@canopy/execution-engine/types/pipeline';
 
 /** The worktree a launch runs in, as the daemon verified it (CAN-5086 D17). */
 export interface DaemonPipelineWorktree {
@@ -39,6 +41,10 @@ export interface DaemonPipelineRuntimeOptions {
   readonly owner?: DaemonPipelineOwnerPorts;
   /** The host's own Codex runtime, for an owner-bound launch's Codex steps. */
   readonly codexRuntime?: () => CodexRuntimeService;
+  /** The run's plugin collection snapshots, resolved by its core at launch (CAN-5832). */
+  readonly pluginCollections?: Readonly<
+    Record<string, ResolvedPipelinePluginCollectionSnapshot>
+  >;
   /** Hands a step's desktop notifications to Electron main (CAN-5868). */
   readonly onStepNotifications?: (
     stepId: string,
@@ -112,6 +118,11 @@ export function createDaemonPipelineRuntime(
     }),
     resolvePipelineTarget: (request) =>
       resolveVerifiedWorktree(options.worktree, request),
+    ...(options.pluginCollections && {
+      resolvePipelinePluginCollections: launchPluginCollectionResolver(
+        options.pluginCollections,
+      ),
+    }),
     // Every model is refused unless the launch's core answers for it (D7).
     isModelBlockedByOrgPolicy: () => Promise.resolve(true),
     isOrgModelPolicyActive: () => Promise.resolve(true),
@@ -130,9 +141,9 @@ function notificationForwarder(
 /**
  * The model ports of an owner-bound launch (CAN-5095 D2): Claude steps run
  * their action subprocess, Codex steps the shared runner on the host's own
- * runtime; Agent model aliases resolve through the owner (CAN-5832).
- * Terminal workers, Cursor, Copilot, OpenCode and plugin collections stay
- * absent, so such a step fails closed.
+ * runtime; Agent model aliases resolve through the owner and plugin
+ * collections from the launch (CAN-5832). Terminal workers, Cursor, Copilot
+ * and OpenCode stay absent, so such a step fails closed.
  */
 function ownerModelPorts(
   owner: DaemonPipelineOwnerPorts,

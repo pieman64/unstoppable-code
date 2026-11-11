@@ -38,14 +38,14 @@ import type {
   PipelinePluginDefault,
   Step,
 } from '@canopy/execution-engine/types/pipeline';
-import { getPipelinePluginDefaultKey } from '../pipelines/plugin-collections';
+import { getPipelinePluginDefaultKey } from '@canopy/execution-engine/pipelines/plugin-collections';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import type { ConfiguredPromptReference } from '@canopy/protocol/configured-prompt-references';
 import type {
   ChatAttachmentPromptContext,
   FileReference,
 } from '@canopy/agent-transcript/types';
-import { parseSendAgentMessageInputs } from '../pipelines/host-send-agent-message';
+import { parseSendAgentMessageInputs } from '@canopy/execution-engine/pipelines/host-send-agent-message';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 
 /** The generated pipeline's only job. */

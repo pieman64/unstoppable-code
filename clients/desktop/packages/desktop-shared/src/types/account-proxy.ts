@@ -30,7 +30,9 @@ export type AccountProxyAccountStatus =
   | 'error'
   | 'disabled'
   | 'refreshing'
-  | 'pending';
+  | 'pending'
+  /** The proxy can no longer renew this sign-in; it needs a new one. */
+  | 'sign-in-required';
 
 export interface AccountProxyLimit {
   readonly id: 'five-hour' | 'weekly';
@@ -154,6 +156,8 @@ export type AccountProxySignInProvider = 'claude' | 'codex';
 /** An account sign-in started from the settings, until it finishes. */
 export interface AccountProxySignIn {
   readonly provider: AccountProxySignInProvider;
+  /** The credential being renewed; retained if the sign-in is retried. */
+  readonly authIndex?: string;
   /** `waiting` until the browser sign-in finishes; `failed` keeps why. */
   readonly phase: 'waiting' | 'failed';
   readonly message: string | null;
@@ -163,6 +167,8 @@ export type AccountProxySignInRequest =
   | {
       readonly action: 'start';
       readonly provider: AccountProxySignInProvider;
+      /** Sign this existing account in again instead of adding one. */
+      readonly authIndex?: string;
     }
   | { readonly action: 'reopen' }
   | { readonly action: 'cancel' };

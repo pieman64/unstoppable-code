@@ -9,7 +9,7 @@ const LINUX_SAFE_STORAGE_HELPER_FILE = 'linux-safe-storage-helper.cjs';
  * dependencies load as hoisted `require()` calls ahead of any bundled module,
  * and one changes `process.env` when it loads (the Claude Agent SDK sets
  * NoDefaultCurrentDirectoryInExePath). `getEnhancedEnv()` in
- * packages/desktop-shared/src/pipelines/config-paths.ts reads this slot to
+ * packages/execution-engine/src/pipelines/config-paths.ts reads this slot to
  * give children the startup value instead.
  */
 const RECORD_STARTUP_ENVIRONMENT = [

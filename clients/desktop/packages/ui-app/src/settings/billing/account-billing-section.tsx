@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import {
   useCallback,
   useEffect,
@@ -41,9 +42,8 @@ import {
 import { BillingCardBodySkeleton } from './billing-card-body-skeleton';
 import { CreditsUsedThisPeriod } from './credits-used-this-period';
 import { InvoicesSection, INVOICES_PAGE_LIMIT } from './invoices-section';
-import { TrialBadge } from './trial-badge';
-import { PlanPill } from './plan-pill';
-import { SubscriptionPlanPill } from './subscription-plan-pill';
+import { trialBadgeLabel } from './trial-badge-label';
+import { subscriptionPlanBadge } from './subscription-plan-badge';
 import { AutoTopUpSummary } from './auto-top-up-summary';
 import {
   useBillingSettingsSlots,
@@ -549,6 +549,7 @@ function OrgCoverageCard({
   const otherManageable = manageable.filter((org) => org.id !== primary?.id);
   const listedOrgs = single ? [] : orgs.filter((org) => !org.canManageBilling);
   const personalPending = summary?.pendingCancellation ?? null;
+  const subscriptionBadge = subscriptionPlanBadge(chrome);
   // A lapsed end date must never be rendered as a future promise. The server
   // now cancels a lapsed row immediately, but a flagged TRIALING row past its
   // trial end (or an ACTIVE row awaiting the hourly sweep) can still land here.
@@ -575,10 +576,14 @@ function OrgCoverageCard({
                       <Heading level={2} variant="section">
                         Subscription plan
                       </Heading>
-                      <SubscriptionPlanPill
-                        chrome={chrome}
-                        dataTestId="billing-plan-pill"
-                      />
+                      {subscriptionBadge !== null && (
+                        <Badge
+                          tone={subscriptionBadge.tone}
+                          data-testid="billing-plan-pill"
+                        >
+                          {subscriptionBadge.label}
+                        </Badge>
+                      )}
                     </div>
                     <p
                       className={withPrivacyClass(
@@ -788,11 +793,14 @@ function PlanCard({
                   <Heading level={2} variant="section">
                     Subscription plan
                   </Heading>
-                  <PlanPill
-                    planDisplayName={plan ? plan.displayName : 'Free'}
-                    dataTestId="billing-plan-pill"
-                  />
-                  {trial?.active && <TrialBadge endsAt={trial.endsAt} />}
+                  <Badge data-testid="billing-plan-pill">
+                    {plan ? plan.displayName : 'Free'}
+                  </Badge>
+                  {trial?.active && (
+                    <Badge tone="warning">
+                      {trialBadgeLabel(trial.endsAt)}
+                    </Badge>
+                  )}
                   {seatCount !== null && seatCount > 0 && (
                     <span className="text-xs fg-secondary">
                       {`${seatCount} ${seatCount === 1 ? 'seat' : 'seats'}`}

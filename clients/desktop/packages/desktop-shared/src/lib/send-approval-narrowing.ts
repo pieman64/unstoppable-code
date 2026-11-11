@@ -2,7 +2,7 @@ import {
   APPROVAL_MODES,
   type ApprovalMode,
   type ApprovalRule,
-} from '../types/approvals';
+} from '@canopy/execution-engine/types/approvals';
 import { stableStringify } from './stable-hash';
 
 /*

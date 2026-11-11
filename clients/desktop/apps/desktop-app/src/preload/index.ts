@@ -3263,6 +3263,8 @@ const canopyApi: CanopyApi = {
   },
   loadCanopyCloudApiKey: () =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCanopyCloudApiKey),
+  recheckSecureStorage: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.secureStorageRecheck, request),
   saveCanopyCloudApiKey: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsSaveCanopyCloudApiKey, request),
   clearCanopyCloudApiKey: () =>
@@ -5002,6 +5004,29 @@ const canopyApi: CanopyApi = {
       return (): void => {
         ipcRenderer.removeListener(
           IPC_CHANNELS.sidebarItemGroupsChanged,
+          handler,
+        );
+      };
+    },
+  },
+  workEntryAutoDelete: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.workEntryAutoDeleteList),
+    disarm: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workEntryAutoDeleteDisarm, request),
+    resolveBranch: (request) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.workEntryAutoDeleteResolveBranch,
+        request,
+      ),
+    onChanged: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        snapshot: Parameters<typeof listener>[0],
+      ): void => listener(snapshot);
+      ipcRenderer.on(IPC_CHANNELS.workEntryAutoDeleteChanged, handler);
+      return (): void => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.workEntryAutoDeleteChanged,
           handler,
         );
       };

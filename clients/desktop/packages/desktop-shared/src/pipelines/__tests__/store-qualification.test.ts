@@ -35,7 +35,7 @@ jest.mock('node:fs', () => {
     },
   };
 });
-jest.mock('../config-paths', () => ({
+jest.mock('@canopy/execution-engine/pipelines/config-paths', () => ({
   getUserPipelinesDir: (): string => join(mockRoot, 'pipelines'),
   getUserPipelineIndexPath: (): string =>
     join(mockRoot, 'pipelines', 'index.json'),
@@ -75,7 +75,7 @@ import {
   writeStoredPipeline,
   writeStoredPipelineRemoteMetadata,
 } from '../store';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { createStoredPipelineDefinitionWriter } from '../../node/pipelines/definition-sources';
 
 const input = (name = 'Review'): PipelineSaveInput => ({

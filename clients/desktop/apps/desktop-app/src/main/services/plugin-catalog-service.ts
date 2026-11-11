@@ -1880,6 +1880,7 @@ async function buildPortalCollectionsList(
       mcpServerCount: entry.mcpServerCount,
       ...(sharing.shareable.has(entry.id) ? { shareable: true } : {}),
       ...(sharing.existing.has(entry.id) ? { hasExistingShare: true } : {}),
+      ...(entry.remote ? { shareRemoteId: entry.remote.remoteId } : {}),
       ...(entry.sharedSource ? { sharedSource: entry.sharedSource } : {}),
       ...(entry.hasSharedSource ? { hasSharedSource: true } : {}),
       ...(entry.provenanceUnknown ? { provenanceUnknown: true } : {}),

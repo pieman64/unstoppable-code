@@ -18,19 +18,20 @@ import {
   parseMoveToGroupInputs,
   PIPELINE_HOST_FAILURE_REASON_OUTPUT,
   PIPELINE_NEEDS_DESKTOP_MESSAGE,
+  pipelineNeedsHostMessage,
   type PipelineHostActionId,
   type PipelineHostFailureReason,
-} from '@canopy/desktop-shared/pipelines/host-actions';
+} from '@canopy/execution-engine/pipelines/host-actions';
 import {
   emptyCreateBotEntryOutputs,
   emptyCreateProjectEntryOutputs,
   parseCreateBotEntryInputs,
   parseCreateProjectEntryInputs,
-} from '@canopy/desktop-shared/pipelines/host-create-entry';
+} from '@canopy/execution-engine/pipelines/host-create-entry';
 import {
   emptyCreateWorktreeOutputs,
   parseCreateWorktreeInputs,
-} from '@canopy/desktop-shared/pipelines/host-create-worktree';
+} from '@canopy/execution-engine/pipelines/host-create-worktree';
 import {
   checkSendAgentMessageReferences,
   emptySendAgentMessageOutputs,
@@ -38,11 +39,11 @@ import {
   parseSendAgentMessageInputs,
   SEND_AGENT_MESSAGE_TEXT_FILE_MAX_BYTES,
   type ResolvedSendAgentMessageInputs,
-} from '@canopy/desktop-shared/pipelines/host-send-agent-message';
+} from '@canopy/execution-engine/pipelines/host-send-agent-message';
 import {
   emptyWaitForAgentReplyOutputs,
   parseWaitForAgentReplyInputs,
-} from '@canopy/desktop-shared/pipelines/host-wait-for-agent-reply';
+} from '@canopy/execution-engine/pipelines/host-wait-for-agent-reply';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type {
   ChatTabPluginSelections,
@@ -58,7 +59,7 @@ import {
   createSetupWithdrawal,
   SETUP_WITHDRAWN,
   stepTimedOutMessage,
-} from '../step-timeout';
+} from '@canopy/execution-engine/node/pipelines/step-timeout';
 import type { RunStepOptions, StepLogMetadata } from './step-runner';
 import type {
   ExecutionRuntime,
@@ -564,17 +565,74 @@ async function callHostWithDeadline(
   }
 }
 
+/**
+ * A host action is bundled-only, so its directory sits directly under the
+ * bundled actions root; its name there is the resolver's parsed ref.
+ */
+function hostActionIdOf(
+  action: ResolvedActionRuntime,
+  bundledActionsDir: string,
+): string {
+  return path.relative(bundledActionsDir, action.actionDir);
+}
+
+/**
+ * Whether the runtime's host port takes this host step (CAN-6082): a port
+ * takes every action it declares, every action when it declares none, and
+ * an action this app doesn't know, which it then refuses as unsupported.
+ */
+export function hostPortTakesAction(
+  action: ResolvedActionRuntime,
+  runtime: Pick<ExecutionRuntime, 'pipelineHostActions' | 'bundledActionsDir'>,
+): boolean {
+  const port = runtime.pipelineHostActions;
+  if (port === undefined) return false;
+  const { support } = port;
+  if (support === undefined) return true;
+  const actionId = hostActionIdOf(action, runtime.bundledActionsDir);
+  return !isPipelineHostActionId(actionId) || support.actions.has(actionId);
+}
+
+type HostPortTake =
+  | { ok: true; port: PipelineHostActions }
+  | {
+      ok: false;
+      failureReason: Extract<
+        PipelineHostFailureReason,
+        'needs_desktop' | 'needs_host'
+      >;
+      message: string;
+    };
+
+/** The port that answers a host step, or why none does. */
+function takeHostPort(
+  port: PipelineHostActions | undefined,
+  actionId: PipelineHostActionId,
+): HostPortTake {
+  if (port === undefined) {
+    return {
+      ok: false,
+      failureReason: 'needs_desktop',
+      message: PIPELINE_NEEDS_DESKTOP_MESSAGE,
+    };
+  }
+  const { support } = port;
+  if (support !== undefined && !support.actions.has(actionId)) {
+    return {
+      ok: false,
+      failureReason: 'needs_host',
+      message: pipelineNeedsHostMessage(actionId, support.hostName),
+    };
+  }
+  return { ok: true, port };
+}
+
 export async function runHostAction(
   action: ResolvedActionRuntime,
   options: HostActionStepOptions,
 ): Promise<StepResult> {
   const startedAt = new Date().toISOString();
-  // A host action is bundled-only, so its directory sits directly under the
-  // bundled actions root; its name there is the resolver's parsed ref.
-  const actionId = path.relative(
-    options.runtime.bundledActionsDir,
-    action.actionDir,
-  );
+  const actionId = hostActionIdOf(action, options.runtime.bundledActionsDir);
   const label = `[host:${actionId}]`;
 
   const finish = (partial: {
@@ -717,14 +775,11 @@ export async function runHostAction(
       : {}),
   };
 
-  const port = options.runtime.pipelineHostActions;
-  if (!port) {
-    return typedFailure(
-      'needs_desktop',
-      PIPELINE_NEEDS_DESKTOP_MESSAGE,
-      build.emptyOutputs,
-    );
+  const taken = takeHostPort(options.runtime.pipelineHostActions, actionId);
+  if (!taken.ok) {
+    return typedFailure(taken.failureReason, taken.message, build.emptyOutputs);
   }
+  const { port } = taken;
 
   const timeoutMs = hostStepTimeoutMs(options.step, build.request);
   const outcome = await callHostWithDeadline(

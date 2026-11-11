@@ -17,7 +17,7 @@ import {
 } from './resource-lanes';
 import { classifyResourceOwner } from '@canopy/execution-engine/lib/resource-context';
 import { parseSharedPipelineLocalId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { BrowserWindow } from 'electron';

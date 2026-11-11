@@ -24,7 +24,7 @@ import {
   resolveChatArchivesFilePath,
   resolveChatJournalFilePath,
 } from '../lib/resolve-worktree';
-import { resetResolvedCanopyDataDirForTests } from '@canopy/desktop-shared/canopy-paths';
+import { resetResolvedCanopyDataDirForTests } from '@canopy/execution-engine/canopy-paths';
 import { registerIpcHandler } from '../ipc/register';
 import { registerStandaloneChatHandlers } from '../ipc/standalone-chat';
 import {

@@ -8,7 +8,7 @@ import {
   type WorkerPipelineHostResult,
 } from '@canopy/protocol/canopy-core';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
-import type { ResolvedSendAgentMessageInputs } from '../../pipelines/host-send-agent-message';
+import type { ResolvedSendAgentMessageInputs } from '@canopy/execution-engine/pipelines/host-send-agent-message';
 import type { PipelineChatSendRecord } from '@canopy/execution-engine/types/pipeline';
 import type {
   PipelineHostActionCaller,

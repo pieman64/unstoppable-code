@@ -2063,6 +2063,7 @@ export function parseGetAccountResponsePayload(
           email: readString(accountValue, 'email') ?? null,
           planType:
             parsePlanType(readString(accountValue, 'planType')) ?? 'unknown',
+          workspaceName: readString(accountValue, 'workspaceName') ?? null,
         }
       : null;
 
@@ -2932,6 +2933,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     this.connection = codexRuntimeForWorkerRun(
       'attachInteractiveClient',
     ).attachInteractiveClient({
+      threadConfig: opts.threadConfig,
       profile: opts.spawnProfile ?? {
         ...(opts.extraEnv ? { environment: opts.extraEnv } : {}),
         ...(opts.configArgs ? { configArgs: opts.configArgs } : {}),

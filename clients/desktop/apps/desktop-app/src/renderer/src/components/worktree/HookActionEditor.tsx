@@ -33,7 +33,7 @@ import {
   isWindowsCommandShell,
   type CommandShellDefinition,
 } from '@canopy/desktop-shared/scripts';
-import { resolvePipelineModelAliasLenient } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { resolvePipelineModelAliasLenient } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { ConfigurationChatComposer } from '@/components/shared/ConfigurationChatComposer';
 import type { ConfigurationComposerContext } from '@/lib/configurationComposerTargets';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';

@@ -96,7 +96,7 @@ import { getAuthoritativeConfiguredModel } from '../../lib/model-config';
 import { isModelBlockedByStoredPolicy } from '../../lib/model-policy-state';
 import { resolveHelperInvocation } from '../../ollama/helper-invocation';
 import { resolveCodexRuntimeEnvironmentProfile } from '../../lib/user-environment-runtime';
-import { getLoginShellPath } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getLoginShellPath } from '@canopy/execution-engine/pipelines/config-paths';
 import { delegatedCodexCommandEnvironment } from './codex-command-environment';
 import {
   isProviderNativelyAuthenticatedForRouting,

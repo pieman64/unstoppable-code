@@ -19,7 +19,7 @@ import {
   planCursorThinking,
   type CursorConfigSet,
 } from '@canopy/execution-engine/lib/cursor-thinking';
-import { connectAcp, type AcpClient } from '../acp';
+import { AcpClientError, connectAcp, type AcpClient } from '../acp';
 import { isTransientAcpFailure } from './acp-failure';
 import {
   CursorEventProjection,
@@ -302,6 +302,8 @@ export interface CursorTurnResult {
   isError: boolean;
   cancelled: boolean;
   message: string;
+  /** Redacted ACP explanation for Copy details, separate from the headline. */
+  providerErrorDetails?: string;
   stopReason?: string;
   contextLost: boolean;
   integrityFailure?: string;
@@ -1184,6 +1186,12 @@ export async function runCursorTurn(
     // rather than a user's stop.
     const cancelled = abort.signal.aborted && childFailure === undefined;
     return result({
+      ...(error instanceof AcpClientError &&
+      !cancelled &&
+      childFailure === undefined &&
+      error.providerDetails
+        ? { providerErrorDetails: error.providerDetails }
+        : {}),
       sessionId,
       isError: !cancelled,
       cancelled,

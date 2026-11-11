@@ -1,5 +1,6 @@
 import type { JSX, MouseEvent } from 'react';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
+import { Dot } from '@canopy/ui-shared/components/Badge';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 
 /**
@@ -72,14 +73,11 @@ export function SidebarRemoteControlSubtitle({
 }: SidebarRemoteControlSubtitleProps): JSX.Element {
   const disconnected = status === 'disconnected';
   const label = sidebarRemoteControlSubtitleLabel(status);
-  const colors = disconnected
-    ? OPERATIONAL_STATUS_COLORS.failed
-    : OPERATIONAL_STATUS_COLORS.active;
   return (
     <span
       data-testid="sidebar-account-remote-control-subtitle"
       data-status={status}
-      className={`${SUBTITLE_CLASS_NAME} ${disconnected ? colors.foreground : 'fg-tertiary'}`}
+      className={`${SUBTITLE_CLASS_NAME} ${disconnected ? OPERATIONAL_STATUS_COLORS.failed.foreground : 'fg-tertiary'}`}
     >
       <span
         aria-hidden="true"
@@ -89,12 +87,11 @@ export function SidebarRemoteControlSubtitle({
         {status === 'reconnecting' && (
           <span
             data-testid="sidebar-account-remote-control-ping"
-            className={`absolute inline-flex h-full w-full animate-ping rounded-full motion-reduce:animate-none ${OPERATIONAL_STATUS_COLORS.active.backgroundPing}`}
+            className={`absolute inline-flex h-full w-full animate-ping rounded-full motion-reduce:animate-none ${OPERATIONAL_STATUS_COLORS.success.backgroundPing}`}
           />
         )}
-        <span
-          className={`relative inline-flex h-1.5 w-1.5 rounded-full ${colors.background}`}
-        />
+        {/* A remote session is a live connection. */}
+        <Dot tone={disconnected ? 'danger' : 'success'} className="relative" />
       </span>
       <span
         className={SUBTITLE_TEXT_CLASS_NAME}

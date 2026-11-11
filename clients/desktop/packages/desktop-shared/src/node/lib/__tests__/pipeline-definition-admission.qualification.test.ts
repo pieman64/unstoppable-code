@@ -11,7 +11,7 @@ import { writeFileAtomicallySync } from '../atomic-file';
 import {
   admittedStorageRowForPath,
   isAdmittedStorageCandidate,
-} from '../admitted-storage-paths';
+} from '@canopy/execution-engine/node/lib/admitted-storage-paths';
 
 let root = '';
 beforeEach(() => {

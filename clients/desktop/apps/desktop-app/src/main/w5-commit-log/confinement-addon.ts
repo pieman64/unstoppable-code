@@ -1,7 +1,7 @@
 import { win32 } from 'node:path';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import type { PlatformOperatingSystem } from '@canopy/core-runtime';
-import { getCanopyRuntimeMode } from '@canopy/desktop-shared/canopy-paths';
+import { getCanopyRuntimeMode } from '@canopy/execution-engine/canopy-paths';
 import type { CanopyRuntimeMode } from '@canopy/protocol/brand';
 
 /** The build's `.cache/native-owned-child`, fixed when main is bundled. */

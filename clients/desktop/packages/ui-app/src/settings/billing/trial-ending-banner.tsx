@@ -8,8 +8,8 @@ import { SettingsLink } from '../host/settings-host';
 
 /**
  * Whole days remaining until an ISO instant, clamped at zero. Mirrors the
- * `daysUntil` ceil logic in {@link import('./trial-badge').TrialBadge} so the
- * banner's "< 7 days" cutoff stays consistent with the account/org trial chips.
+ * ceil logic in {@link import('./trial-badge-label').trialDaysLeft} so the
+ * banner's "< 7 days" cutoff stays consistent with the account/org trial badges.
  */
 function daysUntil(iso: string): number {
   const ms = Date.parse(iso);

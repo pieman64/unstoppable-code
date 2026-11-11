@@ -5,8 +5,8 @@ import {
   readPluginCatalog,
   readPluginCacheIndex,
 } from '@canopy/execution-engine/node/plugins/catalog-read-health';
-import { getCanopyDataDir } from '../../canopy-paths';
-import { getBundledSkillDir } from '../../pipelines/config-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
+import { getBundledSkillDir } from '@canopy/execution-engine/pipelines/config-paths';
 import type {
   ChatTabPluginSelections,
   CodexSelectedCapabilityRoot,

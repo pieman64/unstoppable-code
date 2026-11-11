@@ -2,12 +2,14 @@ import {
   mkdtemp,
   mkdir,
   writeFile,
+  readFile,
   rm,
   symlink,
   readdir,
   lstat,
   rename,
 } from 'node:fs/promises';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as paths from 'node:path';
 import type * as filesystem from 'node:fs/promises';
@@ -20,10 +22,13 @@ import {
 import {
   listFilesystemScopeRoots,
   listFilesystemScopeDirectory,
+  readFilesystemScopeFile,
+  searchFilesystemScope,
   requireFilesystemCatalogRevision,
   withVerifiedFilesystemCatalog,
 } from '../scope-queries';
 import { readNativeRootIdentity } from '../catalog-revision';
+import { createFilesystemSearchEngine } from '../file-search';
 
 let dataRoot: string;
 let dependencies: FilesystemScopeDependencies;
@@ -277,6 +282,136 @@ const directoryParams = { scope, fileRootId: 'project', relativePath: '' };
 const conflict = {
   payload: { code: 'worker.filesystem.directory.revisionConflict' },
 };
+const caseProbe = mkdtempSync(paths.join(tmpdir(), 'scope-reader-case-'));
+let caseSensitive: boolean;
+try {
+  writeFileSync(paths.join(caseProbe, 'A.ts'), 'upper');
+  caseSensitive = !existsSync(paths.join(caseProbe, 'a.ts'));
+} finally {
+  rmSync(caseProbe, { recursive: true, force: true });
+}
+
+(caseSensitive ? it : it.skip)(
+  'retains case neighbors through revisioned tree, paginated search and reads',
+  async () => {
+    const home = paths.join(dataRoot, 'workspaces/project/worktrees/task');
+    await writeFile(paths.join(home, 'A.ts'), 'upper');
+    await writeFile(paths.join(home, 'a.ts'), 'lower');
+    const roots = await listFilesystemScopeRoots({ scope }, dependencies);
+    const catalogRevision = requireFilesystemCatalogRevision(roots, 'roots');
+    const listing = await listFilesystemScopeDirectory(
+      { ...directoryParams, catalogRevision },
+      dependencies,
+      options,
+    );
+    expect(listing.entries.map((entry) => entry.relativePath).sort()).toEqual([
+      'A.ts',
+      'a.ts',
+    ]);
+    const engine = createFilesystemSearchEngine();
+    let cursor: string | undefined;
+    const found: string[] = [];
+    do {
+      const page = await searchFilesystemScope(
+        {
+          scope,
+          fileRootId: 'project',
+          mode: 'name',
+          query: 'a.ts',
+          limit: 1,
+          catalogRevision,
+          ...(cursor ? { cursor } : {}),
+        },
+        dependencies,
+        {
+          engine,
+          inputs: () =>
+            Promise.resolve({
+              matcher: options.matchingRules,
+              policy: { caseSensitive },
+            }),
+        },
+      );
+      found.push(...page.matches.map((match) => match.path));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(found.sort()).toEqual(['A.ts', 'a.ts']);
+    for (const [name, content] of [
+      ['A.ts', 'upper'],
+      ['a.ts', 'lower'],
+    ] as const) {
+      expect(
+        await readFilesystemScopeFile(
+          {
+            scope,
+            fileRootId: 'project',
+            relativePath: name,
+            maxBytes: 4096,
+            catalogRevision,
+          },
+          dependencies,
+        ),
+      ).toMatchObject({ relativePath: name, name, content });
+    }
+  },
+);
+
+(process.platform === 'win32' ? it.skip : it)(
+  'worker.filesystem.directory.list and worker.filesystem.file.read round-trip literal POSIX filenames with catalog revisions',
+  async () => {
+    const home = paths.join(dataRoot, 'workspaces/project/worktrees/task');
+    const names = [
+      '日本語 🌲.ts',
+      "space and apostrophe's.ts",
+      'literal\\name.ts',
+      'report:12.ts',
+    ];
+    await mkdir(paths.join(home, 'literal'));
+    await writeFile(paths.join(home, 'literal/name.ts'), 'decoy');
+    await mkdir(paths.join(home, 'literal\\directory'));
+    await writeFile(paths.join(home, 'literal\\directory/child.ts'), 'nested');
+    for (const name of names) await writeFile(paths.join(home, name), name);
+    const roots = await listFilesystemScopeRoots({ scope }, dependencies);
+    const catalogRevision = requireFilesystemCatalogRevision(roots, 'roots');
+    const listing = await listFilesystemScopeDirectory(
+      { ...directoryParams, catalogRevision },
+      dependencies,
+      options,
+    );
+    for (const name of names) {
+      expect(listing.entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name, relativePath: name }),
+        ]),
+      );
+      const result = await readFilesystemScopeFile(
+        {
+          scope,
+          fileRootId: 'project',
+          relativePath: name,
+          maxBytes: 4096,
+          catalogRevision,
+        },
+        dependencies,
+      );
+      expect(result).toMatchObject({ relativePath: name, name, content: name });
+      expect(await readFile(paths.join(home, name), 'utf8')).toBe(name);
+    }
+    const nested = await listFilesystemScopeDirectory(
+      {
+        ...directoryParams,
+        relativePath: 'literal\\directory',
+        catalogRevision,
+      },
+      dependencies,
+      options,
+    );
+    expect(nested.entries).toMatchObject([
+      { name: 'child.ts', relativePath: 'literal\\directory/child.ts' },
+    ]);
+  },
+);
+
 it('returns safe revisioned results and lists the selected directory exactly once', async () => {
   const home = paths.join(dataRoot, 'workspaces/project/worktrees/task');
   await writeFile(paths.join(home, 'file.txt'), 'data');

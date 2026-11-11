@@ -2,7 +2,7 @@ import { listCuratedMcpServers } from './curated-catalog';
 import {
   getBundledClaudeBinaryPath,
   getEnhancedEnv,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { normalizeCapabilityName } from '@canopy/desktop-shared/lib/normalize-capability-name';
 import type {
   ProviderAlternateRoute,

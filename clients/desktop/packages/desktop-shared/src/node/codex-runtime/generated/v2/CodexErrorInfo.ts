@@ -16,6 +16,8 @@ export type CodexErrorInfo =
   | 'rateLimitExceeded'
   | 'flexUnavailable'
   | 'serverOverloaded'
+  | 'modelNotFound'
+  | 'policyCapacityUnavailable'
   | 'cyberPolicy'
   | 'misalignmentPolicyViolation'
   | 'tooManyDenials'

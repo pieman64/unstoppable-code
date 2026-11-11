@@ -47,6 +47,13 @@ import { setChatStateCommandPort } from '../../ipc/chat-state';
 import { resetChatStateServiceForTests } from '../chat-state-service';
 import type { ChatTurnStateCommit } from '../chat-turn-state-handoff';
 
+// Derived search owns a packaged worker; this golden runs the canonical store
+// from source, as the archive-effects golden does.
+const mockSearch = { worktreeChatArchived: jest.fn() };
+jest.mock('../../chat-search/service', () => ({
+  getChatSearchService: (): typeof mockSearch => mockSearch,
+}));
+
 const SCOPE = { projectId: 'project-1', worktreeId: 'worktree-1' };
 const CHAT = { ...SCOPE, chatId: 'chat-1' };
 const CALLER: CanopyCallerDescriptor = {

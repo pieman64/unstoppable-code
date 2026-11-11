@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import {
   getLoginShellPath,
   prewarmLoginShellPath,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import {
   hasDesktopControlCharacters,
   isSafeDesktopCommand,

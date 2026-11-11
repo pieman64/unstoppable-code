@@ -94,6 +94,14 @@ export interface OpenCodeTurnHost {
   beforePrompt?(): Promise<void>;
   onPromptAccepted?(): void;
   onToolCompleted?(name: string, input: unknown): void;
+  /**
+   * Each transcript tool block the turn writes. `toolCallId` is the ACP call
+   * the block shows, set only once that call has reached `authorize`, so a
+   * host can tie its own decision for the call to the transcript's
+   * `toolUseId`. The ACP title and input are provider-reported and never
+   * establish identity.
+   */
+  onToolBlock?(block: { toolUseId: string; toolCallId?: string }): void;
 }
 
 /** A local admission refusal, never a provider transport or cleanup failure. */
@@ -108,6 +116,8 @@ export interface OpenCodeTurnResult {
   isError: boolean;
   cancelled: boolean;
   message: string;
+  /** Redacted ACP explanation for Copy details, separate from the headline. */
+  providerErrorDetails?: string;
   usage?: OpenCodeUsage;
 }
 
@@ -132,11 +142,23 @@ export async function runOpenCodeTurn(
   let contextLost = request.contextReset === true;
   let capabilitiesChanged = false;
   let previous: OpenCodeCapabilityBinding | undefined;
+  // The authorized ACP call the projection is writing a block for, if any.
+  let authorizedCallId: string | undefined;
+  // Gated calls that completed: a trailing update for the same invocation
+  // still shows that call. A new tool_call reusing the ID is gated again.
+  const completedCalls = new Set<string>();
   const projection = new CursorEventProjection(
     'OpenCode response exceeded the local chat limit.',
     {
       secretValues: request.secretValues,
       recognizeCursorErrors: false,
+      onToolInvocation: (invocation): void =>
+        host.onToolBlock?.({
+          toolUseId: invocation.toolUseId,
+          ...(authorizedCallId !== undefined
+            ? { toolCallId: authorizedCallId }
+            : {}),
+        }),
       toolDisplay:
         host.displayTool ??
         ((tool): { name: string; input: unknown } =>
@@ -251,18 +273,33 @@ export async function runOpenCodeTurn(
           update.status === 'completed'
         ) {
           tools.delete(update.toolCallId);
+          completedCalls.add(update.toolCallId);
           host.onToolCompleted?.(tool.name, tool.input);
-        }
-        const event = projection.update(
-          tool &&
+        } else if (update.sessionUpdate === 'tool_call' && !tool)
+          completedCalls.delete(update.toolCallId);
+        authorizedCallId =
+          (tool &&
             (update.sessionUpdate === 'tool_call' ||
-              update.sessionUpdate === 'tool_call_update')
-            ? {
-                ...notification,
-                update: { ...update, title: tool.name, rawInput: tool.input },
-              }
-            : notification,
-        );
+              update.sessionUpdate === 'tool_call_update')) ||
+          (update.sessionUpdate === 'tool_call_update' &&
+            completedCalls.has(update.toolCallId))
+            ? update.toolCallId
+            : undefined;
+        let event: ReturnType<typeof projection.update>;
+        try {
+          event = projection.update(
+            tool &&
+              (update.sessionUpdate === 'tool_call' ||
+                update.sessionUpdate === 'tool_call_update')
+              ? {
+                  ...notification,
+                  update: { ...update, title: tool.name, rawInput: tool.input },
+                }
+              : notification,
+          );
+        } finally {
+          authorizedCallId = undefined;
+        }
         for (const flushed of projection.takeFlushed())
           await host.emit(flushed);
         if (event) await host.emit(event);
@@ -620,6 +657,11 @@ export async function runOpenCodeTurn(
   } catch (error) {
     for (const event of projection.finish()) await host.emit(event);
     return {
+      ...(error instanceof AcpClientError &&
+      !request.signal.aborted &&
+      error.providerDetails
+        ? { providerErrorDetails: error.providerDetails }
+        : {}),
       sessionId,
       diagnostics: accounting.snapshot(),
       responseText: projection.getResponseText(),

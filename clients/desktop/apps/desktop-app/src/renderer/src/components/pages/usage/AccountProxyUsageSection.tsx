@@ -16,6 +16,7 @@ import {
   accountProxyAccountState,
   accountProxyPoolNotice,
 } from '@/components/settings/account-proxy/accountProxyCopy';
+import { AccountProxySignInAgainButton } from '@/components/settings/account-proxy/AccountProxySignInAgainButton';
 import {
   useAccountProxyLiveRefresh,
   useAccountProxyStatus,
@@ -65,6 +66,7 @@ export function AccountProxyUsageSection({
                 <span className="shrink-0 text-xs fg-secondary">
                   {accountProxyAccountState(account)}
                 </span>
+                <AccountProxySignInAgainButton account={account} />
               </ProviderAccountUsage>
             </div>
           ))

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { getCanopyRuntimeMode } from '@canopy/desktop-shared/canopy-paths';
+import { getCanopyRuntimeMode } from '@canopy/execution-engine/canopy-paths';
 import { listMissingDesktopBundledBinaries } from '../pipelines/config-paths';
 import { logMainProcessWarn } from './main-process-logging';
 

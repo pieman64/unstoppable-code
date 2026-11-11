@@ -15,12 +15,16 @@ import type {
   ApprovalRule,
   AssistantMode,
   ChatModel,
+  ChatSessionSettingApplication,
+  ChatSessionTurnSettings,
   ThinkingLevel,
   ModelHarness,
   ChatTabPluginSelections,
   ClaudeForkToolResult,
   CodexSpeed,
 } from '@canopy/desktop-shared/types';
+
+export type AgentSessionTurnSettings = ChatSessionTurnSettings;
 import type { CodexContextWindowSetting } from '@canopy/execution-engine/lib/codex-context-window';
 import type { AppAdvisorToolRuntime } from '../app-advisor/runtime';
 import type { PipelineEditorToolRuntime } from '../pipeline-editor/runtime';
@@ -257,6 +261,21 @@ export interface AgentSession {
   setCodexProposalMode?(mode: 'optional' | 'required'): Promise<void>;
   setCodexAppServerIdleTimeoutMinutes?(minutes: number): Promise<void>;
   setRtkEnabled?(enabled: boolean): Promise<void>;
+  /**
+   * When `setModel` and `setThinkingLevel` take effect. `next_turn` means a
+   * setter only records the value for the next turn to apply; a running turn
+   * keeps what it started with (`getAppliedTurnSettings`). Absent when the
+   * session does not declare it.
+   */
+  readonly settingApplication?: ChatSessionSettingApplication;
+  /**
+   * The model and thinking level the running turn applied, after clamping
+   * the effort to the model's levels, or the last turn's while idle.
+   * Undefined before the first turn and while a turn is still preparing. A
+   * provider that cannot acknowledge them fails that turn rather than
+   * running with others.
+   */
+  getAppliedTurnSettings?(): AgentSessionTurnSettings | undefined;
   setThinkingLevel(level: ThinkingLevel): Promise<void>;
   setModel(model: ChatModel): Promise<void>;
 }

@@ -12,7 +12,7 @@ import type {
   Step,
 } from '@canopy/execution-engine/types/pipeline';
 import { parseLogFormatHint } from '@canopy/execution-engine/types/pipeline';
-import { normalizeActionScopes } from '@canopy/desktop-shared/pipelines/scope';
+import { normalizeActionScopes } from '@canopy/execution-engine/pipelines/scope';
 import * as configPathsModule from './config-paths';
 
 const ACTION_FILE_NAME = 'action.yml';

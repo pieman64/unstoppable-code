@@ -131,12 +131,12 @@ async function openLinkTarget(linkTarget: AgentAuditLinkTarget): Promise<void> {
   }
 }
 
-interface IdentifierChipProps {
+interface IdentifierLabelProps {
   label: string;
   value: string;
 }
 
-function IdentifierChip({ label, value }: IdentifierChipProps): JSX.Element {
+function IdentifierLabel({ label, value }: IdentifierLabelProps): JSX.Element {
   return (
     <span className="inline-flex items-baseline gap-1 text-2xs fg-secondary">
       <span className="font-mono opacity-70">{label}</span>
@@ -246,25 +246,25 @@ function WorkerCard({
 
           <div className="flex flex-wrap gap-1.5 px-4 pt-2">
             {worker.projectId && (
-              <IdentifierChip label="project" value={worker.projectId} />
+              <IdentifierLabel label="project" value={worker.projectId} />
             )}
             {worker.worktreeId && (
-              <IdentifierChip
+              <IdentifierLabel
                 label={WORKTREE_UNIT_LABEL.toLowerCase()}
                 value={worker.worktreeId}
               />
             )}
             {worker.chatId && (
-              <IdentifierChip label="Chat" value={worker.chatId} />
+              <IdentifierLabel label="Chat" value={worker.chatId} />
             )}
             {worker.pipelineExecutionId && (
-              <IdentifierChip
+              <IdentifierLabel
                 label="workflow"
                 value={worker.pipelineExecutionId}
               />
             )}
             {worker.stepId && (
-              <IdentifierChip label="step" value={worker.stepId} />
+              <IdentifierLabel label="step" value={worker.stepId} />
             )}
           </div>
         </div>

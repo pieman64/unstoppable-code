@@ -7,7 +7,7 @@ import type {
   ChatPluginSelection,
 } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
-import { serializePipelinePreferenceLocator } from '@canopy/desktop-shared/pipelines/plugin-collections';
+import { serializePipelinePreferenceLocator } from '@canopy/execution-engine/pipelines/plugin-collections';
 import {
   isShareablePluginRef,
   type ShareablePluginRef,
@@ -15,7 +15,7 @@ import {
 import {
   APPROVAL_MODES,
   type ApprovalMode,
-} from '@canopy/desktop-shared/types/approvals';
+} from '@canopy/execution-engine/types/approvals';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type {
   PipelineAgentAuthor,

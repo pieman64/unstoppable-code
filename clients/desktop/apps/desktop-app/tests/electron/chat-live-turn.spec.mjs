@@ -44,7 +44,7 @@ import {
 //
 // ENVIRONMENT HYGIENE (why we scrub `CANOPY_*_BINARY_PATH` below):
 //   The dev binary directory is resolved by `getBundledBinDir()`
-//   (packages/desktop-shared/src/pipelines/config-paths.ts). Its FIRST check is
+//   (packages/execution-engine/src/pipelines/config-paths.ts). Its FIRST check is
 //   `getPipelineBundledBinDirOverride()`, which derives the bundled bin dir from
 //   any `CANOPY_<TOOL>_BINARY_PATH` override env var (CLAUDE/CODEX/GH/OLLAMA/RTK/
 //   RG/DICTATE). A machine with the packaged app installed exports e.g.
@@ -287,6 +287,41 @@ test('a Claude chat uses the account proxy over its default proxy and records th
       { url: proxy.url, key: FAKE_PROXY_MANAGEMENT_KEY },
     );
     expect(connected.ok).toBe(true);
+    await test.step('account-proxy:status preserves renewal state across the IPC boundary', async () => {
+      const account = proxy.state.files[0];
+      account.requires_sign_in = true;
+      account.next_action = 'sign_in';
+      const status = await window.evaluate(() =>
+        window.api.accountProxy.status({ refresh: true }),
+      );
+      expect(
+        status.accounts.find((entry) => entry.authIndex === account.auth_index)
+          ?.status,
+      ).toBe('sign-in-required');
+      delete account.requires_sign_in;
+      delete account.next_action;
+      await window.evaluate(() =>
+        window.api.accountProxy.status({ refresh: true }),
+      );
+    });
+    await test.step('account-proxy:sign-in refuses an invalid credential identity before OAuth', async () => {
+      const result = await window.evaluate(async () => {
+        try {
+          await window.api.accountProxy.signIn({
+            action: 'start',
+            provider: 'claude',
+            authIndex: '../another-account',
+          });
+          return null;
+        } catch (error) {
+          return String(error);
+        }
+      });
+      expect(result).toContain('Invalid account proxy account');
+      expect(
+        proxy.requests.some((entry) => entry.path.includes('/oauth/')),
+      ).toBe(false);
+    });
     // This device added its own client key next to the existing one.
     const clientKeys = proxy.state.config.access['api-keys'];
     expect(clientKeys).toHaveLength(2);

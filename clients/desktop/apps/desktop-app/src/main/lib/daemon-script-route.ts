@@ -15,7 +15,7 @@ import {
   type RemoteScriptTransport,
   type ScriptExecutionWorker,
 } from '@canopy/core-runtime/node/script/execution';
-import { getResolvedCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
+import { getResolvedCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import {
   CanopyHostExecutionSchema,
   WORKER_SCRIPT_GRANTS,
@@ -35,6 +35,11 @@ import {
 import type { ElectronDaemonClient } from '../canopy-runtime/electron-daemon-host';
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
 import { getDaemonScopeResolver } from '../canopy-runtime/daemon-scope-resolver';
+import {
+  recordDaemonRoute,
+  recordDaemonRouteDecision,
+  type DaemonRouteNote,
+} from '../canopy-runtime/daemon-route-telemetry';
 import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
 import { DaemonScriptRuns } from './daemon-script-runs';
 import { logMainProcessWarn } from './main-process-logging';
@@ -79,15 +84,21 @@ function isDaemonScriptPlatformEligible(
   return platform !== null && DAEMON_SCRIPT_PLATFORMS[platform] === true;
 }
 
+/** Why a renderer run stays in process, or `null` when it may go to the daemon. */
+export function daemonScriptRouteExclusion(
+  input: DaemonScriptRouteInput,
+): 'platform' | 'caller' | 'latched' | null {
+  if (!isDaemonScriptPlatformEligible(input.platform)) return 'platform';
+  if (input.context?.localWindow !== true) return 'caller';
+  if (input.daemonLatched) return 'latched';
+  return null;
+}
+
 /** Whether a renderer run may go to the daemon, as code. */
 export function isDaemonScriptRouteEligible(
   input: DaemonScriptRouteInput,
 ): boolean {
-  return (
-    isDaemonScriptPlatformEligible(input.platform) &&
-    input.context?.localWindow === true &&
-    !input.daemonLatched
-  );
+  return daemonScriptRouteExclusion(input) === null;
 }
 
 function hostPlatform(): PlatformOperatingSystem | null {
@@ -102,11 +113,13 @@ function hostPlatform(): PlatformOperatingSystem | null {
 export function selectDaemonScripts(
   context: DaemonScriptRouteContext | undefined,
 ): boolean {
-  return isDaemonScriptRouteEligible({
+  const exclusion = daemonScriptRouteExclusion({
     platform: hostPlatform(),
     context,
     daemonLatched: getElectronDaemonHealth().isLatched(),
   });
+  if (exclusion !== null) recordDaemonRoute('scripts', exclusion);
+  return exclusion === null;
 }
 
 /** As `noteDaemonCodeGraphFallback`, for the `scripts` consumer. */
@@ -267,13 +280,24 @@ function withoutSecrets(
   return forwarded;
 }
 
-/** The dispatcher's daemon branch for one claimed run (D12). */
-export async function executeScriptInDaemon(args: {
-  readonly params: WorkerScriptExecuteParams;
-  readonly signal: AbortSignal;
-  /** The in-process worker: its observers get the relay, and it runs the fallback. */
-  readonly worker: ScriptExecutionWorker;
-}): Promise<{
+/** The dispatcher's daemon branch for one claimed run (D12), recorded once (CAN-5093). */
+export function executeScriptInDaemon(
+  args: Parameters<typeof executeScriptRoute>[0],
+): ReturnType<typeof executeScriptRoute> {
+  return recordDaemonRouteDecision('scripts', (note) =>
+    executeScriptRoute(args, note),
+  );
+}
+
+async function executeScriptRoute(
+  args: {
+    readonly params: WorkerScriptExecuteParams;
+    readonly signal: AbortSignal;
+    /** The in-process worker: its observers get the relay, and it runs the fallback. */
+    readonly worker: ScriptExecutionWorker;
+  },
+  note: DaemonRouteNote<'scripts'>,
+): Promise<{
   readonly result: WorkerScriptExecuteResult;
   readonly servedByDaemon: boolean;
 }> {
@@ -304,16 +328,24 @@ export async function executeScriptInDaemon(args: {
     record === undefined ||
     workspaceId === undefined ||
     worktreeId === undefined
-  )
+  ) {
+    note('scope');
     return inProcess();
+  }
   const execution = hostExecution(place.env);
-  if (execution === null) return inProcess();
+  if (execution === null) {
+    note('environment');
+    return inProcess();
+  }
   const scope = { workspaceId, worktreeId };
-  if (!(await samePlace(params, scope, place.cwd))) return inProcess();
+  if (!(await samePlace(params, scope, place.cwd))) {
+    note('place');
+    return inProcess();
+  }
   try {
     await client();
   } catch (error) {
-    noteDaemonScriptFallback(error);
+    note(noteDaemonScriptFallback(error) ? 'unreachable' : 'refused');
     return inProcess();
   }
 
@@ -343,6 +375,8 @@ export async function executeScriptInDaemon(args: {
       signal: AbortSignal.any([signal, entry.signal]),
       relay: {
         started: (): void => {
+          // The daemon runs it from here, however it later ends.
+          note('served');
           relay.processStarted();
           entry.markStarted();
         },
@@ -351,6 +385,7 @@ export async function executeScriptInDaemon(args: {
       createIdempotencyKey: randomUUID,
     });
     if (outcome.kind === 'not-started') {
+      note(outcome.reason === 'unreachable' ? 'unreachable' : 'refused');
       if (outcome.reason === 'unreachable')
         getElectronDaemonHealth().noteFallback('scripts', 'connection_lost');
       else
@@ -396,6 +431,7 @@ export async function executeScriptInDaemon(args: {
       failure: null,
     });
     entry.settle(result);
+    note('served');
     return { result, servedByDaemon: true };
   } catch (error) {
     throw error instanceof CanopyClientError

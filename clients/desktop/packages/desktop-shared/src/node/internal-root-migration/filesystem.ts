@@ -3,6 +3,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants, createReadStream, type Stats } from 'node:fs';
 import {
   lstat,
+  mkdir,
+  chmod,
+  chown,
+  utimes,
   open,
   readFile,
   readdir,
@@ -223,6 +227,7 @@ async function manifest(
   root: string,
   durable = false,
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+  omitted: (relative: string) => boolean = () => false,
 ): Promise<TreeManifest> {
   const rootDevice = (await lstat(root)).dev;
   const hash = createHash('sha256');
@@ -233,6 +238,7 @@ async function manifest(
   let files = 0;
   let bytes = 0;
   async function visit(relative: string): Promise<void> {
+    if (omitted(relative)) return;
     const path = join(root, relative);
     const stat = await lstat(path);
     if (stat.dev !== rootDevice)
@@ -473,8 +479,9 @@ export async function saveInternalRootJournal(
       'Frozen repair evidence exceeds the journal limit. Preserve both roots and the existing journal for offline diagnosis.',
     );
   await privateDirectory(journal.identity.coordination, host);
-  const { lifecycleJournals, ...plan } = journal.repairPlan ?? {};
-  if (lifecycleJournals !== undefined) {
+  const { lifecycleJournals, abandonedPaths, ...plan } =
+    journal.repairPlan ?? {};
+  if (lifecycleJournals !== undefined || abandonedPaths !== undefined) {
     const path = lifecycleEvidencePath(
       journal.identity,
       journal.transactionId,
@@ -484,7 +491,8 @@ export async function saveInternalRootJournal(
       version: 1,
       transactionId: journal.transactionId,
       planFingerprint: repairPlanFingerprint(plan),
-      lifecycleJournals,
+      lifecycleJournals: lifecycleJournals ?? [],
+      ...(abandonedPaths === undefined ? {} : { abandonedPaths }),
     };
     // Never replace evidence still referenced by the last durable journal.
     if (await statIfPresent(path)) {
@@ -584,6 +592,7 @@ export async function readInternalRootJournal(
           transactionId: z.literal(journal.transactionId),
           planFingerprint: z.literal(repairPlanFingerprint(journal.repairPlan)),
           lifecycleJournals: z.array(z.unknown()),
+          abandonedPaths: z.array(z.string()).optional(),
         })
         .strict()
         .parse(await readPrivateMigrationJson(evidencePath, host));
@@ -593,6 +602,9 @@ export async function readInternalRootJournal(
           repairPlan: {
             ...journal.repairPlan,
             lifecycleJournals: evidence.lifecycleJournals,
+            ...(evidence.abandonedPaths === undefined
+              ? {}
+              : { abandonedPaths: evidence.abandonedPaths }),
           },
         },
         identity,
@@ -612,6 +624,7 @@ export async function readInternalRootJournal(
 export async function cloneInternalRoot(
   source: string,
   destination: string,
+  root = source,
 ): Promise<void> {
   const from = await lstat(source);
   const parent = await lstat(dirname(destination));
@@ -651,7 +664,7 @@ export async function cloneInternalRoot(
       const path = match?.[1];
       if (
         !path ||
-        !path.startsWith(`${source}/runtime/`) ||
+        !path.startsWith(`${root}/runtime/`) ||
         !(await statIfPresent(path))?.isSocket()
       )
         socketsOnly = false;
@@ -1010,6 +1023,11 @@ export async function buildInternalRoot(
   host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<string> {
   const { identity } = journal;
+  const excluded = (journal.repairPlan?.abandonedPaths ?? []).filter((path) =>
+    isWithin(identity.source, path),
+  );
+  const omitted = (relative: string): boolean =>
+    excluded.some((path) => isWithin(path, join(identity.source, relative)));
   let constructionIdentity: string | null = null;
   const portableCopy =
     !cloneTree && ['linux', 'win32'].includes(hostOperatingSystem() ?? '');
@@ -1066,7 +1084,33 @@ export async function buildInternalRoot(
     if (!stagingIdentity) refuseLayout('Construction identity is unavailable.');
     await flush(identity.coordination);
     await saveInternalRootJournal({ ...journal, stagingIdentity }, host);
-    await copyInternalRootTree(identity.source, staging, host, true);
+    await copyInternalRootTree(identity.source, staging, host, true, omitted);
+  } else if (excluded.length) {
+    const clone =
+      cloneTree ??
+      ((from: string, to: string): Promise<void> =>
+        cloneInternalRoot(from, to, identity.source));
+    const visit = async (from: string, to: string): Promise<void> => {
+      if (excluded.some((path) => isWithin(path, from))) return;
+      if (!excluded.some((path) => isWithin(from, path))) {
+        await clone(from, to);
+        return;
+      }
+      const stat = await lstat(from);
+      if (!stat.isDirectory() || stat.isSymbolicLink())
+        refuseLayout(`Aliased omission parent: ${from}`);
+      await mkdir(to, { mode: 0o700 });
+      for (const name of await readdir(from))
+        await visit(join(from, name), join(to, name));
+      await chown(to, stat.uid, stat.gid);
+      await chmod(to, stat.mode & 0o7777);
+      await utimes(
+        to,
+        stat.atimeMs / 1000,
+        (Math.floor(stat.mtimeMs) + 0.5) / 1000,
+      );
+    };
+    await visit(identity.source, staging);
   } else await (cloneTree ?? cloneInternalRoot)(identity.source, staging);
   if (
     constructionIdentity &&
@@ -1079,7 +1123,9 @@ export async function buildInternalRoot(
   await privateDirectory(staging, host);
   if (
     (await manifest(staging, false, host)).fingerprint !==
-      journal.settledFingerprint ||
+      (excluded.length
+        ? (await manifest(identity.source, false, host, omitted)).fingerprint
+        : journal.settledFingerprint) ||
     (await inspectInternalRoot(identity, false, host)).fingerprint !==
       journal.settledFingerprint
   )

@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import {
   getStoredPipelineText,
   saveStoredPipeline,

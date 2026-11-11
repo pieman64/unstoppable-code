@@ -1,5 +1,5 @@
-import type { HTMLAttributes, JSX } from 'react';
-import { badgeClassName } from '@canopy/ui-shared/lib/badge';
+import type { JSX } from 'react';
+import { SidebarTrialBadge } from '@canopy/ui-shared/components/SidebarTrialBadge';
 
 /**
  * The account row's plan line, shared by the desktop sidebar and the web
@@ -13,43 +13,6 @@ export interface SidebarPlanSubtitleProps {
   readonly label: string | null;
   readonly trial?: boolean;
   readonly loading?: boolean;
-}
-
-const PLAN_PILL_CLASS_NAME = badgeClassName('warning');
-
-/**
- * The small warning badge this row uses, as a primitive.
- *
- * Extracted so a surface that needs the same chip around DIFFERENT copy — the
- * web account menu puts the trial countdown in one — reuses the treatment
- * instead of copying the class list and drifting from it.
- *
- * Accessibility is the CALLER's call, which is why `aria-hidden` is not baked
- * in: {@link SidebarTrialPill} hides itself because "Trial" merely restates
- * what the row's own accessible label already says, while a pill carrying the
- * days remaining is information found nowhere else and must stay readable.
- */
-export function SidebarPlanPill({
-  className = '',
-  ...props
-}: HTMLAttributes<HTMLSpanElement>): JSX.Element {
-  return (
-    <span
-      className={`${PLAN_PILL_CLASS_NAME}${className ? ` ${className}` : ''}`}
-      {...props}
-    />
-  );
-}
-
-export function SidebarTrialPill(): JSX.Element {
-  return (
-    <SidebarPlanPill
-      aria-hidden="true"
-      data-testid="sidebar-subscription-trial-pill"
-    >
-      Trial
-    </SidebarPlanPill>
-  );
 }
 
 /** The accessible plan text, shared with the row's own aria-label. */
@@ -94,7 +57,7 @@ export function SidebarPlanSubtitle({
           {label}
         </span>
       )}
-      {!loading && trial ? <SidebarTrialPill /> : null}
+      {!loading && trial ? <SidebarTrialBadge /> : null}
     </span>
   );
 }

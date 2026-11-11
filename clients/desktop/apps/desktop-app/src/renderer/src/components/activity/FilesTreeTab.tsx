@@ -178,9 +178,11 @@ function explorerNodeId(
 }
 
 function pathInsideRoot(filePath: string, rootPath: string): string | null {
-  const normalizedFilePath = filePath.replace(/\\/g, '/').replace(/\/+$/, '');
-  const normalizedRoot = rootPath.replace(/\\/g, '/').replace(/\/+$/, '');
-  const caseInsensitive = isCaseInsensitiveRootPath(normalizedRoot);
+  const caseInsensitive = isCaseInsensitiveRootPath(rootPath);
+  const normalize = (value: string): string =>
+    (caseInsensitive ? value.replace(/\\/g, '/') : value).replace(/\/+$/, '');
+  const normalizedFilePath = normalize(filePath);
+  const normalizedRoot = normalize(rootPath);
   const comparableFilePath = caseInsensitive
     ? normalizedFilePath.toLowerCase()
     : normalizedFilePath;

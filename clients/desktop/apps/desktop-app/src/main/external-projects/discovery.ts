@@ -7,7 +7,7 @@ import { readGitHeadState } from '@canopy/core-runtime/node/git';
 import {
   getBrandOwnedDataDirRoots,
   getCanopySecureDataDir,
-} from '@canopy/desktop-shared/canopy-paths';
+} from '@canopy/execution-engine/canopy-paths';
 import type {
   ExternalProjectCandidate,
   ExternalProjectDetectedPlugin,

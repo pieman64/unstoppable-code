@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { createInitialState } from '../pipeline-executor';
 import { loadExecutionState, saveExecutionState } from '../execution-state';
 

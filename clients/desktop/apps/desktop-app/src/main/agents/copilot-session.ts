@@ -8,7 +8,7 @@ import { runRtkRewrite } from '@canopy/execution-engine/node/rtk/rewrite';
 import {
   getBundledRtkBinaryPath,
   getRtkManagedEnv,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -77,7 +77,7 @@ import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { resolveEffectiveChatPluginContext } from '../plugins/global-plugin-overlay';
 import { requestChatTombstones } from '../plugins/request-chat-tombstones';
 import { resolvePlugins } from '../plugins/plugin-resolver';
-import { discoverCopilotHomeCapabilities } from '../copilot/home-capabilities';
+import { discoverHomeCapabilities } from '../plugins/home-capabilities';
 import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inventory-service';
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
 import { requestAnswersFromRenderer } from '../canopy-tools/session-runtime';
@@ -418,7 +418,7 @@ export class CopilotProvider implements AgentProvider {
         // (design: 2026-10-05-cursor-inherited-capabilities). A broken home
         // folder must not stop the chat: a failed discovery inherits nothing.
         const { inherited, inheritedPluginRefs } =
-          await discoverCopilotHomeCapabilities({
+          await discoverHomeCapabilities({
             cwd: opts.cwd,
             selections: context.selections,
             tombstones: context.chatTombstones,

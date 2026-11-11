@@ -86,7 +86,11 @@ export function accountProxyClock(at: number): string {
  */
 export function accountProxyAccountDescription(
   account: AccountProxyAccount,
-  options: { readonly withLimits?: boolean } = {},
+  options: {
+    readonly withLimits?: boolean;
+    /** This device can sign the account in again (shows a Sign in button). */
+    readonly signInHere?: boolean;
+  } = {},
 ): string {
   const plan = accountProxyPlanLabel(account);
   switch (account.status) {
@@ -104,6 +108,11 @@ export function accountProxyAccountDescription(
         : `${plan} · The proxy can't use this account right now.`;
     case 'pending':
       return `${plan} · Finishing sign-in on the server.`;
+    case 'sign-in-required':
+      // The proxy also flags revoked or reused tokens, so not "expired".
+      return options.signInHere
+        ? "This sign-in can't be renewed. Sign in again to use this account."
+        : "This sign-in can't be renewed. Sign in again on the server to use this account.";
     case 'refreshing':
     case 'active': {
       if (options.withLimits === false) return plan;
@@ -130,6 +139,8 @@ export function accountProxyAccountState(account: AccountProxyAccount): string {
       return "Can't be used right now";
     case 'pending':
       return 'Finishing sign-in';
+    case 'sign-in-required':
+      return 'Needs sign-in';
     case 'refreshing':
     case 'active':
       return accountProxyPlanLabel(account);

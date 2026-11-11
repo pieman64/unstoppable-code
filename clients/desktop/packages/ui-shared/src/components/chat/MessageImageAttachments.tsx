@@ -1,15 +1,25 @@
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
+import { PlayIcon } from '../../icons/AppIcons';
 import { Tooltip } from '../Tooltip';
 
 export interface MessageImageAttachment {
   /** Stable React key (e.g. the attachment's path or id). */
   readonly key: string;
-  /** Image URL; `null` while it loads or when it cannot be shown. */
+  /**
+   * Image URL (a video's first frame); `null` while it loads or when it
+   * cannot be shown. A video without a frame keeps its tile and play mark.
+   */
   readonly src: string | null;
+  /** A video draws a play mark over its frame. Defaults to `image`. */
+  readonly kind?: 'image' | 'video';
   /** Accessible name: the file name. */
   readonly alt: string;
   /** Opens the full image. Without it the thumbnail is not interactive. */
   readonly onOpen?: () => void;
+  /** The picture failed to load; the host may show the file another way. */
+  readonly onError?: () => void;
+  /** What `onOpen` does, for the tile's accessible name. Defaults to `Open`. */
+  readonly actionLabel?: 'Open' | 'Download';
 }
 
 export interface MessageImageAttachmentsProps {
@@ -43,63 +53,111 @@ const TILE_CLASS =
   'relative block h-16 w-16 shrink-0 overflow-hidden rounded-md bg-secondary';
 
 /**
- * The images sent with a chat message, shown as the pictures themselves
- * inside its bubble: 64px square thumbnails. The bubble pads 12px across and
- * 6px down; the row reaches 6px into the side padding, so the pictures sit
- * 6px from the bubble's top and sides, and 6px above the text. Pure display;
- * hosts resolve each image's URL.
+ * The play mark over a video's tile: the tooltip's inverse pair, which keeps
+ * its contrast over any frame, in both color modes.
+ */
+const PLAY_MARK_CLASS =
+  'pointer-events-none absolute inset-0 m-auto flex size-6 items-center justify-center rounded-full bg-tooltip-inverse fg-tooltip-inverse';
+
+/**
+ * The row of a message's sent media inside its bubble. The bubble pads 12px
+ * across and 6px down; the row reaches 6px into the side padding, so the
+ * pictures sit 6px from the bubble's top and sides, and 6px above the text.
+ */
+export function MessageMediaRow({
+  children,
+}: {
+  readonly children: ReactNode;
+}): JSX.Element {
+  return (
+    <div
+      className="-mx-1.5 mb-1.5 flex flex-wrap gap-1.5"
+      data-testid="message-image-attachments"
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * One sent image or video: a 64px square of the picture itself, a video as
+ * its first frame with a play mark. Opens the file when the host can.
+ */
+export function MessageMediaTile({
+  image,
+}: {
+  readonly image: MessageImageAttachment;
+}): JSX.Element {
+  const picture = (
+    <>
+      {image.src !== null ? (
+        <img
+          src={image.src}
+          alt={image.alt}
+          draggable={false}
+          // A transcript can hold many full-size pictures; load each as it
+          // nears the view. The tile's fixed size keeps the layout still.
+          loading="lazy"
+          decoding="async"
+          onError={image.onError}
+          className="h-full w-full object-cover"
+        />
+      ) : null}
+      {image.kind === 'video' ? (
+        <span aria-hidden className={PLAY_MARK_CLASS}>
+          <PlayIcon size="xs" />
+        </span>
+      ) : null}
+      <span aria-hidden className={IMAGE_EDGE_CLASS} />
+    </>
+  );
+  const name = image.kind === 'video' ? `video ${image.alt}` : image.alt;
+  return image.onOpen ? (
+    <Tooltip
+      label={image.alt}
+      contentClassName="max-w-96 break-all"
+      replayBlock
+    >
+      <button
+        type="button"
+        onClick={image.onOpen}
+        aria-label={`${image.actionLabel ?? 'Open'} ${name}`}
+        data-testid="message-image-attachment"
+        data-kind={image.kind ?? 'image'}
+        className={`focus-ring ${TILE_CLASS}`}
+      >
+        {picture}
+      </button>
+    </Tooltip>
+  ) : (
+    <span
+      title={image.alt}
+      role="img"
+      aria-label={name}
+      data-testid="message-image-attachment"
+      data-kind={image.kind ?? 'image'}
+      className={TILE_CLASS}
+    >
+      {picture}
+    </span>
+  );
+}
+
+/**
+ * The images and videos sent with a chat message, shown as the pictures
+ * themselves inside its bubble, in attach order. Pure display; hosts resolve
+ * each image's URL. A host that resolves each picture on its own composes
+ * `MessageMediaRow` and `MessageMediaTile` instead.
  */
 export function MessageImageAttachments({
   images,
 }: MessageImageAttachmentsProps): JSX.Element | null {
   if (images.length === 0) return null;
   return (
-    <div
-      className="-mx-1.5 mb-1.5 flex flex-wrap gap-1.5"
-      data-testid="message-image-attachments"
-    >
-      {images.map((image) => {
-        const picture = (
-          <>
-            {image.src !== null ? (
-              <img
-                src={image.src}
-                alt={image.alt}
-                draggable={false}
-                className="h-full w-full object-cover"
-              />
-            ) : null}
-            <span aria-hidden className={IMAGE_EDGE_CLASS} />
-          </>
-        );
-        return image.onOpen ? (
-          <Tooltip
-            key={image.key}
-            label={image.alt}
-            contentClassName="max-w-96 break-all"
-            replayBlock
-          >
-            <button
-              type="button"
-              onClick={image.onOpen}
-              aria-label={`Open ${image.alt}`}
-              data-testid="message-image-attachment"
-              className={`focus-ring ${TILE_CLASS}`}
-            >
-              {picture}
-            </button>
-          </Tooltip>
-        ) : (
-          <span
-            key={image.key}
-            title={image.alt}
-            data-testid="message-image-attachment"
-            className={TILE_CLASS}
-          >
-            {picture}
-          </span>
-        );
-      })}
-    </div>
+    <MessageMediaRow>
+      {images.map((image) => (
+        <MessageMediaTile key={image.key} image={image} />
+      ))}
+    </MessageMediaRow>
   );
 }

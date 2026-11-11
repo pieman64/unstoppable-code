@@ -20,5 +20,5 @@ export const IMAGE_FILENAME =
  */
 export const PREVIEWABLE_IMAGE_FILENAME = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
 
-/** Video files: a queued message shows them as a thumbnail with a play glyph. */
-export const VIDEO_FILENAME = /\.(mp4|m4v|mov|webm|mkv|avi)$/i;
+/** Video files, shared with the web (a sent video is a tile there too). */
+export { VIDEO_FILENAME } from '@canopy/ui-shared/lib';

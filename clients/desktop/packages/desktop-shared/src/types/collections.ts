@@ -42,6 +42,8 @@ export interface CollectionIndexFile {
   entrySchema?: 2;
   /** 1 once canonical member counts and opaque local revisions have been projected. */
   memberCountsSchema?: 1;
+  /** 1 once every entry carries its author-side `remote` share link. */
+  authorLinkSchema?: 1;
   collections: CollectionIndexEntry[];
 }
 

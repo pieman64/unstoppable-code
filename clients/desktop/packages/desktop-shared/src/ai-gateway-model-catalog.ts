@@ -72,6 +72,7 @@ function gatewayConfig(
     gatewayOnly,
     contextWindow: model.contextWindow,
     supportsPromptCaching: model.supportsPromptCaching,
+    supportsImages: model.supportsImages === true,
     supportedThinkingLevels: materializeGatewayThinkingLevels(
       model.supportedThinkingLevels,
       model.thinkingLevelsExact === true,
@@ -201,6 +202,7 @@ export function mergeAiGatewayModelCatalog(input: {
       recommendedHarness: model.recommendedHarness,
       contextWindow: model.contextWindow,
       supportsPromptCaching: model.supportsPromptCaching,
+      supportsImages: model.supportsImages === true,
       supportedThinkingLevels: materializeGatewayThinkingLevels(
         model.supportedThinkingLevels,
         model.thinkingLevelsExact === true,
@@ -247,6 +249,7 @@ export function mergeAiGatewayModelCatalog(input: {
         recommendedHarness: orgModel.harness,
         contextWindow: orgModel.contextWindow,
         supportsPromptCaching: gateway.promptCachePassthrough,
+        supportsImages: false,
         requiresLocalHarnessSupport: false,
         showMoreOnly: false,
         supportedThinkingLevels: orgModel.supportedThinkingLevels,
@@ -271,6 +274,7 @@ export function mergeAiGatewayModelCatalog(input: {
         recommendedHarness: model.recommendedHarness,
         contextWindow: model.contextWindow,
         supportsPromptCaching: model.supportsPromptCaching,
+        supportsImages: model.supportsImages === true,
         supportedThinkingLevels: materializeGatewayThinkingLevels(
           model.supportedThinkingLevels,
           model.thinkingLevelsExact === true,
@@ -304,6 +308,7 @@ export function mergeAiGatewayModelCatalog(input: {
             gatewayOnly: entry.gateway.gatewayOnly,
             contextWindow: entry.gateway.contextWindow,
             supportsPromptCaching: entry.gateway.supportsPromptCaching,
+            supportsImages: entry.gateway.supportsImages === true,
             supportedThinkingLevels: [...entry.gateway.supportedThinkingLevels],
             toolSchemaProfile: entry.gateway.toolSchemaProfile,
             origin: entry.gateway.origin,
@@ -332,6 +337,7 @@ export function mergeAiGatewayModelCatalog(input: {
               gatewayOnly: true,
               contextWindow: entry.contextWindow,
               supportsPromptCaching: entry.supportsPromptCaching,
+              supportsImages: source.model.supportsImages === true,
               // The entry's levels were already materialized above.
               supportedThinkingLevels: [...entry.supportedThinkingLevels],
               toolSchemaProfile: entry.toolSchemaProfile,

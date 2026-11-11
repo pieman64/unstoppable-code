@@ -766,8 +766,8 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
     <CanopyProxyErrorPresentation
       state={unlocked ? 'resolved' : 'unresolved'}
       diagnostics="inline"
+      announcement="live"
       correlationId={correlationId}
-      role="alert"
       dataTestId="chat-canopy-proxy-error"
       title={
         <span data-testid="chat-canopy-proxy-error-title">{copy.title}</span>

@@ -41,6 +41,10 @@ export function normalizeFingerprintText(value: string): string {
 export function blockFingerprint(block: PersistedChatBlock): string {
   switch (block.type) {
     case 'text':
+      // Authored headlines can match while the failure reasons differ.
+      if (block.providerErrorDetails !== undefined)
+        return `provider_error:${JSON.stringify([block.text, block.providerErrorDetails])}`;
+      return `${block.type}:${normalizeFingerprintText(block.text)}`;
     case 'thinking':
       return `${block.type}:${normalizeFingerprintText(block.text)}`;
     case 'file_references':

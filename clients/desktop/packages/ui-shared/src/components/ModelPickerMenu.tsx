@@ -242,6 +242,29 @@ const EXTRA_CHARGE_TEXT_CLASS = 'fg-destructive';
 /** Internal id of the Auto row the harness layout renders for `autoOption`. */
 const AUTO_ROW_ID = 'auto';
 
+/** Both local and paired pickers use the host's explicit managed-route facts. */
+export function managedOpenCodeAutoUnavailableReason(
+  current: ModelCatalogOption | undefined,
+  candidates: readonly ModelCatalogOption[],
+): string | undefined {
+  const managed = (option: ModelCatalogOption): boolean =>
+    option.harnessChoices?.some(
+      (choice) =>
+        choice.harness === 'opencode' && choice.funding === 'ai-credits',
+    ) === true;
+  if (!current || !managed(current))
+    return MODEL_PICKER_AUTO_REASONS.unsupportedHarness;
+  return candidates.filter(
+    (option) =>
+      option.kind !== 'agent' &&
+      option.available &&
+      !!option.description?.trim() &&
+      managed(option),
+  ).length < 2
+    ? MODEL_PICKER_AUTO_REASONS.tooFewCandidates
+    : undefined;
+}
+
 export interface ModelPickerMenuControls {
   /** Close the menu and hand focus back to the host control. */
   readonly closeMenu: () => void;

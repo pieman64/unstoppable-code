@@ -622,3 +622,22 @@ export function ledgerViewEntryFromMirror(
     source: { availability: response.sourceAvailability, target: null },
   };
 }
+
+/** Search text is cut to the Ledger's query limit, in code points. */
+const LEDGER_VIEW_QUERY_MAX_CODE_POINTS = 256;
+
+/** Query text as the Ledger accepts it: no control characters, bounded. */
+export function normalizeLedgerViewQuery(text: string): string {
+  let result = '';
+  for (const character of text) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    result +=
+      codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
+        ? ' '
+        : character;
+  }
+  return Array.from(result.trim())
+    .slice(0, LEDGER_VIEW_QUERY_MAX_CODE_POINTS)
+    .join('')
+    .trim();
+}

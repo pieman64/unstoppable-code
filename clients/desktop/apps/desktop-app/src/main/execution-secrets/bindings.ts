@@ -13,7 +13,7 @@ import { resolveEnvironmentSecretSlots } from '@canopy/desktop-shared/lib/user-e
 import type {
   ResolveEnvironmentRequest,
   UserEnvironmentEntry,
-} from '@canopy/desktop-shared/types/user-environment';
+} from '@canopy/execution-engine/types/user-environment';
 import { readEnvironmentConfig } from '../lib/user-environment-store';
 import {
   environmentSecretSlot,

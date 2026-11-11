@@ -55,7 +55,7 @@ import {
   isApprovalMode,
   normalizeApprovalRules,
 } from '../../lib/approval-engine';
-import type { ApprovalRule } from '../../types/approvals';
+import type { ApprovalRule } from '@canopy/execution-engine/types/approvals';
 import { validateId } from '@canopy/execution-engine/node/lib/validation';
 import { isMissingFileError } from './fs-utils';
 import {

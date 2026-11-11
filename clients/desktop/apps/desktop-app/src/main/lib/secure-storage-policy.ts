@@ -9,10 +9,13 @@ import {
   getReadableSafeStorage,
   getSafeStorageStatus,
   getWritableSafeStorage,
+  recheckSafeStorage,
+  recheckSafeStorageAfterFailure,
   SafeStorageWriteError,
   type ReadableSafeStorage,
   type SafeStorageStatus,
   type SafeStorageReadOptions,
+  type SafeStorageRecheckTrigger,
 } from './safe-storage';
 import { isRecord } from './type-guards';
 
@@ -166,7 +169,7 @@ function operationError(
   operation: SecureStorageFailure['operation'],
   options: SafeStorageReadOptions = {},
 ): SecureStorageOperationError {
-  // Default diagnostics are live; background spawn failures share their bounded observation.
+  // Diagnostics report the remembered provider state, re-checked after failures.
   return new SecureStorageOperationError(
     failureDescriptor(code, operation, getSafeStorageStatus(options)),
   );
@@ -218,6 +221,8 @@ function encrypt(text: string): Buffer {
     if (error instanceof SafeStorageWriteError) throw error;
     const failure = getSecureStorageFailure(error);
     if (failure) throw new SecureStorageOperationError(failure);
+    // The remembered provider state may be stale; classify against a fresh one.
+    recheckSafeStorageAfterFailure();
     throw operationError('SECURE_STORAGE_ENCRYPT_FAILED', 'write');
   }
 }
@@ -235,11 +240,30 @@ function decrypt(ciphertext: Buffer, options: SafeStorageReadOptions): string {
     // a subsequently healthy helper cannot turn a timeout into corrupt data.
     const failure = getSecureStorageFailure(error);
     if (failure) throw new SecureStorageOperationError(failure);
+    // The remembered provider state may be stale; classify against a fresh one.
+    recheckSafeStorageAfterFailure();
     throw operationError('SECURE_STORAGE_DECRYPT_FAILED', 'read', options);
   }
 }
 
-/** Default operations stay live. Only spawn reads opt into bounded observation reuse. */
+/**
+ * Re-check the Linux provider for a secure storage notice: `retry` is the
+ * person's explicit recovery and goes through helper recovery when the
+ * parent's native initialization failed; `shown` keeps a displayed notice
+ * current, throttled. Resolves whether the state changed; always false on
+ * macOS and Windows.
+ */
+export function recheckSecretStorage(
+  trigger: SafeStorageRecheckTrigger,
+): Promise<boolean> {
+  return recheckSafeStorage(trigger);
+}
+
+/**
+ * Reads, status and writes use the remembered Linux provider state; see
+ * safe-storage.ts for when it is checked again. Spawn reads also reuse
+ * recovery outcomes.
+ */
 export function getSecretStoragePolicy(
   options: SafeStorageReadOptions = {},
 ): SecretStoragePolicy {

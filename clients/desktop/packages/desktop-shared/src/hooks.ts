@@ -7,7 +7,10 @@ import {
   normalizeConfiguredPrompt,
   type ConfiguredPromptReference,
 } from '@canopy/protocol/configured-prompt-references';
-import { APPROVAL_MODES, type ApprovalMode } from './types/approvals';
+import {
+  APPROVAL_MODES,
+  type ApprovalMode,
+} from '@canopy/execution-engine/types/approvals';
 import {
   isChatTabPluginSelections,
   normalizePluginSelections,

@@ -75,7 +75,7 @@ import { type WorktreeUiStatus } from '@/lib/worktree-status';
 import { subscribeToWorktreeArchiveConfirmationRequests } from '@/lib/worktreeArchiveConfirmationEvents';
 import { RunSpinner } from '../shared/loading/spinners/RunSpinner';
 import { ProjectIcon } from '../shared/ProjectIcon';
-import type { WorkspaceKind } from '@canopy/ui-shared/components';
+import type { DotTone, WorkspaceKind } from '@canopy/ui-shared/components';
 import {
   StopLaunchFaces,
   WorktreeIdStopLaunchButton,
@@ -1063,11 +1063,11 @@ function WorktreeItemContent({
 
         let statusText: string;
         let statusClass: string;
-        let dotClass: string;
+        let dotTone: DotTone;
         if (entry.running) {
           statusText = entry.processName ?? 'running';
           statusClass = OPERATIONAL_STATUS_COLORS.active.foreground;
-          dotClass = OPERATIONAL_STATUS_COLORS.active.background;
+          dotTone = 'working';
         } else if (entry.exitCode !== null || entry.signal !== null) {
           const session = terminalLabelSources.sessions[entry.terminalId];
           const labelFromSession = session
@@ -1086,13 +1086,12 @@ function WorktreeItemContent({
           statusClass = isFailure
             ? OPERATIONAL_STATUS_COLORS.failed.foreground
             : OPERATIONAL_STATUS_COLORS.success.foreground;
-          dotClass = isFailure
-            ? OPERATIONAL_STATUS_COLORS.failed.background
-            : OPERATIONAL_STATUS_COLORS.success.background;
+          // A finished run you have not seen is unread; a failure is red.
+          dotTone = isFailure ? 'danger' : 'unread';
         } else {
           statusText = 'idle';
           statusClass = OPERATIONAL_STATUS_COLORS.paused.foreground;
-          dotClass = OPERATIONAL_STATUS_COLORS.paused.background;
+          dotTone = 'filter';
         }
 
         return {
@@ -1100,7 +1099,7 @@ function WorktreeItemContent({
           label,
           statusText,
           statusClass,
-          dotClass,
+          dotTone,
         };
       })
       .sort((a, b) => a.label.localeCompare(b.label));

@@ -315,7 +315,7 @@ export function resolveDevDataRoot({ root, env = process.env }) {
       'tsx',
       '-e',
       DATA_ROOT_PROBE,
-      join(root, 'packages', 'desktop-shared', 'src', 'canopy-paths.ts'),
+      join(root, 'packages', 'execution-engine', 'src', 'canopy-paths.ts'),
       'dev',
     ],
     { cwd: root, env, encoding: 'utf8', timeout: 15_000, windowsHide: true },

@@ -55,7 +55,7 @@ import {
   validateId,
   validateOptionalRepoId,
 } from '../lib/validation';
-import { validatePipelineRuntimeIdentifier } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { validatePipelineRuntimeIdentifier } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
   isAppAdvisorBrowserAction,
   targetsAppAdvisorSurface,

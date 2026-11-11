@@ -7,7 +7,14 @@
  * it, because both share one burst coalescer.
  */
 import { execFileSync } from 'node:child_process';
-import { promises as fsPromises, type Dirent } from 'node:fs';
+import {
+  promises as fsPromises,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  type Dirent,
+} from 'node:fs';
 import {
   chmod,
   lstat,
@@ -17,6 +24,7 @@ import {
   rm,
   symlink,
   writeFile,
+  readFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,7 +36,18 @@ import {
   type FileIndexRequest,
   type FileIndexResponse,
   type RepoFileIndex,
+  type ChangedFileInfo,
 } from '@canopy/desktop-shared/types';
+import {
+  getChangedFileSources,
+  matchChangedFileForPath,
+} from '../../../renderer/src/components/chat/useOpenFileDiffTarget';
+import {
+  buildFilePathMentionIndex,
+  splitTextByFilePathMentions,
+} from '../../../renderer/src/lib/filePathMentionIndex';
+import { rewriteFileReferencesForTargetCwd } from '../../../renderer/src/lib/file-reference-paths';
+import { buildFileTabTitle } from '../../../renderer/src/stores/chat/persisted-tabs';
 import type * as PreferencesStoreModule from '../../lib/preferences-store';
 import type * as SharedContainerReaderModule from '../../shared-containers/read/reader';
 import type { FileBrowserRoot } from '../../lib/file-browser-roots';
@@ -207,6 +226,110 @@ afterEach(async () => {
   runtime = undefined;
   await rm(tempRoot, REMOVE_OPTIONS);
 }, HOOK_TIMEOUT_MS);
+
+// Probe the actual fixture volume; platform names do not establish case rules.
+const caseProbe = mkdtempSync(join(tmpdir(), 'file-index-case-'));
+let caseSensitive: boolean;
+try {
+  writeFileSync(join(caseProbe, 'A.ts'), 'upper');
+  caseSensitive = !existsSync(join(caseProbe, 'a.ts'));
+} finally {
+  rmSync(caseProbe, { recursive: true, force: true });
+}
+
+(caseSensitive ? it : it.skip)(
+  'retains case-neighbor identities in the real mentions index',
+  async () => {
+    const home = join(tempRoot, 'case-neighbors');
+    await put(join(home, 'A.ts'), 'upper');
+    await put(join(home, 'a.ts'), 'lower');
+    setRoots([root('project-1', home, 'standalone')]);
+    const result = await getIndex(target);
+    expect(paths(result.repos[0]).sort()).toEqual(['A.ts', 'a.ts']);
+    const mentions = buildFilePathMentionIndex(result.repos, home);
+    expect(mentions?.aliases.size).toBe(2);
+    for (const name of ['A.ts', 'a.ts']) {
+      expect(mentions?.aliases.get(name)?.absolutePath).toBe(join(home, name));
+    }
+  },
+);
+
+(process.platform === 'win32' ? it.skip : it)(
+  'round-trips indexed POSIX identities through mentions, diff targets and re-rooting',
+  async () => {
+    const home = join(tempRoot, 'identity');
+    const targetHome = join(tempRoot, 'target');
+    const names = [
+      '日本語 🌲.ts',
+      "space and apostrophe's.ts",
+      'literal\\name.ts',
+      'literal/name.ts',
+      'report:12.ts',
+    ];
+    for (const name of names) {
+      await put(join(home, name), name);
+      await put(join(targetHome, name), name);
+    }
+    setRoots([root('project-1', home, 'standalone')]);
+    const result = await getIndex(target);
+    expect(paths(result.repos[0]).sort()).toEqual([...names].sort());
+    const changedFiles: ChangedFileInfo[] = paths(result.repos[0]).map(
+      (path) => ({ path, status: 'added', insertions: 1, deletions: 0 }),
+    );
+    const roots = new Map([[undefined, home]]);
+    const mentions = buildFilePathMentionIndex(result.repos, home);
+    expect(mentions?.aliases.size).toBe(names.length);
+    const tokens = ['literal\\name.ts', 'literal/name.ts', 'report:12.ts'];
+    const pieces = splitTextByFilePathMentions(tokens.join(' '), mentions);
+    expect(
+      pieces
+        .filter((piece) => piece.type === 'file')
+        .map((piece) => piece.target.absolutePath),
+    ).toEqual(tokens.map((name) => join(home, name)));
+    for (const name of names) {
+      const diffTarget = matchChangedFileForPath(
+        { uncommitted: changedFiles, committed: [] },
+        roots,
+        join(home, name),
+      );
+      expect(diffTarget?.file.path).toBe(name);
+      expect(
+        buildFileTabTitle(
+          join(home, name),
+          names.map((path) => join(home, path)),
+        ),
+      ).toBe(name.split('/').pop());
+      expect(
+        await readFile(join(home, diffTarget?.file.path ?? ''), 'utf8'),
+      ).toBe(name);
+      const references = [
+        { absolutePath: join(home, name), displayPath: name },
+      ];
+      const rewritten = rewriteFileReferencesForTargetCwd(
+        references,
+        targetHome,
+      );
+      expect(rewritten[0]?.absolutePath).toBe(join(targetHome, name));
+      expect(await readFile(rewritten[0]?.absolutePath ?? '', 'utf8')).toBe(
+        name,
+      );
+    }
+    const literal = changedFiles.find(
+      (file) => file.path === 'literal\\name.ts',
+    );
+    const directory = changedFiles.find(
+      (file) => file.path === 'literal/name.ts',
+    );
+    if (!literal || !directory)
+      throw new Error('Missing real diff identity fixtures');
+    expect(
+      getChangedFileSources(
+        { uncommitted: [directory], committed: [literal] },
+        literal,
+      ),
+    ).toEqual(['committed']);
+  },
+);
 
 describe('single-repository worktree', () => {
   let repoPath = '';

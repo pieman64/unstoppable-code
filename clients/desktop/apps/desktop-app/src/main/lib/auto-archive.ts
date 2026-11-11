@@ -386,16 +386,14 @@ export function collectWatcherTargetKeys(
 }
 
 /** Live runtime work that keeps a due target from Auto Delete. */
-export async function isAutoArchiveRuntimeBusy(
+async function runtimeBusyReasons(
   candidate: AutoArchiveCandidate,
-): Promise<boolean> {
-  // Queued, starting or running delegates keep their root chat's target.
-  if (
-    worktreeHasLiveDelegations(candidate.workspaceId, candidate.targetId) ||
-    worktreeBlocksClose(candidate.workspaceId, candidate.targetId)
-  )
-    return true;
-  const activeSession = getAllActiveSessionInfos().some(
+): Promise<WorkspaceTargetBusyReason[]> {
+  if (worktreeHasLiveDelegations(candidate.workspaceId, candidate.targetId))
+    return ['agent'];
+  if (worktreeBlocksClose(candidate.workspaceId, candidate.targetId))
+    return ['background work'];
+  const activeSessions = getAllActiveSessionInfos().filter(
     (session) =>
       session.projectId === candidate.workspaceId &&
       session.worktreeId === candidate.targetId &&
@@ -403,7 +401,7 @@ export async function isAutoArchiveRuntimeBusy(
         session.pendingMessageCount > 0 ||
         (session.activeBackgroundTaskCount ?? 0) > 0),
   );
-  if (activeSession) return true;
+  if (activeSessions.length) return activeSessions.map(() => 'agent');
   const worktree =
     candidate.worktree ??
     ({
@@ -417,30 +415,47 @@ export async function isAutoArchiveRuntimeBusy(
   const status = statuses.get(
     targetKey(candidate.workspaceId, candidate.targetId),
   );
-  return Boolean(
-    status?.isStreaming ||
-    status?.pipelineStatus ||
-    status?.terminalStatus ||
-    status?.scriptStatus ||
-    status?.hookStatus ||
-    status?.isRunningRun,
-  );
+  const reasons: WorkspaceTargetBusyReason[] = [];
+  if (status?.isStreaming) reasons.push('agent');
+  if (status?.pipelineStatus) reasons.push('workflow');
+  if (status?.terminalStatus) reasons.push('terminal');
+  if (status?.scriptStatus) reasons.push('script');
+  if (status?.hookStatus) reasons.push('hook');
+  if (status?.isRunningRun) reasons.push('background work');
+  return reasons;
 }
 
-async function defaultArchive(
+export async function isAutoArchiveRuntimeBusy(
   candidate: AutoArchiveCandidate,
+): Promise<boolean> {
+  return (await runtimeBusyReasons(candidate)).length > 0;
+}
+
+export interface WorkspaceTargetRemovalPolicy {
+  mode: 'delete' | 'archive';
+  teardown: 'error' | 'force';
+  branch: { kind: 'preference' } | { kind: 'force' } | { kind: 'keep' };
+}
+
+export async function removeWorkspaceTarget(
+  candidate: AutoArchiveCandidate,
+  policy: WorkspaceTargetRemovalPolicy,
+  revalidateAutoArchivePolicy?: () => Promise<CurrentAutoArchivePolicy>,
 ): Promise<{ warnings?: string[] }> {
-  const revalidateAutoArchivePolicy = (): Promise<CurrentAutoArchivePolicy> =>
-    resolveCurrentAutoArchivePolicy(candidate, Date.now(), {
-      listSidebarItems: defaultDependencies.listSidebarItems,
-      readAppAdvisorSettings: defaultDependencies.readAppAdvisorSettings,
-    });
+  // Only an inactivity removal depends on the last-touched watermark. Deletion
+  // start drains pending activity touches, so pinning it on an agent-armed
+  // removal aborts the first attempt after nearly every turn.
+  const touchedPin = revalidateAutoArchivePolicy
+    ? { expectedLastTouchedAt: candidate.lastTouchedAt }
+    : {};
   if (candidate.surface === 'cowork' || candidate.surface === 'app-advisor') {
     return archiveWorkEntry({
       workspaceId: candidate.workspaceId,
       entryId: candidate.targetId,
       requireArchivedContainer: true,
-      expectedLastTouchedAt: candidate.lastTouchedAt,
+      expectedCreatedAt: candidate.createdAt,
+      lockAfterArchive: policy.mode === 'archive',
+      ...touchedPin,
       revalidateAutoArchivePolicy,
     });
   }
@@ -458,16 +473,22 @@ async function defaultArchive(
     candidate.surface === 'single-repo'
       ? archiveSingleRepoWorktree
       : archiveMultiRepoWorktree;
-  return archive({
+  const warnings: string[] = [];
+  const result = await archive({
     sourceAdmission: 'required',
     workspaceId: candidate.workspaceId,
     worktreeId: candidate.targetId,
     expectedCreatedAt: candidate.createdAt,
-    expectedLastTouchedAt: candidate.lastTouchedAt,
+    ...touchedPin,
     ...(candidate.worktree?.branchName
       ? { expectedBranchName: candidate.worktree.branchName }
       : {}),
-    deleteBranch: candidate.deleteBranch === true,
+    deleteBranch:
+      policy.branch.kind === 'force'
+        ? true
+        : policy.branch.kind === 'keep'
+          ? false
+          : candidate.deleteBranch,
     revalidateAutoArchivePolicy,
     runAutoArchiveTeardown: () =>
       withWorkspaceTargetAutoArchiveTeardown(
@@ -476,20 +497,40 @@ async function defaultArchive(
         async () => {
           const { runAutoArchiveTeardown } =
             await import('./auto-archive-teardown');
-          await runAutoArchiveTeardown(
-            candidate.workspaceId,
-            candidate.targetId,
-            candidate.surface === 'multi-repo',
-          );
+          try {
+            await runAutoArchiveTeardown(
+              candidate.workspaceId,
+              candidate.targetId,
+              candidate.surface === 'multi-repo',
+            );
+          } catch (error) {
+            const { AutoArchiveTeardownFailedError } =
+              await import('./auto-archive-teardown');
+            if (
+              policy.teardown !== 'force' ||
+              !(error instanceof AutoArchiveTeardownFailedError)
+            )
+              throw error;
+            // Continue the admitted removal without repeating a failed script.
+            warnings.push(error.message.slice(-4000));
+          }
         },
       ),
     requireArchivedContainer: true,
+    lockAfterArchive: policy.mode === 'archive',
     observabilityMode: 'live-service',
     liveServices: {
       cleanupLiveState: cleanupLiveWorktreeState,
       purgeObservabilityData: purgeLiveWorktreeObservabilityData,
     },
   });
+  return { warnings: [...warnings, ...(result.warnings ?? [])] };
+}
+
+export function emitAutoArchiveNotification(
+  notification: AutoArchiveNotification,
+): void {
+  autoArchiveResultListener?.(notification);
 }
 
 const defaultDependencies: AutoArchiveDependencies = {
@@ -499,12 +540,27 @@ const defaultDependencies: AutoArchiveDependencies = {
   readAppAdvisorSettings: readAppAdvisorWorkspaceSettings,
   listWatchers: () => getAppAdvisorWatcherService().list(),
   listAutomations: () => getAutomationsService().list(),
-  archive: defaultArchive,
+  archive: (candidate) =>
+    removeWorkspaceTarget(
+      candidate,
+      {
+        mode: 'delete',
+        teardown: 'error',
+        branch: { kind: 'preference' },
+      },
+      () =>
+        resolveCurrentAutoArchivePolicy(
+          candidate,
+          Date.now(),
+          defaultDependencies,
+        ),
+    ),
   isRuntimeBusy: isAutoArchiveRuntimeBusy,
   touch: (workspaceId, targetId, now) =>
     touchWorkspaceTarget(workspaceId, targetId, now),
   onResult: (result) => {
     autoArchiveResultListener?.({
+      trigger: 'inactivity',
       workspaceId: result.candidate.workspaceId,
       workspaceName: result.candidate.workspaceName,
       targetId: result.candidate.targetId,
@@ -525,6 +581,71 @@ const defaultDependencies: AutoArchiveDependencies = {
     }
   },
 };
+
+export type WorkspaceTargetBusyReason =
+  | 'watcher'
+  | 'scheduled automation'
+  | 'split operation'
+  | 'background work'
+  | 'agent'
+  | 'workflow'
+  | 'terminal'
+  | 'script'
+  | 'hook';
+
+export async function workspaceTargetBusyReasons(
+  candidate: AutoArchiveCandidate,
+  deps: Pick<
+    AutoArchiveDependencies,
+    | 'listWatchers'
+    | 'listAutomations'
+    | 'isRuntimeBusy'
+    | 'listWorkEntryChatSummaries'
+  > = defaultDependencies,
+  knownChatOwners?: ReadonlyMap<string, string>,
+): Promise<WorkspaceTargetBusyReason[]> {
+  const chatOwners = new Map(knownChatOwners);
+  if (!knownChatOwners && !candidate.worktree) {
+    for (const summary of await deps.listWorkEntryChatSummaries(
+      candidate.workspaceId,
+    )) {
+      for (const chat of summary.chats)
+        chatOwners.set(`${candidate.workspaceId}\0${chat.id}`, summary.entryId);
+    }
+  }
+  const [watchers, automations] = await Promise.all([
+    deps.listWatchers(),
+    deps.listAutomations(),
+  ]);
+  const key = targetKey(candidate.workspaceId, candidate.targetId);
+  const running = new Set(
+    automations.recentRuns
+      .filter((run) => run.status === 'running')
+      .map((run) => run.activityId),
+  );
+  const reasons: WorkspaceTargetBusyReason[] = [];
+  if (collectWatcherTargetKeys(watchers, chatOwners).has(key))
+    reasons.push('watcher');
+  if (
+    collectScheduledAutomationTargetKeys(automations.activities, running).has(
+      key,
+    )
+  )
+    reasons.push('scheduled automation');
+  if (
+    isSplitLocked(candidate.workspaceId, candidate.targetId) ||
+    isSplitDestinationWorktreeClaimed(candidate.workspaceId, candidate.targetId)
+  )
+    reasons.push('split operation');
+  // Preserve the inactivity gate's short circuit (including its error behavior).
+  if (!reasons.length) {
+    if (deps.isRuntimeBusy === isAutoArchiveRuntimeBusy)
+      reasons.push(...(await runtimeBusyReasons(candidate)));
+    else if (await deps.isRuntimeBusy(candidate))
+      reasons.push('background work');
+  }
+  return reasons;
+}
 
 export async function applyAutoArchive(
   now = Date.now(),
@@ -589,30 +710,9 @@ export async function applyAutoArchive(
         candidate.workspaceId,
         candidate.targetId,
         async () => {
-          const [watchers, automations] = await Promise.all([
-            deps.listWatchers(),
-            deps.listAutomations(),
-          ]);
-          const watcherTargets = collectWatcherTargetKeys(watchers, chatOwners);
-          const runningActivityIds = new Set(
-            automations.recentRuns
-              .filter((run) => run.status === 'running')
-              .map((run) => run.activityId),
-          );
-          const automationTargets = collectScheduledAutomationTargetKeys(
-            automations.activities,
-            runningActivityIds,
-          );
-          const key = targetKey(candidate.workspaceId, candidate.targetId);
           busy =
-            watcherTargets.has(key) ||
-            automationTargets.has(key) ||
-            isSplitLocked(candidate.workspaceId, candidate.targetId) ||
-            isSplitDestinationWorktreeClaimed(
-              candidate.workspaceId,
-              candidate.targetId,
-            ) ||
-            (await deps.isRuntimeBusy(candidate));
+            (await workspaceTargetBusyReasons(candidate, deps, chatOwners))
+              .length > 0;
           if (!busy) warnings = (await deps.archive(candidate))?.warnings;
         },
       );

@@ -26,7 +26,7 @@ import {
 import type { CreateWorktreeServiceOptions } from '../lib/worktree-service';
 import type { WorktreeData } from '../../types';
 import { acquireW5DesktopDeleteGate } from '@canopy/core-platform/w5-process-file-lock';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { validateId } from '@canopy/execution-engine/node/lib/validation';
 import { assertNoConflictingW5Reservation } from './worktree-delete-records';
 

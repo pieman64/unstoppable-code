@@ -20,6 +20,7 @@ import {
 } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import {
   APP_ADVISOR_TOOL_ENTRIES,
+  getCanonicalAppAdvisorToolKey,
   isAppAdvisorLedgerToolKey,
   type AppAdvisorToolKey,
 } from '@canopy/desktop-shared/lib/app-advisor-tools';
@@ -35,6 +36,7 @@ import { isPipelineEditorToolAdvertised } from '../pipeline-editor/tool-advertis
 import type { CanopyInjectedToolTextResult } from '../canopy-tools/core';
 import {
   SET_AUTO_ARCHIVE_DESCRIPTION,
+  SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION,
   SET_BASE_BRANCH_DESCRIPTION,
   START_FORKED_AGENT_DESCRIPTION,
   START_BRANCHED_AGENT_DESCRIPTION,
@@ -70,6 +72,7 @@ import {
   WATCH_GITHUB_ITEMS_DESCRIPTION,
   GET_GITHUB_PULL_REQUEST_STATUS_DESCRIPTION,
   setAutoArchiveJsonSchema,
+  setWorkEntryAutoDeleteJsonSchema,
   setBaseBranchJsonSchema,
   askUserQuestionJsonSchema,
   deleteWatchersJsonSchema,
@@ -288,6 +291,10 @@ export const CLAUDE_TERMINAL_TOOL_DEFINITIONS: Readonly<
     description: SET_AUTO_ARCHIVE_DESCRIPTION,
     inputSchema: setAutoArchiveJsonSchema,
   },
+  set_work_entry_auto_delete: {
+    description: SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION,
+    inputSchema: setWorkEntryAutoDeleteJsonSchema,
+  },
   start_forked_agent: {
     description: START_FORKED_AGENT_DESCRIPTION,
     inputSchema: startSplitAgentJsonSchema,
@@ -434,6 +441,10 @@ export const APP_ADVISOR_TERMINAL_TOOL_DEFINITIONS: Readonly<
   set_auto_archive: {
     description: SET_AUTO_ARCHIVE_DESCRIPTION,
     inputSchema: setAutoArchiveJsonSchema,
+  },
+  set_work_entry_auto_delete: {
+    description: SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION,
+    inputSchema: setWorkEntryAutoDeleteJsonSchema,
   },
   schedule_wakeup: {
     description: SCHEDULE_WAKEUP_DESCRIPTION,
@@ -797,6 +808,14 @@ export function getCanopyRouteTools(
       if (canonicalKey === null) {
         return true;
       }
+      // A delegate never arms removal of the work entry its parent owns; the
+      // managed-delegate listing otherwise falls back to the terminal set.
+      if (
+        canonicalKey === 'set_work_entry_auto_delete' &&
+        effectiveSurface === 'managed-delegate'
+      ) {
+        return false;
+      }
       if (
         !advertiseDeferredLoaders &&
         (canonicalKey === 'search_deferred_tools' ||
@@ -881,7 +900,13 @@ export function getClaudeTerminalAppAdvisorToolKey(
       candidate.claudeToolName === toolName ||
       candidate.codexToolName === toolName,
   );
-  return entry?.canonicalKey ?? null;
+  if (entry) return entry.canonicalKey;
+  // Resumed sessions still call chat auto-archive by its pre-rename names.
+  // Only that ungated tool falls back; other legacy names stay unresolved so
+  // they cannot bypass the listing's gates.
+  return getCanonicalAppAdvisorToolKey(toolName) === 'set_auto_archive'
+    ? 'set_auto_archive'
+    : null;
 }
 
 export function getClaudeTerminalPipelineEditorToolKey(

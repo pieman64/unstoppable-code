@@ -3,7 +3,7 @@ import {
   assertCoworkWorkspaceRootPresent,
 } from '../lib/cowork-folder-guard';
 import { isDeepStrictEqual } from 'node:util';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { ownedPipelineToChatAction } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { getSharedPipelineForExecutionContext } from '../pipelines/canopy-server-client';
@@ -219,7 +219,7 @@ import {
 import {
   executionContextSatisfies,
   normalizePipelineScopes,
-} from '@canopy/desktop-shared/pipelines/scope';
+} from '@canopy/execution-engine/pipelines/scope';
 import {
   discoverProjectPipelines,
   loadProjectPipelineFromDisk,

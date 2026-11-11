@@ -9,6 +9,7 @@ import {
   type WorkerPipelineHostStepValues,
 } from '@canopy/protocol/canopy-core';
 import type { PipelineOwnerSettlement } from '../execution/host-requests';
+import type { PipelineExecutionListQuery } from '../execution/worker-pipelines';
 
 /*
  * The private protocol between a worker and the pipeline host it supervises
@@ -55,7 +56,10 @@ export type PipelineHostRequest =
       codexMcpLauncher?: PipelineHostLauncherCommand;
     }
   | { op: 'start'; start: PipelineHostLaunch }
-  | { op: 'get'; executionId: string }
+  /** With `detail`, the host answers the summary and its detail (CAN-6117). */
+  | { op: 'get'; executionId: string; detail?: true }
+  /** One list page of the executions the host's store holds (CAN-6117). */
+  | { op: 'list'; query: PipelineExecutionListQuery }
   | { op: 'cancel'; executionId: string; mode: WorkerPipelineCancelMode }
   | { op: 'sweep'; executionIds: string[] }
   | { op: 'checkpoint' }
@@ -65,8 +69,12 @@ export type PipelineHostRequest =
       requestId: string;
       settlement: PipelineHostSettlement;
     }
-  /** Pause these owner-bound executions at a checkpoint: their owner is gone (CAN-5771). */
-  | { op: 'pause'; executionIds: string[] }
+  /**
+   * Pause these owner-bound executions at a checkpoint: their owner is gone
+   * (CAN-5771). `owner_lost` records that cause for a remote owner (CAN-6102);
+   * without it the pause records `app_shutdown`, as on desktop.
+   */
+  | { op: 'pause'; executionIds: string[]; reason?: 'owner_lost' }
   /** Close admission and exit once nothing runs. */
   | { op: 'exit' };
 

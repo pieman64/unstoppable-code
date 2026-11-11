@@ -8,7 +8,7 @@ import { release } from 'node:os';
 import {
   getBundledDictateBinaryPath,
   getEnhancedEnv,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { BRAND } from '@canopy/brand/current';
 import {
   UNSUPPORTED_VOICE_DICTATION_RESPONSE,

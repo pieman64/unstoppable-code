@@ -419,10 +419,11 @@ function codexTurnFailure(options: {
     ? ' Retained partial output is available.'
     : '';
   const modelRejected =
-    Boolean(provider) &&
-    MODEL_REJECTION_PATTERNS.some((pattern) =>
-      pattern.test(provider?.text ?? ''),
-    );
+    options.errorInfo === 'modelNotFound' ||
+    (Boolean(provider) &&
+      MODEL_REJECTION_PATTERNS.some((pattern) =>
+        pattern.test(provider?.text ?? ''),
+      ));
   if (modelRejected)
     return {
       modelRejected,

@@ -3,6 +3,7 @@ import {
   MODEL_LIBRARY_PROTOCOL_VERSION,
 } from '@canopy/protocol/models';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { flattenOpenCodeInferenceTools } from '../opencode/inference-tool-schemas';
 import {
   createServer,
   type IncomingMessage,
@@ -248,6 +249,7 @@ export function deriveProxyDiagnosticIdentity(
 interface OpenCodeGatewayInferencePolicy {
   providerType: 'opencode';
   modelId: string;
+  toolSchemaProfile?: 'standard' | 'flat';
   headers: Readonly<Record<string, string>>;
 }
 
@@ -258,6 +260,9 @@ function snapshotInferencePolicy(
   const headers = { ...policy.headers };
   if (
     policy.providerType !== 'opencode' ||
+    (policy.toolSchemaProfile !== undefined &&
+      policy.toolSchemaProfile !== 'standard' &&
+      policy.toolSchemaProfile !== 'flat') ||
     !isSyntacticallyValidModelId(policy.modelId) ||
     Object.entries(headers).some(
       ([name, value]) =>
@@ -270,7 +275,12 @@ function snapshotInferencePolicy(
     )
   )
     throw new Error('Invalid OpenCode inference lease policy');
-  return { providerType: 'opencode', modelId: policy.modelId, headers };
+  return {
+    providerType: 'opencode',
+    modelId: policy.modelId,
+    toolSchemaProfile: policy.toolSchemaProfile,
+    headers,
+  };
 }
 
 interface CodexGatewayRoute {
@@ -1267,6 +1277,19 @@ export class CodexGatewayProxyService {
           'opencode_model_mismatch',
         );
         return;
+      }
+      if (route.inferencePolicy.toolSchemaProfile === 'flat') {
+        try {
+          flattenOpenCodeInferenceTools(payload);
+          body = Buffer.from(JSON.stringify(payload), 'utf8');
+        } catch {
+          refuseInferenceRequest(
+            400,
+            'OpenCode tool definitions are unavailable for this model.',
+            'opencode_tool_schema_invalid',
+          );
+          return;
+        }
       }
     }
     if (route.stripCacheControl) {

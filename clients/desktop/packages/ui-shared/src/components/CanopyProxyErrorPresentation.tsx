@@ -4,13 +4,18 @@ import { Notice } from './Notice';
 
 export interface CanopyProxyErrorPresentationProps {
   state: 'unresolved' | 'resolved';
-  role: 'alert' | 'status';
   dataTestId: string;
   title?: ReactNode;
   children?: ReactNode;
   correlationId?: string | null;
   /** Inline diagnostics in a message, or a supporting line in a short replay. */
   diagnostics: 'inline' | 'supporting';
+  /**
+   * How a failure is announced: `live` interrupts (`alert`) because it just
+   * happened; `replay` is history and stays polite (`status`). A resolved
+   * notice is always polite.
+   */
+  announcement: 'live' | 'replay';
   detail?: ReactNode;
   actions?: ReactNode;
 }
@@ -18,12 +23,12 @@ export interface CanopyProxyErrorPresentationProps {
 /** Proxy refusal display shared by interactive notices and read-only replays. */
 export function CanopyProxyErrorPresentation({
   state,
-  role,
   dataTestId,
   title,
   children,
   correlationId,
   diagnostics,
+  announcement,
   detail,
   actions,
 }: CanopyProxyErrorPresentationProps): JSX.Element {
@@ -57,7 +62,7 @@ export function CanopyProxyErrorPresentation({
   return (
     <Notice
       intent={resolved ? 'positive' : 'attention'}
-      role={resolved ? 'status' : role}
+      role={resolved || announcement === 'replay' ? 'status' : 'alert'}
       data-testid={dataTestId}
       // Transcript rows size to their content, and the notice's container
       // query gives it no intrinsic width; this marker lets the desktop and

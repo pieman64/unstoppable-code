@@ -10,7 +10,7 @@ import {
   readWorkspaceManifest,
   readWorktreeList,
 } from '@canopy/core-runtime/node/workspace/read-formats';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { validateId } from '@canopy/execution-engine/node/lib/validation';
 import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
 import { journalSchema } from '../w5-destructive-journal';

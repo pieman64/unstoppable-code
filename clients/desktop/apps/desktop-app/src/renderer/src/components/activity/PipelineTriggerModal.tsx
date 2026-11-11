@@ -1,4 +1,7 @@
-import { PipelineSourceLabel } from '@canopy/ui-shared/components/EntrySourceLabel';
+import {
+  PipelineSourceLabel,
+  pipelineOriginLabel,
+} from '@canopy/ui-shared/components/EntrySourceLabel';
 import { pipelineSupportsExecutionScope } from '@/lib/pipelineExecutionScope';
 import {
   Stack,
@@ -29,7 +32,7 @@ import { useMarketplaceList } from '@/hooks/useMarketplaceList';
 import { useSkillList } from '@/hooks/useSkillList';
 import { useSharedPipelineList } from '@/hooks/useSharedPipelineList';
 import { brandText } from '@/lib/brand';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import {
   getAgentModelAvailability,
   WORKSPACE_ROOT_REPO_ID,
@@ -51,7 +54,7 @@ import type {
   PipelineTriggerType,
   ResolvePluginCollectionsResponse,
 } from '@canopy/execution-engine/types/pipeline';
-import { DEFAULT_PIPELINE_SCOPES } from '@canopy/desktop-shared/pipelines/scope';
+import { DEFAULT_PIPELINE_SCOPES } from '@canopy/execution-engine/pipelines/scope';
 import { isSharedPipelineLocalId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import type { PluginsCache } from '@canopy/execution-engine/types/plugins';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
@@ -132,16 +135,6 @@ function filterAliasPreferencesToAliases(
     Object.entries(preferences).filter(([aliasId]) => aliasIds.has(aliasId)),
   );
 }
-
-// Note: the `shared` entries keep these maps exhaustive against
-// `PipelineInfo['source']` after Phase T7 added the shared variant.
-const SOURCE_LABEL: Record<PipelineInfo['source'], string> = {
-  bundled: 'Bundled',
-  user: 'Custom',
-  project: 'Project',
-  shared: 'Shared',
-  curated: 'Curated',
-};
 
 const UNRESOLVED_REQUIRED_BLOCKING_MESSAGE =
   "This workflow can't run until all required workflow plugins are installed locally.";
@@ -1017,6 +1010,9 @@ export function PipelineTriggerModal({
     });
   }, [hasAliases, pipelineAliases, aliasDraft, selectedPipeline, agents]);
 
+  const viewerId = cloudReady
+    ? (sharedCloudAccount?.account?.id ?? null)
+    : null;
   const combinedRows = useMemo((): PipelineTriggerRow[] => {
     if (loadState.status !== 'loaded') return [];
     return buildCombinedTriggerRows({
@@ -1027,6 +1023,8 @@ export function PipelineTriggerModal({
       searchQuery,
       triggerType,
       disabledIds: disabledPipelineIds,
+      viewerId,
+      isListed: supportsSurface,
     });
   }, [
     loadState,
@@ -1035,6 +1033,8 @@ export function PipelineTriggerModal({
     triggerScopedSharedRows,
     triggerType,
     disabledPipelineIds,
+    viewerId,
+    supportsSurface,
   ]);
 
   // Filter the unified list by the surface's execution scope using the
@@ -1983,7 +1983,9 @@ export function PipelineTriggerModal({
                             options={sourceFilterOptions.map((filter) => ({
                               value: filter,
                               label:
-                                filter === 'all' ? 'All' : SOURCE_LABEL[filter],
+                                filter === 'all'
+                                  ? 'All'
+                                  : pipelineOriginLabel(filter),
                             }))}
                           />
                         </div>
@@ -2067,8 +2069,14 @@ export function PipelineTriggerModal({
                                             owner={row.info.owner}
                                           />
                                         ) : (
-                                          <PipelineSourceLabel>
-                                            {SOURCE_LABEL[row.info.source]}
+                                          <PipelineSourceLabel
+                                            audience={
+                                              row.info.remote?.shareScope
+                                            }
+                                          >
+                                            {pipelineOriginLabel(
+                                              row.info.source,
+                                            )}
                                           </PipelineSourceLabel>
                                         )}
                                         {isHydrating && <LoadingSpinner />}

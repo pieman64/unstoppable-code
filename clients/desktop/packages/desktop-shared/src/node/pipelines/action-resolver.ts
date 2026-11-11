@@ -13,12 +13,12 @@ import type {
   PipelinePackageCapabilityOverlay,
 } from '@canopy/execution-engine/types/pipeline';
 import { parseLogFormatHint } from '@canopy/execution-engine/types/pipeline';
-import { normalizeActionScopes } from '@canopy/desktop-shared/pipelines/scope';
+import { normalizeActionScopes } from '@canopy/execution-engine/pipelines/scope';
 import {
   getBundledActionsDir,
   getProjectActionsDir,
   getProjectActionsDirCandidates,
-} from './config-paths';
+} from '@canopy/execution-engine/node/pipelines/config-paths';
 
 const ACTION_FILE_NAME = 'action.yml';
 

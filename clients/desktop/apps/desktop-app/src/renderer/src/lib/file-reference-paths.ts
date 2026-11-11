@@ -20,7 +20,7 @@ function normalizePathSeparators(
   style: AbsolutePathStyle,
 ): string {
   if (style === 'posix') {
-    return pathValue.split('\\').join('/');
+    return pathValue;
   }
   return pathValue.split('/').join('\\');
 }

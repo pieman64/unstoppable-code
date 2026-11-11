@@ -1,19 +1,11 @@
+import type { PipelineTrustedCaller } from '@canopy/agent-actions';
 import type { PipelineHostActionCaller } from '@canopy/desktop-shared/node/pipelines/executor/types';
-import { PipelineHostRefusal } from '@canopy/desktop-shared/pipelines/host-actions';
+import { PipelineHostRefusal } from '@canopy/execution-engine/pipelines/host-actions';
 import type { ProjectOwnerContext } from '@canopy/desktop-shared/types';
-import type { PipelineAgentChatAddress } from '@canopy/execution-engine/types/pipeline';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
 
-/** A pipeline step acting through the explicit-target actions; built only by desktop main. */
-export interface PipelineTrustedCaller {
-  executionId: string;
-  pipelineId?: string;
-  stepId: string;
-  /** The run's recorded owner (`execution_context`). */
-  owner: ProjectOwnerContext;
-  /** The agent whose rules apply to an agent-originated run (`agent_origin`). */
-  agentOrigin?: PipelineAgentChatAddress;
-}
+// The shared caller, which the web host binds for cloud projects too.
+export type { PipelineTrustedCaller } from '@canopy/agent-actions';
 
 /** Throws `PipelineHostRefusal('owner_context_unavailable')` for an unparseable owner. */
 export function pipelineTrustedCaller(

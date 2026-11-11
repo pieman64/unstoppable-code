@@ -6,7 +6,7 @@ import {
   hostPlatformOperatingSystem,
   PlatformServicesError,
 } from '@canopy/core-platform';
-import { getCanopyRuntimeMode } from '@canopy/desktop-shared/canopy-paths';
+import { getCanopyRuntimeMode } from '@canopy/execution-engine/canopy-paths';
 import { BRAND } from '@canopy/brand/current';
 import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import {

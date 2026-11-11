@@ -15,7 +15,7 @@ import { useBranchDisplayStore } from '@/stores/branchDisplayStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { ProjectIcon } from '../shared/ProjectIcon';
 import { describeWorkspaceSubtitle } from '@canopy/ui-app/code/shell/WorkspaceMultiSelectPicker';
-import { DiffBadge } from './DiffBadge';
+import { DiffCounts } from './DiffCounts';
 import { getWorktreeRecordKey } from './worktree-record-key';
 
 export interface ExistingWorktreeSelection {
@@ -258,7 +258,7 @@ export function ExistingWorktreePicker({
                             description={candidate.worktreeId}
                             trailing={
                               hasLineChanges ? (
-                                <DiffBadge stats={candidateStats} compact />
+                                <DiffCounts stats={candidateStats} compact />
                               ) : undefined
                             }
                           >

@@ -286,7 +286,7 @@ async function main() {
     await import('@canopy/desktop-shared/node/codex-runtime/index.ts');
   const runtime = runtimeModule.default ?? runtimeModule;
   const configPaths =
-    await import('@canopy/desktop-shared/pipelines/config-paths.ts');
+    await import('@canopy/execution-engine/pipelines/config-paths.ts');
   const getBundledCodexBinaryPath = pick(
     configPaths,
     'getBundledCodexBinaryPath',

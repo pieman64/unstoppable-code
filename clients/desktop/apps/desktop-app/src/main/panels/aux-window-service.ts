@@ -34,9 +34,14 @@
  *   opener contract, so it is blocked. Bounds are validated against the visible displays with the
  *   same `validateWindowBounds` helper the main/App Advisor windows use.
  */
-import type { BrowserWindow, HandlerDetails } from 'electron';
-import { isPanelAuxWindowFrameName } from '@canopy/protocol';
+import { BrowserWindow, type HandlerDetails, type WebContents } from 'electron';
+import {
+  isPanelAuxWindowFrameName,
+  makePanelAuxWindowFrameName,
+  type SerializablePanelLayoutFile,
+} from '@canopy/protocol';
 import { BRAND } from '@canopy/brand/current';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { validateWindowBounds } from '../lib/window-state';
 import { getWindowTitleBarOptions } from '../lib/window-title-bar';
 import { openExternalGuarded } from '../lib/open-external';
@@ -56,6 +61,61 @@ const AUX_WINDOW_MIN_SIZE = {
 };
 
 const SAFE_EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
+
+/** Linux DOM outer bounds include CSD shadows; window.open consumes native bounds. */
+export function canonicalizePanelAuxWindowBounds(
+  layout: SerializablePanelLayoutFile,
+  sender: WebContents,
+): SerializablePanelLayoutFile {
+  if (hostPlatformOperatingSystem() !== 'linux' || !layout.poppedOut?.length)
+    return layout;
+  try {
+    if (sender.isDestroyed()) return layout;
+    const owner = sender.mainFrame;
+    if (owner.detached) return layout;
+    const windows = BrowserWindow.getAllWindows();
+    return {
+      ...layout,
+      poppedOut: layout.poppedOut.map((entry) => {
+        for (const win of windows) {
+          try {
+            if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+            const contents = win.webContents;
+            const frame = contents.mainFrame;
+            const opener = contents.opener;
+            if (
+              frame.detached ||
+              !opener ||
+              opener.detached ||
+              opener.frameTreeNodeId !== owner.frameTreeNodeId ||
+              frame.name !== makePanelAuxWindowFrameName(entry.windowId) ||
+              !isAllowedPanelAuxNavigation(contents.getURL())
+            ) {
+              continue;
+            }
+            const bounds = win.getNormalBounds();
+            if (
+              [bounds.x, bounds.y, bounds.width, bounds.height].every(
+                Number.isFinite,
+              ) &&
+              bounds.width > 0 &&
+              bounds.height > 0
+            ) {
+              return { ...entry, bounds };
+            }
+          } catch {
+            // A closing native window/frame may become unavailable during save.
+            continue;
+          }
+        }
+        return entry;
+      }),
+    };
+  } catch {
+    // Keep the renderer snapshot when the owning renderer is closing.
+    return layout;
+  }
+}
 
 export interface PanelAuxWindowHardeningOptions {
   routeAppLink: (url: string) => Promise<unknown>;

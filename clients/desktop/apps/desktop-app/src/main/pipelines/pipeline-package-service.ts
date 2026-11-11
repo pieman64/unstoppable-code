@@ -123,11 +123,11 @@ import {
 } from '@canopy/protocol/skills';
 import { BRAND } from '@canopy/brand/current';
 import { parseFrontmatterAndBody } from '../lib/frontmatter';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import {
   assignStepIds,
   resolvePipelineModelAliasLenient,
-} from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+} from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
   interpolateExpression,
   templateInputReferences,
@@ -144,7 +144,7 @@ import { getStoredPipelinePathWithSource } from '@canopy/desktop-shared/pipeline
 import {
   collectPipelineCapabilityRefs,
   getPipelinePluginDefaultRef,
-} from '@canopy/desktop-shared/pipelines/plugin-collections';
+} from '@canopy/execution-engine/pipelines/plugin-collections';
 import { getShareablePluginRefKey } from '@canopy/execution-engine/plugin-refs';
 import {
   DEFAULT_CLAUDE_MODEL,

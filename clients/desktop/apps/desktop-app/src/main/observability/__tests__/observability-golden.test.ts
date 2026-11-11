@@ -5,6 +5,8 @@
 // here, and the harness in `golden/` fixes them for every host. Any change
 // to a stored line or an aggregated read fails the snapshot.
 import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import type { OpenCodeAccountSnapshot } from '@canopy/protocol/portal';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import type {
@@ -42,6 +44,17 @@ import { CHUNKING_SCENARIO, GOLDEN_SCENARIOS } from './golden/scenarios';
 
 const mockPricing = GOLDEN_PRICING_STATE;
 const mockAccount = goldenAccount;
+let mockOpenCodeAccounts: OpenCodeAccountSnapshot | undefined;
+const mockRefreshOpenCodeAccounts = jest.fn<Promise<void>, []>();
+
+jest.mock('../../opencode/connection', () => ({
+  refreshOpenCodeAccounts: (): Promise<void> => mockRefreshOpenCodeAccounts(),
+}));
+jest.mock('../../opencode/account-information', () => ({
+  peekOpenCodeAccounts: (): OpenCodeAccountSnapshot | undefined =>
+    mockOpenCodeAccounts,
+  onOpenCodeAccountsChanged: (): (() => void) => (): void => undefined,
+}));
 
 /** The incarnation `getObservabilityService()` returns to producers. */
 let mockCurrentService: unknown = null;
@@ -297,6 +310,91 @@ async function captureScenario(
     throw error;
   }
 }
+
+it('observability:refresh-usage projects OpenCode quota outcomes without persisting account facts', async () => {
+  useGoldenTimers();
+  const host = createDesktopHost(setCurrentService);
+  try {
+    await host.boot();
+    const service = host.incarnations[0]?.service;
+    if (!service) throw new Error('Observability service did not boot');
+    const ready: OpenCodeAccountSnapshot = {
+      status: 'ready',
+      updatedAt: '2026-11-07T12:00:00.000Z',
+      providers: [
+        {
+          id: 'opencode-go',
+          name: 'OpenCode Go',
+          accounts: [
+            {
+              label: 'Volatile fixture account',
+              method: 'key',
+              selected: true,
+              needsSignIn: false,
+              usage: {
+                status: 'ready',
+                plan: 'OpenCode Go',
+                checkedAt: '2026-11-07T12:00:00.000Z',
+                windows: [
+                  {
+                    id: 'rolling',
+                    percent: 25,
+                    resetsAt: '2026-11-08T00:00:00.000Z',
+                  },
+                  {
+                    id: 'weekly',
+                    percent: 5,
+                    resetsAt: '2026-11-12T00:00:00.000Z',
+                  },
+                  {
+                    id: 'monthly',
+                    percent: 70,
+                    resetsAt: '2026-12-01T00:00:00.000Z',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    mockRefreshOpenCodeAccounts.mockImplementationOnce(() => {
+      mockOpenCodeAccounts = ready;
+      return Promise.resolve();
+    });
+    expect(service.loadSnapshot().usage.openCodeAccounts).toBeUndefined();
+    expect(mockRefreshOpenCodeAccounts).not.toHaveBeenCalled();
+    await service.refreshProviderUsage('opencode');
+    expect(mockRefreshOpenCodeAccounts).toHaveBeenCalledTimes(1);
+    expect(service.loadSnapshot().usage.openCodeAccounts).toEqual(ready);
+    await service.flush();
+    const stored = await readFile(
+      join(host.dataRoot, 'agent-observability', 'snapshot.json'),
+      'utf8',
+    );
+    expect(stored).not.toContain('openCodeAccounts');
+    expect(stored).not.toContain('Volatile fixture account');
+    const failed: OpenCodeAccountSnapshot = {
+      status: 'unavailable',
+      updatedAt: '2026-11-07T12:01:00.000Z',
+      providers: [],
+    };
+    mockRefreshOpenCodeAccounts.mockImplementationOnce(() => {
+      mockOpenCodeAccounts = failed;
+      return Promise.resolve();
+    });
+    await service.refreshProviderUsage('opencode');
+    expect(service.loadSnapshot().usage.openCodeAccounts).toEqual(failed);
+    expect(JSON.stringify(service.loadSnapshot())).not.toContain(
+      'Volatile fixture account',
+    );
+  } finally {
+    await disposeAll(host);
+    mockOpenCodeAccounts = undefined;
+    mockRefreshOpenCodeAccounts.mockReset();
+    restoreGoldenEnvironment(setCurrentService);
+  }
+});
 
 describe.each(GOLDEN_SCENARIOS.map((scenario) => [scenario.name, scenario]))(
   'observability golden: %s',

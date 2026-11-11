@@ -37,7 +37,7 @@ import {
 } from '@canopy/execution-engine/lib/codex-speed';
 import type { AgentModelConfig } from '@canopy/desktop-shared/types';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
-import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
   getTriggerTypes,
   type Pipeline,

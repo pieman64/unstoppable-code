@@ -13,7 +13,7 @@ import {
   getInternalLegacySharedEnvironmentConfigFilePath,
   getLegacyEnvironmentConfigFilePath,
   getUserEnvironmentFilePath,
-} from '@canopy/desktop-shared/canopy-paths';
+} from '@canopy/execution-engine/canopy-paths';
 import {
   DEFAULT_ENVIRONMENT_IDS,
   createDefaultEnvironmentConfig,

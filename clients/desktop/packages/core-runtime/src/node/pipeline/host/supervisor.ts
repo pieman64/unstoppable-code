@@ -1,6 +1,8 @@
 import {
   isWorkerPipelineOwnerAction,
+  WORKER_PIPELINE_LIST_LIMIT_MAX,
   WorkerPipelineExecutionSchema,
+  WorkerPipelineExecutionViewSchema,
   WorkerPipelineRecoveryCheckpointResultSchema,
   WorkerPipelineRecoverySweepResultSchema,
   type CanopyHostExecution,
@@ -8,8 +10,10 @@ import {
   type WorkerPipelineControlResult,
   type WorkerPipelineExecution,
   type WorkerPipelineExecutionStartParams,
+  type WorkerPipelineExecutionView,
   type WorkerPipelineHostLaunch,
   type WorkerPipelineHostRequest,
+  type WorkerPipelinePortableLaunch,
   type WorkerPipelineRecoveryCheckpointResult,
   type WorkerPipelineRecoverySweepParams,
   type WorkerPipelineRecoverySweepResult,
@@ -29,8 +33,11 @@ import {
   pipelineLaunchUnavailableError,
   pipelineModelStepsUnsupportedError,
   pipelineOwnerUnavailableError,
+  pipelinePortableLaunchRefusedError,
   pipelineStartFailedError,
   type PipelineControlRequest,
+  type PipelineExecutionListPage,
+  type PipelineExecutionListQuery,
   type PipelineExecutionNotification,
   type PipelineExecutionObserver,
   type PipelineExecutionWorker,
@@ -54,6 +61,19 @@ export interface PipelineHostProcess {
   on(event: 'exit', listener: (code: number) => void): unknown;
 }
 
+/**
+ * An owner that reaches the supervisor over a network, such as the web core
+ * over the relay (CAN-6102), rather than the local app.
+ */
+export interface PipelineRemoteOwner {
+  /**
+   * The owner's delegation lease TTL. Owner-bound runs keep running this
+   * long after the owner's subscription ends, and host requests wait this
+   * long for it to return.
+   */
+  readonly leaseTtlMs: number;
+}
+
 export interface PipelineHostSupervisorOptions {
   /** Starts a new pipeline host process. Throws when it cannot. */
   readonly launch: () => PipelineHostProcess;
@@ -72,6 +92,18 @@ export interface PipelineHostSupervisorOptions {
     execution: CanopyHostExecution & {
       pipelineLaunch: WorkerPipelineHostLaunch;
     },
+  ) => Promise<PipelineHostLaunch>;
+  /**
+   * Maps a portable start (CAN-6161) to this host's own paths, as a cloud
+   * runner does, with the secrets its bindings redeemed as the launch's
+   * `secretEnv`. Without it the supervisor runs only host-local launches.
+   * Throws {@link pipelineLaunchRefusedError}.
+   */
+  readonly resolvePortableLaunch?: (
+    params: WorkerPipelineExecutionStartParams & {
+      portableLaunch: WorkerPipelinePortableLaunch;
+    },
+    secrets: RedeemedExecutionSecrets,
   ) => Promise<PipelineHostLaunch>;
   /** Holds the daemon up while `executionId` runs; returns its release. */
   readonly holdExecution?: (executionId: string) => () => void;
@@ -97,6 +129,16 @@ export interface PipelineHostSupervisorOptions {
   readonly ownerWaitMs?: number;
   /** How long the owner may be gone before owner-bound runs pause. Default 10_000. */
   readonly ownerAbsentPauseMs?: number;
+  /**
+   * A remote owner (CAN-6102). Its lease TTL replaces `ownerWaitMs` and
+   * `ownerAbsentPauseMs`, an owner-loss pause records `owner_lost` instead of
+   * `app_shutdown`, and an owner request still unanswered near its deadline
+   * pauses its run instead of failing its step. An owner-bound start it
+   * refuses `ownerUnavailable` may be retried with its idempotency key
+   * (CAN-6161). Without it the owner is the local app and both timers stay
+   * 10 s.
+   */
+  readonly remoteOwner?: PipelineRemoteOwner;
 }
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -111,6 +153,13 @@ const UNDELIVERED_NOTIFICATIONS_MAX = 32;
 /** How long they are kept once the run pauses or ends. */
 const UNDELIVERED_NOTIFICATIONS_TTL_MS = 60_000;
 const OWNER_ABSENT_PAUSE_MS = 10_000;
+/**
+ * How long before an owner request's deadline a remote owner's silence
+ * pauses the run: the host fails the step at the deadline itself.
+ */
+const HUNG_OWNER_PAUSE_LEAD_MS = 5_000;
+/** The longest delay a timer takes. */
+const TIMER_MAX_MS = 2_147_483_647;
 
 /** Why a host request failed; the host's own message is never kept. */
 class HostRequestFailure extends Error {
@@ -152,6 +201,15 @@ interface LiveHost {
   idleTimer?: ReturnType<typeof setTimeout>;
 }
 
+/** A start's launch, checked and ready to resolve for the host. */
+interface PreparedStart {
+  readonly ownerBound: boolean;
+  /** With the secrets the start's bindings redeemed, which only a portable start reads. */
+  readonly resolve: (
+    secrets: RedeemedExecutionSecrets,
+  ) => Promise<PipelineHostLaunch>;
+}
+
 function isSettled(execution: WorkerPipelineExecution): boolean {
   return (
     execution.status === 'paused' || isTerminalPipelineExecution(execution)
@@ -164,6 +222,27 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+/** A list page as the host answers it (CAN-6117); `null` for anything else. */
+function parseHostListPage(value: unknown): PipelineExecutionListPage | null {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('executions' in value) ||
+    !('more' in value) ||
+    !Array.isArray(value.executions) ||
+    value.executions.length > WORKER_PIPELINE_LIST_LIMIT_MAX ||
+    typeof value.more !== 'boolean'
+  )
+    return null;
+  const executions: WorkerPipelineExecutionView[] = [];
+  for (const item of value.executions) {
+    const parsed = WorkerPipelineExecutionViewSchema.safeParse(item);
+    if (!parsed.success) return null;
+    executions.push(parsed.data);
+  }
+  return { executions, more: value.more };
+}
+
 /**
  * Runs host-local pipeline launches in a supervised pipeline host
  * (CAN-5086): starts the host on first use, routes requests and execution
@@ -171,6 +250,12 @@ function delay(ms: number): Promise<void> {
  * that ends unexpectedly takes its executions with it: their step process
  * groups are killed and their event streams end with
  * `worker.pipeline.hostLost`. Recovery controls are not served (D10).
+ *
+ * Owner-bound runs keep running while their owner is away, whether or not
+ * the current step needs it, until the owner-absence timer pauses them all.
+ * With a remote owner that timer is the delegation lease: once it lapses
+ * the owner may hand the run to another runner, so nothing keeps running
+ * past it (CAN-6102).
  */
 export class PipelineHostSupervisor implements PipelineExecutionWorker {
   private host: LiveHost | null = null;
@@ -205,9 +290,20 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
   private readonly offOwnerChange: (() => void) | undefined;
 
   public constructor(private readonly options: PipelineHostSupervisorOptions) {
+    const ttl = options.remoteOwner?.leaseTtlMs;
+    if (
+      ttl !== undefined &&
+      !(Number.isSafeInteger(ttl) && ttl > 0 && ttl <= TIMER_MAX_MS)
+    )
+      throw new RangeError('The owner lease TTL is out of range.');
     this.offOwnerChange = options.owner?.onOwnerChange((subscribed) =>
       this.ownerChanged(subscribed),
     );
+  }
+
+  /** Whether this supervisor maps portable starts to its own paths (CAN-6161). */
+  public get portableLaunches(): boolean {
+    return this.options.resolvePortableLaunch !== undefined;
   }
 
   /** Starts the host if none runs. Throws {@link pipelineHostUnavailableError}. */
@@ -218,12 +314,10 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
   public async start(
     params: WorkerPipelineExecutionStartParams,
     signal: AbortSignal,
-    _secrets: RedeemedExecutionSecrets,
+    secrets: RedeemedExecutionSecrets,
     execution?: CanopyHostExecution,
   ): Promise<WorkerPipelineExecution> {
-    void _secrets;
-    const pipelineLaunch = execution?.pipelineLaunch;
-    if (!execution || !pipelineLaunch) throw pipelineLaunchUnavailableError();
+    const prepared = this.prepareStart(params, execution);
     const { executionId } = params;
     const joined = this.starts.get(executionId);
     if (joined) return joined;
@@ -232,7 +326,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       const current = await this.get(executionId);
       if (current) return current;
     }
-    const run = this.runStart(params, signal, { ...execution, pipelineLaunch });
+    const run = this.runStart(params, signal, prepared, secrets);
     this.starts.set(executionId, run);
     try {
       return await run;
@@ -241,17 +335,73 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     }
   }
 
+  /**
+   * The launch a start runs: its host-local launch, or its portable one on
+   * a supervisor that maps them (CAN-6161), never both.
+   */
+  private prepareStart(
+    params: WorkerPipelineExecutionStartParams,
+    execution: CanopyHostExecution | undefined,
+  ): PreparedStart {
+    const { portableLaunch } = params;
+    const pipelineLaunch = execution?.pipelineLaunch;
+    if (portableLaunch !== undefined) {
+      const resolve = this.options.resolvePortableLaunch;
+      if (!resolve || pipelineLaunch !== undefined)
+        throw pipelinePortableLaunchRefusedError();
+      return {
+        ownerBound: portableLaunch.ownerBound === true,
+        resolve: (secrets) => resolve({ ...params, portableLaunch }, secrets),
+      };
+    }
+    if (!execution || !pipelineLaunch) throw pipelineLaunchUnavailableError();
+    return {
+      ownerBound: pipelineLaunch.ownerBound === true,
+      resolve: () =>
+        this.options.resolveLaunch(params, { ...execution, pipelineLaunch }),
+    };
+  }
+
+  /**
+   * Admits a start before its secrets are redeemed: refuses a launch it
+   * cannot run, or an owner-bound one with no owner subscribed, which a
+   * remote owner may retry with the same key (CAN-6161). Resolves the run a
+   * resend of a start already under way joins.
+   */
+  public async admitStart(
+    params: WorkerPipelineExecutionStartParams,
+    execution?: CanopyHostExecution,
+  ): Promise<WorkerPipelineExecution | null> {
+    const prepared = this.prepareStart(params, execution);
+    const { executionId } = params;
+    const joined = this.starts.get(executionId);
+    if (joined) return joined;
+    if (this.host?.executions.has(executionId)) {
+      const current = await this.get(executionId);
+      if (current) return current;
+    }
+    if (prepared.ownerBound && this.options.owner?.ownerSubscribed() !== true)
+      throw pipelineOwnerUnavailableError({
+        retryable: this.options.remoteOwner !== undefined,
+      });
+    return null;
+  }
+
   private async runStart(
     params: WorkerPipelineExecutionStartParams,
     signal: AbortSignal,
-    execution: CanopyHostExecution & {
-      pipelineLaunch: WorkerPipelineHostLaunch;
-    },
+    prepared: PreparedStart,
+    secrets: RedeemedExecutionSecrets,
   ): Promise<WorkerPipelineExecution> {
-    const ownerBound = execution.pipelineLaunch.ownerBound === true;
-    if (ownerBound && this.options.owner?.ownerSubscribed() !== true)
-      throw pipelineOwnerUnavailableError();
-    const start = await this.options.resolveLaunch(params, execution);
+    // The owner left since admission. A retry would find the secret grant
+    // already redeemed, so only a start without bindings may retry.
+    if (prepared.ownerBound && this.options.owner?.ownerSubscribed() !== true)
+      throw pipelineOwnerUnavailableError({
+        retryable:
+          this.options.remoteOwner !== undefined &&
+          params.secrets === undefined,
+      });
+    const start = await prepared.resolve(secrets);
     const host = await this.liveHost();
     if (signal.aborted)
       throw pipelineStartFailedError(
@@ -276,7 +426,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     // A run can settle in the same tick its start answers.
     if (!host.exited && !settledEarly && !isSettled(projection)) {
       host.executions.add(executionId);
-      if (ownerBound) {
+      if (prepared.ownerBound) {
         this.ownerBound.add(executionId);
         // The owner went past the deadline while this start was pending.
         if (this.ownerGone) void this.pauseOwnerBound();
@@ -345,27 +495,45 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     return Promise.reject(pipelineLaunchUnavailableError());
   }
 
-  public async get(
-    executionId: string,
-  ): Promise<WorkerPipelineExecution | null> {
+  /** One read the host answers; a host that exits under it is lost, as during a start. */
+  private async read(request: PipelineHostRequest): Promise<unknown> {
     const host = await this.liveHost();
-    let value: unknown;
     try {
-      value = await this.send(
-        host,
-        { op: 'get', executionId },
-        this.requestTimeoutMs,
-      );
+      return await this.send(host, request, this.requestTimeoutMs);
     } catch (error) {
-      // A host that exits under the request is lost, as during a start.
       if (error instanceof HostRequestFailure && error.reason === 'exited')
         throw pipelineHostLostError();
       throw pipelineHostUnavailableError();
     }
+  }
+
+  public async get(
+    executionId: string,
+  ): Promise<WorkerPipelineExecution | null> {
+    const value = await this.read({ op: 'get', executionId });
     if (value === null) return null;
     const parsed = WorkerPipelineExecutionSchema.safeParse(value);
     if (!parsed.success) throw pipelineHostUnavailableError();
     return parsed.data;
+  }
+
+  public async inspect(
+    executionId: string,
+  ): Promise<WorkerPipelineExecutionView | null> {
+    const value = await this.read({ op: 'get', executionId, detail: true });
+    if (value === null) return null;
+    const parsed = WorkerPipelineExecutionViewSchema.safeParse(value);
+    if (!parsed.success || parsed.data.detail === undefined)
+      throw pipelineHostUnavailableError();
+    return parsed.data;
+  }
+
+  public async list(
+    query: PipelineExecutionListQuery,
+  ): Promise<PipelineExecutionListPage> {
+    const page = parseHostListPage(await this.read({ op: 'list', query }));
+    if (page === null) throw pipelineHostUnavailableError();
+    return page;
   }
 
   public async cancel(
@@ -504,6 +672,22 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
 
   private get requestTimeoutMs(): number {
     return this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
+  }
+
+  private get ownerWaitMs(): number {
+    return (
+      this.options.remoteOwner?.leaseTtlMs ??
+      this.options.ownerWaitMs ??
+      OWNER_WAIT_MS
+    );
+  }
+
+  private get ownerAbsentPauseMs(): number {
+    return (
+      this.options.remoteOwner?.leaseTtlMs ??
+      this.options.ownerAbsentPauseMs ??
+      OWNER_ABSENT_PAUSE_MS
+    );
   }
 
   private liveHost(): Promise<LiveHost> {
@@ -671,8 +855,11 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       return;
     const abort = new AbortController();
     host.hostCalls.set(requestId, { executionId, abort });
+    const hung = this.armHungOwnerPause(request);
     try {
       const settlement = await this.settleHostRequest(request, abort.signal);
+      // The owner answered: only an unanswered request pauses its run.
+      if (hung !== undefined) clearTimeout(hung);
       if (settlement && !abort.signal.aborted)
         await this.send(
           host,
@@ -680,6 +867,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
           this.requestTimeoutMs,
         ).catch(() => undefined);
     } finally {
+      if (hung !== undefined) clearTimeout(hung);
       if (host.hostCalls.get(requestId)?.abort === abort)
         host.hostCalls.delete(requestId);
     }
@@ -730,10 +918,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         resolve(present);
       };
       const aborted = (): void => done(false);
-      const timer = setTimeout(
-        () => done(false),
-        this.options.ownerWaitMs ?? OWNER_WAIT_MS,
-      );
+      const timer = setTimeout(() => done(false), this.ownerWaitMs);
       const off = owner.onOwnerChange((subscribed) => {
         if (subscribed) done(true);
       });
@@ -761,19 +946,57 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       this.ownerAbsentTimer = undefined;
       this.ownerGone = true;
       void this.pauseOwnerBound();
-    }, this.options.ownerAbsentPauseMs ?? OWNER_ABSENT_PAUSE_MS);
+    }, this.ownerAbsentPauseMs);
     timer.unref?.();
     this.ownerAbsentTimer = timer;
   }
 
-  private async pauseOwnerBound(): Promise<void> {
+  private async pauseOwnerBound(
+    executionIds: readonly string[] = [...this.ownerBound],
+  ): Promise<void> {
     const host = this.host;
-    if (!host || host.exited || this.ownerBound.size === 0) return;
+    if (!host || host.exited || executionIds.length === 0) return;
     await this.send(
       host,
-      { op: 'pause', executionIds: [...this.ownerBound] },
+      {
+        op: 'pause',
+        executionIds: [...executionIds],
+        // Desktop keeps `app_shutdown`: its resume after restart looks for it.
+        ...(this.options.remoteOwner && { reason: 'owner_lost' as const }),
+      },
       this.options.checkpointTimeoutMs ?? CHECKPOINT_TIMEOUT_MS,
     ).catch(() => undefined);
+  }
+
+  /**
+   * With a remote owner, an owner request still unanswered shortly before
+   * its deadline pauses its run with `owner_lost`; the host would fail the
+   * step at the deadline (CAN-6102). The owner may be silent, as in a web
+   * core redeploy that keeps the relay open, or away.
+   */
+  private armHungOwnerPause(
+    request: WorkerPipelineHostRequest,
+  ): ReturnType<typeof setTimeout> | undefined {
+    if (
+      !this.options.remoteOwner ||
+      !isWorkerPipelineOwnerAction(request.request.action)
+    )
+      return undefined;
+    const deadline = Date.parse(request.deadlineAt);
+    if (!Number.isFinite(deadline)) return undefined;
+    const { executionId } = request;
+    const timer = setTimeout(
+      () => {
+        if (this.ownerBound.has(executionId))
+          void this.pauseOwnerBound([executionId]);
+      },
+      Math.min(
+        TIMER_MAX_MS,
+        Math.max(0, deadline - Date.now() - HUNG_OWNER_PAUSE_LEAD_MS),
+      ),
+    );
+    timer.unref?.();
+    return timer;
   }
 
   /** Takes the notifications no stream has received yet for `executionId`. */

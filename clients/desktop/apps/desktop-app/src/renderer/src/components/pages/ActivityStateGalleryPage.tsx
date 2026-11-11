@@ -9,6 +9,8 @@ import {
   Stack,
   Chip,
   HeaderActionButton,
+  Dot,
+  type DotTone,
   Heading,
   PanelSection,
   ProgressBar,
@@ -103,6 +105,18 @@ const TONE_CLASS_NAMES: Record<ActivityGalleryTone, string> = {
   warning: 'fg-warning',
   positive: 'fg-positive',
   destructive: 'fg-destructive',
+};
+
+/**
+ * A row's tone as the shared dot: in-progress rows ("Creating pull
+ * request…", "Refreshing…") are running work, so they take `working`.
+ */
+const DOT_TONES: Record<ActivityGalleryTone, DotTone> = {
+  neutral: 'filter',
+  accent: 'working',
+  warning: 'attention',
+  positive: 'success',
+  destructive: 'danger',
 };
 
 function SectionIcon({
@@ -200,10 +214,7 @@ function DemoBody({
                 key={`${row.label}-${index}`}
               >
                 <div className="flex items-center min-h-9 gap-2 px-2.5 py-2 text-xs">
-                  <span
-                    aria-hidden="true"
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${TONE_CLASS_NAMES[rowTone]}`}
-                  />
+                  <Dot tone={DOT_TONES[rowTone]} />
                   <span className="min-w-0 flex-1 truncate fg-primary">
                     {row.label}
                     {row.detail && (

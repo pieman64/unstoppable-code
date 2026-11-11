@@ -271,6 +271,61 @@ describe('pipeline host supervisor owner channel (CAN-5771)', () => {
     await h.supervisor.stop();
   });
 
+  it('a second answer for an applied request is a no-op (CAN-6171)', async () => {
+    const h = harness();
+    const owner = await subscribeOwner(h.channel);
+    const host = await startRun(h, 'run-1', true);
+    host.send({
+      kind: 'hostRequest',
+      request: hostRequest('run-1', 'request-1'),
+    });
+    await settle();
+    const respond =
+      h.channel.handlers.instructions['worker.pipeline.hostRequest.respond'];
+    const answer = (
+      branch: string,
+      path: string,
+    ): Parameters<typeof respond> => [
+      {
+        executionId: 'run-1',
+        requestId: 'request-1',
+        result: { status: 'success', outputs: { branch } },
+      },
+      {
+        ...context,
+        execution: {
+          childEnvironment: {},
+          pipelineHostStep: { pathOutputs: { path }, timeout: 'none' },
+        },
+      },
+    ];
+    await expect(
+      respond(...answer('first', '/work/first')),
+    ).resolves.toMatchObject({
+      outcome: 'applied',
+    });
+    // A later answer, from any owner session, changes nothing.
+    await expect(
+      respond(...answer('second', '/work/second')),
+    ).resolves.toMatchObject({
+      outcome: 'already_settled',
+    });
+    await settle();
+    expect(host.of('hostSettled')).toEqual([
+      {
+        op: 'hostSettled',
+        requestId: 'request-1',
+        settlement: {
+          kind: 'settled',
+          result: { status: 'success', outputs: { branch: 'first' } },
+          values: { pathOutputs: { path: '/work/first' }, timeout: 'none' },
+        },
+      },
+    ]);
+    owner.stop();
+    await h.supervisor.stop();
+  });
+
   it('relays a model step owner request and its owner values back (CAN-5095)', async () => {
     const h = harness();
     const owner = await subscribeOwner(h.channel);

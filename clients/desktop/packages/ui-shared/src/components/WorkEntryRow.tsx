@@ -1,5 +1,8 @@
 'use client';
 
+import type { WorkEntryAutoDeleteRowState } from '@canopy/protocol';
+import { SidebarAutoDeleteBadge } from './SidebarAutoDeleteBadge';
+
 import { Dot } from './Badge';
 import {
   memo,
@@ -201,6 +204,10 @@ export interface WorkEntryRowProps {
    * {@link pinnedSurface}, which marks a sticky copy of the selected row.
    */
   pinnedToTop?: boolean;
+  /** Agent-armed removal intent, outside the live-status priority chain. */
+  autoDelete?: WorkEntryAutoDeleteRowState;
+  onAutoDeleteActivate?: () => void;
+  autoDeleteReadOnly?: boolean;
   /**
    * When the entry last had activity (epoch ms or ISO string). Set, an idle
    * row shows its compact age (`5m`, `3h`, `2d`) on the right. A live status
@@ -350,6 +357,9 @@ function WorkEntryRowImpl({
   hasUnread = false,
   sharedWithTeammates = false,
   pinnedToTop = false,
+  autoDelete,
+  onAutoDeleteActivate,
+  autoDeleteReadOnly = false,
   lastActivityAt,
   pinnedSurface,
   disableSelectedPin = false,
@@ -417,7 +427,13 @@ function WorkEntryRowImpl({
   const actionCount = compactActions
     ? 2
     : (onDelete ? 1 : 0) + (hasMenu ? 1 : 0);
-  const coarseActionCount = compactActions ? (hasMenu ? 1 : 0) : actionCount;
+  const coarseActionCount = autoDelete
+    ? 0
+    : compactActions
+      ? hasMenu
+        ? 1
+        : 0
+      : actionCount;
 
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -550,7 +566,8 @@ function WorkEntryRowImpl({
   // status (or the actions) carries the coarse-pointer action reserve.
   // Compact rows draw the pin beside the age instead of as a badge.
   const pinnedBadge = pinnedToTop && !compactActions;
-  const hasMetadataBadge = sharedWithTeammates || pinnedBadge;
+  const hasMetadataBadge =
+    autoDelete !== undefined || sharedWithTeammates || pinnedBadge;
   const coarseReserveClassName = hasTrailingStatus
     ? ''
     : coarseActionCount === 2
@@ -663,7 +680,7 @@ function WorkEntryRowImpl({
           compactActions
             ? compactTitleReserveClassName(coarseActionCount, hasMetadataBadge)
             : titleReserveClassName(
-                actionCount,
+                autoDelete ? 0 : actionCount,
                 hasTrailingStatus,
                 hasMetadataBadge,
               )
@@ -672,6 +689,39 @@ function WorkEntryRowImpl({
       >
         {title}
       </p>
+      {autoDelete && (
+        <>
+          {compactActions && (
+            <WorkEntryRowCompactActions
+              inline={autoDelete !== undefined}
+              pinned={pinnedToTop}
+              onTogglePin={onTogglePin}
+              onArchive={onArchive}
+              archiveDisabledReason={archiveDisabledReason}
+              menuButtonRef={hasMenu ? menuButtonRef : undefined}
+              menuOpen={menuOpen}
+              onToggleMenu={toggleMenuFromButton}
+              testIdFor={testIdFor}
+            />
+          )}
+          {!compactActions && actionCount > 0 && (
+            <WorkEntryRowActions
+              inline={autoDelete !== undefined}
+              onDelete={onDelete}
+              deleteDisabledReason={deleteDisabledReason}
+              menuButtonRef={hasMenu ? menuButtonRef : undefined}
+              menuOpen={menuOpen}
+              onToggleMenu={toggleMenuFromButton}
+              testIdFor={testIdFor}
+            />
+          )}
+          <SidebarAutoDeleteBadge
+            autoDelete={autoDelete}
+            onActivate={onAutoDeleteActivate}
+            readOnly={autoDeleteReadOnly}
+          />
+        </>
+      )}
       {/* Persistent metadata, outside the leading slot's priority contest:
           neither pinning nor shared-ness may hide the live status glyph. */}
       {pinnedBadge && (
@@ -712,33 +762,39 @@ function WorkEntryRowImpl({
           working={showWorking}
           backgroundTasks={shownBackgroundTasks}
           attentionDot={attentionDot}
-          actionCount={actionCount}
+          actionCount={autoDelete ? 0 : actionCount}
           testIdFor={testIdFor}
           onDotActivate={showUnreadPreview}
           onDotBlur={hideUnreadPreview}
         />
       )}
-      {compactActions && (
-        <WorkEntryRowCompactActions
-          pinned={pinnedToTop}
-          onTogglePin={onTogglePin}
-          onArchive={onArchive}
-          archiveDisabledReason={archiveDisabledReason}
-          menuButtonRef={hasMenu ? menuButtonRef : undefined}
-          menuOpen={menuOpen}
-          onToggleMenu={toggleMenuFromButton}
-          testIdFor={testIdFor}
-        />
-      )}
-      {!compactActions && actionCount > 0 && (
-        <WorkEntryRowActions
-          onDelete={onDelete}
-          deleteDisabledReason={deleteDisabledReason}
-          menuButtonRef={hasMenu ? menuButtonRef : undefined}
-          menuOpen={menuOpen}
-          onToggleMenu={toggleMenuFromButton}
-          testIdFor={testIdFor}
-        />
+      {!autoDelete && (
+        <>
+          {compactActions && (
+            <WorkEntryRowCompactActions
+              inline={autoDelete !== undefined}
+              pinned={pinnedToTop}
+              onTogglePin={onTogglePin}
+              onArchive={onArchive}
+              archiveDisabledReason={archiveDisabledReason}
+              menuButtonRef={hasMenu ? menuButtonRef : undefined}
+              menuOpen={menuOpen}
+              onToggleMenu={toggleMenuFromButton}
+              testIdFor={testIdFor}
+            />
+          )}
+          {!compactActions && actionCount > 0 && (
+            <WorkEntryRowActions
+              inline={autoDelete !== undefined}
+              onDelete={onDelete}
+              deleteDisabledReason={deleteDisabledReason}
+              menuButtonRef={hasMenu ? menuButtonRef : undefined}
+              menuOpen={menuOpen}
+              onToggleMenu={toggleMenuFromButton}
+              testIdFor={testIdFor}
+            />
+          )}
+        </>
       )}
       {renderMenu
         ? renderMenu({
@@ -1036,6 +1092,7 @@ export function WorkEntryRowTrailingStatus({
 }
 
 interface WorkEntryRowActionsProps {
+  inline?: boolean;
   onDelete?: (event: MouseEvent<HTMLButtonElement>) => void;
   deleteDisabledReason?: string;
   /** The ••• button's ref; omitted when the row has no menu. */
@@ -1047,6 +1104,7 @@ interface WorkEntryRowActionsProps {
 
 /** The hover-revealed Delete and ••• rail buttons at the row's end. */
 function WorkEntryRowActions({
+  inline = false,
   onDelete,
   deleteDisabledReason,
   menuButtonRef,
@@ -1055,7 +1113,13 @@ function WorkEntryRowActions({
   testIdFor,
 }: WorkEntryRowActionsProps): JSX.Element {
   return (
-    <span className="pointer-events-none absolute inset-y-0 right-1 flex items-center">
+    <span
+      className={
+        inline
+          ? 'pointer-events-none inline-flex shrink-0 items-center'
+          : 'pointer-events-none absolute inset-y-0 right-1 flex items-center'
+      }
+    >
       {onDelete && (
         <RailIconButton
           icon={TrashIcon}
@@ -1092,6 +1156,7 @@ function WorkEntryRowActions({
 }
 
 interface WorkEntryRowCompactActionsProps {
+  inline?: boolean;
   pinned: boolean;
   onTogglePin?: (pinned: boolean) => void;
   onArchive?: () => void;
@@ -1111,6 +1176,7 @@ interface WorkEntryRowCompactActionsProps {
  * right-click.
  */
 function WorkEntryRowCompactActions({
+  inline = false,
   pinned,
   onTogglePin,
   onArchive,
@@ -1124,7 +1190,13 @@ function WorkEntryRowCompactActions({
     <span aria-hidden="true" className="w-7 shrink-0 pointer-coarse:hidden" />
   );
   return (
-    <span className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center gap-0.5">
+    <span
+      className={
+        inline
+          ? 'pointer-events-none inline-flex shrink-0 items-center gap-0.5'
+          : 'pointer-events-none absolute inset-y-0 right-1.5 flex items-center gap-0.5'
+      }
+    >
       {onTogglePin ? (
         <RailIconButton
           icon={pinned ? PinFilledIcon : PinIcon}
@@ -1287,6 +1359,9 @@ export interface WorkEntryRowMenuItemsProps {
   notifications?: SpaceNotificationMenuState;
   /** Saves a notification choice; `null` clears the override. Keeps the menu open. */
   onNotificationChoice?: (choice: SpaceNotificationMenuChoice) => void;
+  /** The mode of an agent-armed removal. */
+  autoDelete?: WorkEntryAutoDeleteRowState;
+  onAutoDeleteDisarm?: () => void;
   /** Shows Archive. */
   onArchive?: () => void;
   /** Hover explanation for Archive. */
@@ -1327,6 +1402,8 @@ export function WorkEntryRowMenuItems({
   onShare,
   notifications,
   onNotificationChoice,
+  autoDelete,
+  onAutoDeleteDisarm,
   onArchive,
   archiveTitle,
   onDelete,
@@ -1419,6 +1496,16 @@ export function WorkEntryRowMenuItems({
       {/* Archive and Delete end the menu in their own group. */}
       {(hasActionRows || notificationsShown || beforeRemoval !== undefined) &&
         (onArchive || onDelete) && <DropdownMenuDivider />}
+      {autoDelete && onAutoDeleteDisarm && (
+        <DropdownMenuItem
+          onClick={run(onAutoDeleteDisarm)}
+          data-testid={menu.testIdFor('-auto-delete-disarm')}
+        >
+          {autoDelete.mode === 'archive'
+            ? 'Turn off auto-archive'
+            : 'Turn off auto-delete'}
+        </DropdownMenuItem>
+      )}
       {onArchive && (
         <DropdownMenuItem
           onClick={run(onArchive)}

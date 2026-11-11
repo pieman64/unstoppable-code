@@ -7,6 +7,7 @@ import {
   type CanopyErrorPayload,
   type CanopyHostExecution,
   type WorkerPipelineExecution,
+  type WorkerPipelineExecutionDetail,
   type WorkerPipelineExecutionEventsItem,
   type WorkerPipelineExecutionStartParams,
 } from '@canopy/protocol/canopy-core';
@@ -101,6 +102,35 @@ function projection(
     completedAt: null,
     pendingPauseCount: 0,
     error: null,
+  };
+}
+
+/** The smallest detail a host may answer (CAN-6117). */
+function detail(): WorkerPipelineExecutionDetail {
+  return {
+    revision: 'a'.repeat(64),
+    definition: { contentHash: null, revision: null, packageDigest: null },
+    initiation: {
+      source: 'user',
+      initiator: { kind: 'user' },
+      hook: null,
+      event: 'dispatch',
+      rerunSourceId: null,
+      parentStep: null,
+    },
+    rerun: {
+      inputsPersisted: true,
+      planReadyText: false,
+      taskReadyText: false,
+    },
+    hidden: false,
+    pausedAt: null,
+    pausedMs: 0,
+    plan: null,
+    artifacts: [],
+    jobs: [],
+    pendingPauses: [],
+    statusReasons: [],
   };
 }
 
@@ -442,6 +472,89 @@ describe('PipelineHostSupervisor', () => {
   });
 
   // Coordinator ruling: a host lost during a start answers hostLost.
+  it('serves the detail and list reads over the host channel and checks each answer (CAN-6117)', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    host.reply(host.last('start').id, projection('running'));
+    await result;
+    const handlers = createWorkerPipelineHandlers(h.supervisor, {
+      secrets: refusingExecutionSecretSource,
+    });
+    const context: CanopyHandlerContext = {
+      requestId: 'reads',
+      caller: {
+        principalId: 'client',
+        clientInstanceId: 'client',
+        authorityId: 'authority',
+        interfaceKind: 'daemon',
+        grants: ['worker.pipeline.read'],
+      },
+      metadata: {},
+      signal: new AbortController().signal,
+    };
+
+    const got = handlers.queries['worker.pipeline.execution.get'](
+      { executionId: 'run', detail: true },
+      context,
+    );
+    await settle();
+    expect(host.last('get').request).toEqual({
+      op: 'get',
+      executionId: 'run',
+      detail: true,
+    });
+    host.reply(host.last('get').id, {
+      execution: projection('running'),
+      detail: detail(),
+    });
+    await expect(got).resolves.toEqual({
+      execution: projection('running'),
+      detail: detail(),
+    });
+
+    const listed = handlers.queries['worker.pipeline.execution.list'](
+      { scope: { worktreeId: 'worktree' }, limit: 1, detail: true },
+      context,
+    );
+    await settle();
+    expect(host.last('list').request).toEqual({
+      op: 'list',
+      query: {
+        worktreeId: 'worktree',
+        detail: true,
+        after: null,
+        limit: 1,
+      },
+    });
+    host.reply(host.last('list').id, {
+      executions: [{ execution: projection('running'), detail: detail() }],
+      more: true,
+    });
+    const page = await listed;
+    expect(page.executions).toEqual([
+      { execution: projection('running'), detail: detail() },
+    ]);
+    expect(page.nextCursor).toEqual(expect.any(String));
+
+    // A summary without the detail it asked for, or a malformed page, is refused.
+    const bare = h.supervisor.inspect('run');
+    await settle();
+    host.reply(host.last('get').id, { execution: projection('running') });
+    await expect(bare).rejects.toMatchObject({
+      payload: { code: 'worker.pipeline.hostUnavailable' },
+    });
+    const malformed = h.supervisor.list({
+      detail: false,
+      after: null,
+      limit: 1,
+    });
+    await settle();
+    host.reply(host.last('list').id, { executions: 'nope', more: false });
+    await expect(malformed).rejects.toMatchObject({
+      payload: { code: 'worker.pipeline.hostUnavailable' },
+    });
+  });
+
   it('a start whose host exits before answering fails with hostLost', async () => {
     const h = harness();
     const handlers = createWorkerPipelineHandlers(h.supervisor, {

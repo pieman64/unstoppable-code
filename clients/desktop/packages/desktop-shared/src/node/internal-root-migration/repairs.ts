@@ -15,6 +15,7 @@ import {
   readFile,
   readdir,
   readlink,
+  realpath,
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -68,6 +69,7 @@ import {
 import { assertRelocationW5Settled } from '@canopy/core-runtime/node/relocation';
 import { fingerprintW5File } from '@canopy/core-runtime/node/w5/commit-log/fingerprint';
 import type { W5DurabilityPort } from '@canopy/core-runtime/node/w5/commit-log';
+import { abandonedArchivePaths } from './abandoned-paths';
 import {
   freezeInternalRootJournals,
   internalRootJournalOwnedPaths,
@@ -109,6 +111,7 @@ export async function reportInternalRootCleanup(
   applied: boolean,
   host: InternalRootFilesystemHost,
   sourceBytes?: number,
+  abandonArchives: readonly string[] = [],
 ): Promise<InternalRootCleanupReport> {
   // Only the exclusive holder can distinguish abandoned staging from a live writer.
   const release = await coordinateInternalRootMigration(identity, host);
@@ -117,6 +120,7 @@ export async function reportInternalRootCleanup(
       applied,
       git,
       sourceBytes,
+      abandonArchives,
     });
     await saveInternalRootCleanupReport(report, host);
     return report;
@@ -140,11 +144,16 @@ const readonlyStore: W5FileStore = {
 async function inventoryTree(
   root: string,
   opaqueDirectories: ReadonlySet<string>,
+  abandonedPaths: readonly string[] = [],
 ): Promise<{ paths: string[]; checkouts: string[] }> {
   const paths: string[] = [root];
   const checkouts: string[] = [];
   const visit = async (path: string): Promise<void> => {
-    if (opaqueDirectories.has(path)) return;
+    if (
+      opaqueDirectories.has(path) ||
+      abandonedPaths.some((root) => isWithin(root, path))
+    )
+      return;
     const state = await lstat(path);
     if (state.isSymbolicLink()) {
       paths.push(path);
@@ -169,6 +178,7 @@ async function freeze(
   context: InternalRootRepairContext,
   observation: LocalAuthorityObservation,
   diagnostics?: string[],
+  abandonArchives: readonly string[] = [],
 ): Promise<InternalRootRepairPlan> {
   const { identity } = context;
   const transition = await observeLocalAuthorityRelocation(
@@ -222,9 +232,9 @@ async function freeze(
         opaqueDirectories.add(join(workspaceRoot, entry.name));
     }
   }
-  const inventory = await inventoryTree(identity.source, opaqueDirectories);
   const lifecycleJournals = await freezeInternalRootJournals(
     identity.source,
+    abandonArchives,
   ).catch((error: unknown) => {
     if (!diagnostics) throw error;
     diagnostics.push(
@@ -234,6 +244,17 @@ async function freeze(
     );
     return [];
   });
+  const abandonedPaths = await abandonedArchivePaths(
+    identity.source,
+    lifecycleJournals,
+  );
+  const ignored = (path: string): boolean =>
+    abandonedPaths.some((root) => isWithin(root, path));
+  const inventory = await inventoryTree(
+    identity.source,
+    opaqueDirectories,
+    abandonedPaths,
+  );
   inventory.paths.push(
     ...internalRootJournalOwnedPaths(identity.source, lifecycleJournals),
   );
@@ -276,7 +297,26 @@ async function freeze(
             refuse('Unreadable repository owner evidence');
           repoPaths.push(repo.repoPath);
         }
+      if (trees.authority === 'ok') {
+        const abandonedIds = lifecycleJournals.flatMap((entry) =>
+          entry.abandoned?.workspaceId === workspaceId
+            ? [entry.abandoned.worktreeId]
+            : [],
+        );
+        for (const row of trees.worktrees.filter(
+          (row) => !abandonedIds.includes(row.id),
+        ))
+          for (const path of relocationWorktreeOwnedPaths(
+            JSON.stringify({ version: 1, worktrees: [row] }),
+          ))
+            if (ignored(path))
+              refuse(
+                `Abandoned archive ${workspaceId}/${abandonedIds.join(',')} overlaps live checkout ${path}`,
+              );
+      }
       for (const path of repoPaths) {
+        if (ignored(path))
+          refuse(`Abandoned archive omission overlaps repository ${path}`);
         // External owner references are read only, never a recursive walk grant.
         if (
           (await statIfPresent(path)) &&
@@ -310,7 +350,9 @@ async function freeze(
     }
   }
   // Complete each common repository's membership, including external linked checkouts.
-  const checkouts = new Set(inventory.checkouts);
+  const checkouts = new Set(
+    inventory.checkouts.filter((path) => !ignored(path)),
+  );
   const reportedMissingPrunable = new Set<string>();
   for (const path of checkouts) {
     let listed: string;
@@ -334,7 +376,7 @@ async function freeze(
       const member = fields
         .find((field) => field.startsWith('worktree '))
         ?.slice(9);
-      if (member) checkouts.add(member);
+      if (member && !ignored(member)) checkouts.add(member);
     }
   }
   let gitPlan: RelocationGitPlan = { checkouts: [], backlinks: [] };
@@ -363,6 +405,7 @@ async function freeze(
         const group = await prepareRelocationGit(git, paths, {
           portableFilesystem: portableGitFilesystem(),
           reportedMissingPrunable,
+          ignoredWorktrees: abandonedPaths,
         });
         gitPlan = {
           checkouts: [...gitPlan.checkouts, ...group.checkouts],
@@ -378,11 +421,37 @@ async function freeze(
     gitPlan = await prepareRelocationGit(git, [...checkouts], {
       portableFilesystem: portableGitFilesystem(),
       reportedMissingPrunable,
+      ignoredWorktrees: abandonedPaths,
     });
+  for (const common of new Set(
+    abandonedPaths.length
+      ? gitPlan.checkouts.map((row) => row.commonDirectory)
+      : [],
+  )) {
+    const admin = join(common, 'worktrees');
+    if (!(await statIfPresent(admin))) continue;
+    if ((await realpath(admin)) !== admin)
+      refuse(`Aliased Git worktree records: ${admin}`);
+    for (const name of await readdir(admin)) {
+      const path = join(admin, name);
+      const file = join(path, 'gitdir');
+      const state = await statIfPresent(file);
+      if (
+        !state?.isFile() ||
+        state.nlink !== 1 ||
+        (await realpath(file)) !== file
+      )
+        continue;
+      const backlink = await readFile(file, 'utf8');
+      if (ignored(dirname(resolve(path, backlink.trim()))))
+        abandonedPaths.push(path);
+    }
+  }
   const repositoryPaths = gitPlan.checkouts.map((row) => row.path);
   return {
     transition,
     lifecycleJournals,
+    ...(abandonedPaths.length ? { abandonedPaths } : {}),
     gitPlan,
     ownedPaths: [...new Set(inventory.paths)],
     workspaces: workspaces.map((evidence) => ({
@@ -408,7 +477,9 @@ function ownedPathsForProof(plan: InternalRootRepairPlan): readonly string[] {
     ),
     ...plan.gitPlan.checkouts.flatMap((row) => [row.path, row.commonDirectory]),
     ...plan.gitPlan.backlinks.map((row) => row.path),
-  ];
+  ].filter(
+    (path) => !(plan.abandonedPaths ?? []).some((root) => isWithin(root, path)),
+  );
 }
 
 function checkedPlan(
@@ -432,6 +503,7 @@ function checkedPlan(
 
 /** Live B/C composition. It has no dependency on ordinary routing or destination startup. */
 export function createInternalRootRelocationRepairs(options: {
+  readonly abandonArchives?: readonly string[];
   readonly durability: W5DurabilityPort;
   /** Host-selected TokenUser observer; Windows refuses when it is absent. */
   readonly windowsPrincipal?: () => Promise<string>;
@@ -492,7 +564,8 @@ export function createInternalRootRelocationRepairs(options: {
           },
         }
       : {}),
-    freeze: (context) => freeze(context, observation),
+    freeze: (context) =>
+      freeze(context, observation, undefined, options.abandonArchives),
     admit: async (context, plan) => {
       checkedPlan(context, plan);
       const observed = await observeLocalAuthorityRelocation(
@@ -511,6 +584,42 @@ export function createInternalRootRelocationRepairs(options: {
         context.externalFiles,
         host,
       );
+      // Shared repositories outlive either root; startup may prune the original archive refs.
+      for (const common of new Set(
+        plan.gitPlan.checkouts.map((row) => row.commonDirectory),
+      )) {
+        if (isWithin(context.identity.source, common)) continue;
+        for (const entry of plan.lifecycleJournals ?? []) {
+          if (!entry.abandoned) continue;
+          const { workspaceId, worktreeId } = entry.abandoned;
+          const prefix = `refs/app/archived-containers/${workspaceId}/${worktreeId}/`;
+          const refs = await git(common, [
+            'for-each-ref',
+            '--format=%(refname) %(objectname)',
+            prefix,
+          ]);
+          for (const line of refs.trim().split('\n').filter(Boolean)) {
+            const [ref, oid] = line.split(' ');
+            if (
+              !ref?.startsWith(prefix) ||
+              !oid ||
+              !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid)
+            )
+              refuse('Unreadable abandoned archive ref');
+            const retained = `refs/canopy-migration-abandoned/${ref.slice('refs/app/'.length)}/${oid}`;
+            const existing = (
+              await git(common, [
+                'for-each-ref',
+                '--format=%(objectname)',
+                retained,
+              ])
+            ).trim();
+            if (existing && existing !== oid)
+              refuse(`Conflicting abandoned archive ref: ${retained}`);
+            if (!existing) await git(common, ['update-ref', retained, oid, '']);
+          }
+        }
+      }
     },
     recordAuthority: async (context, plan) => {
       const path = join(context.workingRoot, 'internal-root-authority.json');
@@ -681,6 +790,10 @@ export function createInternalRootRelocationRepairs(options: {
       if (published)
         await qualifyRelocationGit(git, plan.transition, plan.gitPlan, {
           portableFilesystem: portableGitFilesystem(),
+          ignoredWorktrees: (plan.abandonedPaths ?? []).flatMap((path) => [
+            path,
+            movedOwnedPath(plan.transition, path),
+          ]),
         });
     },
   };
@@ -691,7 +804,12 @@ export function createInternalRootRelocationRepairs(options: {
     ): Promise<readonly string[]> => {
       const diagnostics: string[] = [];
       try {
-        const plan = await freeze(context, observation, diagnostics);
+        const plan = await freeze(
+          context,
+          observation,
+          diagnostics,
+          options.abandonArchives,
+        );
         await assertRelocationOwnedPathsSafe(
           plan.transition,
           [

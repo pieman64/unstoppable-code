@@ -13,7 +13,10 @@ import { BuildStorageStartupRefused } from '@canopy/core-runtime/node/build-stor
 import { historicalSecureDataDir } from '@canopy/core-runtime/node/secure-data-dir';
 import { hasDataDirectoryOverride } from '@canopy/core-runtime/node/build-identity';
 import { BRAND } from '@canopy/brand/current';
-import { getCanopyBuildIdentity, getCanopyDataDir } from '../canopy-paths';
+import {
+  getCanopyBuildIdentity,
+  getCanopyDataDir,
+} from '@canopy/execution-engine/canopy-paths';
 
 /** Called with the host's existing per-build startup/lifetime exclusion held. */
 export async function prepareCanopySecureStorage(): Promise<void> {

@@ -9,8 +9,8 @@ import {
   SpillingRecordStore,
   trackLateStorageCleanup,
   type RecordStore,
-} from './record-store';
-import { SurrogatePairGuard } from './surrogate-safe-text';
+} from '@canopy/execution-engine/node/pipelines/executor/record-store';
+import { SurrogatePairGuard } from '@canopy/execution-engine/node/pipelines/executor/surrogate-safe-text';
 
 /**
  * A spilled record's remaining work, run by the host when it is ready to take
@@ -26,7 +26,7 @@ export type RecordStoreFactory = (
   spillAfterChars: number,
   label: string,
 ) => RecordStore;
-import { redactRecordFromSource } from './streaming-json-redactor';
+import { redactRecordFromSource } from '@canopy/execution-engine/node/pipelines/executor/streaming-json-redactor';
 import {
   classifyJsonDocumentStart,
   type JsonDocumentStart,

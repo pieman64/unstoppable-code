@@ -1,4 +1,5 @@
 import { Dot } from '@canopy/ui-shared/components/Badge';
+import { SidebarTrialBadge } from '@canopy/ui-shared/components/SidebarTrialBadge';
 import {
   AccountMenuComputersSection,
   SidebarMachinePicker,
@@ -32,7 +33,6 @@ import {
   SidebarAccountFooter,
   SidebarAccountMenuHeader,
   SidebarRemoteControlSubtitle,
-  SidebarTrialPill,
   sidebarRemoteControlSubtitleLabel,
   type SidebarAccountAttention,
   type SidebarAccountIdentityTone,
@@ -59,7 +59,6 @@ import {
   SettingsIcon,
   SyncIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import {
   useEffect,
   useId,
@@ -476,7 +475,7 @@ export function SidebarAccountMenu({
                       {subscription.status.label}
                     </span>
                     {subscription.status.kind === 'trial' && (
-                      <SidebarTrialPill />
+                      <SidebarTrialBadge />
                     )}
                   </span>
                   {subscription.status.kind === 'trial' &&
@@ -639,9 +638,9 @@ export function SidebarAccountMenu({
                         aria-hidden="true"
                         className="pointer-events-none ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center"
                       >
-                        <span
+                        <Dot
+                          tone="filter"
                           data-testid="sidebar-account-sync-paused-dot"
-                          className={`h-1.5 w-1.5 rounded-full ${OPERATIONAL_STATUS_COLORS.paused.background}`}
                         />
                       </span>
                     </DropdownMenuStatusRow>

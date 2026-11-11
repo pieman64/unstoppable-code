@@ -249,6 +249,11 @@ export interface PipelineInfo extends PipelineIndexEntry {
    * reason as `shareScope`.
    */
   owner?: PipelineShareOwner;
+  /**
+   * Who created the share. Populated with the other shared fields; absent on
+   * older rows.
+   */
+  createdBy?: SharedPipelineSummary['createdBy'];
   publicShare?: SharedPipelinePublicShareInfo | null;
   /** Package mode returned with an authenticated shared-pipeline snapshot. */
   distributionMode?: PipelineDistributionMode;

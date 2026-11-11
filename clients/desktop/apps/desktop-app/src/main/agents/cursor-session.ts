@@ -1397,6 +1397,9 @@ export class CursorProvider implements AgentProvider {
           type: 'result',
           is_error: outcome.isError,
           result: message,
+          ...(outcome.providerErrorDetails
+            ? { canopy_provider_error_details: outcome.providerErrorDetails }
+            : {}),
           ...(outcome.cancelled ? { subtype: 'cancelled' } : {}),
         };
       } catch (error) {
@@ -1540,7 +1543,16 @@ export class CursorProvider implements AgentProvider {
             });
             return emit(
               result.is_error === true
-                ? { type: 'error', error: result.result }
+                ? {
+                    type: 'error',
+                    error: result.result,
+                    ...(typeof result.canopy_provider_error_details === 'string'
+                      ? {
+                          canopy_provider_error_details:
+                            result.canopy_provider_error_details,
+                        }
+                      : {}),
+                  }
                 : result,
               sendOptions?.userMessageId,
             );

@@ -17,6 +17,7 @@ import {
   type AccountProxyRoutingStrategy,
   type AccountProxyStatus,
 } from '../types/account-proxy';
+import { ACCOUNT_PROXY_SETTINGS_REFERENCE } from '@canopy/protocol/auth-recovery';
 import type { ProviderRateLimitSnapshot } from '@canopy/execution-engine/types/observability';
 import {
   isOllamaModel,
@@ -375,6 +376,9 @@ function credentialStatus(
 ): AccountProxyAccountStatus {
   const status = stringField(entry, 'status');
   if (entry.disabled === true || status === 'disabled') return 'disabled';
+  // CLIProxyAPI 8.0.48+ marks a credential it can no longer renew.
+  if (entry.requires_sign_in === true || entry.next_action === 'sign_in')
+    return 'sign-in-required';
   if (availableAt !== null) return 'cooling';
   if (status === 'refreshing') return 'refreshing';
   if (status === 'pending') return 'pending';
@@ -539,6 +543,19 @@ export function isAccountProxyAccountReady(
   account: AccountProxyAccount,
 ): boolean {
   return account.status === 'active' || account.status === 'refreshing';
+}
+
+/** Whether this device can sign the account in again itself (its own proxy). */
+export function canSignInAccountProxyAccountHere(
+  account: AccountProxyAccount,
+  connectionKind: string | undefined,
+): boolean {
+  return (
+    account.status === 'sign-in-required' &&
+    account.source === 'sign-in' &&
+    connectionKind === 'local' &&
+    (account.provider === 'claude' || account.provider === 'codex')
+  );
 }
 
 /** The agent harnesses the account proxy can route. */
@@ -737,8 +754,9 @@ export function isAccountProxyAccountSignedOut(
   account: AccountProxyAccount,
 ): boolean {
   return (
-    account.status === 'error' &&
-    SIGNED_OUT_PATTERN.test(account.statusMessage ?? '')
+    account.status === 'sign-in-required' ||
+    (account.status === 'error' &&
+      SIGNED_OUT_PATTERN.test(account.statusMessage ?? ''))
   );
 }
 
@@ -760,7 +778,7 @@ export function accountProxyNoUsableAccountsMessage(
   const own = accounts.filter((account) => providers.has(account.provider));
   const label = HARNESS_LABELS[harness];
   if (own.length === 0) {
-    return `The account proxy has no ${label} accounts. Add one in Settings > Multi-account proxy, or turn off Use for ${label} there.`;
+    return `The account proxy has no ${label} accounts. Add one in ${ACCOUNT_PROXY_SETTINGS_REFERENCE}, or turn off Use for ${label} there.`;
   }
   if (
     own.some(
@@ -771,7 +789,12 @@ export function accountProxyNoUsableAccountsMessage(
   ) {
     return null;
   }
-  return `None of the account proxy's ${label} accounts can be used. Turn one on or sign in again in Settings > Multi-account proxy, or turn off Use for ${label} there.`;
+  // Here every account is turned off or signed out; when all need a new
+  // sign-in, say so, since that is the only fix.
+  if (own.every(isAccountProxyAccountSignedOut)) {
+    return `The account proxy's ${label} accounts need a new sign-in. Sign in again in ${ACCOUNT_PROXY_SETTINGS_REFERENCE}, or turn off Use for ${label} there.`;
+  }
+  return `None of the account proxy's ${label} accounts can be used. Turn one on or sign in again in ${ACCOUNT_PROXY_SETTINGS_REFERENCE}, or turn off Use for ${label} there.`;
 }
 
 /**

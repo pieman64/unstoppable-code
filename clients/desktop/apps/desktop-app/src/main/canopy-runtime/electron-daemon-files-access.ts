@@ -2,7 +2,7 @@ import { retryElectronW5RecordPorts } from './electron-w5-record-port';
 import type { ReadEvidenceCursor } from '@canopy/desktop-shared/lib/bounded-read-evidence';
 import { snapshotFilesWorkCounters } from '@canopy/desktop-shared/node/work-counters';
 import { BRAND } from '@canopy/brand/current';
-import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import type { BackgroundServiceStatus } from '@canopy/desktop-shared/lib/background-service-status';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { resolveWorktreeTargetIds } from '../lib/resolve-worktree';

@@ -96,7 +96,7 @@ import * as animals from '../lib/animals';
 import {
   registerUserEnvironmentInjector,
   registerSecretsEnvInjector,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 const caller: CanopyCallerDescriptor = {
   principalId: 'local-desktop-user',
@@ -434,7 +434,8 @@ it('starts a new branch at origin default after parallel preparation and preserv
   await expect(
     createWorktree(source, join(root, 'occupied'), 'topic'),
   ).rejects.toThrow('is already used by worktree');
-  await removeWorktree(source, target);
+  // afterAll removes this entire fixture. App process cleanup would scan the
+  // host even though this creation case launches no worktree processes.
 }, 30_000);
 
 it.each(['single', 'multi'] as const)(

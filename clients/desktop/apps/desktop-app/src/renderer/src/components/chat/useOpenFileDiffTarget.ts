@@ -15,14 +15,21 @@ export interface OpenFileDiffTarget {
   file: ChangedFileInfo;
   source: FileDiffSource;
 }
-/** Normalize separators and drop trailing slashes for cross-platform matching. */
+/** Normalize Windows separators while preserving literal POSIX backslashes. */
 function normalizePath(value: string): string {
-  return value.replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalized = isWindowsAbsolutePath(value)
+    ? value.replace(/\\/g, '/')
+    : value;
+  return normalized.replace(/\/+$/, '');
 }
 
 /** Windows drive-letter and UNC paths use case-insensitive matching. */
 function isWindowsAbsolutePath(value: string): boolean {
-  return /^[a-z]:\//i.test(value) || value.startsWith('//');
+  return (
+    /^[a-z]:[\\/]/i.test(value) ||
+    value.startsWith('\\\\') ||
+    value.startsWith('//')
+  );
 }
 
 function pathsEqual(left: string, right: string): boolean {
@@ -46,7 +53,9 @@ export function getChangedFileSources(
     changedFiles[source].some(
       (candidate) =>
         (candidate.repoId ?? 'default') === (file.repoId ?? 'default') &&
-        normalizePath(candidate.path) === normalizePath(file.path),
+        // Git supplies canonical repo-relative paths on every host. A
+        // backslash here is a literal POSIX character, never a separator.
+        candidate.path === file.path,
     ),
   );
 }

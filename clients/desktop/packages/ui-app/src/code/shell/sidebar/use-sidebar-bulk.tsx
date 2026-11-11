@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  SidebarBatchCleanupFailureNotice,
   SidebarBatchRemovalNotice,
   type SidebarBatchRemovalDialogExcludedRow,
   type SidebarBatchRemovalDialogLocalWork,
@@ -317,6 +318,8 @@ interface BulkDialogState {
   readonly unit: SidebarBatchUnitLabel;
   readonly included: readonly SidebarBulkTarget[];
   readonly excluded: readonly SidebarBatchRemovalDialogExcludedRow[];
+  /** Results of a closed batch reporting a late cleanup failure. */
+  readonly retiredBatchId?: string;
 }
 
 function bindingCovering(
@@ -656,9 +659,40 @@ export function useSidebarBulk(input: {
 
   // Counts use the latest attempt per key, so a successful retry clears the
   // outcome; the results still list every attempt.
+  // Retired items belong to batches already closed while their cleanup ran:
+  // they report under their own batch, never in the current counts.
+  const currentItems = useMemo(
+    () => batch.items.filter((item) => item.retired !== true),
+    [batch.items],
+  );
+  const retiredBatches = useMemo(() => {
+    const byBatch = new Map<string, QueuedBulkItem[]>();
+    for (const item of batch.items) {
+      if (item.retired !== true) continue;
+      byBatch.set(item.batchId, [...(byBatch.get(item.batchId) ?? []), item]);
+    }
+    return [...byBatch].flatMap(([batchId, items]) => {
+      const failed = items.filter((item) => item.status === 'failed');
+      const [first] = items;
+      if (failed.length === 0 || first === undefined) return [];
+      return [
+        {
+          batchId,
+          items,
+          verb: first.mode,
+          unit: first.target.unit,
+          bindingKind: first.target.bindingKind,
+          failedLabels: failed.map((item) => item.target.label),
+          cleanupRunning: items.filter((item) => item.cleanup === 'running')
+            .length,
+        },
+      ];
+    });
+  }, [batch.items]);
+
   const counts = useMemo(() => {
     const latest = new Map<string, QueuedBulkItem>();
-    for (const item of batch.items) latest.set(item.target.key, item);
+    for (const item of currentItems) latest.set(item.target.key, item);
     const latestItems = [...latest.values()];
     const count = (status: QueuedBulkItem['status']): number =>
       latestItems.filter((item) => item.status === status).length;
@@ -676,6 +710,10 @@ export function useSidebarBulk(input: {
       failed: count('failed'),
       skipped: count('skipped'),
       notStarted: count('pending'),
+      cleanupRunning: latestItems.filter((item) => item.cleanup === 'running')
+        .length,
+      lateFailed: latestItems.filter((item) => item.cleanup === 'failed')
+        .length,
       queuedByKind,
       // Stable across renders with the same counts, for the report effect.
       queuedByKindKey: JSON.stringify([...queuedByKind]),
@@ -683,15 +721,15 @@ export function useSidebarBulk(input: {
         units.size === 1 && onlyItem !== undefined
           ? onlyItem.target.unit
           : MIXED_BATCH_UNIT,
-      lastKind: batch.items[batch.items.length - 1]?.target.bindingKind,
+      lastKind: currentItems[currentItems.length - 1]?.target.bindingKind,
     };
-  }, [batch.items]);
+  }, [currentItems]);
   const verb = useMemo((): SidebarBatchRemovalVerb => {
-    const hasArchive = batch.items.some((item) => item.mode === 'archive');
-    const hasDelete = batch.items.some((item) => item.mode === 'delete');
+    const hasArchive = currentItems.some((item) => item.mode === 'archive');
+    const hasDelete = currentItems.some((item) => item.mode === 'delete');
     if (hasArchive && hasDelete) return 'remove';
     return hasArchive ? 'archive' : 'delete';
-  }, [batch.items]);
+  }, [currentItems]);
   const verbMode: SidebarBatchRemovalMode =
     verb === 'archive' ? 'archive' : 'delete';
 
@@ -720,6 +758,26 @@ export function useSidebarBulk(input: {
     setDialog(null);
     resetBatch();
   };
+  const showRetiredResults = (
+    retired: (typeof retiredBatches)[number],
+  ): void => {
+    setDialog({
+      mode: retired.verb,
+      phase: 'results',
+      bindingKind: retired.bindingKind,
+      unit: retired.unit,
+      included: [],
+      excluded: [],
+      retiredBatchId: retired.batchId,
+    });
+  };
+  const { dismissRetired } = batch;
+  const dismissRetiredOutcome = (batchId: string): void => {
+    setDialog((current) =>
+      current?.retiredBatchId === batchId ? null : current,
+    );
+    dismissRetired(batchId);
+  };
 
   const dialogRowsFor = (
     state: BulkDialogState,
@@ -727,7 +785,14 @@ export function useSidebarBulk(input: {
   ): SidebarBatchRemovalDialogRow[] => {
     if (state.phase === 'results') {
       // One row per attempt: a retried key appears once per batch.
-      return batch.items.map(
+      const resultItems =
+        state.retiredBatchId === undefined
+          ? currentItems
+          : batch.items.filter(
+              (item) =>
+                item.retired === true && item.batchId === state.retiredBatchId,
+            );
+      return resultItems.map(
         (item): SidebarBatchRemovalDialogRow => ({
           key: `${item.batchId}:${item.target.key}`,
           projectName: item.target.projectName,
@@ -848,14 +913,18 @@ export function useSidebarBulk(input: {
           testId={dialogBinding?.dialogTestId}
           onCancel={(): void => setDialog(null)}
           onConfirm={confirm}
-          onDone={dismissOutcome}
+          onDone={(): void => {
+            const { retiredBatchId } = dialog;
+            if (retiredBatchId === undefined) dismissOutcome();
+            else dismissRetiredOutcome(retiredBatchId);
+          }}
         />
       </Suspense>
     ) : null;
 
   // Null, not a notice that renders nothing, once everything succeeded: the
   // rail sizes its footer callout on this before the reset effect runs.
-  const noticeNode =
+  const currentNotice =
     !batch.running && counts.done === counts.total ? null : (
       <SidebarBatchRemovalNotice
         verb={verb}
@@ -867,10 +936,31 @@ export function useSidebarBulk(input: {
         failed={counts.failed}
         skipped={counts.skipped}
         notStarted={counts.notStarted}
+        cleanupRunning={counts.cleanupRunning}
+        lateFailed={counts.lateFailed}
         onStop={batch.stop}
         onShowDetails={showResults}
         onDismiss={dismissOutcome}
       />
+    );
+  // A closed batch whose background cleanup failed reports on its own
+  // notice, so it never changes a later batch's counts.
+  const noticeNode =
+    currentNotice === null && retiredBatches.length === 0 ? null : (
+      <>
+        {retiredBatches.map((retired) => (
+          <SidebarBatchCleanupFailureNotice
+            key={retired.batchId}
+            verb={retired.verb}
+            unitLabel={retired.unit}
+            failedLabels={retired.failedLabels}
+            cleanupRunning={retired.cleanupRunning}
+            onShowDetails={(): void => showRetiredResults(retired)}
+            onDismiss={(): void => dismissRetiredOutcome(retired.batchId)}
+          />
+        ))}
+        {currentNotice}
+      </>
     );
 
   // One row's selection menu. The selection's availability and unit are

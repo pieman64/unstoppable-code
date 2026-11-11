@@ -100,7 +100,13 @@ function parseSignInRequest(value: unknown): AccountProxySignInRequest {
     value.action === 'start' &&
     (value.provider === 'claude' || value.provider === 'codex')
   ) {
-    return { action: 'start', provider: value.provider };
+    if (value.authIndex === undefined)
+      return { action: 'start', provider: value.provider };
+    return {
+      action: 'start',
+      provider: value.provider,
+      authIndex: parseAccountRequest(value).authIndex,
+    };
   }
   throw new Error('Invalid account proxy sign-in.');
 }

@@ -15,8 +15,11 @@ import {
   isModelHarnessSource,
 } from '@canopy/desktop-shared/types';
 import { isClaudeModAdmission } from '@canopy/execution-engine/types/claude-mod-admission';
-import { normalizePluginSelections } from '../../../lib/plugin-selections-normalization';
-import { pipelinePluginSelectionsAddPlugins } from '../executor/step-runner';
+import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
+import {
+  pipelinePluginSelectionsAddPlugins,
+  pipelinePluginSelectionsSelectMcpServers,
+} from '../executor/step-runner';
 import type { DynamicToolCallParams } from '../../codex-runtime/generated/v2/DynamicToolCallParams';
 import type { DynamicToolCallResponse } from '../../codex-runtime/generated/v2/DynamicToolCallResponse';
 import type { DynamicToolSpec } from '../../codex-runtime/generated/v2/DynamicToolSpec';
@@ -468,8 +471,9 @@ export function createDaemonPipelineOwnerPorts(
       };
     },
     // An Agent model alias (CAN-5832), resolved by the run's core with the
-    // run's own scope. Plugins stay in process: an Agent that adds plugins
-    // after the launch fails its step closed.
+    // run's own scope. Standalone MCP servers stay in process (CAN-6011): an
+    // Agent that names one after the launch fails its step closed. Codex
+    // steps refuse any other plugins in their runner.
     resolvePipelineAgentModelAlias: async (agentId) => {
       const { alias } = expectKind(
         await ask(
@@ -484,9 +488,9 @@ export function createDaemonPipelineOwnerPorts(
         alias.pluginSelections === undefined
           ? undefined
           : normalizePluginSelections(alias.pluginSelections);
-      if (pipelinePluginSelectionsAddPlugins(pluginSelections))
+      if (pipelinePluginSelectionsSelectMcpServers(pluginSelections))
         throw new Error(
-          "This Agent's plugins don't run in the background service.",
+          "This Agent's MCP servers don't run in the background service.",
         );
       return {
         agentId: alias.agentId,

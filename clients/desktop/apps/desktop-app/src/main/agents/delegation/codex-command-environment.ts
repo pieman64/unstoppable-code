@@ -11,7 +11,7 @@ import {
 import {
   getCanopyDataDir,
   getCanopySecureDataDir,
-} from '@canopy/desktop-shared/canopy-paths';
+} from '@canopy/execution-engine/canopy-paths';
 import type { CodexDelegationPreparation } from './codex-runner';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 

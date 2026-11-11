@@ -227,9 +227,14 @@ type FileCommentPopoverState =
   | { mode: 'annotation'; anchorRect: DOMRect; annotationId: string };
 
 function pathInsideRoot(filePath: string, rootPath: string): string | null {
-  const normalizedFilePath = filePath.replace(/\\/g, '/').replace(/\/+$/, '');
-  const root = rootPath.replace(/\\/g, '/').replace(/\/+$/, '');
-  const caseInsensitive = /^[a-z]:\//i.test(root) || root.startsWith('//');
+  const caseInsensitive =
+    /^[a-z]:[\\/]/i.test(rootPath) ||
+    rootPath.startsWith('\\\\') ||
+    rootPath.startsWith('//');
+  const normalize = (value: string): string =>
+    (caseInsensitive ? value.replace(/\\/g, '/') : value).replace(/\/+$/, '');
+  const normalizedFilePath = normalize(filePath);
+  const root = normalize(rootPath);
   const comparableFilePath = caseInsensitive
     ? normalizedFilePath.toLowerCase()
     : normalizedFilePath;

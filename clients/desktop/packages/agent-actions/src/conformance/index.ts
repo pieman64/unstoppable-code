@@ -23,3 +23,13 @@ export {
 } from './limits';
 
 export { createConformanceTranscriptStore } from './transcript-store';
+export {
+  createReferenceProjectWriteHost,
+  PROJECT_WRITE_CONFORMANCE_WORLD,
+  projectWriteConformanceCaller,
+  runProjectWriteConformance,
+  type MakeProjectWriteConformanceHost,
+  type ProjectWriteConformanceHost,
+  type ProjectWriteConformanceStep,
+  type ProjectWriteConformanceWorld,
+} from './projects';

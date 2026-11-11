@@ -6,7 +6,11 @@ import {
   useAgentSentReceivingContext,
   type AgentSentReceivingContext,
 } from '@canopy/ui-shared';
-import { ChatMessageAttachments } from './ChatMessageAttachments';
+import {
+  ChatMessageAttachments,
+  ChatMessageMedia,
+  useChatMessageAttachmentSplit,
+} from './ChatMessageAttachments';
 import {
   Fragment,
   memo,
@@ -26,6 +30,7 @@ import {
   type PortalChatPart,
   readChatPromptSource,
   readChatWatcherFired,
+  type PortalChatMessageAttachment,
 } from '@canopy/protocol/portal';
 import {
   AutoResumeMarker,
@@ -51,6 +56,8 @@ import {
   TRANSCRIPT_PROSE_CLASS,
 } from '@canopy/ui-shared/components';
 import { parseCanopyProxyError } from '@canopy/protocol';
+import { isAccountProxySettingsFailure } from '@canopy/protocol/auth-recovery';
+import { AccountProxyFailureNotice } from '@canopy/ui-shared/components';
 import { FailedIcon } from '@canopy/ui-shared/icons';
 import {
   stripOpaqueAgentCitationMarkers,
@@ -442,6 +449,9 @@ const SmoothStreamingProse = memo(function SmoothStreamingProse({
 
 const EMPTY_PARTS: readonly PortalChatPart[] = [];
 
+/** A stable empty list, so a message without attachments resolves nothing. */
+const NO_ATTACHMENTS: readonly PortalChatMessageAttachment[] = [];
+
 function ChatMessageViewImpl({
   message,
   receivingContext: explicitContext,
@@ -510,8 +520,12 @@ function ChatMessageViewImpl({
       // Rows with no message text (tool-only, timers) get no Tab stop.
       focusable: (message.role === 'user' ? userBody : message.text) !== '',
     });
+  const attachmentSplit = useChatMessageAttachmentSplit(
+    message.role === 'user'
+      ? (message.attachments ?? NO_ATTACHMENTS)
+      : NO_ATTACHMENTS,
+  );
   if (message.role === 'user') {
-    const attachments = message.attachments ?? [];
     const isSteering = hasSteeringChatPart(message.parts);
     const body = userBody;
     // Only trusted relay provenance marks a resume; `promptSource` alone
@@ -581,12 +595,23 @@ function ChatMessageViewImpl({
             steeringRequest?.variant ?? (autoResume ? 'muted' : 'default')
           }
           {...(header ? { header } : {})}
-          {...(attachments.length > 0
+          {...(attachmentSplit.media.length > 0
+            ? {
+                media: (
+                  <ChatMessageMedia
+                    key={message.chatId}
+                    media={attachmentSplit.media}
+                    onMediaFailed={attachmentSplit.onMediaFailed}
+                  />
+                ),
+              }
+            : {})}
+          {...(attachmentSplit.files.length > 0
             ? {
                 footer: (
                   <ChatMessageAttachments
                     key={message.chatId}
-                    attachments={attachments}
+                    attachments={attachmentSplit.files}
                   />
                 ),
               }
@@ -712,6 +737,16 @@ function ChatMessageViewImpl({
             // subsystem) must not have its whole response replaced by an error
             // notice.
             ((): JSX.Element => {
+              if (
+                message.role === 'system' &&
+                isAccountProxySettingsFailure(message.text)
+              ) {
+                return (
+                  <AccountProxyFailureNotice
+                    message={message.text.replace(/^Error:\s*/, '')}
+                  />
+                );
+              }
               const proxyError =
                 message.role === 'system' || message.status === 'failed'
                   ? parseCanopyProxyError(message.text)

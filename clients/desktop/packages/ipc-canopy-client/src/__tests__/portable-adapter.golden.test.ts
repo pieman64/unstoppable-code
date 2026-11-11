@@ -2259,6 +2259,51 @@ const QUERY_SCENARIOS: QueryScenarios = {
   ),
   'file.read': [
     {
+      name: 'preserves a literal POSIX backslash in both file locators',
+      args: {
+        ...WORKTREE,
+        fileRootLocalId: 'repo-1',
+        relativePath: 'literal\\name.ts',
+      },
+      calls: [
+        call(C.fileTreeRoots, WORKTREE),
+        call(C.fileReadContent, {
+          absolutePath: '/root/literal\\name.ts',
+          workspaceTarget: WORKTREE,
+          file: { fileRootId: 'repo-1', relativePath: 'literal\\name.ts' },
+        }),
+      ],
+      result: (value) =>
+        expect(value).toMatchObject({
+          path: 'literal\\name.ts',
+          content: 'body',
+        }),
+    },
+    {
+      name: 'retains Windows separators in both file locators',
+      args: {
+        ...WORKTREE,
+        fileRootLocalId: 'repo-1',
+        relativePath: 'src\\App.ts',
+      },
+      replies: {
+        [C.fileTreeRoots]: () => ({
+          roots: [
+            { repoId: 'repo-1', repoName: 'Repo', absolutePath: 'C:\\repo' },
+          ],
+        }),
+      },
+      calls: [
+        call(C.fileTreeRoots, WORKTREE),
+        call(C.fileReadContent, {
+          absolutePath: 'C:\\repo/src/App.ts',
+          workspaceTarget: WORKTREE,
+          file: { fileRootId: 'repo-1', relativePath: 'src/App.ts' },
+        }),
+      ],
+      result: (value) => expect(value).toMatchObject({ content: 'body' }),
+    },
+    {
       name: 'reads a catalog root canonically',
       args: {
         ...WORKTREE,

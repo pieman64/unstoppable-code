@@ -19,7 +19,7 @@ import {
   getEnhancedEnv,
   isLinuxLoginShellPathSupported,
   resolveLinuxAccountShell,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import { startWindowsProcessTreeKill } from '@canopy/execution-engine/node/lib/process-kill';
 import { lowerSpawnedProcessPriority } from '../lib/background-process';

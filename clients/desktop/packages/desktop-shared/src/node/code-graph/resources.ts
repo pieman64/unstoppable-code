@@ -1,5 +1,5 @@
 import { installCodeGraphResourcesDirResolver } from '@canopy/code-graph/resources';
-import { getBundledCodeGraphDir } from '../../pipelines/config-paths';
+import { getBundledCodeGraphDir } from '@canopy/execution-engine/pipelines/config-paths';
 
 /**
  * Points the engine's default `resourcesDir` at the desktop and CLI bundled

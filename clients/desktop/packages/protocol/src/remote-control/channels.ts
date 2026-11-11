@@ -45,6 +45,9 @@ export const MOBILE_CONTROLLER_CHANNELS = [
   'desktop:session-snapshot',
   'desktop:session-snapshot-invalidate',
   'desktop:session-snapshot-stale',
+  // The mobile file viewer resolves roots, then reads reports and linked images.
+  'file-tree:roots',
+  'file:read-content',
   'github:create-pr',
   'github:merge-pr',
   'github:merge-pr-progress',

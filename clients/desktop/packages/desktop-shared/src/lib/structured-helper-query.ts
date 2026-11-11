@@ -21,7 +21,7 @@ import {
   getBundledClaudeBinaryPath,
   getBundledRgBinaryPath,
   getEnhancedEnv,
-} from '../pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { claudeNativeMemoryOptions } from '@canopy/execution-engine/node/lib/native-memory';
 import {

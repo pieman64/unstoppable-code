@@ -347,15 +347,23 @@ async function resolveCanonicalSkillDirForRead(
 }
 
 /**
- * Resolve a skill-relative file path for reading. Deliberately more
+ * Resolve a skill-relative file path. Deliberately more
  * permissive than the authoring-side validation (installed GitHub skills may
- * contain names custom authoring rejects) but still traversal-safe.
+ * contain names custom authoring rejects) but still traversal-safe. Only
+ * local reads accept literal POSIX backslashes; mutation callers retain the
+ * restricted policy, and portable bundle validation remains separate.
  */
 function resolveSkillFilePath(
   skillDir: string,
   filePath: string,
+  pathPolicy: 'restricted' | 'local-read' = 'restricted',
 ): string | null {
-  if (!filePath || filePath.includes('\\') || path.isAbsolute(filePath)) {
+  if (
+    !filePath ||
+    (filePath.includes('\\') &&
+      (pathPolicy !== 'local-read' || path.sep === '\\')) ||
+    path.isAbsolute(filePath)
+  ) {
     return null;
   }
   const segments = filePath.split('/');
@@ -516,7 +524,7 @@ async function resolveSkillFileForRead(
   skillDir: string,
   filePath: string,
 ): Promise<ResolvedSkillFile> {
-  if (!resolveSkillFilePath(skillDir, filePath)) {
+  if (!resolveSkillFilePath(skillDir, filePath, 'local-read')) {
     return { status: 'invalid' };
   }
 
@@ -2404,7 +2412,7 @@ export async function readSkillFile(
     if (!lexicalSkillDir) {
       return { success: false, error: 'Invalid skill path.' };
     }
-    if (!resolveSkillFilePath(lexicalSkillDir, filePath)) {
+    if (!resolveSkillFilePath(lexicalSkillDir, filePath, 'local-read')) {
       return { success: false, error: 'Invalid file path.' };
     }
     const resolvedSkillDir = await resolveCanonicalSkillDirForRead(

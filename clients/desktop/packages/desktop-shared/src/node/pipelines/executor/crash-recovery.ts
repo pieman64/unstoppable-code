@@ -7,7 +7,7 @@ import {
   requestExecutionCancellation,
   saveExecutionStateIfUnchanged,
 } from './execution-state';
-import { refreshAllJobGroups } from './job-scheduler';
+import { refreshAllJobGroups } from '@canopy/execution-engine/node/pipelines/executor/job-scheduler';
 import {
   cancelRecoveredExecutionState,
   isKnownOrphanedExecution,
@@ -16,7 +16,7 @@ import {
   buildAgentRecoveryStepResult,
   buildNestedPipelineOutputs,
 } from './step-runner';
-import { pauseInterruptedExecution } from './shutdown-recovery';
+import { pauseInterruptedExecution } from '@canopy/execution-engine/node/pipelines/executor/shutdown-recovery';
 
 function isTerminalExecutionStatus(
   status: ExecutionState['status'],

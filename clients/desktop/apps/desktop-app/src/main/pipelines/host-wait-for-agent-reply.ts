@@ -26,12 +26,12 @@ import type {
 import {
   PipelineHostRefusal,
   type PipelineHostFailureReason,
-} from '@canopy/desktop-shared/pipelines/host-actions';
+} from '@canopy/execution-engine/pipelines/host-actions';
 import {
   emptyWaitForAgentReplyOutputs,
   type HostChatAddress,
   type WaitForAgentReplyInputs,
-} from '@canopy/desktop-shared/pipelines/host-wait-for-agent-reply';
+} from '@canopy/execution-engine/pipelines/host-wait-for-agent-reply';
 import {
   parseWorkspaceContext,
   PERSONAL_WORKSPACE_CONTEXT,

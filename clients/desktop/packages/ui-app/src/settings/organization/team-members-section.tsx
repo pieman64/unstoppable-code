@@ -59,7 +59,7 @@ import {
   removeMember,
   TeamApiError,
 } from './team-api';
-import { TeamRoleBadge } from './team-role-badge';
+import { ROLE_LABEL } from './team-role-label';
 import { MemberAvatar } from './MemberAvatar';
 import { memberProfileHref } from './profile-links';
 import { joinClassNames } from './join-class-names';
@@ -449,7 +449,7 @@ export function TeamMembersSection({
                       }))}
                     />
                   ) : (
-                    <TeamRoleBadge role={member.role} />
+                    <Badge>{ROLE_LABEL[member.role]}</Badge>
                   )}
                 </div>
 

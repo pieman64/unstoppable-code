@@ -1,5 +1,7 @@
 import {
   pipelineShareLinkItemId,
+  workflowCallerCount,
+  workflowDeleteMessage,
   workflowDeletePlan,
 } from '@/lib/workflows/library-projection';
 import {
@@ -570,6 +572,17 @@ export function WorkflowsLibraryTab({
         )
       : undefined;
   const deleteScheduleCount = deletePlan?.ok ? deletePlan.schedules.length : 1;
+  // CAN-6035: workflow pages whose run-pipeline step calls this row's
+  // pipeline fail once it's gone, so the confirmation says how many.
+  const deleteCallers =
+    pendingDelete?.target.kind === 'automation'
+      ? workflowCallerCount(
+          pendingDelete.target.activity.workflowSchedule?.pipelineId,
+          pipelines.pipelines,
+        )
+      : pendingDelete?.target.kind === 'pipeline'
+        ? (pendingDelete.target.pipeline.workflowCallers ?? 0)
+        : 0;
 
   const confirmDelete = useCallback((): void => {
     if (!pendingDelete) return;
@@ -677,11 +690,11 @@ export function WorkflowsLibraryTab({
           message={
             deletePlan?.ok === false
               ? deletePlan.error
-              : deleteScheduleCount > 1
-                ? `Deletes the workflow and its ${String(deleteScheduleCount)} schedules. This cannot be undone.`
-                : deletingRunning
-                  ? 'A run is in progress and will be stopped. This cannot be undone.'
-                  : 'This cannot be undone.'
+              : workflowDeleteMessage({
+                  scheduleCount: deleteScheduleCount,
+                  running: deletingRunning,
+                  callers: deleteCallers,
+                })
           }
           confirmLabel="Delete"
           busyLabel="Deleting…"

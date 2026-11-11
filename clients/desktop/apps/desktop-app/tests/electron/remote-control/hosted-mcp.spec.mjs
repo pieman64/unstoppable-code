@@ -86,6 +86,10 @@ const ASK_USER_TOOL = 'mcp__canopy_ui__AskUserQuestion';
 /** `task_diff_get`'s patch bound (Portal's `MAX_PATCH_BYTES`). */
 const MAX_PATCH_BYTES = 32_768;
 const POLL = { timeout: 30_000, intervals: [250, 500, 1_000] };
+/** Polls of the agent's tools, within its 60 calls a minute. */
+const TOOL_POLL = { timeout: 30_000, intervals: [1_000, 2_000] };
+/** The reply to a Work Entry chat's opening message (`startWorkEntryChat`). */
+const OPEN_STEPS = { open: [{ text: 'Note opened.', stopReason: 'end_turn' }] };
 
 let relay = null;
 let webServer = null;
@@ -139,7 +143,29 @@ async function openAgent(seeded) {
   const context = await browser.newContext();
   const page = await context.newPage();
   const agent = await connectTasksAgent(page, seeded, { webServer });
-  return { ...agent, close: () => context.close() };
+  // The suite makes more tool calls than a connection's 60 a minute. A call
+  // refused by that limit never ran, so it waits out the window and calls
+  // again.
+  async function call(name, args) {
+    for (let attempt = 0; ; attempt += 1) {
+      const result = await agent.call(name, args);
+      if (result.structuredContent?.code !== 'rate_limited' || attempt === 5) {
+        return result;
+      }
+      const seconds = result.structuredContent.retryAfterSeconds ?? 1;
+      await new Promise((resolve) => setTimeout(resolve, seconds * 1_000));
+    }
+  }
+  async function ok(name, args) {
+    const result = await call(name, args);
+    if (result.isError) {
+      throw new Error(
+        `MCP ${name} returned an error: ${JSON.stringify(result.structuredContent)}`,
+      );
+    }
+    return result.structuredContent;
+  }
+  return { ...agent, call, ok, close: () => context.close() };
 }
 
 function expectToolError(result, code, reason) {
@@ -154,27 +180,6 @@ function workspaceRoot(workspaceId) {
   return path.join(desktop.userDataDir, 'workspaces', workspaceId);
 }
 
-function chatTabIds(workspaceId, scopeId) {
-  return readChatStorageTabs(workspaceRoot(workspaceId), scopeId).tabs.map(
-    (tab) => tab.id,
-  );
-}
-
-/** The one chat tab added to a scope since `before`. */
-async function newChatTab(workspaceId, scopeId, before) {
-  let added = [];
-  await expect
-    .poll(() => {
-      added = readChatStorageTabs(
-        workspaceRoot(workspaceId),
-        scopeId,
-      ).tabs.filter((tab) => !before.includes(tab.id));
-      return added.length;
-    }, POLL)
-    .toBe(1);
-  return added[0];
-}
-
 function chatMessages(workspaceId, scopeId, chatId) {
   return readChatStorageMessages(workspaceRoot(workspaceId), scopeId, chatId);
 }
@@ -183,20 +188,174 @@ function demoWorktreePath() {
   return desktop.demo.workspaces[0].worktreePath;
 }
 
-/** Polls `task_get` until `predicate` holds for the task; returns it. */
-async function waitForTask(taskId, predicate, message) {
-  let task = null;
+/** Polls `task_chat_get` until `predicate` holds for the chat; returns it. */
+async function waitForChat({ taskId, chatId }, predicate, message) {
+  let chat = null;
+  try {
+    await expect
+      .poll(async () => {
+        chat = (
+          await agentA.ok('task_chat_get', {
+            host: target.host,
+            taskId,
+            chatId,
+          })
+        ).chat;
+        return predicate(chat);
+      }, TOOL_POLL)
+      .toBe(true);
+  } catch (error) {
+    throw new Error(`${message}; last=${JSON.stringify(chat)}`, {
+      cause: error,
+    });
+  }
+  return chat;
+}
+
+function chatIdsOf(taskId) {
+  return agentA
+    .ok('task_get', { host: target.host, taskId })
+    .then((read) => read.chats.map((chat) => chat.chatId));
+}
+
+/**
+ * Starts an empty chat on the computer over a hosted session. Hosted agents
+ * have no direct `task_create` or `task_chat_create` (DIRECT_UNSUPPORTED_TOOLS),
+ * so the spec sends the `chat.create_tab` the hosted profile allows. Returns
+ * the desktop tab ID and the Tasks chat ID the agent reads it under.
+ */
+async function startHostedChat({ taskId, projectId, worktreeId }) {
+  const before = await chatIdsOf(taskId);
+  const tabId = randomUUID();
+  const session = await openHostedSession();
+  try {
+    const created = await settle(
+      session.transport.invoke('chat:command', {
+        ...chatEnvelope(projectId, worktreeId),
+        command: { type: 'chat.create_tab', tabId },
+      }),
+    );
+    expect(created.ok, created.message).toBe(true);
+    expect(created.value, JSON.stringify(created.value)).toMatchObject({
+      outcome: 'applied',
+    });
+  } finally {
+    session.stop();
+  }
+  let added = [];
   await expect
-    .poll(
-      async () => {
-        task = (await agentA.ok('task_get', { host: target.host, taskId }))
-          .task;
-        return predicate(task);
+    .poll(async () => {
+      added = (await chatIdsOf(taskId)).filter((id) => !before.includes(id));
+      return added.length;
+    }, TOOL_POLL)
+    .toBe(1);
+  return { tabId, taskId, chatId: added[0] };
+}
+
+/**
+ * A Work Entry in the cowork project with one chat, made over a hosted
+ * session as the earlier direct create did: an empty entry, its chat, and an
+ * opening message (a Work Entry chat is listed once it has one). The desktop
+ * reuses an empty entry, so the chat may land in an existing task. Resolves
+ * once that opening turn has ended, with it as `opening`. `marker`'s scenario
+ * answers the opening message under its `open` request tag
+ * ({@link OPEN_STEPS}).
+ */
+async function startWorkEntryChat(coworkProjectId, marker) {
+  const session = await openHostedSession();
+  let entryId;
+  try {
+    const entry = await settle(
+      session.transport.invoke('work-entries:create', { projectId: COWORK.id }),
+    );
+    expect(entry.ok, entry.message).toBe(true);
+    entryId = entry.value.entry.id;
+    const tabId = randomUUID();
+    for (const command of [
+      { type: 'chat.create_tab', tabId },
+      {
+        type: 'chat.send_message',
+        chatId: tabId,
+        userMessageId: randomUUID(),
+        text: `[${marker}] [Canopy-Mock-Request:open] Open a note.`,
       },
-      { ...POLL, message: () => `${message}; last=${JSON.stringify(task)}` },
-    )
-    .toBe(true);
-  return task;
+    ]) {
+      const sent = await settle(
+        session.transport.invoke('chat:command', {
+          ...chatEnvelope(COWORK.id, entryId),
+          command,
+        }),
+      );
+      expect(sent.ok, sent.message).toBe(true);
+      expect(sent.value, JSON.stringify(sent.value)).toMatchObject({
+        outcome: 'applied',
+      });
+    }
+  } finally {
+    session.stop();
+  }
+  // The entry and its chat are titled by the opening message.
+  let taskId = null;
+  await expect
+    .poll(async () => {
+      const listed = await agentA.ok('task_list', {
+        host: target.host,
+        projectId: coworkProjectId,
+        limit: 50,
+      });
+      taskId =
+        listed.items.find(
+          (item) => item.kind === 'work_entry' && item.title.includes(marker),
+        )?.taskId ?? null;
+      return taskId;
+    }, TOOL_POLL)
+    .not.toBeNull();
+  const { chats } = await agentA.ok('task_get', {
+    host: target.host,
+    taskId,
+  });
+  const opened = chats.find((item) => item.title.includes(marker));
+  expect(opened, JSON.stringify(chats)).toBeTruthy();
+  const task = { taskId, chatId: opened.chatId };
+  const chat = { entryId, ...task };
+  const ended = await waitForChat(
+    chat,
+    (current) =>
+      current.lastTurn !== null &&
+      !['queued', 'running'].includes(current.lastTurn.status),
+    'the opening turn to end',
+  );
+  return { ...chat, opening: ended.lastTurn };
+}
+
+/** Sends `text` to a chat as the agent, as a plain queued message. */
+async function sendToChat(chat, text) {
+  const sent = await agentA.ok('task_chat_send', {
+    host: target.host,
+    taskId: chat.taskId,
+    chatId: chat.chatId,
+    text,
+    idempotencyKey: randomUUID(),
+  });
+  expect(sent.receipt.operation).toBe('task_chat_send');
+  expect(sent.chatId).toBe(chat.chatId);
+  return sent;
+}
+
+/**
+ * The chat read live. A worktree chat's cached read comes from the task
+ * listing, which names no turn until it ends; a live read (one of the
+ * connection's per-minute live reads) names the running one.
+ */
+async function readChatLive(chat) {
+  return (
+    await agentA.ok('task_chat_get', {
+      host: target.host,
+      taskId: chat.taskId,
+      chatId: chat.chatId,
+      noCache: true,
+    })
+  ).chat;
 }
 
 /** A delegated hosted session to the paired desktop, as the pool opens one. */
@@ -472,14 +631,14 @@ test('pairs through the SSE route with desktop approval, retrying a failed link 
   target.hostPublicKey = links[0].hosted_host_public_key;
 });
 
-test('host_list reports the paired computer online; task_create and task_wait follow a real turn on a default-model chat the desktop attributes to the agent', async () => {
+test('host_list reports the paired computer online; task_chat_send and task_chat_wait follow a real turn on a default-model chat the desktop attributes to the agent', async () => {
   test.setTimeout(180_000);
   expect(target.host).toBeTruthy();
   await expect
     .poll(async () => {
       const listed = await agentA.ok('host_list', { limit: 50 });
       return listed.hosts.find((host) => host.host === target.host)?.status;
-    }, POLL)
+    }, TOOL_POLL)
     .toBe('online');
 
   const projects = await agentA.ok('project_list', {
@@ -489,17 +648,39 @@ test('host_list reports the paired computer online; task_create and task_wait fo
   const project = projects.items.find((item) => item.name === PROJECT_NAME);
   expect(project, JSON.stringify(projects)).toBeTruthy();
   target.projectId = project.projectId;
+  // The worktree is one task; its chats, the seeded ones included, are in it.
   const tasks = await agentA.ok('task_list', {
     host: target.host,
     projectId: target.projectId,
     limit: 50,
   });
-  const seeded = tasks.items.find((item) => item.title === SEEDED_CHAT.title);
-  expect(seeded?.environment?.kind, JSON.stringify(tasks)).toBe('worktree');
-  target.worktreeId = seeded.environment.worktreeId;
+  const worktreeTask = tasks.items.find(
+    (item) => item.kind === 'worktree' && item.branch === WORKTREE_ID,
+  );
+  expect(worktreeTask, JSON.stringify(tasks)).toBeTruthy();
+  target.taskId = worktreeTask.taskId;
+  const read = await agentA.ok('task_get', {
+    host: target.host,
+    taskId: target.taskId,
+  });
+  expect(read.chats.map((chat) => chat.title)).toEqual(
+    expect.arrayContaining([SEEDED_CHAT.title, SECRET_CHAT.title]),
+  );
+
+  // A computer connected for agents has no direct create sequence yet: the
+  // web refuses task_create before anything reaches the computer.
+  expectToolError(
+    await agentA.call('task_create', {
+      host: target.host,
+      projectId: target.projectId,
+      idempotencyKey: randomUUID(),
+      chat: { prompt: 'Summarize the README.' },
+    }),
+    'capability_missing',
+  );
 
   // The provider reply waits on a barrier, so the turn is still running
-  // while task_wait subscribes, and completes only when released.
+  // while task_chat_wait subscribes, and completes only when released.
   const marker = `Canopy-CHOSTEDWAIT${randomBytes(4).toString('hex')}`;
   await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
     llm: {
@@ -512,28 +693,31 @@ test('host_list reports the paired computer online; task_create and task_wait fo
       ],
     },
   });
-  const tabsBefore = chatTabIds(WORKSPACE_ID, WORKTREE_ID);
+  const chat = await startHostedChat({
+    taskId: target.taskId,
+    projectId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+  });
   try {
-    const created = await agentA.ok('task_create', {
-      host: target.host,
-      projectId: target.projectId,
-      prompt: `[${marker}] Summarize the README.`,
-      environment: { kind: 'existing_worktree', worktreeId: target.worktreeId },
-      idempotencyKey: randomUUID(),
-    });
-    expect(created.host).toBe(target.host);
-    expect(created.receipt.operation).toBe('create');
-    expect(created.taskId).toBe(created.receipt.taskId);
+    const sent = await sendToChat(chat, `[${marker}] Summarize the README.`);
+    expect(sent.host).toBe(target.host);
+    expect(sent.taskId).toBe(target.taskId);
     await expect
       .poll(() => mockBarrierWaiting(marker, 'finish'), POLL)
       .toBeGreaterThan(0);
+    const running = await readChatLive(chat);
+    expect(running.lastTurn, JSON.stringify(running)).toMatchObject({
+      status: 'running',
+    });
 
     // Completion during the subscription: the wait is in flight when the
     // turn ends, and returns that completion rather than timing out.
     const waitStartedAt = Date.now();
-    const waiting = agentA.call('task_wait', {
+    const waiting = agentA.call('task_chat_wait', {
       host: target.host,
-      taskId: created.taskId,
+      taskId: chat.taskId,
+      chatId: chat.chatId,
+      until: 'idle',
       timeoutSeconds: 25,
     });
     await new Promise((resolve) => setTimeout(resolve, 3_000));
@@ -544,31 +728,32 @@ test('host_list reports the paired computer online; task_create and task_wait fo
     );
     expect(Date.now() - waitStartedAt).toBeGreaterThanOrEqual(3_000);
     expect(completed.structuredContent.timedOut).toBe(false);
-    expect(completed.structuredContent.task.status).not.toBe('running');
-    expect(completed.structuredContent.task.lastTurn?.status).toBe('complete');
+    expect(completed.structuredContent.chat.lastTurn).toMatchObject({
+      turnId: running.lastTurn.turnId,
+      status: 'complete',
+    });
 
     // Already complete: a second wait answers from the current state.
-    const again = await agentA.ok('task_wait', {
+    const again = await agentA.call('task_chat_wait', {
       host: target.host,
-      taskId: created.taskId,
+      taskId: chat.taskId,
+      chatId: chat.chatId,
+      until: 'idle',
       timeoutSeconds: 25,
     });
-    expect(again.timedOut).toBe(false);
-    expect(again.task.lastTurn?.status).toBe('complete');
-    const againMs = (
-      await agentA.call('task_wait', {
-        host: target.host,
-        taskId: created.taskId,
-        timeoutSeconds: 25,
-      })
-    ).ms;
-    expect(againMs).toBeLessThan(10_000);
+    expect(again.isError, JSON.stringify(again.structuredContent)).toBe(false);
+    expect(again.structuredContent.timedOut).toBe(false);
+    expect(again.structuredContent.chat.lastTurn?.status).toBe('complete');
+    expect(again.ms).toBeLessThan(10_000);
 
     // The computer started the new chat on its default model (stamped as the
     // default, and the prompt above ran on it) and stamped who sent the
     // message, derived from the session.
-    const tab = await newChatTab(WORKSPACE_ID, WORKTREE_ID, tabsBefore);
-    expect(tab.model, JSON.stringify(tab)).toMatch(/\S/);
+    const tab = readChatStorageTabs(
+      workspaceRoot(WORKSPACE_ID),
+      WORKTREE_ID,
+    ).tabs.find((candidate) => candidate.id === chat.tabId);
+    expect(tab?.model, JSON.stringify(tab)).toMatch(/\S/);
     expect(tab.defaultStampModel).toBe(tab.model);
     const [root] = await hostedControllers();
     const userMessage = chatMessages(WORKSPACE_ID, WORKTREE_ID, tab.id).find(
@@ -593,7 +778,7 @@ test('host_list reports the paired computer online; task_create and task_wait fo
   }
 });
 
-test('task_cancel stops only the named running turn; an older turn answers turn_not_active', async () => {
+test('task_chat_cancel stops only the named running turn; an older turn answers turn_not_active', async () => {
   test.setTimeout(120_000);
   const marker = `Canopy-CHOSTEDSTOP${randomBytes(4).toString('hex')}`;
   await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
@@ -611,110 +796,99 @@ test('task_cancel stops only the named running turn; an older turn answers turn_
       },
     },
   });
-  const tabsBefore = chatTabIds(WORKSPACE_ID, WORKTREE_ID);
+  const chat = await startHostedChat({
+    taskId: target.taskId,
+    projectId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+  });
   const session = await openHostedSession();
   try {
-    const created = await agentA.ok('task_create', {
-      host: target.host,
-      projectId: target.projectId,
-      prompt: `[${marker}] [Canopy-Mock-Request:first] Say hello.`,
-      environment: { kind: 'existing_worktree', worktreeId: target.worktreeId },
-      idempotencyKey: randomUUID(),
-    });
-    const firstTurn = created.turnId;
-    expect(firstTurn).toBeTruthy();
-    await waitForTask(
-      created.taskId,
-      (task) =>
-        task.lastTurn?.turnId === firstTurn &&
-        task.lastTurn.status === 'complete',
+    await sendToChat(
+      chat,
+      `[${marker}] [Canopy-Mock-Request:first] Say hello.`,
+    );
+    const first = await waitForChat(
+      chat,
+      (current) => current.lastTurn?.status === 'complete',
       'the first turn to complete',
     );
+    const firstTurn = first.lastTurn.turnId;
 
-    const sent = await agentA.ok('task_send', {
-      host: target.host,
-      taskId: created.taskId,
-      text: '[Canopy-Mock-Request:second] Keep going.',
-      idempotencyKey: randomUUID(),
-    });
-    const secondTurn = sent.receipt.turnId;
-    expect(secondTurn).toBeTruthy();
-    expect(secondTurn).not.toBe(firstTurn);
+    await sendToChat(chat, '[Canopy-Mock-Request:second] Keep going.');
     await expect
       .poll(() => mockBarrierWaiting(marker, 'second'), POLL)
       .toBeGreaterThan(0);
-    await waitForTask(
-      created.taskId,
-      (task) =>
-        task.lastTurn?.turnId === secondTurn && task.status === 'running',
-      'the second turn to run',
-    );
+    const second = await readChatLive(chat);
+    expect(second.lastTurn, JSON.stringify(second)).toMatchObject({
+      status: 'running',
+    });
+    const secondTurn = second.lastTurn.turnId;
+    expect(secondTurn).not.toBe(firstTurn);
 
     // Stopping the finished turn never stops the newer one.
-    const stale = await agentA.ok('task_cancel', {
+    const stale = await agentA.ok('task_chat_cancel', {
       host: target.host,
-      taskId: created.taskId,
+      taskId: chat.taskId,
+      chatId: chat.chatId,
       turnId: firstTurn,
+      idempotencyKey: randomUUID(),
     });
     expect(stale).toMatchObject({
       outcome: 'turn_not_active',
       stopRequested: false,
     });
     const stillRunning = (
-      await agentA.ok('task_get', { host: target.host, taskId: created.taskId })
-    ).task;
-    expect(stillRunning.status).toBe('running');
-    expect(stillRunning.lastTurn).toMatchObject({
-      turnId: secondTurn,
-      status: 'running',
-    });
+      await agentA.ok('task_chat_get', {
+        host: target.host,
+        taskId: chat.taskId,
+        chatId: chat.chatId,
+      })
+    ).chat;
+    expect(stillRunning.activity.status).toBe('active');
     expect(await mockBarrierWaiting(marker, 'second')).toBeGreaterThan(0);
 
     // The computer refuses a hosted plain Stop that names no turn.
-    const tab = await newChatTab(WORKSPACE_ID, WORKTREE_ID, tabsBefore);
     const plainStop = await settle(
       session.transport.invoke('chat:cancel', {
         projectId: WORKSPACE_ID,
         worktreeId: WORKTREE_ID,
-        chatId: tab.id,
+        chatId: chat.tabId,
       }),
     );
     expect(plainStop.ok).toBe(false);
     expect(plainStop.message).toMatch(HOST_PROFILE_REFUSAL);
-    expect(
-      (
-        await agentA.ok('task_get', {
-          host: target.host,
-          taskId: created.taskId,
-        })
-      ).task.status,
-    ).toBe('running');
+    expect(await mockBarrierWaiting(marker, 'second')).toBeGreaterThan(0);
 
     // Stopping the named running turn stops exactly that turn.
-    const stop = await agentA.ok('task_cancel', {
+    const stop = await agentA.ok('task_chat_cancel', {
       host: target.host,
-      taskId: created.taskId,
+      taskId: chat.taskId,
+      chatId: chat.chatId,
       turnId: secondTurn,
+      idempotencyKey: randomUUID(),
     });
     expect(stop).toMatchObject({
       outcome: 'stop_requested',
       stopRequested: true,
     });
-    await waitForTask(
-      created.taskId,
-      (task) =>
-        task.lastTurn?.turnId === secondTurn &&
-        task.lastTurn.status === 'cancelled' &&
-        task.status !== 'running',
-      'the second turn to stop',
-    );
+    const stopped = await agentA.ok('task_chat_wait', {
+      host: target.host,
+      taskId: chat.taskId,
+      chatId: chat.chatId,
+      until: 'idle',
+      timeoutSeconds: 25,
+    });
+    expect(stopped.chat.lastTurn, JSON.stringify(stopped.chat)).toMatchObject({
+      turnId: secondTurn,
+      status: 'cancelled',
+    });
   } finally {
     session.stop();
     await releaseMockBarrier(marker, 'second');
   }
 });
 
-test('task_respond answers an ordinary question and the turn continues; secret and approval answers are refused', async () => {
+test('task_chat_respond answers an ordinary question and the turn continues; secret and approval answers are refused', async () => {
   test.setTimeout(120_000);
   const marker = `Canopy-CHOSTEDASK${randomBytes(4).toString('hex')}`;
   await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
@@ -740,20 +914,18 @@ test('task_respond answers an ordinary question and the turn continues; secret a
       ],
     },
   });
-  const tabsBefore = chatTabIds(WORKSPACE_ID, WORKTREE_ID);
-  const created = await agentA.ok('task_create', {
-    host: target.host,
-    projectId: target.projectId,
-    prompt: `[${marker}] Pick a banner color.`,
-    environment: { kind: 'existing_worktree', worktreeId: target.worktreeId },
-    idempotencyKey: randomUUID(),
+  const chat = await startHostedChat({
+    taskId: target.taskId,
+    projectId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
   });
-  const asking = await waitForTask(
-    created.taskId,
-    (task) =>
-      task.status === 'waiting_for_input' && task.pendingQuestion !== null,
+  await sendToChat(chat, `[${marker}] Pick a banner color.`);
+  const asking = await waitForChat(
+    chat,
+    (current) => current.pendingQuestion !== null,
     'the agent to ask its question',
   );
+  expect(asking.activity.status).toBe('blocked');
   expect(asking.pendingQuestion).toMatchObject({
     prompt: 'Which color should the banner use?',
     options: [
@@ -762,51 +934,53 @@ test('task_respond answers an ordinary question and the turn continues; secret a
     ],
   });
 
-  const answered = await agentA.ok('task_respond', {
+  const answered = await agentA.ok('task_chat_respond', {
     host: target.host,
-    taskId: created.taskId,
+    taskId: chat.taskId,
+    chatId: chat.chatId,
     questionId: asking.pendingQuestion.questionId,
+    idempotencyKey: randomUUID(),
     selectedOptionIndexes: [1],
     freeformText: null,
   });
   expect(answered.receipt).toMatchObject({
-    operation: 'respond',
-    taskId: created.taskId,
-    status: 'accepted',
+    operation: 'task_chat_respond',
+    taskId: chat.taskId,
+    chatId: chat.chatId,
   });
-  const done = await agentA.ok('task_wait', {
+  expect(answered.receipt.status).not.toBe('failed');
+  const done = await agentA.ok('task_chat_wait', {
     host: target.host,
-    taskId: created.taskId,
+    taskId: chat.taskId,
+    chatId: chat.chatId,
+    until: 'idle',
     timeoutSeconds: 25,
   });
   expect(done.timedOut).toBe(false);
-  expect(done.task.lastTurn?.status).toBe('complete');
-  expect(done.task.pendingQuestion).toBeNull();
+  expect(done.chat.lastTurn?.status).toBe('complete');
+  expect(done.chat.pendingQuestion).toBeNull();
   // The agent received the answer and finished its turn with it.
-  const tab = await newChatTab(WORKSPACE_ID, WORKTREE_ID, tabsBefore);
   const transcript = JSON.stringify(
-    chatMessages(WORKSPACE_ID, WORKTREE_ID, tab.id),
+    chatMessages(WORKSPACE_ID, WORKTREE_ID, chat.tabId),
   );
   expect(transcript).toContain('Blue');
   expect(transcript).toContain('Using the chosen color.');
 
   // A secret question: the web refuses before anything is sent...
-  const tasks = await agentA.ok('task_list', {
-    host: target.host,
-    projectId: target.projectId,
-    limit: 50,
-  });
-  const secretTask = tasks.items.find(
-    (item) => item.title === SECRET_CHAT.title,
-  );
-  expect(secretTask?.pendingQuestion?.prompt, JSON.stringify(tasks)).toBe(
+  const chats = (
+    await agentA.ok('task_get', { host: target.host, taskId: target.taskId })
+  ).chats;
+  const secretChat = chats.find((item) => item.title === SECRET_CHAT.title);
+  expect(secretChat?.pendingQuestion?.prompt, JSON.stringify(chats)).toBe(
     SECRET_CHAT.question,
   );
   expectToolError(
-    await agentA.call('task_respond', {
+    await agentA.call('task_chat_respond', {
       host: target.host,
-      taskId: secretTask.taskId,
-      questionId: secretTask.pendingQuestion.questionId,
+      taskId: target.taskId,
+      chatId: secretChat.chatId,
+      questionId: secretChat.pendingQuestion.questionId,
+      idempotencyKey: randomUUID(),
       selectedOptionIndexes: [],
       freeformText: 'not-a-real-token',
     }),
@@ -851,15 +1025,16 @@ test('task_respond answers an ordinary question and the turn continues; secret a
     session.stop();
   }
   const stillPending = (
-    await agentA.ok('task_get', {
+    await agentA.ok('task_chat_get', {
       host: target.host,
-      taskId: secretTask.taskId,
+      taskId: target.taskId,
+      chatId: secretChat.chatId,
     })
-  ).task;
+  ).chat;
   expect(stillPending.pendingQuestion?.prompt).toBe(SECRET_CHAT.question);
 });
 
-test('a no-repository task_create reuses an empty work entry and runs its turn', async () => {
+test('a Work Entry chat in a cowork project runs the turn an agent sends and reads it as a work_entry task', async () => {
   test.setTimeout(120_000);
   const projects = await agentA.ok('project_list', {
     host: target.host,
@@ -867,88 +1042,78 @@ test('a no-repository task_create reuses an empty work entry and runs its turn',
   });
   const cowork = projects.items.find((item) => item.name === COWORK.name);
   expect(cowork, JSON.stringify(projects)).toBeTruthy();
-  // An entry nothing was written to yet, as the desktop's own New chat
-  // leaves one.
-  const empty = await desktop.window.evaluate(
-    (projectId) => window.api.workEntries.create({ projectId }),
-    COWORK.id,
+  // No direct no-repository create either.
+  expectToolError(
+    await agentA.call('task_create', {
+      host: target.host,
+      projectId: cowork.projectId,
+      idempotencyKey: randomUUID(),
+      chat: { prompt: 'Draft a note.' },
+    }),
+    'capability_missing',
   );
-  const entriesBefore = (
-    await desktop.window.evaluate(
-      (projectId) => window.api.workEntries.list({ projectId }),
-      COWORK.id,
-    )
-  ).entries;
-  const emptyBefore = entriesBefore.find(
-    (entry) => entry.id === empty.entry.id,
-  );
-  expect(emptyBefore, JSON.stringify(entriesBefore)).toBeTruthy();
-  expect(emptyBefore.lastMessageAt).toBeUndefined();
 
   const marker = `Canopy-CHOSTEDSOLO${randomBytes(4).toString('hex')}`;
   await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
     llm: {
-      steps: [
-        {
-          text: 'No-repository turn complete.',
-          waitFor: 'solo',
-          barrierTimeoutMs: 60_000,
-        },
-      ],
+      steps: [{ text: 'Unexpected turn.', stopReason: 'end_turn' }],
+      stepsByRequestTag: {
+        ...OPEN_STEPS,
+        solo: [
+          {
+            text: 'No-repository turn complete.',
+            waitFor: 'solo',
+            barrierTimeoutMs: 60_000,
+          },
+        ],
+      },
     },
   });
-  const created = await agentA.ok('task_create', {
-    host: target.host,
-    projectId: cowork.projectId,
-    prompt: `[${marker}] Draft a note.`,
-    environment: { kind: 'no_repository' },
-    idempotencyKey: randomUUID(),
-  });
-  expect(created.receipt.operation).toBe('create');
+  const chat = await startWorkEntryChat(cowork.projectId, marker);
+  let turnId;
   try {
+    await sendToChat(
+      chat,
+      `[${marker}] [Canopy-Mock-Request:solo] Draft a note.`,
+    );
     // The prompt runs on the computer: the provider call is held open.
     await expect
       .poll(() => mockBarrierWaiting(marker, 'solo'), POLL)
       .toBeGreaterThan(0);
-    const running = await waitForTask(
-      created.taskId,
-      (task) => task.status === 'running',
+    const running = await waitForChat(
+      chat,
+      (current) => current.lastTurn?.status === 'running',
       'the no-repository turn to run',
     );
-    expect(running.environment.kind).toBe('no_repository');
-    expect(running.lastTurn?.turnId).toBe(created.turnId);
+    turnId = running.lastTurn.turnId;
   } finally {
     await releaseMockBarrier(marker, 'solo');
   }
-  const done = await agentA.ok('task_wait', {
+  const done = await agentA.ok('task_chat_wait', {
     host: target.host,
-    taskId: created.taskId,
+    taskId: chat.taskId,
+    chatId: chat.chatId,
+    until: 'idle',
     timeoutSeconds: 25,
   });
   expect(done.timedOut).toBe(false);
-  expect(done.task.status).toBe('idle');
-  expect(done.task.lastTurn).toMatchObject({
-    turnId: created.turnId,
-    status: 'complete',
-  });
+  expect(done.chat.activity.status).toBe('idle');
+  expect(done.chat.lastTurn).toMatchObject({ turnId, status: 'complete' });
 
-  // The chat went into the empty entry; no other entry was added.
-  const entriesAfter = (
+  // The chat ran in the Work Entry the hosted session added.
+  const entries = (
     await desktop.window.evaluate(
       (projectId) => window.api.workEntries.list({ projectId }),
       COWORK.id,
     )
   ).entries;
-  expect(entriesAfter.map((entry) => entry.id).sort()).toEqual(
-    entriesBefore.map((entry) => entry.id).sort(),
-  );
-  const used = entriesAfter.find((entry) => entry.id === empty.entry.id);
-  expect(used?.lastMessageAt, JSON.stringify(entriesAfter)).toBeTruthy();
+  const used = entries.find((entry) => entry.id === chat.entryId);
+  expect(used?.lastMessageAt, JSON.stringify(entries)).toBeTruthy();
   const transcripts = readChatStorageTabs(
     workspaceRoot(COWORK.id),
-    empty.entry.id,
+    chat.entryId,
   ).tabs.map((tab) =>
-    JSON.stringify(chatMessages(COWORK.id, empty.entry.id, tab.id) ?? []),
+    JSON.stringify(chatMessages(COWORK.id, chat.entryId, tab.id) ?? []),
   );
   const transcript = transcripts.find((text) => text.includes(marker));
   expect(transcript, JSON.stringify(transcripts)).toBeTruthy();
@@ -976,7 +1141,7 @@ async function overrideClaudeExecutable(missing) {
     }, saved);
 }
 
-test('a failed no-repository turn reads as failed in task_get and task_wait, and a running one reads the same in both', async () => {
+test('a failed no-repository turn reads as failed in task_chat_get and task_chat_wait, and a running one reads the same in both', async () => {
   test.setTimeout(180_000);
   const projects = await agentA.ok('project_list', {
     host: target.host,
@@ -989,45 +1154,47 @@ test('a failed no-repository turn reads as failed in task_get and task_wait, and
   const marker = `Canopy-CHOSTEDFAIL${randomBytes(4).toString('hex')}`;
   await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
     llm: {
-      steps: [
-        {
-          waitFor: 'fail',
-          barrierTimeoutMs: 60_000,
-          error: { kind: 'status', status: 400 },
-        },
-      ],
+      steps: [{ text: 'Unexpected turn.', stopReason: 'end_turn' }],
+      stepsByRequestTag: {
+        ...OPEN_STEPS,
+        fail: [
+          {
+            waitFor: 'fail',
+            barrierTimeoutMs: 60_000,
+            error: { kind: 'status', status: 400 },
+          },
+        ],
+      },
     },
   });
-  const created = await agentA.ok('task_create', {
-    host: target.host,
-    projectId: cowork.projectId,
-    prompt: `[${marker}] Draft a note that fails.`,
-    environment: { kind: 'no_repository' },
-    idempotencyKey: randomUUID(),
-  });
+  const chat = await startWorkEntryChat(cowork.projectId, marker);
+  let turnId;
   try {
+    await sendToChat(
+      chat,
+      `[${marker}] [Canopy-Mock-Request:fail] Draft a note that fails.`,
+    );
     await expect
       .poll(() => mockBarrierWaiting(marker, 'fail'), POLL)
       .toBeGreaterThan(0);
-    const running = await waitForTask(
-      created.taskId,
-      (task) => task.status === 'running',
+    const running = await waitForChat(
+      chat,
+      (current) => current.lastTurn?.status === 'running',
       'the no-repository turn to run',
     );
-    expect(running.lastTurn).toMatchObject({
-      turnId: created.turnId,
-      status: 'running',
-    });
-    // A wait that times out on the running turn sees the turn task_get sees.
-    const waiting = await agentA.ok('task_wait', {
+    turnId = running.lastTurn.turnId;
+    // A wait that times out on the running turn sees the turn task_chat_get
+    // sees.
+    const waiting = await agentA.ok('task_chat_wait', {
       host: target.host,
-      taskId: created.taskId,
+      taskId: chat.taskId,
+      chatId: chat.chatId,
+      until: 'idle',
       timeoutSeconds: 1,
     });
     expect(waiting.timedOut).toBe(true);
-    expect(waiting.task.status).toBe('running');
-    expect(waiting.task.lastTurn, JSON.stringify(waiting.task)).toMatchObject({
-      turnId: created.turnId,
+    expect(waiting.chat.lastTurn, JSON.stringify(waiting.chat)).toMatchObject({
+      turnId,
       status: 'running',
       startedAt: running.lastTurn.startedAt,
     });
@@ -1035,66 +1202,82 @@ test('a failed no-repository turn reads as failed in task_get and task_wait, and
     await releaseMockBarrier(marker, 'fail');
   }
 
-  const done = await agentA.ok('task_wait', {
+  const done = await agentA.ok('task_chat_wait', {
     host: target.host,
-    taskId: created.taskId,
+    taskId: chat.taskId,
+    chatId: chat.chatId,
+    until: 'idle',
     timeoutSeconds: 25,
   });
   expect(done.timedOut).toBe(false);
-  expect(done.task.status).not.toBe('running');
-  expect(done.task.lastTurn, JSON.stringify(done.task)).toMatchObject({
-    turnId: created.turnId,
+  expect(done.chat.lastTurn, JSON.stringify(done.chat)).toMatchObject({
+    turnId,
     status: 'failed',
     outcome: 'failed',
     startedAt: expect.any(String),
     endedAt: expect.any(String),
   });
   const read = (
-    await agentA.ok('task_get', { host: target.host, taskId: created.taskId })
-  ).task;
+    await agentA.ok('task_chat_get', {
+      host: target.host,
+      taskId: chat.taskId,
+      chatId: chat.chatId,
+    })
+  ).chat;
   expect(read.lastTurn, JSON.stringify(read)).toMatchObject({
-    turnId: created.turnId,
+    turnId,
     status: 'failed',
     outcome: 'failed',
-    startedAt: done.task.lastTurn.startedAt,
-    endedAt: done.task.lastTurn.endedAt,
+    startedAt: done.chat.lastTurn.startedAt,
+    endedAt: done.chat.lastTurn.endedAt,
   });
+  // task_get's cheaper listing may leave the turn out, never reads it complete.
+  const listed = (
+    await agentA.ok('task_get', { host: target.host, taskId: chat.taskId })
+  ).chats.find((item) => item.chatId === chat.chatId);
+  expect(listed?.lastTurn?.status ?? null, JSON.stringify(listed)).not.toBe(
+    'complete',
+  );
 
-  // The provider cannot start at all ("spawn ... ENOENT"): the turn fails
-  // with no live session left on the computer, and still never reads as
-  // complete.
+  // The provider cannot start at all ("spawn ... ENOENT"): the chat's first
+  // turn fails with no live session left on the computer, and still never
+  // reads as complete.
+  const unstartedMarker = `Canopy-CHOSTEDNOEXE${randomBytes(4).toString('hex')}`;
   const restore = await overrideClaudeExecutable(
     path.join(desktop.userDataDir, 'missing-provider', 'claude'),
   );
   let unstarted;
-  let failed;
   try {
-    unstarted = await agentA.ok('task_create', {
-      host: target.host,
-      projectId: cowork.projectId,
-      prompt: 'Draft a note no provider can start.',
-      environment: { kind: 'no_repository' },
-      idempotencyKey: randomUUID(),
-    });
-    failed = await agentA.ok('task_wait', {
-      host: target.host,
-      taskId: unstarted.taskId,
-      timeoutSeconds: 25,
-    });
+    unstarted = await startWorkEntryChat(cowork.projectId, unstartedMarker);
   } finally {
     await restore();
   }
+  expect(unstarted.opening, JSON.stringify(unstarted.opening)).toMatchObject({
+    status: 'failed',
+    outcome: 'failed',
+  });
+  const failed = await agentA.ok('task_chat_wait', {
+    host: target.host,
+    taskId: unstarted.taskId,
+    chatId: unstarted.chatId,
+    until: 'idle',
+    timeoutSeconds: 25,
+  });
   expect(failed.timedOut).toBe(false);
-  expect(failed.task.lastTurn, JSON.stringify(failed.task)).toMatchObject({
-    turnId: unstarted.turnId,
+  expect(failed.chat.lastTurn, JSON.stringify(failed.chat)).toMatchObject({
+    turnId: unstarted.opening.turnId,
     status: 'failed',
     outcome: 'failed',
   });
   const unstartedRead = (
-    await agentA.ok('task_get', { host: target.host, taskId: unstarted.taskId })
-  ).task;
+    await agentA.ok('task_chat_get', {
+      host: target.host,
+      taskId: unstarted.taskId,
+      chatId: unstarted.chatId,
+    })
+  ).chat;
   expect(unstartedRead.lastTurn, JSON.stringify(unstartedRead)).toMatchObject({
-    turnId: unstarted.turnId,
+    turnId: unstarted.opening.turnId,
     status: 'failed',
     outcome: 'failed',
   });
@@ -1104,8 +1287,7 @@ test('plan_list returns the tracked plan seeded on the desktop', async () => {
   test.setTimeout(60_000);
   const plans = await agentA.ok('plan_list', {
     host: target.host,
-    projectId: target.projectId,
-    worktreeId: target.worktreeId,
+    taskId: target.taskId,
     limit: 50,
   });
   expect(plans.host).toBe(target.host);
@@ -1113,7 +1295,7 @@ test('plan_list returns the tracked plan seeded on the desktop', async () => {
     expect.objectContaining({
       host: target.host,
       projectId: target.projectId,
-      worktreeId: target.worktreeId,
+      worktreeId: target.taskId,
       title: PLAN.title,
       status: 'pending',
     }),
@@ -1125,15 +1307,14 @@ test('pipeline_list and pipeline_run_get return a seeded pipeline and the run it
   test.setTimeout(120_000);
   const listed = await agentA.ok('pipeline_list', {
     host: target.host,
-    projectId: target.projectId,
-    worktreeId: target.worktreeId,
+    taskId: target.taskId,
     limit: 100,
   });
   const before = listed.items.find((item) => item.name === PIPELINE.name);
   expect(before, JSON.stringify(listed)).toMatchObject({
     host: target.host,
     projectId: target.projectId,
-    worktreeId: target.worktreeId,
+    worktreeId: target.taskId,
     triggerTypes: ['dispatch'],
     latestRun: null,
   });
@@ -1170,15 +1351,14 @@ test('pipeline_list and pipeline_run_get return a seeded pipeline and the run it
     .poll(async () => {
       const page = await agentA.ok('pipeline_list', {
         host: target.host,
-        projectId: target.projectId,
-        worktreeId: target.worktreeId,
+        taskId: target.taskId,
         limit: 100,
       });
       latestRun =
         page.items.find((item) => item.name === PIPELINE.name)?.latestRun ??
         null;
       return Boolean(latestRun?.finishedAt);
-    }, POLL)
+    }, TOOL_POLL)
     .toBe(true);
   expect(latestRun).toMatchObject({ host: target.host, status: 'success' });
 
@@ -1191,7 +1371,7 @@ test('pipeline_list and pipeline_run_get return a seeded pipeline and the run it
     runId: latestRun.runId,
     pipelineId: before.pipelineId,
     projectId: target.projectId,
-    worktreeId: target.worktreeId,
+    worktreeId: target.taskId,
     pipelineName: PIPELINE.name,
     status: 'success',
   });
@@ -1224,13 +1404,12 @@ test('task_diff_get returns the combined worktree diff and cuts the patch at its
   try {
     const diff = await agentA.ok('task_diff_get', {
       host: target.host,
-      projectId: target.projectId,
-      worktreeId: target.worktreeId,
+      taskId: target.taskId,
     });
     expect(diff).toMatchObject({
       host: target.host,
       projectId: target.projectId,
-      worktreeId: target.worktreeId,
+      worktreeId: target.taskId,
       diffSource: 'combined',
       filesTruncated: false,
       patchTruncated: true,
@@ -1261,7 +1440,7 @@ test('task_diff_get returns the combined worktree diff and cuts the patch at its
   }
 });
 
-test('pull_request_get answers no pull request for a worktree without a GitHub remote', async () => {
+test('task_pull_request_get answers no pull request for a worktree without a GitHub remote', async () => {
   test.setTimeout(60_000);
   // No remote at all, so nothing can reach GitHub.
   expect(
@@ -1270,15 +1449,14 @@ test('pull_request_get answers no pull request for a worktree without a GitHub r
       encoding: 'utf8',
     }).trim(),
   ).toBe('');
-  const read = await agentA.ok('pull_request_get', {
+  const read = await agentA.ok('task_pull_request_get', {
     host: target.host,
-    projectId: target.projectId,
-    worktreeId: target.worktreeId,
+    taskId: target.taskId,
   });
   expect(read).toMatchObject({
     host: target.host,
     projectId: target.projectId,
-    worktreeId: target.worktreeId,
+    worktreeId: target.taskId,
     pullRequest: null,
     source: 'live',
   });

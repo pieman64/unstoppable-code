@@ -256,6 +256,7 @@ const GET_SCRIPT_OUTPUT_TOOL_ALIASES: ReadonlySet<string> = new Set([
 ]);
 
 const SET_AUTO_ARCHIVE_TOOL_ALIASES: ReadonlySet<string> = new Set([
+  'SetChatAutoArchive',
   legacyMcpToolName('SetAutoArchive'),
   legacyCodexToolName('set_auto_archive'),
   'SetAutoArchive',
@@ -266,6 +267,9 @@ const SET_AUTO_ARCHIVE_TOOL_ALIASES: ReadonlySet<string> = new Set([
 
 const APP_ACTION_TOOL_ALIASES: ReadonlySet<string> = new Set([
   'ShowVisual',
+  'PreviewVisual',
+  'ShowCapabilities',
+  'SetWorkEntryAutoDelete',
   legacyMcpToolName('ShowFiles'),
   legacyCodexToolName('show_files'),
   'ShowFiles',
@@ -397,9 +401,12 @@ const APP_MCP_DISPLAY_TO_CAPABILITY: ReadonlyMap<
   ['InspectDelegate', 'inspect_delegate'],
   ['ListDelegates', 'list_delegates'],
   ['StopDelegate', 'stop_delegate'],
+  ['SetChatAutoArchive', 'set_auto_archive'],
   ['SetAutoArchive', 'set_auto_archive'],
   ['ArchiveChat', 'set_auto_archive'],
+  ['SetWorkEntryAutoDelete', 'set_work_entry_auto_delete'],
   ['ShowFiles', 'show_files'],
+  ['ShowCapabilities', 'show_capabilities'],
   ['ShowVisual', 'show_visual'],
   ['PreviewVisual', 'preview_visual'],
   ['GetFileComments', 'get_file_comments'],
@@ -458,9 +465,12 @@ const APP_CODEX_SUFFIX_TO_CAPABILITY: ReadonlyMap<
   ['inspect_delegate', 'inspect_delegate'],
   ['list_delegates', 'list_delegates'],
   ['stop_delegate', 'stop_delegate'],
+  ['set_chat_auto_archive', 'set_auto_archive'],
   ['set_auto_archive', 'set_auto_archive'],
   ['archive_chat', 'set_auto_archive'],
+  ['set_work_entry_auto_delete', 'set_work_entry_auto_delete'],
   ['show_files', 'show_files'],
+  ['show_capabilities', 'show_capabilities'],
   ['show_visual', 'show_visual'],
   ['preview_visual', 'preview_visual'],
   ['get_file_comments', 'get_file_comments'],
@@ -588,7 +598,7 @@ function getBrandedAppCapability(
   }
 
   const codexMatch = toolName.match(
-    /^(.+?)_(ask_user_question|get_script_output|spawn_delegate|watch_delegates|get_delegate_output|wait_delegates|inspect_delegate|list_delegates|stop_delegate|manage_delegate_worktree|message_delegate|request_steering|manage_delegate|set_auto_archive|set_base_branch|start_forked_agent|start_branched_agent|archive_chat|show_files|show_visual|preview_visual|get_file_comments|respond_to_file_comment|search_actions|dispatch_action|get_git_preferences|save_memory|search_memory|read_memory|read_pipeline_yaml|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|delete_watchers|search_deferred_tools|load_deferred_tools|immediate_turn_restart|get_code_graph_context|build_or_update_code_graph|query_code_graph|search_code_graph|explain_code_symbol|get_impact_radius|detect_changed_symbols|compare_change_impact|get_review_context|add_feed_entry|search_feed_entries|update_feed_entry|add_ledger_entry|search_ledger_entries|update_ledger_entry)$/,
+    /^(.+?)_(ask_user_question|get_script_output|spawn_delegate|watch_delegates|get_delegate_output|wait_delegates|inspect_delegate|list_delegates|stop_delegate|manage_delegate_worktree|message_delegate|request_steering|manage_delegate|set_chat_auto_archive|set_auto_archive|set_work_entry_auto_delete|set_base_branch|start_forked_agent|start_branched_agent|archive_chat|show_files|show_capabilities|show_visual|preview_visual|get_file_comments|respond_to_file_comment|search_actions|dispatch_action|get_git_preferences|save_memory|search_memory|read_memory|read_pipeline_yaml|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|delete_watchers|search_deferred_tools|load_deferred_tools|immediate_turn_restart|get_code_graph_context|build_or_update_code_graph|query_code_graph|search_code_graph|explain_code_symbol|get_impact_radius|detect_changed_symbols|compare_change_impact|get_review_context|add_feed_entry|search_feed_entries|update_feed_entry|add_ledger_entry|search_ledger_entries|update_ledger_entry)$/,
   );
   if (codexMatch) {
     const namespace = codexMatch[1];
@@ -673,54 +683,14 @@ export function isAppActionToolName(
   if (APP_ACTION_TOOL_ALIASES.has(toolName)) {
     return true;
   }
+  // Every app capability except the two with their own dedicated families.
+  // A hand-kept list here once dropped ShowFiles and the file-comment tools,
+  // so non-default brands rendered them as generic MCP calls.
   const capability = getBrandedAppCapability(toolName, scope);
   return (
-    capability === 'spawn_delegate' ||
-    capability === 'watch_delegates' ||
-    capability === 'get_delegate_output' ||
-    capability === 'wait_delegates' ||
-    capability === 'inspect_delegate' ||
-    capability === 'list_delegates' ||
-    capability === 'stop_delegate' ||
-    capability === 'manage_delegate' ||
-    capability === 'manage_delegate_worktree' ||
-    capability === 'message_delegate' ||
-    capability === 'request_steering' ||
-    capability === 'show_visual' ||
-    capability === 'preview_visual' ||
-    capability === 'search_actions' ||
-    capability === 'dispatch_action' ||
-    capability === 'get_git_preferences' ||
-    capability === 'save_memory' ||
-    capability === 'search_memory' ||
-    capability === 'read_memory' ||
-    capability === 'read_pipeline_yaml' ||
-    capability === 'set_auto_archive' ||
-    capability === 'set_base_branch' ||
-    capability === 'start_forked_agent' ||
-    capability === 'start_branched_agent' ||
-    capability === 'search_watchers' ||
-    capability === 'setup_watchers' ||
-    capability === 'watch_github_items' ||
-    capability === 'get_github_pull_request_status' ||
-    capability === 'watch_command' ||
-    capability === 'schedule_wakeup' ||
-    capability === 'delete_watchers' ||
-    capability === 'search_deferred_tools' ||
-    capability === 'load_deferred_tools' ||
-    capability === 'immediate_turn_restart' ||
-    capability === 'get_code_graph_context' ||
-    capability === 'build_or_update_code_graph' ||
-    capability === 'query_code_graph' ||
-    capability === 'search_code_graph' ||
-    capability === 'explain_code_symbol' ||
-    capability === 'get_impact_radius' ||
-    capability === 'detect_changed_symbols' ||
-    capability === 'compare_change_impact' ||
-    capability === 'get_review_context' ||
-    capability === 'add_ledger_entry' ||
-    capability === 'search_ledger_entries' ||
-    capability === 'update_ledger_entry'
+    capability !== null &&
+    capability !== 'ask_user_question' &&
+    capability !== 'get_script_output'
   );
 }
 
@@ -820,12 +790,16 @@ type AppAdvisorCapability =
   | 'watch_command'
   | 'schedule_wakeup'
   | 'set_auto_archive'
+  | 'set_work_entry_auto_delete'
+  | 'show_capabilities'
   | 'start_forked_agent'
   | 'search_deferred_tools'
   | 'load_deferred_tools';
 
 type CanopyActionCapability =
   | 'show_files'
+  | 'show_capabilities'
+  | 'set_work_entry_auto_delete'
   | 'show_visual'
   | 'preview_visual'
   | 'get_file_comments'
@@ -927,7 +901,10 @@ const APP_ADVISOR_MCP_DISPLAY_TO_CAPABILITY: ReadonlyMap<
   ['GetGitHubPullRequestStatus', 'get_github_pull_request_status'],
   ['WatchCommand', 'watch_command'],
   ['ScheduleWakeup', 'schedule_wakeup'],
+  ['SetChatAutoArchive', 'set_auto_archive'],
   ['SetAutoArchive', 'set_auto_archive'],
+  ['SetWorkEntryAutoDelete', 'set_work_entry_auto_delete'],
+  ['ShowCapabilities', 'show_capabilities'],
   ['StartForkedAgent', 'start_forked_agent'],
   ['SearchDeferredTools', 'search_deferred_tools'],
   ['LoadDeferredTools', 'load_deferred_tools'],
@@ -953,7 +930,10 @@ const APP_ADVISOR_CODEX_SUFFIX_TO_CAPABILITY: ReadonlyMap<
   ['get_github_pull_request_status', 'get_github_pull_request_status'],
   ['watch_command', 'watch_command'],
   ['schedule_wakeup', 'schedule_wakeup'],
+  ['set_chat_auto_archive', 'set_auto_archive'],
   ['set_auto_archive', 'set_auto_archive'],
+  ['set_work_entry_auto_delete', 'set_work_entry_auto_delete'],
+  ['show_capabilities', 'show_capabilities'],
   ['start_forked_agent', 'start_forked_agent'],
   ['search_deferred_tools', 'search_deferred_tools'],
   ['load_deferred_tools', 'load_deferred_tools'],
@@ -973,7 +953,7 @@ function getAppAdvisorCapability(
   }
 
   const codexMatch = toolName.match(
-    /^(.+)_app_advisor_(ask_user_question|get_script_output|show_files|get_file_comments|respond_to_file_comment|search_actions|get_current_ui_state|dispatch_action|read_pipeline_yaml|get_pipeline_debug_context|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|set_auto_archive|start_forked_agent|search_deferred_tools|load_deferred_tools)$/,
+    /^(.+)_app_advisor_(ask_user_question|get_script_output|show_files|get_file_comments|respond_to_file_comment|search_actions|get_current_ui_state|dispatch_action|read_pipeline_yaml|get_pipeline_debug_context|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|set_chat_auto_archive|set_auto_archive|set_work_entry_auto_delete|show_capabilities|start_forked_agent|search_deferred_tools|load_deferred_tools)$/,
   );
   if (codexMatch) {
     return APP_ADVISOR_CODEX_SUFFIX_TO_CAPABILITY.get(codexMatch[2]) ?? null;
@@ -1069,6 +1049,8 @@ const APP_ACTION_TOOL_NAME_TO_CAPABILITY: ReadonlyMap<
   [legacyMcpToolName('ShowFiles'), 'show_files'],
   [legacyCodexToolName('show_files'), 'show_files'],
   ['ShowFiles', 'show_files'],
+  ['ShowCapabilities', 'show_capabilities'],
+  ['SetWorkEntryAutoDelete', 'set_work_entry_auto_delete'],
   ['ShowVisual', 'show_visual'],
   ['PreviewVisual', 'preview_visual'],
   [legacyMcpToolName('GetFileComments'), 'get_file_comments'],
@@ -1543,6 +1525,29 @@ const renderSetAutoArchive: ToolDisplayRenderer = (parsed) => {
       typeof enabled === 'boolean'
         ? `${enabled ? 'Enable' : 'Disable'} chat auto-archive`
         : 'Set chat auto-archive',
+  };
+};
+
+const renderSetWorkEntryAutoDelete: ToolDisplayRenderer = (parsed) =>
+  parsed.archive === true
+    ? { icon: <ArchiveIcon />, label: 'Set work entry auto-archive' }
+    : { icon: <TrashIcon />, label: 'Set work entry auto-delete' };
+
+const renderShowCapabilities: ToolDisplayRenderer = (parsed) => {
+  const items = Array.isArray(parsed.items) ? parsed.items : [];
+  return {
+    icon: <WrenchIcon />,
+    label:
+      items.length > 0 ? (
+        <>
+          Show capabilities{' '}
+          <MutedSnippet>
+            {items.length} {items.length === 1 ? 'item' : 'items'}
+          </MutedSnippet>
+        </>
+      ) : (
+        'Show capabilities'
+      ),
   };
 };
 
@@ -2270,6 +2275,8 @@ const APP_ADVISOR_CAPABILITY_RENDERERS: Record<
   schedule_wakeup: (parsed, input, toolName) =>
     renderScheduleWakeup(parsed, input, toolName),
   set_auto_archive: renderSetAutoArchive,
+  set_work_entry_auto_delete: renderSetWorkEntryAutoDelete,
+  show_capabilities: renderShowCapabilities,
   start_forked_agent: (parsed) => ({
     ...renderStartSplitAgent(parsed, '', ''),
     label: (
@@ -2602,6 +2609,8 @@ const APP_ACTION_RENDERERS: Record<
   ToolDisplayRenderer
 > = {
   show_files: renderShowFiles,
+  show_capabilities: renderShowCapabilities,
+  set_work_entry_auto_delete: renderSetWorkEntryAutoDelete,
   show_visual: renderShowVisual,
   preview_visual: renderPreviewVisual,
   get_file_comments: renderGetFileComments,
@@ -2676,6 +2685,9 @@ const renderAppActionTool: ToolDisplayRenderer = (
   if (capability) {
     if (capability === 'set_auto_archive') {
       return renderSetAutoArchive(parsed, input, toolName);
+    }
+    if (capability === 'set_work_entry_auto_delete') {
+      return renderSetWorkEntryAutoDelete(parsed, input, toolName);
     }
     if (capability === 'spawn_delegate')
       return { icon: <AgentIcon />, label: 'Delegate task' };

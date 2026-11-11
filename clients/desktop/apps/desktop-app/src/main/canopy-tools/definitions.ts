@@ -1,3 +1,7 @@
+import type {
+  WorkEntryAutoDeleteTeardown,
+  WorkEntryAutoDeleteUnmergedBranch,
+} from '@canopy/protocol';
 import { sharingOpenDialogSchema } from '@canopy/desktop-shared/lib/sharing-action-schema';
 import { scopedSidebarItemGroupSchemas } from './sidebar-item-group-schema';
 import { SIDEBAR_ITEM_GROUP_COLORS } from '@canopy/protocol/sidebar';
@@ -73,7 +77,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import type { PrMergeQueueKnownPhase } from '@canopy/desktop-shared/types/github';
 import { PR_MERGE_QUEUE_KNOWN_PHASES } from '@canopy/desktop-shared/lib/pr-merge-queue';
-import { validatePipelineRuntimeIdentifier } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { validatePipelineRuntimeIdentifier } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
   LedgerAddEntryToolInputSchema,
   LedgerSearchEntriesToolInputSchema,
@@ -184,7 +188,10 @@ export const SETUP_WATCHERS_DESCRIPTION =
   setupWatchersDescription(AGENT_ACTION_BRAND);
 
 export const SET_AUTO_ARCHIVE_DESCRIPTION =
-  'Enable or disable automatic archiving for this current chat session when the active agent turn fully completes. Set enabled to true to auto-archive, or false to keep the chat open. This tool only applies to the current chat/session and does not affect any other chat, worktree, project, or future session.';
+  'Archive this chat (only this chat) when the active agent turn fully completes. Set enabled to true to enable chat auto-archive, or false to keep this chat open. Other chats and future sessions are unaffected. Use SetWorkEntryAutoDelete to remove the whole worktree or work entry instead.';
+
+export const SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION =
+  'Arm removal of this chat’s own worktree, Cowork work entry, or Orchestrator work entry once fully idle: no agents, workflows, or background work are active. Only the owning root chat can call this tool; delegates cannot. Set enabled to true to arm or replace an existing arm. Set enabled to false alone to turn it off. By default, Delete keeps a restorable archive for the retention window; archive: true keeps an archive until the user deletes it. Worktrees only: teardown defaults to error (a teardown failure stops removal); force removes without teardown if teardown fails. Worktrees only: unmergedLocalBranchDelete defaults to ask; error stops removal for an unmerged local branch, force deletes it. This branch option applies only when the Git setting “Delete fully merged branches on archive” is on. Both worktree-only options are rejected for Cowork and Orchestrator work entries. A recurring scheduled automation targeting this item makes the call fail. Failures turn auto-delete off and are reported back to this chat as a message. The result states the mode and what the item is waiting for.';
 
 export const SET_BASE_BRANCH_DESCRIPTION =
   "Set the base branch for this chat's current worktree. The project and worktree are captured server-side and cannot be overridden. Provide repoId only for a multi-repository project. The operation reuses the visible base-branch UX, including branch availability checks, active-operation guards, pull-request alignment confirmation, stale-state protection, and canonical error reporting.";
@@ -1172,6 +1179,42 @@ export const setAutoArchiveSchema = z
   })
   .strict();
 
+const WORK_ENTRY_AUTO_DELETE_TEARDOWNS = [
+  'error',
+  'force',
+] as const satisfies readonly WorkEntryAutoDeleteTeardown[];
+const WORK_ENTRY_AUTO_DELETE_UNMERGED_BRANCHES = [
+  'ask',
+  'error',
+  'force',
+] as const satisfies readonly WorkEntryAutoDeleteUnmergedBranch[];
+const WORK_ENTRY_AUTO_DELETE_ENABLED_DESCRIPTION =
+  'True arms or replaces removal of this chat’s own work entry when fully idle. False turns it off and accepts no other options.';
+const WORK_ENTRY_AUTO_DELETE_ARCHIVE_DESCRIPTION =
+  'Archive until the user deletes the archive instead of Delete (restorable for the retention window). Default false.';
+const WORK_ENTRY_AUTO_DELETE_TEARDOWN_DESCRIPTION =
+  'Worktrees only. On teardown failure: error stops removal; force removes without teardown. Default error. Rejected for work entries.';
+const WORK_ENTRY_AUTO_DELETE_BRANCH_DESCRIPTION =
+  'Worktrees only, when Git settings → “Delete fully merged branches on archive” is on. For unmerged local branches: ask waits for the user, error stops removal, force deletes the branch. Default ask. Rejected for work entries.';
+
+export const setWorkEntryAutoDeleteSchema = z
+  .object({
+    enabled: z.boolean().describe(WORK_ENTRY_AUTO_DELETE_ENABLED_DESCRIPTION),
+    archive: z
+      .boolean()
+      .optional()
+      .describe(WORK_ENTRY_AUTO_DELETE_ARCHIVE_DESCRIPTION),
+    teardown: z
+      .enum(WORK_ENTRY_AUTO_DELETE_TEARDOWNS)
+      .optional()
+      .describe(WORK_ENTRY_AUTO_DELETE_TEARDOWN_DESCRIPTION),
+    unmergedLocalBranchDelete: z
+      .enum(WORK_ENTRY_AUTO_DELETE_UNMERGED_BRANCHES)
+      .optional()
+      .describe(WORK_ENTRY_AUTO_DELETE_BRANCH_DESCRIPTION),
+  })
+  .strict();
+
 export const setBaseBranchSchema = z
   .object({
     baseBranch: z
@@ -1412,6 +1455,9 @@ export type GetGitHubPullRequestStatusArgs = z.infer<
 >;
 export type DeleteWatchersArgs = z.infer<typeof deleteWatchersSchema>;
 export type SetAutoArchiveArgs = z.infer<typeof setAutoArchiveSchema>;
+export type SetWorkEntryAutoDeleteArgs = z.infer<
+  typeof setWorkEntryAutoDeleteSchema
+>;
 export type SetBaseBranchArgs = z.infer<typeof setBaseBranchSchema>;
 export type GetCodeGraphContextArgs = z.infer<typeof getCodeGraphContextSchema>;
 export type BuildOrUpdateCodeGraphArgs = z.infer<
@@ -2231,6 +2277,32 @@ export const setAutoArchiveJsonSchema: JsonValue = {
       type: 'boolean',
       description:
         'Whether this chat should be archived automatically when the active turn completes.',
+    },
+  },
+  required: ['enabled'],
+  additionalProperties: false,
+};
+
+export const setWorkEntryAutoDeleteJsonSchema: JsonValue = {
+  type: 'object',
+  properties: {
+    enabled: {
+      type: 'boolean',
+      description: WORK_ENTRY_AUTO_DELETE_ENABLED_DESCRIPTION,
+    },
+    archive: {
+      type: 'boolean',
+      description: WORK_ENTRY_AUTO_DELETE_ARCHIVE_DESCRIPTION,
+    },
+    teardown: {
+      type: 'string',
+      enum: [...WORK_ENTRY_AUTO_DELETE_TEARDOWNS],
+      description: WORK_ENTRY_AUTO_DELETE_TEARDOWN_DESCRIPTION,
+    },
+    unmergedLocalBranchDelete: {
+      type: 'string',
+      enum: [...WORK_ENTRY_AUTO_DELETE_UNMERGED_BRANCHES],
+      description: WORK_ENTRY_AUTO_DELETE_BRANCH_DESCRIPTION,
     },
   },
   required: ['enabled'],

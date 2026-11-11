@@ -4,8 +4,9 @@
 // workspace records, Git checkouts and bare origins; only IPC registration is
 // mocked. Pinned divergences the canonical engine handles differently:
 // rename/copy line counts and binary flags dropped (1), untracked files past
-// 200 dropped without a flag (2), Git failures read as empty (3), C-quoted
-// and trimmed paths (4), and the desktop status vocabulary (5).
+// 200 dropped without a flag (2), Git failures read as empty (3), trimmed
+// paths (4), and the desktop status vocabulary (5). CAN-3224 corrects the
+// C-quoted-path divergence: snapshots now retain actual filename identities.
 import type { IpcMainInvokeEvent } from 'electron';
 import {
   IPC_CHANNELS,
@@ -191,7 +192,7 @@ describe('activity:changed-files', () => {
   });
 
   posixIt(
-    'C-quotes names Git quotes and trims edge whitespace (4, 5)',
+    'decodes Git-quoted filename identities while retaining edge trimming (CAN-3224)',
     async () => {
       expect(
         await changedFiles({ projectId: POSIX_WS, worktreeId: WORKTREE }),

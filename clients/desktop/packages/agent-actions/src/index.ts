@@ -215,7 +215,20 @@ export {
   type BotAction,
   type BotActionType,
 } from './families/bots';
-export type { AgentProjectBotPort } from './port/project-bot-port';
+export type {
+  AgentPipelineOriginChat,
+  AgentProjectBotPort,
+  AgentProjectOwner,
+  PipelineTrustedCaller,
+} from './port/project-bot-port';
+export type {
+  AcceptedInputReceipt,
+  BotReceiptAddress,
+  CreatedTaskChatReceipt,
+  ProjectReceiptAddress,
+  SteeredInputReceipt,
+  WatcherReceipt,
+} from './families/projects/receipts';
 export type {
   AgentChatCreateResult,
   AgentChatGetResult,

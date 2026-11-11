@@ -1,5 +1,5 @@
 import { CodexAuthenticationSession } from './managed-auth';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import {
   type AppServerRequestMethod,
   type AppServerRequestParams,
@@ -83,6 +83,91 @@ import { classifyCodexSteerError } from './steer-refusal';
 
 type JsonRpcId = number | string;
 
+/**
+ * Codex 0.167 checks a thread's provider against the app-server's current
+ * configuration before each input. A thread-only `model_provider` override is
+ * therefore insufficient: select the same provider in this worker's immutable
+ * spawn profile, without putting provider headers or credentials in argv.
+ */
+function profileForThreadProvider(
+  requested: CodexSpawnProfileRequest | undefined,
+  params: Pick<ThreadStartParams, 'config' | 'modelProvider'>,
+): CodexSpawnProfileRequest | undefined {
+  const provider =
+    params.modelProvider === undefined
+      ? params.config?.model_provider
+      : params.modelProvider;
+  if (typeof provider !== 'string') return requested;
+
+  const config = params.config;
+  const providers = config?.model_providers;
+  const nested =
+    providers !== null &&
+    typeof providers === 'object' &&
+    !Array.isArray(providers)
+      ? providers[provider]
+      : undefined;
+  const table =
+    nested !== null && typeof nested === 'object' && !Array.isArray(nested)
+      ? nested
+      : config?.[`model_providers.${provider}`];
+  const definition =
+    table !== null && typeof table === 'object' && !Array.isArray(table)
+      ? table
+      : undefined;
+  const args = [...(requested?.configArgs ?? [])];
+  const providerFields: string[] = [];
+  for (const key of [
+    'name',
+    'base_url',
+    'wire_api',
+    'requires_openai_auth',
+    'env_key',
+  ]) {
+    const value =
+      definition?.[key] ?? config?.[`model_providers.${provider}.${key}`];
+    if (key === 'base_url' && typeof value === 'string') {
+      let url: URL | undefined;
+      try {
+        url = new URL(value);
+      } catch {
+        // Codex validates the complete provider table in the thread config.
+      }
+      // A valid URL may carry credentials or query values. Do not put either
+      // on a process command line; the thread retains the original URL.
+      if (!url || url.username || url.password || url.search || url.hash)
+        continue;
+    }
+    if (typeof value === 'string' || typeof value === 'boolean') {
+      const assignment = `${key}=${JSON.stringify(value)}`;
+      if (/^[A-Za-z0-9_-]+$/.test(provider)) {
+        args.push('-c', `model_providers.${provider}.${assignment}`);
+      } else {
+        providerFields.push(assignment);
+      }
+    }
+  }
+  if (providerFields.length > 0) {
+    // Codex's -c path parser does not understand quoted dotted segments.
+    // An inline table preserves a legitimate non-bare provider name.
+    args.push(
+      '-c',
+      `model_providers={${JSON.stringify(provider)}={${providerFields.join(',')}}}`,
+    );
+  }
+  args.push('-c', `model_provider=${JSON.stringify(provider)}`);
+  return { ...requested, configArgs: args };
+}
+
+function modelProviderParamFromThreadConfig(
+  params: Pick<ThreadStartParams, 'config' | 'modelProvider'>,
+): { modelProvider?: string } {
+  const provider = params.config?.model_provider;
+  return params.modelProvider === undefined && typeof provider === 'string'
+    ? { modelProvider: provider }
+    : {};
+}
+
 export interface CodexStartThreadRequest {
   params: ThreadStartParams;
   capabilitySnapshotId: string;
@@ -156,6 +241,7 @@ export type CodexInteractiveOwner = CodexAppServerConnectionOwner;
 
 export interface CodexInteractiveClientRequest {
   profile?: CodexSpawnProfileRequest;
+  threadConfig?: ThreadStartParams['config'];
   owner: CodexInteractiveOwner;
   processCallbacks?: CodexAppServerProcessCallbacks;
 }
@@ -1626,7 +1712,11 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
   attachInteractiveClient(
     request: CodexInteractiveClientRequest,
   ): CodexInteractiveTransport {
-    const profile = resolveCodexSpawnProfile(request.profile);
+    const profile = resolveCodexSpawnProfile(
+      profileForThreadProvider(request.profile, {
+        config: request.threadConfig,
+      }),
+    );
     const connection = this.pool.acquire({
       profileKey: profile.id,
       extraEnv: profile.environment,
@@ -1734,7 +1824,9 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
   async startThread(
     request: CodexStartThreadRequest,
   ): Promise<CodexThreadHandle> {
-    const profile = resolveCodexSpawnProfile(request.profile);
+    const profile = resolveCodexSpawnProfile(
+      profileForThreadProvider(request.profile, request.params),
+    );
     const { owner: provisionalOwner, connection } =
       this.getProfileAnchor(profile);
     const releaseOperation = provisionalOwner.retainOperation();
@@ -1764,6 +1856,7 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
           'thread/start',
           {
             ...request.params,
+            ...modelProviderParamFromThreadConfig(request.params),
             config,
             selectedCapabilityRoots:
               request.params.selectedCapabilityRoots != null
@@ -1841,7 +1934,9 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
   async resumeThread(
     request: CodexResumeThreadRequest,
   ): Promise<CodexThreadHandle> {
-    const profile = resolveCodexSpawnProfile(request.profile);
+    const profile = resolveCodexSpawnProfile(
+      profileForThreadProvider(request.profile, request.params),
+    );
     const existingLease = await this.capabilityStore.readLease(
       request.params.threadId,
     );
@@ -1868,6 +1963,7 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
         'thread/resume',
         {
           ...request.params,
+          ...modelProviderParamFromThreadConfig(request.params),
           config,
         },
         {
@@ -1936,7 +2032,9 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
   async forkThread(
     request: CodexForkThreadRequest,
   ): Promise<CodexThreadHandle> {
-    const profile = resolveCodexSpawnProfile(request.profile);
+    const profile = resolveCodexSpawnProfile(
+      profileForThreadProvider(request.profile, request.params),
+    );
     const sourceLease = await this.capabilityStore.readLease(
       request.params.threadId,
     );
@@ -1965,6 +2063,7 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
         'thread/fork',
         {
           ...request.params,
+          ...modelProviderParamFromThreadConfig(request.params),
           config: flattenCodexThreadConfig(
             omitCodexMcpServersFromThreadConfig(request.params.config),
           ),

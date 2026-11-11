@@ -81,7 +81,7 @@ jest.mock('electron', () => ({
 
 const mockLoginPath = jest.fn<string, []>();
 const mockPrewarmLoginPath = jest.fn<Promise<void>, [{ force?: boolean }?]>();
-jest.mock('@canopy/desktop-shared/pipelines/config-paths', () => ({
+jest.mock('@canopy/execution-engine/pipelines/config-paths', () => ({
   getLinuxProbeEnv: (): Record<string, string> => ({ PATH: '/probe/bin' }),
   getLoginShellPath: (): string => mockLoginPath(),
   prewarmLoginShellPath: (options?: { force?: boolean }): Promise<void> =>

@@ -19,6 +19,7 @@ import {
   type IconSize,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { canSignInAccountProxyAccountHere } from '@canopy/desktop-shared/lib/account-proxy';
 import { projectAccountProxyUsageAccount } from '@canopy/desktop-shared/lib/account-proxy-usage-projection';
 import type {
   AccountProxyAccount,
@@ -26,12 +27,16 @@ import type {
   AccountProxyStatus,
 } from '@canopy/desktop-shared/types/account-proxy';
 import { DeleteConfirmModal } from '@/components/shared/DeleteConfirmModal';
-import { useAccountProxyStore } from '@/stores/accountProxyStore';
+import {
+  useAccountProxyStatus,
+  useAccountProxyStore,
+} from '@/stores/accountProxyStore';
 import { SettingsRow, SettingsSubRow } from '../SettingsLayout';
 import {
   accountProxyAccountDescription,
   accountProxyProviderLabel,
 } from './accountProxyCopy';
+import { AccountProxySignInAgainButton } from './AccountProxySignInAgainButton';
 import { ErrorBanner, StatusLabel } from '@canopy/ui-shared/components';
 
 const STATUS_DOT_TONES: Readonly<
@@ -43,6 +48,7 @@ const STATUS_DOT_TONES: Readonly<
   error: 'failed',
   disabled: 'idle',
   pending: 'pending',
+  'sign-in-required': 'failed',
 };
 
 const STATUS_LABELS: Readonly<Record<AccountProxyAccountStatus, string>> = {
@@ -52,6 +58,7 @@ const STATUS_LABELS: Readonly<Record<AccountProxyAccountStatus, string>> = {
   error: 'Needs attention',
   disabled: 'Turned off',
   pending: 'Signing in',
+  'sign-in-required': 'Needs sign-in',
 };
 
 export function AccountProxyStatusDot({
@@ -198,6 +205,7 @@ export function AccountProxyAccountList({
 }: AccountProxyAccountListProps): JSX.Element {
   const idPrefix = useId();
   const nowMs = useMinuteClock();
+  const connectionKind = useAccountProxyStatus()?.connection?.kind;
   const [removing, setRemoving] = useState<AccountProxyAccount | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -232,19 +240,25 @@ export function AccountProxyAccountList({
   const rows = accounts.map((account) => {
     const labelId = `${idPrefix}-${account.authIndex}`;
     const control = actionsDisabled ? undefined : (
-      <AccountMenu
-        account={account}
-        labelId={labelId}
-        onToggleDisabled={(): void => toggle(account)}
-        onRemove={(): void => setRemoving(account)}
-      />
+      <span className="inline-flex items-center gap-1">
+        <AccountProxySignInAgainButton account={account} />
+        <AccountMenu
+          account={account}
+          labelId={labelId}
+          onToggleDisabled={(): void => toggle(account)}
+          onRemove={(): void => setRemoving(account)}
+        />
+      </span>
     );
+    const needsAttention =
+      account.status === 'error' || account.status === 'sign-in-required';
     // Claude and Codex accounts show their named limits under the row, so
     // the description keeps only the plan or why the account can't serve.
     const showsUsage =
       account.provider === 'claude' || account.provider === 'codex';
     const description = accountProxyAccountDescription(account, {
       withLimits: !showsUsage,
+      signInHere: canSignInAccountProxyAccountHere(account, connectionKind),
     });
     const usage = showsUsage ? (
       <div data-testid={`account-proxy-account-usage-${account.authIndex}`}>
@@ -263,7 +277,7 @@ export function AccountProxyAccountList({
           <AccountLabel account={account} iconSize="md" labelId={labelId} />
         }
         description={
-          account.status === 'error' ? (
+          needsAttention ? (
             <StatusLabel>{description}</StatusLabel>
           ) : (
             description
@@ -281,7 +295,7 @@ export function AccountProxyAccountList({
           <AccountLabel account={account} iconSize="sm" labelId={labelId} />
         }
         description={
-          account.status === 'error' ? (
+          needsAttention ? (
             <StatusLabel>{description}</StatusLabel>
           ) : (
             description

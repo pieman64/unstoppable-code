@@ -73,6 +73,7 @@ import type { ThreadRealtimeStartedNotification } from './v2/ThreadRealtimeStart
 import type { ThreadRealtimeTranscriptDeltaNotification } from './v2/ThreadRealtimeTranscriptDeltaNotification';
 import type { ThreadRealtimeTranscriptDoneNotification } from './v2/ThreadRealtimeTranscriptDoneNotification';
 import type { ThreadRevertedNotification } from './v2/ThreadRevertedNotification';
+import type { ThreadSectionChangedNotification } from './v2/ThreadSectionChangedNotification';
 import type { ThreadSettingsUpdatedNotification } from './v2/ThreadSettingsUpdatedNotification';
 import type { ThreadStartedNotification } from './v2/ThreadStartedNotification';
 import type { ThreadStatusChangedNotification } from './v2/ThreadStatusChangedNotification';
@@ -116,6 +117,10 @@ export type ServerNotificationEnvelope = {
   | { method: 'thread/reverted'; params: ThreadRevertedNotification }
   | { method: 'skills/changed'; params: SkillsChangedNotification }
   | { method: 'thread/name/updated'; params: ThreadNameUpdatedNotification }
+  | {
+      method: 'thread/section/changed';
+      params: ThreadSectionChangedNotification;
+    }
   | {
       method: 'thread/attachment/updated';
       params: ThreadAttachmentUpdatedNotification;

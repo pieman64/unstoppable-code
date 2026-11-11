@@ -10,6 +10,7 @@ import {
   type LedgerViewSource,
   type LedgerViewSummarySnapshot,
 } from '@canopy/protocol/ledger-view';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import { readChatArchivesFile } from '../lib/chat-archives';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
@@ -52,6 +53,14 @@ export interface LedgerSourceHost {
   readonly keptExecution: (
     executionId: string,
   ) => Promise<LedgerKeptExecution | null>;
+  /**
+   * The App Advisor work entry holding a chat, or null. App Advisor records
+   * entries in other work's Feed as its own chat (CAN-6007), so a chat the
+   * entry's own scope doesn't have may be one of its chats.
+   */
+  readonly advisorChatScope?: (
+    chatId: string,
+  ) => Promise<LedgerTaskViewScope | null>;
   /** Null when the scope's summary history no longer holds the snapshot. */
   readonly summarySnapshot: (
     scope: LedgerTaskViewScope,
@@ -148,13 +157,45 @@ async function readSummarySnapshot(
   };
 }
 
+async function readAdvisorChatScope(
+  chatId: string,
+): Promise<LedgerTaskViewScope | null> {
+  const { resolveWorkEntryForChat } =
+    await import('../lib/cowork-work-entries');
+  const { entryId, archivedInEntryId } = await resolveWorkEntryForChat(
+    APP_ADVISOR_PROJECT_ID,
+    chatId,
+  );
+  const entry = entryId ?? archivedInEntryId;
+  return entry === null
+    ? null
+    : { projectId: APP_ADVISOR_PROJECT_ID, worktreeId: entry };
+}
+
+/** Reads each chat's App Advisor work entry once for a page. */
+function createAdvisorChatScopeReader(): NonNullable<
+  LedgerSourceHost['advisorChatScope']
+> {
+  const scopes = new Map<string, Promise<LedgerTaskViewScope | null>>();
+  return (chatId) => {
+    let scope = scopes.get(chatId);
+    if (scope === undefined) {
+      scope = readAdvisorChatScope(chatId);
+      scopes.set(chatId, scope);
+    }
+    return scope;
+  };
+}
+
 export const DESKTOP_LEDGER_SOURCE_HOST: LedgerSourceHost = {
   chatPresence: readChatPresence,
   keptExecution: readKeptExecution,
+  advisorChatScope: readAdvisorChatScope,
   summarySnapshot: readSummarySnapshot,
   forPage: (): LedgerSourceHost => ({
     chatPresence: createChatPresenceReader(),
     keptExecution: readKeptExecution,
+    advisorChatScope: createAdvisorChatScopeReader(),
     summarySnapshot: readSummarySnapshot,
   }),
 };
@@ -219,10 +260,21 @@ export async function resolveLedgerViewSource(
   switch (origin.kind) {
     case 'user':
       return { availability: 'available', target: null };
-    case 'chat':
-      return task === null
-        ? { availability: 'deleted', target: null }
-        : chatSource(task, origin.chatId, undefined, host);
+    case 'chat': {
+      if (task === null) return { availability: 'deleted', target: null };
+      const source = await chatSource(task, origin.chatId, undefined, host);
+      if (
+        source.availability !== 'deleted' ||
+        host.advisorChatScope === undefined
+      )
+        return source;
+      const advisor = await host.advisorChatScope(origin.chatId);
+      return advisor === null ||
+        (advisor.projectId === task.projectId &&
+          advisor.worktreeId === task.worktreeId)
+        ? source
+        : chatSource(advisor, origin.chatId, undefined, host);
+    }
     case 'managed_delegation':
       if (origin.root.kind !== 'chat') {
         return pipelineSource(origin.root.executionId, null, host);
@@ -306,6 +358,18 @@ export async function resolveDesktopLedgerSourceAvailability(
         scope,
         request.subject.entry.origin,
         host,
+      );
+      return source.availability;
+    }
+    // A chat's own entries may be App Advisor's, whose chat is elsewhere.
+    if (
+      request.subject.origin.kind === 'chat' &&
+      isLedgerTaskViewScope(scope)
+    ) {
+      const source = await resolveLedgerViewSource(
+        scope,
+        request.subject.origin,
+        pageHostFor(request.page, host),
       );
       return source.availability;
     }

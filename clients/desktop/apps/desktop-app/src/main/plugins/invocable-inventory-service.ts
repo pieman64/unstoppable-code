@@ -924,29 +924,20 @@ async function buildInventoryCache(): Promise<InvocableInventoryCache> {
   const inherited = await discoverInheritedForInventory();
   addInheritedCursorEntries(entries, inherited);
 
-  // Copilot runs the same projection a Cursor session does, inherited
-  // home-folder rows included, so it mirrors every Cursor row.
-  entries.push(
-    ...entries
-      .filter((entry) => entry.provider === 'cursor')
-      .map((entry) => ({
+  // Copilot and OpenCode run the same projection a Cursor session does,
+  // inherited home-folder rows included, so each mirrors every Cursor row.
+  // Inherited (`none`) rows are for chats: OpenCode delegates and pipeline
+  // steps load the selection alone, so their pickers must not list them.
+  const cursorEntries = entries.filter((entry) => entry.provider === 'cursor');
+  for (const provider of ['copilot', 'opencode'] as const) {
+    entries.push(
+      ...cursorEntries.map((entry) => ({
         ...entry,
-        id: entryId(['copilot', entry.id]),
-        provider: 'copilot' as const,
+        id: entryId([provider, entry.id]),
+        provider,
       })),
-  );
-  entries.push(
-    ...entries
-      .filter(
-        (entry) =>
-          entry.provider === 'cursor' && entry.enableRef.kind !== 'none',
-      )
-      .map((entry) => ({
-        ...entry,
-        id: entryId(['opencode', entry.id]),
-        provider: 'opencode' as const,
-      })),
-  );
+    );
+  }
   return {
     version: CACHE_VERSION,
     builtAt: new Date().toISOString(),
@@ -1146,6 +1137,7 @@ export async function listInvocableInventory(
   } else if (
     request.providerType === 'cursor' ||
     request.providerType === 'copilot' ||
+    request.providerType === 'opencode' ||
     request.providerType === null
   ) {
     recheckInheritedCursorCapabilities(cache);
@@ -1703,23 +1695,20 @@ export async function resolveInvocableSelection(
     return failure('Inventory row provider does not match this session.');
   }
 
-  if (
-    entry.enableRef.kind === 'none' &&
-    providerType !== 'cursor' &&
-    providerType !== 'copilot'
-  ) {
-    // Inherited rows exist for the chats that read the user's home folders:
-    // Cursor, and Copilot through the same projection. OpenCode mirrors
-    // Cursor's selectable rows only.
-    return failure('Inherited rows belong to Cursor and Copilot chats.');
-  }
-
+  // Inherited rows exist for the chats that read the user's home folders:
+  // Cursor, and Copilot and OpenCode through the same projection.
   if (
     providerType === 'cursor' ||
     providerType === 'copilot' ||
     providerType === 'opencode'
   ) {
     return resolveCursorSelection(request);
+  }
+
+  if (entry.enableRef.kind === 'none') {
+    return failure(
+      'Inherited rows belong to Cursor, Copilot and OpenCode chats.',
+    );
   }
 
   if (entry.kind === 'skill') {

@@ -30,6 +30,7 @@ import {
   type RetrievalHighlight,
   type RetrievalPaintState,
 } from './graph-helpers';
+import { ENTITY_KIND_COLOR_VARIABLES } from './entity-graph-palette';
 
 interface EntityForceGraphProps {
   graph: ExplorerEntityGraph;
@@ -142,9 +143,9 @@ function readGraphPalette(): GraphPalette {
   // nearly invisible on its own. Links derive from the opaque body token instead.
   const link = normalizeColor(cssColor(styles, '--fg-tertiary', '#94a3b8'));
   return {
-    service: cssColor(styles, '--bg-accent', '#6366f1'),
-    code: cssColor(styles, '--bg-success', '#22c55e'),
-    tool: cssColor(styles, '--bg-warning', '#f59e0b'),
+    service: cssColor(styles, ENTITY_KIND_COLOR_VARIABLES.service, '#6366f1'),
+    code: cssColor(styles, ENTITY_KIND_COLOR_VARIABLES.code, '#22c55e'),
+    tool: cssColor(styles, ENTITY_KIND_COLOR_VARIABLES.tool, '#f59e0b'),
     label: cssColor(styles, '--fg-primary', '#171717'),
     link: withAlpha(link, 0.75) ?? link,
     linkFaded: withAlpha(link, 0.12) ?? link,

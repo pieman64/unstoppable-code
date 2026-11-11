@@ -30,7 +30,7 @@ import type {
 import {
   PipelineHostRefusal,
   type PipelineHostFailureReason,
-} from '@canopy/desktop-shared/pipelines/host-actions';
+} from '@canopy/execution-engine/pipelines/host-actions';
 import {
   emptySendAgentMessageOutputs,
   parsePipelineChatSendRecord,
@@ -38,7 +38,7 @@ import {
   type ResolvedSendAgentMessageInputs,
   type SendAgentMessageSettings,
   type SendAgentMessageSteerUnavailableReason,
-} from '@canopy/desktop-shared/pipelines/host-send-agent-message';
+} from '@canopy/execution-engine/pipelines/host-send-agent-message';
 import { acceptedInputReceiptSchema } from '@canopy/desktop-shared/lib/chat-send-actions';
 import { interpolateAutomationIfCommandOutput } from '@canopy/desktop-shared/lib/automations';
 import { mapConfiguredPromptText } from '@canopy/protocol/configured-prompt-references';

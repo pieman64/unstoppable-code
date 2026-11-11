@@ -1,5 +1,7 @@
 'use client';
 
+import { useSidebarAutoDelete } from './SidebarAutoDelete';
+
 import {
   useCallback,
   useContext,
@@ -1173,7 +1175,36 @@ function ChatsSectionWorkEntryRow({
   // A row in a selection of 2 or more shows the selection's menu alone,
   // with the group moves the list built for it.
   const replaces = selectionMenu?.replacesMenu === true;
-  const rowMenu = replaces ? [] : menu;
+  const autoDelete = useSidebarAutoDelete({
+    workspaceId: workspaceLocalId,
+    targetId: row.workEntryId,
+    name: title,
+  });
+  const disarmItem: WorktreeMenuItem | undefined =
+    autoDelete.autoDelete && autoDelete.onAutoDeleteDisarm
+      ? {
+          key: 'auto-delete-disarm',
+          icon: null,
+          label:
+            autoDelete.autoDelete.mode === 'archive'
+              ? 'Turn off auto-archive'
+              : 'Turn off auto-delete',
+          onSelect: autoDelete.onAutoDeleteDisarm,
+        }
+      : undefined;
+  const removalIndex = menu.findIndex(
+    (item) => item.key === 'archive' || item.key === 'delete',
+  );
+  const insertionIndex = removalIndex < 0 ? menu.length : removalIndex;
+  const rowMenu = replaces
+    ? []
+    : disarmItem
+      ? [
+          ...menu.slice(0, insertionIndex),
+          disarmItem,
+          ...menu.slice(insertionIndex),
+        ]
+      : menu;
   const showsNotifications =
     !replaces && notifications !== undefined && offersNotifications;
   const selectionSource = replaces
@@ -1192,6 +1223,7 @@ function ChatsSectionWorkEntryRow({
     showsNotifications ||
     offersSelectItem ||
     selectionItems.length > 0;
+
   return (
     <SidebarRowFrame
       data-testid={testIds?.chatRow?.(row.targetChat.localId)}
@@ -1203,6 +1235,7 @@ function ChatsSectionWorkEntryRow({
       density={touchTargets ? 'touch' : 'default'}
     >
       <WorkEntryRow
+        {...autoDelete}
         drag={
           drag
             ? { attributes: drag.attributes, isDragging: drag.isDragging }

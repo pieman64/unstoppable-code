@@ -1,6 +1,6 @@
 'use client';
 
-import { Dot } from '@canopy/ui-shared/components/Badge';
+import { Badge, Dot } from '@canopy/ui-shared/components/Badge';
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
 import type { IncomingTeamInvitation } from '@canopy/protocol/settings/organization';
 import type {
@@ -40,7 +40,6 @@ import {
   type SidebarContextActions,
 } from './sidebar-context-actions';
 import type { SidebarContextInvitations } from './usePendingOrganizationInvitations';
-import { TeamRoleBadge } from '../../settings/organization/team-role-badge';
 import { ROLE_LABEL } from '../../settings/organization/team-role-label';
 
 /**
@@ -753,7 +752,7 @@ function ContextInvitationItems({
               >
                 {invite.organizationName}
               </span>
-              <TeamRoleBadge role={invite.role} />
+              <Badge>{ROLE_LABEL[invite.role]}</Badge>
             </div>
             <div role="presentation" className="flex items-center gap-1 pl-5">
               {needsReview ? (

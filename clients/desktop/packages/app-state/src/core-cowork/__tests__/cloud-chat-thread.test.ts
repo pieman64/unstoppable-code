@@ -237,6 +237,7 @@ describe('cloud chat thread binding (CAN-4185)', () => {
     expect(project).toHaveBeenLastCalledWith({
       chatKey: 'web-core:chat-1',
       messages: [message('m1', 'Hello'), message('m2', 'From the web')],
+      tasks: [],
     });
   });
 

@@ -26,6 +26,7 @@
     "./components/DataSharingOptInCta": "./src/components/DataSharingOptInCta.tsx",
     "./components/InvoiceDetailView": "./src/components/InvoiceDetailView.tsx",
     "./components/Badge": "./src/components/Badge.tsx",
+    "./components/SidebarTrialBadge": "./src/components/SidebarTrialBadge.tsx",
     "./components/Field": "./src/components/Field.tsx",
     "./components/Notice": "./src/components/Notice.tsx",
     "./components/RemoteControlPairingCode": "./src/components/RemoteControlPairingCode.tsx",

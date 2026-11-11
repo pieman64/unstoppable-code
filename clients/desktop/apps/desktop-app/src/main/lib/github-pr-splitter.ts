@@ -31,7 +31,7 @@ import {
   topologicalChildOrder,
   validateSplitPlan,
 } from '@canopy/desktop-shared/lib/pr-split-plan';
-import { getEnhancedEnv } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import { findExecutableOnPath } from '@canopy/execution-engine/node/lib/path-lookup';
 import {
   addDetachedWorktree,

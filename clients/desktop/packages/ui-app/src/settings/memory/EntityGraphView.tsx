@@ -46,6 +46,10 @@ import {
   useSettingsSearchParams,
 } from '../host';
 import { fetchMemoryFactsBatch, fetchMemoryGraph } from './api';
+import {
+  ENTITY_KIND_COLOR_VARIABLES,
+  type EntityGraphKind,
+} from './entity-graph-palette';
 import { FactCard } from './FactCard';
 import { FactCardsSkeleton } from './FactCardsSkeleton';
 import { GraphRetrievalPanel } from './GraphRetrievalPanel';
@@ -72,6 +76,16 @@ const LIVENESS_OPTIONS: readonly SettingsSelectOption<EntityGraphLiveness>[] = [
   { value: 'live', label: 'Live' },
   { value: 'superseded', label: 'Superseded' },
   { value: 'all', label: 'All' },
+];
+
+/** The legend over the graph: a swatch of each kind's node color. */
+const ENTITY_GRAPH_LEGEND: readonly {
+  readonly kind: EntityGraphKind;
+  readonly label: string;
+}[] = [
+  { kind: 'service', label: 'Service' },
+  { kind: 'code', label: 'Code' },
+  { kind: 'tool', label: 'Tool' },
 ];
 
 // The graph area fills the space below the page header instead of a fixed
@@ -471,18 +485,17 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
           <Surface variant="card" className="overflow-hidden">
             <section className={`relative ${GRAPH_AREA_HEIGHT}`}>
               <div className="absolute left-4 top-4 z-10 flex flex-wrap items-center gap-3 rounded-lg border bg-card/90 px-3 py-2 text-xs fg-secondary backdrop-blur">
-                <span>
-                  <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-accent" />
-                  Service
-                </span>
-                <span>
-                  <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-success" />
-                  Code
-                </span>
-                <span>
-                  <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-warning" />
-                  Tool
-                </span>
+                {ENTITY_GRAPH_LEGEND.map(({ kind, label }) => (
+                  <span key={kind}>
+                    <i
+                      className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full"
+                      style={{
+                        background: `var(${ENTITY_KIND_COLOR_VARIABLES[kind]})`,
+                      }}
+                    />
+                    {label}
+                  </span>
+                ))}
                 {graph.truncated && (
                   <span className="fg-tertiary">
                     Truncated — showing the most connected activity

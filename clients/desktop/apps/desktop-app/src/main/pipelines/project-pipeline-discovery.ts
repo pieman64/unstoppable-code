@@ -1,13 +1,13 @@
 import type { Dirent } from 'node:fs';
 import { lstat, opendir, readFile, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
-import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
-import { getDefaultShellTypeForCurrentProcess } from '@canopy/desktop-shared/node/pipelines/default-shell';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
+import { getDefaultShellTypeForCurrentProcess } from '@canopy/execution-engine/node/pipelines/default-shell';
 import { isPathInside } from '../lib/path-safety';
 import { measureSerializedBytes } from '../lib/serialized-size-budget';
 import { attachProjectPipelineRemoteMetadata } from './pipeline-service';
-import { getProjectPipelinesDirCandidates } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getProjectPipelinesDirCandidates } from '@canopy/execution-engine/pipelines/config-paths';
 import {
   getTriggerTypes,
   type Pipeline,

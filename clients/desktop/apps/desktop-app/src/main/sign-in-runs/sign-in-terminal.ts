@@ -9,7 +9,7 @@ import {
   getBundledClaudeBinaryPath,
   getBundledGhBinaryPath,
   getEnhancedEnv,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { startWindowsProcessTreeKill } from '@canopy/execution-engine/node/lib/process-kill';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { assertSignInWorkerContext } from './sign-in-worker-context';

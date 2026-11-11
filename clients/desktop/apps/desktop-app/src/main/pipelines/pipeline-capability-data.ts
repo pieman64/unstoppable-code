@@ -4,8 +4,8 @@ import {
   getBundledPipelinesDir,
   getUserPipelineIndexPath,
   getUserPipelinesDir,
-} from '@canopy/desktop-shared/pipelines/config-paths';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+} from '@canopy/execution-engine/pipelines/config-paths';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type {
   IPCResult,
   Pipeline,

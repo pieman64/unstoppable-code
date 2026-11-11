@@ -66,8 +66,12 @@
         "7bf99a622d77fa6a8349efa7bd452408d2f85ea1c9de5b643b0e6e618b9de668"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "StartForkedAgent",
@@ -168,8 +172,12 @@
         "7bf99a622d77fa6a8349efa7bd452408d2f85ea1c9de5b643b0e6e618b9de668"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SearchDeferredTools",
@@ -266,8 +274,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -368,8 +380,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -568,8 +584,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -678,8 +698,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -808,8 +832,12 @@
         "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SearchDeferredTools",
@@ -906,8 +934,12 @@
         "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SearchDeferredTools",
@@ -1012,8 +1044,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -1114,8 +1150,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -1224,8 +1264,12 @@
         "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ]
     ],
     "ui": [
@@ -1318,8 +1362,12 @@
         "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ]
     ],
     "ui": [
@@ -1408,8 +1456,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -1511,8 +1563,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -1661,8 +1717,8 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
       ],
       [
         "SetBaseBranch",
@@ -1763,8 +1819,8 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
       ],
       [
         "SetBaseBranch",
@@ -1921,8 +1977,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -2039,8 +2099,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -2205,8 +2269,12 @@
         "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SearchDeferredTools",
@@ -2311,8 +2379,12 @@
         "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SearchDeferredTools",
@@ -2405,6 +2477,14 @@
         "f0cecda978c3e77f45d4ea4f66565eebd0f6b2c6b0046c183e9a262a2603a85d"
       ],
       [
+        "ShowVisual",
+        "ed62a0fe552254f4561b191c96c1ab96e7db0f73569d1a192787e2e50c603eb4"
+      ],
+      [
+        "PreviewVisual",
+        "f44501e56fa7032f81b21b86b02f5dddd2c635cdfaa4a7d4f2c5dfdf515c0ea4"
+      ],
+      [
         "GetFileComments",
         "e3fb61b022cab7ac5977f3f8ebc581ce50e953c2870d61006e1718513e3b2737"
       ],
@@ -2449,8 +2529,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -2515,6 +2599,14 @@
         "f0cecda978c3e77f45d4ea4f66565eebd0f6b2c6b0046c183e9a262a2603a85d"
       ],
       [
+        "ShowVisual",
+        "ed62a0fe552254f4561b191c96c1ab96e7db0f73569d1a192787e2e50c603eb4"
+      ],
+      [
+        "PreviewVisual",
+        "f44501e56fa7032f81b21b86b02f5dddd2c635cdfaa4a7d4f2c5dfdf515c0ea4"
+      ],
+      [
         "GetFileComments",
         "e3fb61b022cab7ac5977f3f8ebc581ce50e953c2870d61006e1718513e3b2737"
       ],
@@ -2559,8 +2651,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -2681,6 +2777,14 @@
         "f0cecda978c3e77f45d4ea4f66565eebd0f6b2c6b0046c183e9a262a2603a85d"
       ],
       [
+        "ShowVisual",
+        "ed62a0fe552254f4561b191c96c1ab96e7db0f73569d1a192787e2e50c603eb4"
+      ],
+      [
+        "PreviewVisual",
+        "f44501e56fa7032f81b21b86b02f5dddd2c635cdfaa4a7d4f2c5dfdf515c0ea4"
+      ],
+      [
         "GetFileComments",
         "e3fb61b022cab7ac5977f3f8ebc581ce50e953c2870d61006e1718513e3b2737"
       ],
@@ -2713,8 +2817,12 @@
         "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "StartForkedAgent",
@@ -2779,6 +2887,14 @@
         "f0cecda978c3e77f45d4ea4f66565eebd0f6b2c6b0046c183e9a262a2603a85d"
       ],
       [
+        "ShowVisual",
+        "ed62a0fe552254f4561b191c96c1ab96e7db0f73569d1a192787e2e50c603eb4"
+      ],
+      [
+        "PreviewVisual",
+        "f44501e56fa7032f81b21b86b02f5dddd2c635cdfaa4a7d4f2c5dfdf515c0ea4"
+      ],
+      [
         "GetFileComments",
         "e3fb61b022cab7ac5977f3f8ebc581ce50e953c2870d61006e1718513e3b2737"
       ],
@@ -2811,8 +2927,12 @@
         "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "StartForkedAgent",
@@ -2913,8 +3033,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",
@@ -3109,8 +3233,12 @@
         "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
       ],
       [
-        "SetAutoArchive",
-        "325f6063500871b58614dd84ab09586df121a9161a8551a07594e7e5531ffc84"
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
       ],
       [
         "SetBaseBranch",

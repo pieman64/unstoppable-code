@@ -632,6 +632,12 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     workEntriesReorder: 'tunnel',
     workEntriesDelete: 'tunnel',
     workEntriesResolveChat: 'tunnel',
+    // Agent-armed auto-delete is not in the remote-control contract yet; a
+    // controlling window shows no armed badges until these are tunneled.
+    workEntryAutoDeleteList: 'blocked',
+    workEntryAutoDeleteDisarm: 'blocked',
+    workEntryAutoDeleteResolveBranch: 'blocked',
+    workEntryAutoDeleteChanged: 'blocked',
     settingsClaudeAuthStatus: 'tunnel',
     settingsProviderCarryover: 'tunnel',
     settingsCodexAuthStatus: 'tunnel',
@@ -672,6 +678,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     settingsLoadNativeAiCreditsAvailability: 'tunnel',
     // returns raw secret/API key to caller
     settingsLoadCanopyCloudApiKey: 'blocked',
+    // Re-checks this computer's credential store; never another host's.
+    secureStorageRecheck: 'local',
     settingsSaveCanopyCloudApiKey: 'tunnel',
     // would sever B's cloud identity, breaking the remote session
     settingsClearCanopyCloudApiKey: 'blocked',

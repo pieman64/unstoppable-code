@@ -716,14 +716,22 @@ function DesktopChatsSectionMenuItems({
   );
 }
 
-// Bulk removal (CAN-3975): the shared rail runs one awaited archive per
-// confirmed worktree. It calls the store directly, not the single-slot
-// navigation request the one-row confirm uses, so N requests never
-// overwrite each other, and always after the batch's own confirm.
+// Bulk removal (CAN-3975): the shared rail runs one archive per confirmed
+// worktree. It calls the store directly, not the single-slot navigation
+// request the one-row confirm uses, so N requests never overwrite each other,
+// and always after the batch's own confirm. Like the single row, the queue
+// moves on once the row has left the sidebar (`onRowHidden`); main's Git
+// removal and cleanup finish in the background, and a failure there rejects
+// this promise, which the rail reports on its batch notice alone.
 export const removeDesktopWorktreeInBatch = async (
   workspaceId: string,
   worktreeId: string,
-  { mode, deleteBranch, expectedBranchName }: WorktreeBatchRemovalOptions,
+  {
+    mode,
+    deleteBranch,
+    expectedBranchName,
+    onRowHidden,
+  }: WorktreeBatchRemovalOptions,
 ): Promise<void> => {
   const project = useProjectsStore
     .getState()
@@ -744,6 +752,7 @@ export const removeDesktopWorktreeInBatch = async (
       expectedBranchName: expectedBranchName ?? worktree.branchName,
       ...(mode === 'archive' ? { lockAfterArchive: true } : {}),
       ...(mode === 'delete' ? { deleteWithoutRetentionIfMissing: true } : {}),
+      ...(onRowHidden !== undefined ? { onUiRemoved: onRowHidden } : {}),
     });
   } catch (error) {
     if (error instanceof TeardownFailedError) {

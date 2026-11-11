@@ -3,7 +3,10 @@ import type {
   WorkerPipelineHostRequest,
   WorkerPipelineHostStepValues,
 } from '@canopy/protocol/canopy-core';
-import { PIPELINE_NEEDS_DESKTOP_MESSAGE } from '../../../pipelines/host-actions';
+import {
+  EVERY_PIPELINE_HOST_ACTION,
+  PIPELINE_NEEDS_DESKTOP_MESSAGE,
+} from '@canopy/execution-engine/pipelines/host-actions';
 import type { PipelineChatSendRecord } from '@canopy/execution-engine/types/pipeline';
 import type {
   PipelineHostActionResult,
@@ -109,6 +112,11 @@ export function createDaemonHostStepPort(
 ): DaemonHostStepPort {
   const waiting = new Map<string, WaitingCall>();
   return {
+    // Every host step is raised to the owner, which answers what it can.
+    support: {
+      hostName: 'the background workflow service',
+      actions: EVERY_PIPELINE_HOST_ACTION,
+    },
     run(request, caller, signal, controls): Promise<PipelineHostActionResult> {
       const portable = portableHostActionRequest(request);
       const hostPaths = hostPathsOf(request);

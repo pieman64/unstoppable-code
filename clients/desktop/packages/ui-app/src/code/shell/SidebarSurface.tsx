@@ -1,5 +1,11 @@
 'use client';
 
+import {
+  SidebarAutoDeleteProvider,
+  SidebarAutoDeleteNotice,
+  useSidebarAutoDeleteMenu,
+} from './SidebarAutoDelete';
+
 import { Surface, Stack, Heading } from '@canopy/ui-shared/components';
 import { DEFAULT_ARCHIVE_RETENTION_DAYS } from '@canopy/protocol/archive-retention';
 import { useSidebarHeaderRest } from '@canopy/ui-shared/lib';
@@ -1879,6 +1885,17 @@ function withWorkEntrySelectability(
 }
 
 export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
+  return (
+    <SidebarAutoDeleteProvider
+      retentionDaysFor={props.worktreeRetentionDaysFor}
+    >
+      <SidebarSurfaceContent {...props} />
+    </SidebarAutoDeleteProvider>
+  );
+}
+
+function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
+  const autoDelete = useSidebarAutoDeleteMenu();
   const {
     variant,
     snapshot,
@@ -3157,10 +3174,31 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
               ...menu.items.slice(pinIndex + 1),
             ]
         : menu.items;
+    const autoDeleteItem = autoDelete(
+      workspace.localId,
+      worktree.localId,
+      worktree.label || worktree.branch || worktree.localId,
+    );
+    const removalIndex = organizingItems.findIndex(
+      (item) => item.key === 'archive' || item.key === 'delete',
+    );
+    const armedItems =
+      !bulkMenu && autoDeleteItem
+        ? [
+            ...organizingItems.slice(
+              0,
+              removalIndex < 0 ? organizingItems.length : removalIndex,
+            ),
+            autoDeleteItem,
+            ...organizingItems.slice(
+              removalIndex < 0 ? organizingItems.length : removalIndex,
+            ),
+          ]
+        : organizingItems;
     const transformedItems = bulkMenu
-      ? organizingItems
-      : (props.transformWorktreeMenuItems?.(hostContext, organizingItems) ??
-        organizingItems);
+      ? armedItems
+      : (props.transformWorktreeMenuItems?.(hostContext, armedItems) ??
+        armedItems);
     // A hover shortcut copies a menu row, so a row the host withholds takes
     // its shortcut with it: Show rides on Hide/Show, and the removal chip on
     // the row it runs (Delete where Archive and Delete both exist, otherwise
@@ -4443,16 +4481,16 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
       holdHoverWhenExpanded
     />
   );
-  const footerCallout =
-    bulk.notice !== null || props.footerCallout ? (
-      <div
-        data-testid="sidebar-footer-callout"
-        className="relative flex shrink-0 flex-col gap-2 px-1.5 pb-1.5 pt-2"
-      >
-        {bulk.notice}
-        {props.footerCallout}
-      </div>
-    ) : null;
+  const footerCallout = (
+    <div
+      data-testid="sidebar-footer-callout"
+      className="relative flex shrink-0 flex-col gap-2 px-1.5 pb-1.5 pt-2 empty:hidden"
+    >
+      <SidebarAutoDeleteNotice />
+      {bulk.notice}
+      {props.footerCallout}
+    </div>
+  );
 
   const selectionToolbar = (
     <div className="pointer-events-none absolute inset-x-2 bottom-2 z-sticky">

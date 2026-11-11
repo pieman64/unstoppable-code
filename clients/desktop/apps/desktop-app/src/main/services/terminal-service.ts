@@ -1,4 +1,5 @@
 import { isScriptActionRelativePath } from '@canopy/protocol/script-actions';
+import { TERMINAL_SHELL_UNAVAILABLE_PREFIX } from '@canopy/protocol/terminal';
 import {
   readWorkspaceConfigDetailed,
   readWorkspaceWorktrees,
@@ -9,6 +10,8 @@ import {
 } from '@canopy/desktop-shared/types';
 import { resolveTerminalRelativeCwd } from '@canopy/desktop-shared/node/terminal-relative-cwd';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
+import { waitForWorktreeGitSetup } from '../lib/worktree-git-setup';
+import { stat } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
 import {
@@ -62,6 +65,7 @@ import {
   getSharedContainerRunCopyState,
 } from '../shared-containers/run/run-copy';
 import { readSharedContainerRunEnvironment } from '../shared-containers/run-env-store';
+import { recordDaemonRoute } from '../canopy-runtime/daemon-route-telemetry';
 import { buildSharedContainerRunEnv } from '../lib/shared-container-run-env';
 
 export const MAX_TERMINAL_WRITE_BYTES = 64 * 1024;
@@ -454,8 +458,52 @@ async function authorizeRelativeTerminalTarget(
 export async function spawnTerminalAfterShellPrewarm(
   request: TerminalSpawnRequest,
   route?: DaemonTerminalRouteContext,
+  canStart?: () => boolean,
 ): Promise<TerminalSession> {
+  if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
+    return spawnTerminal(request);
+  }
+  validateSpawnRequest(request);
+  // Creation returns its reservation before Git materializes the checkout.
+  // Wait before resolving relative paths or selecting either execution host.
+  // Do not claim the outcome: a subsequent chat send must still see failures.
+  const setup = await waitForWorktreeGitSetup(
+    request.projectId,
+    request.worktreeId,
+  );
+  if (setup === 'failed' || setup === 'cancelled') {
+    throw new TerminalServiceError(
+      'invalid_target',
+      `${TERMINAL_SHELL_UNAVAILABLE_PREFIX}Couldn't open terminal: worktree setup ${setup}.`,
+    );
+  }
   await authorizeRelativeTerminalTarget(request);
+  const cwd = resolveWorktreeCwd(
+    request.projectId,
+    request.worktreeId,
+    request.selectedRepoId,
+  );
+  const directory = await stat(cwd).catch((error: unknown) => {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+    ) {
+      throw new TerminalServiceError(
+        'invalid_target',
+        // Terminal surfaces show safe startup diagnostics with this marker.
+        `${TERMINAL_SHELL_UNAVAILABLE_PREFIX}Couldn't open terminal: working directory does not exist: ${cwd}`,
+      );
+    }
+    throw error;
+  });
+  if (!directory.isDirectory()) {
+    throw new TerminalServiceError(
+      'invalid_target',
+      `${TERMINAL_SHELL_UNAVAILABLE_PREFIX}Couldn't open terminal: working directory is not a directory: ${cwd}`,
+    );
+  }
   if (
     request.managedCommand === undefined &&
     (request.terminalProfileId === undefined ||
@@ -463,9 +511,18 @@ export async function spawnTerminalAfterShellPrewarm(
   ) {
     await workerTerminal.prewarmShell();
   }
+  if (canStart?.() === false) {
+    throw new TerminalServiceError(
+      'invalid_target',
+      'The terminal request is no longer active.',
+    );
+  }
   if (route?.localWindow) {
     const placed = await spawnDaemonTerminal(request, route);
     if (placed) return placed;
+  } else {
+    // The bridge, Portal and other non-local callers stay in process (CAN-5093).
+    recordDaemonRoute('terminals', 'caller');
   }
   return spawnTerminal(request);
 }
@@ -490,7 +547,7 @@ async function spawnDaemonTerminal(
   const shell = desktopTerminalShells.profile(request.terminalProfileId);
   try {
     // Held until the terminal is mirrored, so archiving waits for it.
-    return await withWorkspaceTargetRuntimeStartReservation(
+    const session = await withWorkspaceTargetRuntimeStartReservation(
       request.projectId,
       request.worktreeId,
       () =>
@@ -516,6 +573,8 @@ async function spawnDaemonTerminal(
           }),
         }),
     );
+    routing.noteDaemonTerminalServed();
+    return session;
   } catch (error) {
     if (routing.noteDaemonTerminalFallback(error)) return null;
     throw error;
@@ -541,8 +600,10 @@ async function restoreDaemonTerminal(
     !persisted ||
     (persisted.session.kind ?? 'shell') !== 'shell' ||
     !isRestorableExitSignal(persisted.signal)
-  )
+  ) {
+    recordDaemonRoute('terminals', 'not_restorable');
     return null;
+  }
   const { session } = persisted;
   const routing = await import('../terminal/daemon-terminal-route');
   const target = await routing.selectDaemonTerminalTarget(
@@ -556,7 +617,7 @@ async function restoreDaemonTerminal(
     session.cwd,
   );
   try {
-    return await withWorkspaceTargetRuntimeStartReservation(
+    const restored = await withWorkspaceTargetRuntimeStartReservation(
       session.projectId,
       session.worktreeId,
       () =>
@@ -585,6 +646,8 @@ async function restoreDaemonTerminal(
           }),
         }),
     );
+    routing.noteDaemonTerminalServed();
+    return restored;
   } catch (error) {
     if (routing.noteDaemonTerminalFallback(error)) return null;
     throw error;
@@ -604,6 +667,7 @@ export async function spawnTerminalForRenderer(
       'Package terminal directories require a code workspace.',
     );
   }
+  recordDaemonRoute('terminals', 'shared_container');
   return withSharedContainerRunLifecycle(
     request.worktreeId,
     async (): Promise<TerminalSession> => {
@@ -679,9 +743,11 @@ export async function restoreTerminalForRenderer(
     const daemon = workerTerminal.daemonTerminals;
     if (daemon?.has(request.terminalId))
       return daemon.reattach(request.terminalId, request.cols, request.rows);
-    if (route?.localWindow && !workerTerminal.get(request.terminalId)) {
-      const restored = await restoreDaemonTerminal(request, route);
-      if (restored) return restored;
+    if (!workerTerminal.get(request.terminalId)) {
+      if (route?.localWindow) {
+        const restored = await restoreDaemonTerminal(request, route);
+        if (restored) return restored;
+      } else recordDaemonRoute('terminals', 'caller');
     }
     return workerTerminal.restore({
       terminalId: request.terminalId,
@@ -689,6 +755,7 @@ export async function restoreTerminalForRenderer(
       rows: request.rows,
     });
   }
+  recordDaemonRoute('terminals', 'shared_container');
   return withSharedContainerRunLifecycle(
     session.worktreeId,
     async (): Promise<TerminalSession> => {
@@ -874,7 +941,7 @@ export async function spawnPlacedManagedTerminal(
   if (!target) return spawnManagedTerminal(request);
   await routing.sweepOrphanedDaemonManagedTerminals();
   try {
-    return await withWorkspaceTargetRuntimeStartReservation(
+    const managed = await withWorkspaceTargetRuntimeStartReservation(
       request.projectId,
       request.worktreeId,
       () =>
@@ -910,6 +977,8 @@ export async function spawnPlacedManagedTerminal(
           },
         }),
     );
+    routing.noteDaemonTerminalServed();
+    return managed;
   } catch (error) {
     if (routing.noteDaemonTerminalFallback(error))
       return spawnManagedTerminal(request);

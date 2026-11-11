@@ -8,10 +8,10 @@ import {
   getPipelineText,
   listPipelines,
 } from './pipeline-service';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { readFile, realpath } from 'node:fs/promises';
 import * as path from 'node:path';
-import { getProjectPipelinesDirCandidates } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getProjectPipelinesDirCandidates } from '@canopy/execution-engine/pipelines/config-paths';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { isPathInside } from '../lib/path-safety';
 import type { PipelineShareSource } from '@canopy/execution-engine/types/pipeline';

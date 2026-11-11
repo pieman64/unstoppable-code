@@ -69,6 +69,80 @@ export interface ShareRemoteMetadata {
   readonly ownerName?: string;
 }
 
+/** A local row's author-side link, as desktop (`remote`) or web (`shareRemoteId`) carries it. */
+export interface AuthorShareLink {
+  readonly remote?: Pick<ShareRemoteMetadata, 'remoteId' | 'accountId'>;
+  readonly shareRemoteId?: string;
+}
+
+function authorShareLinkId(
+  local: AuthorShareLink,
+  viewerId: string,
+): string | undefined {
+  if (local.remote) {
+    const { accountId, remoteId } = local.remote;
+    return accountId === undefined || accountId === viewerId
+      ? remoteId
+      : undefined;
+  }
+  return local.shareRemoteId;
+}
+
+/**
+ * Share ids the viewer's own local copies link to. Uses `remote.remoteId`,
+ * else `shareRemoteId`. Drops a link whose `accountId` names another
+ * account, and any id claimed by more than one local copy (an ambiguous
+ * identity proves no single status to follow). Empty when `viewerId` is
+ * absent.
+ *
+ * Callers filtering a share list must also check the share's `createdBy.id`
+ * against the viewer; never fold on this set alone.
+ */
+export function authorShareRemoteIds(
+  locals: readonly AuthorShareLink[],
+  viewerId: string | null | undefined,
+): ReadonlySet<string> {
+  if (!viewerId) {
+    return new Set();
+  }
+  const claims = new Map<string, number>();
+  for (const local of locals) {
+    const id = authorShareLinkId(local, viewerId);
+    if (id) {
+      claims.set(id, (claims.get(id) ?? 0) + 1);
+    }
+  }
+  const ids = new Set<string>();
+  for (const [id, count] of claims) {
+    if (count === 1) {
+      ids.add(id);
+    }
+  }
+  return ids;
+}
+
+/** The one local copy a share folds into, by index, or undefined. */
+export function authorLinkedLocalIndex(
+  share: { id: string; createdBy?: { id: string } | null },
+  locals: readonly AuthorShareLink[],
+  viewerId: string | null | undefined,
+): number | undefined {
+  if (!viewerId || share.createdBy?.id !== viewerId) {
+    return undefined;
+  }
+  let match: number | undefined;
+  for (const [index, local] of locals.entries()) {
+    if (authorShareLinkId(local, viewerId) !== share.id) {
+      continue;
+    }
+    if (match !== undefined) {
+      return undefined;
+    }
+    match = index;
+  }
+  return match;
+}
+
 /** Parse persisted author metadata without trusting an unchecked JSON cast. */
 export function parseShareRemoteMetadata(
   value: unknown,

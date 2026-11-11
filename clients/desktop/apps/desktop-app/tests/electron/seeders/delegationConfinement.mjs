@@ -18,7 +18,7 @@ import {
 } from '../mock-server/routes/llm.mjs';
 
 const pathsModule = await tsImport(
-  '../../../../../packages/desktop-shared/src/pipelines/config-paths.ts',
+  '../../../../../packages/execution-engine/src/pipelines/config-paths.ts',
   import.meta.url,
 );
 const { getBundledCodexBinaryPath } = pathsModule.default ?? pathsModule;

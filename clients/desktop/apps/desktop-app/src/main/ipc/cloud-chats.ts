@@ -1,15 +1,20 @@
 import { app } from 'electron';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { SettingsOperationError } from '@canopy/protocol/settings';
 import {
   IPC_CHANNELS,
   type CloudChatAttachmentUploadResult,
   type CloudChatsReconnectResult,
 } from '@canopy/desktop-shared/types';
 import { getFeatureFlagService } from '../feature-flags';
-import { readCanopyCloudAccountWithStatus } from '../lib/canopy-cloud-account-store';
-import type { SettingsBridgeSession } from '../canopy-cloud/settings-session';
-import type { WebCoreBindingOptions } from '../canopy-cloud/web-core-connection';
+import {
+  readCanopyCloudAccountWithStatus,
+  subscribeCanopyCloudAccountChanges,
+} from '../lib/canopy-cloud-account-store';
+import { resolveCanopyCloudCredentialContext } from '../canopy-cloud/client';
+import type {
+  WebCoreBindingOptions,
+  WebCoreCredentials,
+} from '../canopy-cloud/web-core-connection';
 import { createWebCoreReconnect } from '../canopy-cloud/web-core-reconnect';
 import {
   createCloudChatAttachmentUpload,
@@ -32,31 +37,41 @@ async function signedInAccountId(): Promise<string | null> {
   return (read.status === 'ok' ? read.entry?.account?.id : null) ?? null;
 }
 
-// Loaded off the startup path, as the hosted settings handlers do.
-async function acquireBridge(
-  accountId: string,
-): Promise<SettingsBridgeSession> {
-  const { acquireSettingsBridgeSession } =
-    await import('../canopy-cloud/settings-session');
-  return acquireSettingsBridgeSession(accountId);
+/**
+ * The signed-in account's cloud origin, desktop key and external id, or a
+ * rejection when signed out or the account is not yet known.
+ */
+async function readWebCoreCredentials(): Promise<WebCoreCredentials> {
+  const [context, accountId] = await Promise.all([
+    resolveCanopyCloudCredentialContext(),
+    signedInAccountId(),
+  ]);
+  if (accountId === null) throw new Error('No signed-in cloud account.');
+  return { baseUrl: context.baseUrl, apiKey: context.apiKey, accountId };
 }
 
-/** Main's web core binding: `canopyDesktopCloudChats` and the signed-in account's bridge. */
+/**
+ * Main's web core binding: `canopyDesktopCloudChats`, and the signed-in
+ * account's desktop key (CAN-5989).
+ */
 export function desktopWebCoreBindingOptions(): WebCoreBindingOptions {
   return {
     isEnabled: cloudChatsEnabled,
-    acquireSession: async () => {
-      const accountId = await signedInAccountId();
-      if (accountId === null)
-        throw new SettingsOperationError({ code: 'unauthenticated' });
-      return acquireBridge(accountId);
-    },
+    readCredentials: readWebCoreCredentials,
+    onAccountChange: (listener) =>
+      subscribeCanopyCloudAccountChanges((entry) =>
+        listener(
+          entry === null
+            ? null
+            : { apiKey: entry.apiKey, accountId: entry.account?.id ?? '' },
+        ),
+      ),
   };
 }
 
 /**
  * The cloud chats Reconnect action (CAN-4185); its throttle lives in main.
- * Only the app's own main window may remint, by the same trusted-surface check
+ * Only the app's own main window may ask, by the same trusted-surface check
  * that keeps the web-core relay main-window only.
  */
 export function registerCloudChatsHandlers(
@@ -65,7 +80,7 @@ export function registerCloudChatsHandlers(
   const reconnect = createWebCoreReconnect({
     isEnabled: cloudChatsEnabled,
     currentAccountId: signedInAccountId,
-    acquireSession: acquireBridge,
+    readCredentials: readWebCoreCredentials,
   });
   const requireMainWindow = (event: RendererRelayEvent): void => {
     let trusted = false;

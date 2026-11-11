@@ -34,6 +34,7 @@ import {
   type LedgerFeedPage,
   type LedgerFeedWorkPage,
   type LedgerGlobalViewScope,
+  type LedgerTaskViewScope,
   type LedgerViewChange,
   type LedgerViewChangedEvent,
   type LedgerViewEntry,
@@ -325,13 +326,36 @@ async function resolveGlobalScope(
   };
 }
 
+/** Who one call is recorded as, and the caller it is made through. */
+interface LedgerCallActor {
+  readonly actor: LedgerCallerBindingRegistration['actor'];
+  readonly role: LedgerCallerBindingRegistration['role'];
+  readonly authorDetails: LedgerAuthorDetails;
+  readonly clientInstanceId: string;
+  readonly interfaceKind: CanopyCallerDescriptor['interfaceKind'];
+}
+
+function localUserActor(ipcCaller: CanopyCallerDescriptor): LedgerCallActor {
+  return {
+    actor: {
+      kind: 'user',
+      originKey: 'local',
+      displayName: LEDGER_USER_ACTOR_DISPLAY_NAME,
+    },
+    role: 'user',
+    authorDetails: USER_AUTHOR_DETAILS,
+    clientInstanceId: ipcCaller.clientInstanceId,
+    interfaceKind: 'desktop',
+  };
+}
+
 /**
- * Runs one call as the local user of the scope, through a binding registered
+ * Runs one call in the scope as the given actor, through a binding registered
  * for that call only and holding only the given grant.
  */
-async function asLocalUser<Result>(
+async function asBoundActor<Result>(
   resolution: Extract<ScopeResolution, { kind: 'ready' }>,
-  ipcCaller: CanopyCallerDescriptor,
+  actor: LedgerCallActor,
   host: LedgerIpcHost,
   grant: CanopyCallerDescriptor['grants'][number],
   call: (caller: CanopyCallerDescriptor) => Promise<Result>,
@@ -340,27 +364,33 @@ async function asLocalUser<Result>(
   const bindingId = registry.register({
     container: resolution.container,
     containerCreatedAt: resolution.containerCreatedAt,
-    actor: {
-      kind: 'user',
-      originKey: 'local',
-      displayName: LEDGER_USER_ACTOR_DISPLAY_NAME,
-    },
-    role: 'user',
-    authorDetails: USER_AUTHOR_DETAILS,
+    actor: actor.actor,
+    role: actor.role,
+    authorDetails: actor.authorDetails,
     runtimeGeneration: 0,
     ttlMs: USER_BINDING_TTL_MS,
   });
   try {
     return await call({
       principalId: bindingId,
-      clientInstanceId: ipcCaller.clientInstanceId,
+      clientInstanceId: actor.clientInstanceId,
       authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
-      interfaceKind: 'desktop',
+      interfaceKind: actor.interfaceKind,
       grants: [grant],
     });
   } finally {
     registry.revoke(bindingId);
   }
+}
+
+async function asLocalUser<Result>(
+  resolution: Extract<ScopeResolution, { kind: 'ready' }>,
+  ipcCaller: CanopyCallerDescriptor,
+  host: LedgerIpcHost,
+  grant: CanopyCallerDescriptor['grants'][number],
+  call: (caller: CanopyCallerDescriptor) => Promise<Result>,
+): Promise<Result> {
+  return asBoundActor(resolution, localUserActor(ipcCaller), host, grant, call);
 }
 
 function errorResult(error: unknown): LedgerViewResult<never> {
@@ -499,6 +529,94 @@ export async function addLedgerEntryForView(
         dispatcher.instruction(
           'core.ledger.entry.add',
           { ...params.data, _meta: { idempotencyKey: requestKey } },
+          { caller, metadata: { idempotencyKey: requestKey } },
+        ),
+    );
+    return { status: 'ok', value };
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+/**
+ * A chat acting in another work's Ledger: App Advisor's Feed actions
+ * (CAN-6007), recorded as the advisor chat itself, never as the person.
+ */
+export interface LedgerChatCaller {
+  readonly chatId: string;
+  readonly displayName: string;
+  readonly authorDetails: LedgerAuthorDetails;
+}
+
+function chatActor(chat: LedgerChatCaller): LedgerCallActor {
+  return {
+    actor: {
+      kind: 'chat',
+      originKey: chat.chatId,
+      displayName: chat.displayName,
+    },
+    role: 'interactive_chat',
+    authorDetails: chat.authorDetails,
+    clientInstanceId: `agent-action:${chat.chatId}`,
+    interfaceKind: 'mcp',
+  };
+}
+
+/** One page of a work scope's entries, read as the chat. */
+export async function searchLedgerEntriesAsChat(
+  dispatcher: Pick<DesktopCanopyDispatcher, 'query'>,
+  chat: LedgerChatCaller,
+  scope: LedgerTaskViewScope,
+  params: LedgerEntriesSearchParams,
+  host: LedgerIpcHost = DESKTOP_LEDGER_IPC_HOST,
+): Promise<LedgerViewResult<LedgerEntriesSearchResult>> {
+  try {
+    const resolution = await resolveScope(scope, host);
+    if (resolution.kind === 'done') return resolution.result;
+    if (resolution.kind === 'empty') {
+      return { status: 'ok', value: EMPTY_SEARCH_RESULT };
+    }
+    const value = await asBoundActor(
+      resolution,
+      chatActor(chat),
+      host,
+      LEDGER_GRANTS.read,
+      (caller) =>
+        dispatcher.query('core.ledger.entries.search', params, { caller }),
+    );
+    return { status: 'ok', value };
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+/** Adds an entry to a work scope's Ledger as the chat; the key makes a retry add once. */
+export async function addLedgerEntryAsChat(
+  dispatcher: Pick<DesktopCanopyDispatcher, 'instruction'>,
+  chat: LedgerChatCaller,
+  scope: LedgerTaskViewScope,
+  requestKey: string,
+  params: z.input<typeof LedgerAddEntryParamsSchema>,
+  host: LedgerIpcHost = DESKTOP_LEDGER_IPC_HOST,
+): Promise<LedgerViewResult<LedgerViewReceipt>> {
+  const parsed = LedgerAddEntryParamsSchema.safeParse(params);
+  if (!parsed.success) return invalidRequest('Invalid Feed entry.');
+  try {
+    const resolution = await resolveScope(scope, host, { creates: true });
+    if (resolution.kind !== 'ready') {
+      return resolution.kind === 'done'
+        ? resolution.result
+        : invalidRequest('Unknown Feed scope.');
+    }
+    const value = await asBoundActor(
+      resolution,
+      chatActor(chat),
+      host,
+      LEDGER_GRANTS.write,
+      (caller) =>
+        dispatcher.instruction(
+          'core.ledger.entry.add',
+          { ...parsed.data, _meta: { idempotencyKey: requestKey } },
           { caller, metadata: { idempotencyKey: requestKey } },
         ),
     );

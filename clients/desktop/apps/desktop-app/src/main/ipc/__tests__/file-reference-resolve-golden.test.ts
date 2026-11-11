@@ -64,6 +64,7 @@ function registerHandlers(): void {
 function resolveReference(
   baseFilePath: string,
   href: string,
+  mode?: 'transcript',
 ): Promise<FileReferenceResolveResponse> {
   const handler = handlers.get(IPC_CHANNELS.fileReferenceResolve);
   if (!handler) throw new Error('file-reference:resolve is not registered.');
@@ -73,6 +74,7 @@ function resolveReference(
       worktreeId: 'wt-1',
       baseFilePath,
       href,
+      ...(mode ? { mode } : {}),
     }),
   ).then((value) => value as FileReferenceResolveResponse);
 }
@@ -161,6 +163,41 @@ posix('single-repository worktree', () => {
       root('attachments', 'attachments', attachments, 'attachments'),
     ]);
   });
+
+  it.each([
+    '日本語 🌲.ts',
+    "space and apostrophe's.ts",
+    'literal\\name.ts',
+    'report:12.ts',
+  ])(
+    'preserves encoded filesystem identity across markdown and transcript dispatch: %s',
+    async (name) => {
+      await put(join(repo, 'docs', name), name);
+      // A directory spelling must never win over a literal POSIX backslash.
+      await put(join(repo, 'docs', 'literal', 'name.ts'), 'decoy');
+      await expect(
+        resolveReference(base, encodeURIComponent(name)),
+      ).resolves.toEqual(file(join(repo, 'docs', name), name));
+      await expect(
+        resolveReference(join(repo, 'docs', name), encodeURIComponent(name)),
+      ).resolves.toEqual(file(join(repo, 'docs', name), name));
+      await expect(
+        resolveReference(
+          base,
+          `docs/${encodeURIComponent(name)}`,
+          'transcript',
+        ),
+      ).resolves.toEqual({
+        ...file(join(repo, 'docs', name), name),
+        canonical: {
+          fileRootId: 'project-1',
+          relativePath: `docs/${name}`,
+          name,
+          kind: 'file',
+        },
+      });
+    },
+  );
 
   it('resolves links relative to the base file', async () => {
     await expect(resolveReference(base, 'guide.md')).resolves.toEqual(

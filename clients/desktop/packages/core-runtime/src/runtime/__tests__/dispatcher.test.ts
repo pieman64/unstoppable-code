@@ -60,6 +60,7 @@ type WorkerQueryHandlers = Pick<
   | 'worker.script.execution.get'
   | 'worker.script.execution.list'
   | 'worker.pipeline.execution.get'
+  | 'worker.pipeline.execution.list'
   | 'worker.codeGraph.buildQueue.get'
   | 'worker.codeGraph.status.get'
   | 'worker.codeGraph.query'
@@ -110,6 +111,9 @@ function handlers(
       throw new Error('Not exercised.');
     },
     'worker.pipeline.execution.get': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.pipeline.execution.list': (): never => {
       throw new Error('Not exercised.');
     },
     'worker.codeGraph.buildQueue.get': (): never => {

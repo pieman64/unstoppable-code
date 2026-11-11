@@ -16,7 +16,21 @@ export interface DaemonCodeGraphRoute {
   claim(): boolean;
   /** The operation the route took went to the daemon, not in process. */
   servedByDaemon(): void;
+  /** A reached daemon refused the operation; its refusal is the answer. */
+  refusedByDaemon?(): void;
+  /** The daemon could not be reached, so the operation ran in process. */
+  fellBack?(): void;
 }
+
+/**
+ * How a selected route settled (CAN-5093 field evidence), whether the work
+ * succeeded or failed: `not_dispatched` when nothing took the route.
+ */
+export type DaemonCodeGraphRouteOutcome =
+  | 'served'
+  | 'refused'
+  | 'fallback'
+  | 'not_dispatched';
 
 const routes = new AsyncLocalStorage<DaemonCodeGraphRoute>();
 
@@ -39,28 +53,44 @@ export function isOwnRendererSender(
   );
 }
 
-/** Runs `work` with the daemon route open when `selected`. */
+/**
+ * Runs `work` with the daemon route open when `selected`. `settled` hears
+ * once how a selected route ended, also when `work` throws.
+ */
 export async function withDaemonCodeGraphRoute<T>(
   selected: boolean,
   work: () => Promise<T>,
+  settled?: (outcome: DaemonCodeGraphRouteOutcome) => void,
 ): Promise<{ value: T; daemon: boolean }> {
   if (!selected) return { value: await work(), daemon: false };
   let claimed = false;
-  let daemon = false;
-  const value = await routes.run(
-    {
-      claim: () => {
-        if (claimed) return false;
-        claimed = true;
-        return true;
+  const state: { outcome: DaemonCodeGraphRouteOutcome } = {
+    outcome: 'not_dispatched',
+  };
+  try {
+    const value = await routes.run(
+      {
+        claim: () => {
+          if (claimed) return false;
+          claimed = true;
+          return true;
+        },
+        servedByDaemon: () => {
+          state.outcome = 'served';
+        },
+        refusedByDaemon: () => {
+          state.outcome = 'refused';
+        },
+        fellBack: () => {
+          state.outcome = 'fallback';
+        },
       },
-      servedByDaemon: () => {
-        daemon = true;
-      },
-    },
-    work,
-  );
-  return { value, daemon };
+      work,
+    );
+    return { value, daemon: state.outcome === 'served' };
+  } finally {
+    settled?.(state.outcome);
+  }
 }
 
 /** The route this dispatch may take, if its IPC handler opened one. */
@@ -87,10 +117,13 @@ export async function onDaemonCodeGraphRoute<T>(
     route.servedByDaemon();
     return answer;
   } catch (error) {
-    if (!daemon.noteDaemonCodeGraphFallback(error))
+    if (!daemon.noteDaemonCodeGraphFallback(error)) {
+      route.refusedByDaemon?.();
       throw error instanceof CanopyClientError
         ? new CanopyOperationError(error.payload, error)
         : error;
+    }
   }
+  route.fellBack?.();
   return inProcess();
 }

@@ -20,6 +20,7 @@ import type {
   PipelineInfo,
   PipelineTriggerType,
 } from '@canopy/execution-engine/types/pipeline';
+import { authorShareRemoteIds } from '@canopy/protocol/sharing';
 import { pipelineSupportsExecutionScope } from './pipelineExecutionScope';
 
 export type PipelineTriggerSourceFilter =
@@ -75,7 +76,10 @@ function matchesSearch(info: PipelineInfo, query: string): boolean {
  *     Cloud account. Local rows are filtered in-memory by `searchQuery`;
  *     shared rows are rendered from the singleton list state. The hook applies
  *     query and trigger filters server-side, and this helper defensively
- *     re-checks trigger metadata before rendering.
+ *     re-checks trigger metadata before rendering. A share `viewerId`
+ *     created that exactly one local pipeline links to (`info.remote`) is
+ *     dropped: the author sees one row, the local one, which carries the
+ *     share's audience.
  *   - `bundled` / `user` / `project`: only local rows whose
  *     `info.source` matches, with the in-memory search applied.
  *   - `shared`: returns an empty array — the Shared filter is rendered
@@ -97,6 +101,13 @@ export function buildCombinedTriggerRows(args: {
    * the picker entirely. Defaults to an empty set (nothing disabled).
    */
   disabledIds?: ReadonlySet<string>;
+  /** Signed-in Canopy Cloud account id; absent folds no author share. */
+  viewerId?: string | null;
+  /**
+   * Whether the surface lists a row (its execution-scope filter, applied by
+   * the caller). A local copy it hides does not absorb its share.
+   */
+  isListed?: (info: PipelineInfo) => boolean;
 }): PipelineTriggerRow[] {
   const {
     localPipelines,
@@ -106,6 +117,8 @@ export function buildCombinedTriggerRows(args: {
     searchQuery,
     triggerType,
     disabledIds,
+    viewerId,
+    isListed,
   } = args;
 
   if (sourceFilter === 'shared') {
@@ -142,10 +155,25 @@ export function buildCombinedTriggerRows(args: {
     return [...localRows, ...curatedTriggerRows];
   }
 
+  // Only a local row the picker lists absorbs its share; a disabled copy, or
+  // one the search or the surface's scope filters out, leaves it visible.
+  const authorIds = authorShareRemoteIds(
+    localRows.flatMap((row) =>
+      !isListed || isListed(row.info) ? [row.info] : [],
+    ),
+    viewerId,
+  );
   const sharedTriggerRows: PipelineTriggerRow[] = [];
   for (const info of sharedRows) {
     if (!info.remoteId) continue;
     if (isDisabled(info.id)) continue;
+    if (
+      viewerId &&
+      info.createdBy?.id === viewerId &&
+      authorIds.has(info.remoteId)
+    ) {
+      continue;
+    }
     if (info.triggerTypes && !info.triggerTypes.includes(triggerType)) {
       continue;
     }

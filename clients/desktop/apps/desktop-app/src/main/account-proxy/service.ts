@@ -2033,6 +2033,7 @@ const SIGN_IN_TIMEOUT_MS = ACCOUNT_PROXY_SIGN_IN_TIMEOUT_MS;
 interface PendingSignIn {
   readonly connectionId: string;
   readonly provider: AccountProxySignInProvider;
+  readonly authIndex?: string;
   readonly state: string;
   readonly url: string;
   readonly startedAt: number;
@@ -2081,6 +2082,7 @@ function currentSignIn(settings: Settings): AccountProxySignIn | null {
   if (!signIn || settings.connection?.id !== signIn.connectionId) return null;
   return {
     provider: signIn.provider,
+    authIndex: signIn.authIndex,
     phase: signIn.phase,
     message: signIn.message,
   };
@@ -2328,8 +2330,13 @@ export async function signInLocalAccountProxyAccount(
       method: 'GET',
       // Without `is_webui` the proxy binds no callback port here; the
       // controlling computer catches the redirect and relays it.
+      // `auth_index` re-signs that credential; the proxy refuses another account.
       path: `/oauth/auth-url?provider=${request.provider}${
         remote ? '' : '&is_webui=true'
+      }${
+        request.authIndex
+          ? `&auth_index=${encodeURIComponent(request.authIndex)}`
+          : ''
       }`,
     }).catch(async (error: unknown) => {
       await recordSignInKeyRejection(
@@ -2358,6 +2365,7 @@ export async function signInLocalAccountProxyAccount(
   const pending: PendingSignIn = {
     connectionId: connection.id,
     provider: request.provider,
+    authIndex: request.authIndex,
     state: page.state,
     url: page.url,
     startedAt: Date.now(),

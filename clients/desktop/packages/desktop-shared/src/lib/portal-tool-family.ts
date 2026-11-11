@@ -197,6 +197,7 @@ export function getPortalChatToolFamily(
     canopyKey === 'search_memory' ||
     canopyKey === 'read_memory' ||
     canopyKey === 'set_auto_archive' ||
+    canopyKey === 'set_work_entry_auto_delete' ||
     canopyKey === 'start_forked_agent' ||
     canopyKey === 'start_branched_agent' ||
     canopyKey === 'set_base_branch' ||

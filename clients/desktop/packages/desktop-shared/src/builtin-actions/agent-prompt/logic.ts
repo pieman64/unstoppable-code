@@ -23,7 +23,7 @@ import {
   mapThinkingToReasoningEffort,
   type CodexThreadOptions,
 } from '@canopy/execution-engine/lib/codex-model-config';
-import { getBundledRtkBinaryPath } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getBundledRtkBinaryPath } from '@canopy/execution-engine/pipelines/config-paths';
 import {
   claudeNativeMemoryOptions,
   localMemoryEnabledFromEnv,

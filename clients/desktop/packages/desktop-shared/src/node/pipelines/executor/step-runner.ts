@@ -16,7 +16,7 @@ import type { ModelHarnessInvocation } from '@canopy/execution-engine/types/mode
 import {
   isShutdownSignal,
   readShutdownAgentMetadata,
-} from './shutdown-recovery';
+} from '@canopy/execution-engine/node/pipelines/executor/shutdown-recovery';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
@@ -25,7 +25,7 @@ import { spawn } from 'node:child_process';
 import { finished } from 'node:stream/promises';
 import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
-import { stepTimedOutMessage } from '../step-timeout';
+import { stepTimedOutMessage } from '@canopy/execution-engine/node/pipelines/step-timeout';
 import {
   redactSecrets,
   redactSerializedJsonLine,
@@ -42,10 +42,10 @@ import {
   buildPipelineGlobalInstructionsBlock,
 } from '@canopy/execution-engine/lib/global-instructions';
 import { killChildProcessGroup } from '@canopy/execution-engine/node/lib/process-kill';
-import { getPipelineExecutionPluginRuntimeDir } from '../../lib/paths';
+import { getPipelineExecutionPluginRuntimeDir } from '@canopy/execution-engine/node/lib/paths';
 import { resolvePlugins } from '../../plugins/plugin-resolver';
-import { validatePauseInputRequest } from '@canopy/desktop-shared/pipelines/pause-input-validation';
-import { executionContextSatisfies } from '@canopy/desktop-shared/pipelines/scope';
+import { validatePauseInputRequest } from '@canopy/execution-engine/pipelines/pause-input-validation';
+import { executionContextSatisfies } from '@canopy/execution-engine/pipelines/scope';
 import {
   brandEnvCandidates,
   brandEnvName,
@@ -62,9 +62,9 @@ import {
   getEnhancedEnv,
   getLoginShellPath,
   getRtkManagedEnv,
-} from '../config-paths';
+} from '@canopy/execution-engine/node/pipelines/config-paths';
 import { resolveChildPipeline } from './child-pipeline-resolver';
-import { runHostAction } from './host-action-runner';
+import { hostPortTakesAction, runHostAction } from './host-action-runner';
 import {
   resolveActionRuntime,
   type ResolvedActionRuntime,
@@ -89,7 +89,7 @@ import type {
 } from '@canopy/execution-engine/types/pipeline';
 import type { AgentActionFailureMetadata } from '@canopy/execution-engine/agent-failures';
 import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
-import { BASE_BRANCH_MANAGED_ENV_KEYS } from '@canopy/desktop-shared/pipelines/base-branch-env';
+import { BASE_BRANCH_MANAGED_ENV_KEYS } from '@canopy/execution-engine/pipelines/base-branch-env';
 import {
   buildExpressionAssets,
   buildExpressionContext,
@@ -104,11 +104,11 @@ import {
   interpolateExpression,
 } from './expression-evaluator';
 import { interpolateNormalizedStep } from './step-interpolation';
-import { buildModelRegistrySnapshot } from './model-registry-snapshot';
+import { buildModelRegistrySnapshot } from '@canopy/execution-engine/node/pipelines/executor/model-registry-snapshot';
 import {
   normalizePipeline,
   resolvePipelineModelAlias,
-} from './normalize-pipeline';
+} from '@canopy/execution-engine/node/pipelines/executor/normalize-pipeline';
 import {
   AI_GATEWAY_MODELS,
   APP_ADVISOR_PROJECT_ID,
@@ -165,7 +165,7 @@ import {
   openAppendingStepLogCursor,
   resetStepLogForPositionedWriter,
   type StepLogPositionCursor,
-} from './step-log-positions';
+} from '@canopy/execution-engine/node/pipelines/executor/step-log-positions';
 import {
   applyPlanPromptRequirement,
   parseMaxTurns,
@@ -194,14 +194,14 @@ import {
   buildCmdCommandLine,
   wrapWindowsCommandShim,
 } from '@canopy/execution-engine/node/lib/windows-process';
-import { getDefaultShellTypeForCurrentProcess } from '../default-shell';
+import { getDefaultShellTypeForCurrentProcess } from '@canopy/execution-engine/node/pipelines/default-shell';
 import { sanitizeCodexSpawnEnvironment } from '../../codex-runtime/profile';
 import {
   SecretValueRedactor,
   type RecordStoreFactory,
 } from './spawned-process';
-import { SurrogatePairGuard } from './surrogate-safe-text';
-import { trackLateStorageCleanup } from './record-store';
+import { SurrogatePairGuard } from '@canopy/execution-engine/node/pipelines/executor/surrogate-safe-text';
+import { trackLateStorageCleanup } from '@canopy/execution-engine/node/pipelines/executor/record-store';
 import {
   appendPipelineLedgerInstructions,
   openPipelineLedgerAttempt,
@@ -3044,6 +3044,16 @@ export function pipelinePluginSelectionsAddPlugins(
   );
 }
 
+/**
+ * Whether plugin selections name a standalone MCP server, whose configuration
+ * can hold a credential; such selections stay in the app (CAN-5832, CAN-6011).
+ */
+export function pipelinePluginSelectionsSelectMcpServers(
+  selections: ChatTabPluginSelections | undefined,
+): boolean {
+  return (selections?.mcpServerRefs?.length ?? 0) > 0;
+}
+
 /** What a workflow model alias names for a run before its steps (CAN-5832). */
 export interface PipelineModelAliasTarget {
   /** The base model the alias's steps run on. */
@@ -3052,6 +3062,8 @@ export interface PipelineModelAliasTarget {
   readonly plugins: boolean;
   /** It names an Agent, whose base model each step resolves again. */
   readonly agent: boolean;
+  /** Its Agent's plugins name a standalone MCP server. */
+  readonly mcpServers: boolean;
 }
 
 /**
@@ -3077,6 +3089,9 @@ export async function resolvePipelineModelAliasTarget(
       base: resolution.base,
       plugins: pipelinePluginSelectionsAddPlugins(resolution.pluginSelections),
       agent: true,
+      mcpServers: pipelinePluginSelectionsSelectMcpServers(
+        resolution.pluginSelections,
+      ),
     };
   }
   if (resolveModelAlias(defaults.base).startsWith(AGENT_MODEL_PREFIX))
@@ -3085,6 +3100,7 @@ export async function resolvePipelineModelAliasTarget(
     base: defaults.base,
     plugins: Boolean(defaults.plugin_collection_id),
     agent: false,
+    mcpServers: false,
   };
 }
 
@@ -5821,18 +5837,19 @@ async function openLedgerSubprocessTools(
 
 /**
  * The runtime a step's action actually uses. A bundled host action with a
- * Node fallback runs as `node` only when the runtime has no host port; with a
- * port, or without a fallback, it stays `host`.
+ * Node fallback runs as `node` when the runtime's host port doesn't take it:
+ * there is no port, or the port doesn't declare the action (CAN-6082). With
+ * a port that takes it, or without a fallback, it stays `host`.
  */
 function effectiveRunsUsing(
   action: ResolvedActionRuntime,
-  runtime: Pick<ExecutionRuntime, 'pipelineHostActions'>,
+  runtime: Pick<ExecutionRuntime, 'pipelineHostActions' | 'bundledActionsDir'>,
 ): ActionRuns['using'] {
   const runs = action.definition.runs;
   if (
     runs.using === 'host' &&
     runs.fallback !== undefined &&
-    runtime.pipelineHostActions === undefined
+    !hostPortTakesAction(action, runtime)
   ) {
     return runs.fallback.using;
   }

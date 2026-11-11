@@ -817,7 +817,7 @@ const REVIEWED_STUDY_OVERLAYS = Object.freeze({
       installed:
         '6fe0dc288be4b115078cc3edb06a4df71cd6000766e0fa8cd7465db584e173b7',
     }),
-  'packages/desktop-shared/src/pipelines/config-paths.ts': Object.freeze({
+  'packages/execution-engine/src/pipelines/config-paths.ts': Object.freeze({
     original:
       'ca1693b07d8d06c7a429b05ef0a27408405f8bc4bebbdd011367031888b01c91',
     installed:

@@ -34,7 +34,14 @@ export {
   type ProjectsSendMessageAction,
   type ProjectsSteerQueuedMessageAction,
 } from '@canopy/agent-actions/families/projects/messages';
-import type { BotChatAddress } from './bot-discovery';
+// The receipts moved to the shared projects family, for the web host too.
+export type {
+  AcceptedInputReceipt,
+  CreatedTaskChatReceipt,
+  SteeredInputReceipt,
+  WatcherReceipt,
+} from '@canopy/agent-actions/families/projects/receipts';
+import type { WatcherReceipt } from '@canopy/agent-actions/families/projects/receipts';
 import type {
   CanonicalChatAddress,
   TrustedChatWatcherRecipient,
@@ -137,14 +144,6 @@ export {
   projectsSteerQueuedMessageJsonSchema,
 };
 
-/** Steering keeps the original input ID; it never sends another message. */
-export type SteeredInputReceipt = {
-  address: ProjectChatAddress;
-  queuedMessageId: string;
-  disposition: 'steered';
-  steeredAt: string;
-};
-
 /** A saved one-time schedule; `runAt` is the resolved instant. */
 export type ScheduledMessageReceipt = {
   address: ProjectChatAddress;
@@ -207,45 +206,6 @@ export {
   projectsCreateTaskChatJsonSchema,
   projectsCreateTaskJsonSchema,
 };
-
-/**
- * A created (or, for chat creation in an existing task, reused empty) chat.
- * `chatCreated` is false only for documented empty-tab reuse. `input` is
- * present exactly when an initial message was accepted.
- */
-export type CreatedTaskChatReceipt = {
-  address: ProjectChatAddress | BotChatAddress;
-  taskCreated: boolean;
-  chatCreated: boolean;
-  /**
-   * Present exactly when the action supplied `model`: the id stored on the
-   * new chat, a route for an Agent on the default model.
-   */
-  model?: string;
-  /** The selected Agent's id, when the selected model is an Agent. */
-  agentId?: string;
-  input?: AcceptedInputReceipt;
-};
-
-export type WatcherReceipt = {
-  watcherId: string;
-  disposition: 'created' | 'deduplicated';
-};
-
-/**
- * Proof that the target accepted one input (plan 8.1). A queued receipt
- * carries the actual host queue row ID; a started one the canonical input ID.
- * Turn IDs are never synthesized.
- */
-export type AcceptedInputReceipt = {
-  address: ProjectChatAddress | BotChatAddress;
-  acceptedAt: string;
-  turnId?: string;
-  watcherReceipts: WatcherReceipt[];
-} & (
-  | { disposition: 'started'; messageId: string; queuedMessageId?: string }
-  | { disposition: 'queued'; queuedMessageId: string; messageId?: string }
-);
 
 // Receipt IDs share the actions' opaque public ID validation.
 const idSchema = z.string().min(1).max(512).regex(/\S/);

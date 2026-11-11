@@ -47,7 +47,7 @@ import {
   type CodexSpeed,
 } from '@canopy/execution-engine/lib/codex-speed';
 import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
-import { resolvePipelineModelAlias } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { resolvePipelineModelAlias } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { readPreferencesFile } from '../lib/preferences-store';
 import {
   readApprovalPreferencesForSurface,

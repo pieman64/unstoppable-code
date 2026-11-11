@@ -621,7 +621,7 @@ describe.each([canopyBrand, unstoppableBrand])(
             const { readStoredPatWithStatus } =
               await import('../../lib/github-auth');
             const { getCanopyBuildIdentity, resetResolvedCanopyDataDirCache } =
-              await import('@canopy/desktop-shared/canopy-paths');
+              await import('@canopy/execution-engine/canopy-paths');
             for (const testBuild of [false, true]) {
               Object.defineProperty(
                 globalThis,

@@ -1,7 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { getCanopyCacheDir } from '../../canopy-paths';
+import { getCanopyCacheDir } from '@canopy/execution-engine/canopy-paths';
 
 function loadEmbeddedData(): Record<string, string> | null {
   try {

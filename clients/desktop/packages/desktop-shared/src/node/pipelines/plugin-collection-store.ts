@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { copyFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import {
   writeFileAtomically,
   type AdmittedWriterTarget,
@@ -21,7 +21,7 @@ import type {
   PipelinePluginCollectionPreference,
   PipelinePreferenceLocator,
 } from '@canopy/execution-engine/types/pipeline';
-import { serializePipelinePreferenceLocator } from '../../pipelines/plugin-collections';
+import { serializePipelinePreferenceLocator } from '@canopy/execution-engine/pipelines/plugin-collections';
 
 interface PipelinePreferenceEntry {
   plugin_collections?: Record<string, PipelinePluginCollectionPreference>;

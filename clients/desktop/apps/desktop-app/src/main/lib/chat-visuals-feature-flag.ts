@@ -39,6 +39,8 @@ export function chatVisualsEligible({
     return providerType === 'claude';
   if (surface === 'cursor-acp' || surface === 'cursor-acp-standalone')
     return providerType === 'cursor';
+  if (surface === 'opencode-acp' || surface === 'opencode-acp-standalone')
+    return providerType === 'opencode';
   return false;
 }
 
@@ -60,8 +62,12 @@ export function chatVisualsPromptEligible(
         ? cowork
           ? 'cursor-acp-standalone'
           : 'cursor-acp'
-        : cowork
-          ? 'native-sdk-standalone'
-          : 'native-sdk';
+        : providerType === 'opencode'
+          ? cowork
+            ? 'opencode-acp-standalone'
+            : 'opencode-acp'
+          : cowork
+            ? 'native-sdk-standalone'
+            : 'native-sdk';
   return chatVisualsEligible({ providerType, surface });
 }

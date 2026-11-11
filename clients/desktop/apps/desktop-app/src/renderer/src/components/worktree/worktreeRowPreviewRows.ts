@@ -257,9 +257,8 @@ export function buildScriptRunBadgeRows(
       statusClass: isStopping
         ? OPERATIONAL_STATUS_COLORS.unread.foreground
         : OPERATIONAL_STATUS_COLORS.active.foreground,
-      dotClass: isStopping
-        ? OPERATIONAL_STATUS_COLORS.unread.background
-        : OPERATIONAL_STATUS_COLORS.active.background,
+      // Stopping is still running.
+      dotTone: 'working',
     };
   });
 }
@@ -274,7 +273,7 @@ export function buildHookRunBadgeRows(
       label: run.repoName ? `${run.label} · ${run.repoName}` : run.label,
       statusText: 'Running',
       statusClass: OPERATIONAL_STATUS_COLORS.active.foreground,
-      dotClass: OPERATIONAL_STATUS_COLORS.active.background,
+      dotTone: 'working',
     }),
   );
 }

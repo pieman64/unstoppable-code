@@ -1,4 +1,5 @@
 import { screen } from 'electron';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import type { WindowBounds } from '@canopy/desktop-shared/types';
 
 const MIN_WIDTH = 800;
@@ -17,7 +18,7 @@ export function validateWindowBounds(
     return null;
   }
 
-  const targetDisplay = displays.find((display) => {
+  const matchingDisplay = displays.find((display) => {
     const wa = display.workArea;
     return (
       bounds.x >= wa.x &&
@@ -26,6 +27,16 @@ export function validateWindowBounds(
       bounds.y < wa.y + wa.height
     );
   });
+
+  // Wayland owns placement and can report (0, 0), outside GNOME's work
+  // area below the top bar. Keep the saved size even when that origin (or
+  // a disconnected monitor's coordinates) cannot identify a display.
+  // X11 still restores meaningful positions; Wayland may ignore them.
+  const targetDisplay =
+    matchingDisplay ??
+    (hostPlatformOperatingSystem() === 'linux'
+      ? screen.getPrimaryDisplay()
+      : null);
 
   if (!targetDisplay) {
     return null;

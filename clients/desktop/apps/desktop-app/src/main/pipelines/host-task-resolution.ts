@@ -12,7 +12,7 @@ import {
 import {
   PipelineHostRefusal,
   type MoveToGroupInputs,
-} from '@canopy/desktop-shared/pipelines/host-actions';
+} from '@canopy/execution-engine/pipelines/host-actions';
 import type { SidebarItemGroupScope } from '@canopy/protocol/sidebar';
 import type { PipelineHostActionCaller } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import {

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sanitizeEnvVars } from '@canopy/execution-engine/lib/mcp-security';
-import { getLinuxProbeEnv } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getLinuxProbeEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import {
   GIT_BRANCH_LIST_REF_ARGS,
   GIT_CONVENTIONAL_DEFAULT_BRANCHES,
@@ -704,6 +704,7 @@ describe('environments', () => {
     const startup = desktopKeys(
       'pipelines/config-paths.ts',
       "startsWith('BASH_FUNC_')",
+      'execution-engine',
     );
     expect(blocked).toContain('NODE_OPTIONS');
     expect(startup).toContain('GLIBC_TUNABLES');

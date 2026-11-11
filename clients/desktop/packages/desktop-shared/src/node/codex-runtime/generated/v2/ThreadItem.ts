@@ -31,7 +31,19 @@ import type { PatchApplyStatus } from './PatchApplyStatus';
 import type { SubAgentActivityKind } from './SubAgentActivityKind';
 import type { UserInput } from './UserInput';
 
-export type ThreadItem =
+/**
+ * A thread item and its recorded lifecycle times. The payload stays flat on the wire.
+ */
+export type ThreadItem = {
+  /**
+   * Unix timestamp in milliseconds when the item started, if recorded.
+   */
+  startedAtMs?: number | null;
+  /**
+   * Unix timestamp in milliseconds when the item completed, if recorded.
+   */
+  completedAtMs?: number | null;
+} & (
   | {
       type: 'userMessage';
       id: string;
@@ -212,4 +224,5 @@ export type ThreadItem =
   | ({ type: 'imageGeneration' } & ImageGenerationItem)
   | { type: 'enteredReviewMode'; id: string; review: string }
   | { type: 'exitedReviewMode'; id: string; review: string }
-  | { type: 'contextCompaction'; id: string };
+  | { type: 'contextCompaction'; id: string }
+);

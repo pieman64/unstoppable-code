@@ -8,7 +8,7 @@ import {
   getBundledRtkBinaryPath,
   getEnhancedEnv,
   getRtkManagedEnv,
-} from '../../pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import { hasAnySelections } from '../../types';
 import { createHash, randomUUID } from 'node:crypto';
@@ -51,12 +51,12 @@ import type {
 import { CopilotToolCorrelation } from '../copilot/tool-correlation';
 import { headlessCopilotDecision } from '../copilot/headless-policy';
 import { extractProposedPlan } from '@canopy/execution-engine/codex-plan-mode';
-import { getPipelineExecutionCopilotSessionsDir } from '../lib/paths';
+import { getPipelineExecutionCopilotSessionsDir } from '@canopy/execution-engine/node/lib/paths';
 import {
   createSetupWithdrawal,
   SETUP_WITHDRAWN,
   stepTimedOutMessage,
-} from './step-timeout';
+} from '@canopy/execution-engine/node/pipelines/step-timeout';
 import type {
   CopilotPromptRunnerRequest,
   CopilotPromptRunnerResult,

@@ -13,7 +13,7 @@ import {
   type WorkspaceCreationDiagnostics,
   type WorkspaceCreationRepository,
 } from '@canopy/core-runtime/node/w5/commit-log/reservation-diagnostics';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { getDefaultWorkspaceClaudeMd } from '../../constants/workspace-templates';
 import type {
   CanopyJsonFile,

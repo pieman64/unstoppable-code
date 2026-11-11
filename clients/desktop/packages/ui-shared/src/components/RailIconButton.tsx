@@ -24,6 +24,7 @@ export type RailIconButtonTone =
   | 'section'
   | 'secondary'
   | 'warning'
+  | 'armed'
   | 'destructive';
 export type RailIconButtonSize = 'compact' | 'row';
 
@@ -76,6 +77,7 @@ const BUTTON_TONE_VARIANTS: Record<
   neutral: 'ghost-quiet',
   secondary: 'ghost-overlay',
   warning: 'ghost-warning',
+  armed: 'ghost-armed',
 };
 
 /**

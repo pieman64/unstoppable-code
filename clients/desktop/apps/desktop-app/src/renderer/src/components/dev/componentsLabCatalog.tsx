@@ -484,7 +484,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     id: 'sidebar-parts',
     name: 'Sidebar and settings parts',
     group: 'Unified',
-    note: 'The sidebar nav marker, style picker and batch-removal notice and dialog, and the settings save line, each in every state.',
+    note: 'The sidebar nav marker, style picker, batch-removal notice, cleanup-failure notice and dialog, and the settings save line, each in every state.',
     source:
       'packages/ui-shared/src/components/{SidebarNavMarker,SidebarStylePicker,SidebarBatchRemovalNotice,SidebarBatchRemovalDialog,SettingsSaveStatus}.tsx',
     prs: [],

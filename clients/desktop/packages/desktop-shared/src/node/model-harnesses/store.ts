@@ -10,7 +10,7 @@ import {
   rm,
 } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { getModelHarnessOverridesFilePath } from '../../canopy-paths';
+import { getModelHarnessOverridesFilePath } from '@canopy/execution-engine/canopy-paths';
 import {
   damagedCopiesOf,
   pruneDamagedCopies,

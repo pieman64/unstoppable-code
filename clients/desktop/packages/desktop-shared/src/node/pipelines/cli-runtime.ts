@@ -3,7 +3,7 @@ import type { CopilotPromptHost } from './copilot-prompt-runner';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import {
   getCursorRuntimeRootDir,
   getEnhancedEnv,
@@ -11,9 +11,9 @@ import {
   getProjectActionsDirCandidates,
   getProjectPipelinesDir,
   getProjectPipelinesDirCandidates,
-} from '../../pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import { getWorktreeCliRecord } from '../lib/worktree-cli-reads';
-import { getPipelineExecutionPluginRuntimeDir } from '../lib/paths';
+import { getPipelineExecutionPluginRuntimeDir } from '@canopy/execution-engine/node/lib/paths';
 import type {
   CodexPromptRunnerRequest,
   CodexPromptRunnerResult,
@@ -66,7 +66,7 @@ import {
   SETUP_WITHDRAWN,
   createSetupWithdrawal,
   stepTimedOutMessage,
-} from './step-timeout';
+} from '@canopy/execution-engine/node/pipelines/step-timeout';
 import { buildPipelineGlobalInstructionsBlock } from '@canopy/execution-engine/lib/global-instructions';
 import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';

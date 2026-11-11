@@ -547,7 +547,7 @@ class PortableIpcCanopyClient implements CanopyClient {
       args.fileRootLocalId ?? args.repoId,
     );
     const absolutePath = joinRootPath(root.absolutePath, args.relativePath);
-    const segments = rootRelativeSegments(args.relativePath);
+    const segments = rootRelativeSegments(args.relativePath, root.absolutePath);
     const response = await this.channels.invoke(
       C.fileReadContent,
       isFileContent,

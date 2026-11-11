@@ -18,6 +18,7 @@ import {
 } from '@canopy/ui-app/chat-panel';
 import {
   AskUserQuestionInteractionProvider,
+  BackgroundTray,
   ChatTranscript,
   type AskUserQuestionInteraction,
   type ChatPanelSendContext,
@@ -26,6 +27,7 @@ import { Notice } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { toAppError } from '@canopy/protocol/app-errors';
+import { agentTaskBackgroundTasks } from '@canopy/agent-transcript/agent-tasks';
 import { cloudChatCanopyClient } from './cloud-chat-client';
 import {
   CloudChatComposerHost,
@@ -100,6 +102,19 @@ function CloudChatThreadView({
   );
   const getQuestions = useCallback(() => thread.getQuestions(), [thread]);
   const questions = useSyncExternalStore(subscribeQuestions, getQuestions);
+  const subscribeAgentTasks = useCallback(
+    (listener: () => void): (() => void) =>
+      thread.subscribeAgentTasks(listener),
+    [thread],
+  );
+  const getAgentTasks = useCallback(() => thread.getAgentTasks(), [thread]);
+  const agentTasks = useSyncExternalStore(subscribeAgentTasks, getAgentTasks);
+  // Background work the chat's tasks report (CAN-5976); a cloud task has no
+  // Stop here until the web core serves one.
+  const backgroundTasks = useMemo(
+    () => agentTaskBackgroundTasks(agentTasks),
+    [agentTasks],
+  );
   // Live reply text only for the chat on screen (CAN-5984).
   useEffect((): (() => void) => {
     thread.setLive(true);
@@ -176,8 +191,15 @@ function CloudChatThreadView({
             })}
         // Shown whether or not a turn is running, unlike the thread's banner.
         footerStatus={
-          sendError === null ? undefined : (
-            <Notice intent="destructive">{sendError}</Notice>
+          sendError === null && backgroundTasks.length === 0 ? undefined : (
+            <>
+              {backgroundTasks.length === 0 ? null : (
+                <BackgroundTray chatId={target.key} tasks={backgroundTasks} />
+              )}
+              {sendError === null ? null : (
+                <Notice intent="destructive">{sendError}</Notice>
+              )}
+            </>
           )
         }
         // Session replay blocks the whole transcript: tool inputs and

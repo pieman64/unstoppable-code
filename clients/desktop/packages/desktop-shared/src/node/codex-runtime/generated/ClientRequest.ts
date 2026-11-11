@@ -10,6 +10,8 @@ import type { GetConversationSummaryParams } from './GetConversationSummaryParam
 import type { GitDiffToRemoteParams } from './GitDiffToRemoteParams';
 import type { InitializeParams } from './InitializeParams';
 import type { RequestId } from './RequestId';
+import type { AccountSessionsListParams } from './v2/AccountSessionsListParams';
+import type { AccountSessionsSwitchParams } from './v2/AccountSessionsSwitchParams';
 import type { AppsInstalledParams } from './v2/AppsInstalledParams';
 import type { AppsListParams } from './v2/AppsListParams';
 import type { AppsReadParams } from './v2/AppsReadParams';
@@ -45,6 +47,7 @@ import type { FsRemoveParams } from './v2/FsRemoveParams';
 import type { FsUnwatchParams } from './v2/FsUnwatchParams';
 import type { FsWatchParams } from './v2/FsWatchParams';
 import type { FsWriteFileParams } from './v2/FsWriteFileParams';
+import type { GcpSetupParams } from './v2/GcpSetupParams';
 import type { GetAccountParams } from './v2/GetAccountParams';
 import type { GetAccountRateLimitsParams } from './v2/GetAccountRateLimitsParams';
 import type { GetAccountTokenUsageParams } from './v2/GetAccountTokenUsageParams';
@@ -116,6 +119,7 @@ import type { ThreadForkParams } from './v2/ThreadForkParams';
 import type { ThreadGoalClearParams } from './v2/ThreadGoalClearParams';
 import type { ThreadGoalGetParams } from './v2/ThreadGoalGetParams';
 import type { ThreadGoalSetParams } from './v2/ThreadGoalSetParams';
+import type { ThreadGuardianReviewParams } from './v2/ThreadGuardianReviewParams';
 import type { ThreadIncrementElicitationParams } from './v2/ThreadIncrementElicitationParams';
 import type { ThreadInjectItemsParams } from './v2/ThreadInjectItemsParams';
 import type { ThreadItemsListParams } from './v2/ThreadItemsListParams';
@@ -123,6 +127,7 @@ import type { ThreadItemsReadParams } from './v2/ThreadItemsReadParams';
 import type { ThreadListParams } from './v2/ThreadListParams';
 import type { ThreadLoadedListParams } from './v2/ThreadLoadedListParams';
 import type { ThreadMemoryModeSetParams } from './v2/ThreadMemoryModeSetParams';
+import type { ThreadMemoryReadParams } from './v2/ThreadMemoryReadParams';
 import type { ThreadMetadataUpdateParams } from './v2/ThreadMetadataUpdateParams';
 import type { ThreadPredictionRequestParams } from './v2/ThreadPredictionRequestParams';
 import type { ThreadQueueAddParams } from './v2/ThreadQueueAddParams';
@@ -309,6 +314,11 @@ export type ClientRequest =
       id: RequestId;
       params: ThreadMemoryModeSetParams;
     }
+  | {
+      method: 'thread/memory/read';
+      id: RequestId;
+      params: ThreadMemoryReadParams;
+    }
   | { method: 'memory/status'; id: RequestId; params: MemoryStatusParams }
   | { method: 'memory/reset'; id: RequestId; params: undefined }
   | { method: 'rollout/compress'; id: RequestId; params: undefined }
@@ -403,6 +413,11 @@ export type ClientRequest =
       method: 'thread/items/read';
       id: RequestId;
       params: ThreadItemsReadParams;
+    }
+  | {
+      method: 'thread/guardianReview';
+      id: RequestId;
+      params: ThreadGuardianReviewParams;
     }
   | {
       method: 'thread/inject_items';
@@ -649,6 +664,7 @@ export type ClientRequest =
       id: RequestId;
       params: BedrockSetupParams;
     }
+  | { method: 'account/gcp/setup'; id: RequestId; params: GcpSetupParams }
   | {
       method: 'account/bedrock/checkGovCloudRequirements';
       id: RequestId;
@@ -658,6 +674,16 @@ export type ClientRequest =
       method: 'account/login/cancel';
       id: RequestId;
       params: CancelLoginAccountParams;
+    }
+  | {
+      method: 'accountSession/list';
+      id: RequestId;
+      params: AccountSessionsListParams;
+    }
+  | {
+      method: 'accountSession/switch';
+      id: RequestId;
+      params: AccountSessionsSwitchParams;
     }
   | { method: 'account/logout'; id: RequestId; params: undefined }
   | {

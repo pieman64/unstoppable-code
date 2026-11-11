@@ -166,6 +166,17 @@ const chatChange = z.discriminatedUnion('type', [
         .catchall(extension),
     })
     .catchall(extension),
+  /**
+   * The chat's agent tasks (subagents and background shells) as they stand,
+   * replacing any earlier list; served by the web core only (CAN-5976).
+   */
+  z
+    .strictObject({
+      type: z.literal('agent_tasks.replaced'),
+      chatId: id,
+      tasks: z.array(extension).max(256),
+    })
+    .catchall(extension),
   z
     .strictObject({
       type: z.literal('archive.upserted'),

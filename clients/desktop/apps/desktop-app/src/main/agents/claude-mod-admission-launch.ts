@@ -26,8 +26,8 @@ import { projectClaudePluginForLaunch } from '@canopy/execution-engine/node/plug
 import {
   getEnhancedEnv,
   setClaudeModAdmissionEnabled,
-} from '@canopy/desktop-shared/pipelines/config-paths';
-import type { ResolveEnvironmentRequest } from '@canopy/desktop-shared/types/user-environment';
+} from '@canopy/execution-engine/pipelines/config-paths';
+import type { ResolveEnvironmentRequest } from '@canopy/execution-engine/types/user-environment';
 import {
   isClaudeModPluginId,
   isSkippedClaudeMod,

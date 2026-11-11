@@ -199,6 +199,8 @@ async function launch(kind: 'direct' | 'bundled'): Promise<{
     sweep: () => Promise.resolve({ failureCount: 0 }),
     checkpoint: () => Promise.resolve({ checkpointedCount: 0 }),
     get: () => Promise.resolve(execution),
+    inspect: () => Promise.resolve({ execution }),
+    list: () => Promise.resolve({ executions: [], more: false }),
     cancel: () => Promise.resolve(execution),
     observe: () => null,
   };

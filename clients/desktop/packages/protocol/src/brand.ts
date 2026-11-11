@@ -1454,6 +1454,7 @@ export interface InjectedToolNamesForBrand {
     readonly scheduleWakeup: string;
     readonly deleteWatchers: string;
     readonly setAutoArchive: string;
+    readonly setWorkEntryAutoDelete: string;
     readonly setBaseBranch: string;
     readonly startForkedAgent: string;
     readonly startBranchedAgent: string;
@@ -1504,6 +1505,7 @@ export interface InjectedToolNamesForBrand {
     readonly scheduleWakeup: string;
     readonly deleteWatchers: string;
     readonly setAutoArchive: string;
+    readonly setWorkEntryAutoDelete: string;
     readonly setBaseBranch: string;
     readonly startForkedAgent: string;
     readonly startBranchedAgent: string;
@@ -1564,7 +1566,8 @@ export function buildInjectedToolNamesForBrand(
       watchCommand: `mcp__${namespace}__WatchCommand`,
       scheduleWakeup: `mcp__${namespace}__ScheduleWakeup`,
       deleteWatchers: `mcp__${namespace}__DeleteWatchers`,
-      setAutoArchive: `mcp__${namespace}__SetAutoArchive`,
+      setAutoArchive: `mcp__${namespace}__SetChatAutoArchive`,
+      setWorkEntryAutoDelete: `mcp__${namespace}__SetWorkEntryAutoDelete`,
       setBaseBranch: `mcp__${namespace}__SetBaseBranch`,
       startForkedAgent: `mcp__${namespace}__StartForkedAgent`,
       startBranchedAgent: `mcp__${namespace}__StartBranchedAgent`,
@@ -1614,7 +1617,8 @@ export function buildInjectedToolNamesForBrand(
       watchCommand: `${namespace}_watch_command`,
       scheduleWakeup: `${namespace}_schedule_wakeup`,
       deleteWatchers: `${namespace}_delete_watchers`,
-      setAutoArchive: `${namespace}_set_auto_archive`,
+      setAutoArchive: `${namespace}_set_chat_auto_archive`,
+      setWorkEntryAutoDelete: `${namespace}_set_work_entry_auto_delete`,
       setBaseBranch: `${namespace}_set_base_branch`,
       startForkedAgent: `${namespace}_start_forked_agent`,
       startBranchedAgent: `${namespace}_start_branched_agent`,

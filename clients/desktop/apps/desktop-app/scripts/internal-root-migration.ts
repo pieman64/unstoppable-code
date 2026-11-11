@@ -7,7 +7,10 @@ import { windowsPrincipalObserver } from '../../../packages/core-platform/src';
 import { internalRootFilesystemHost } from '../../../packages/desktop-shared/src/node/internal-root-migration/filesystem-host';
 import { createFreshInternalRoot } from '../../../packages/desktop-shared/src/node/internal-root-migration/fresh-start';
 import { canonicalStoragePath } from '../../../packages/core-platform/src/build-storage-startup';
-import { parseInternalRootMigrationOptions } from '../../../packages/desktop-shared/src/node/internal-root-migration/operator-options';
+import {
+  parseInternalRootMigrationOptions,
+  selectInternalRootArchiveAbandonments,
+} from '../../../packages/desktop-shared/src/node/internal-root-migration/operator-options';
 import canopy from '../../../brands/canopy/brand.json';
 import unstoppableCode from '../../../brands/unstoppable-code/brand.json';
 import {
@@ -27,10 +30,23 @@ import {
   formatInternalRootCleanupReport,
   type InternalRootCleanupReport,
 } from '../../../packages/desktop-shared/src/node/internal-root-migration/cleanup-candidates';
+import { assertAbandonedArchivesMatch } from '../../../packages/desktop-shared/src/node/internal-root-migration/lifecycle-policy';
+import { inspectDestructiveJournals } from '../../../packages/desktop-shared/src/node/w5-destructive-journal';
 import { desktopW5Durability } from '../../../packages/desktop-shared/src/node/w5-commit-log/durability';
+
+function phase<Args extends unknown[], Result>(
+  name: string,
+  operation: (...args: Args) => Result,
+): (...args: Args) => Result {
+  return (...args: Args): Result => {
+    process.stderr.write(`Migration: ${name}\n`);
+    return operation(...args);
+  };
+}
 
 async function main(): Promise<void> {
   const options = parseInternalRootMigrationOptions(process.argv.slice(2));
+  let abandonArchives = options.abandonArchives;
   const brand = options.brandId === 'canopy' ? canopy : unstoppableCode;
   // Only explicit source selection; ordinary startup never guesses a predecessor.
   const identity = internalRootIdentity(
@@ -61,9 +77,10 @@ async function main(): Promise<void> {
       : {}),
     executableBrands: [canopy, unstoppableCode],
     diagnose: async (source): Promise<readonly string[]> => {
+      process.stderr.write('Migration: W5 diagnosis\n');
       const { diagnoseInternalRootW5 } =
         await import('../src/main/lib/internal-root-migration-inventory');
-      return diagnoseInternalRootW5(source);
+      return diagnoseInternalRootW5(source, abandonArchives);
     },
     recoverW5: async (source, qualification): Promise<void> => {
       const { settleInternalRootW5 } =
@@ -72,7 +89,7 @@ async function main(): Promise<void> {
         source,
         resolve('dist/core-daemon/w5-commit-log-worker.js'),
         qualification,
-        { ownedChildPath, windowsProcessPath },
+        { ownedChildPath, windowsProcessPath, abandonArchives },
       );
     },
   });
@@ -103,24 +120,61 @@ async function main(): Promise<void> {
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
       throw error;
   }
+  const prior = await worker.readJournal(identity);
+  const frozenAbandonments = [
+    ...new Set(
+      prior?.repairPlan?.lifecycleJournals?.flatMap((entry) =>
+        entry.abandoned
+          ? [`${entry.abandoned.workspaceId}/${entry.abandoned.worktreeId}`]
+          : [],
+      ) ?? [],
+    ),
+  ];
+  abandonArchives = selectInternalRootArchiveAbandonments(
+    options.abandonArchives,
+    prior?.repairPlan ? frozenAbandonments : undefined,
+  );
+  if (options.abandonArchives.length)
+    assertAbandonedArchivesMatch(
+      (await inspectDestructiveJournals(identity.source)).records,
+      options.abandonArchives,
+    );
+  const repairs = createInternalRootRelocationRepairs({
+    abandonArchives,
+    durability: desktopW5Durability,
+    windowsPrincipal,
+    ownedChildPath,
+    filesystemHost,
+  });
   const result = await migrateInternalRoot(
-    worker,
+    {
+      ...worker,
+      inventory: phase('Walking source', worker.inventory),
+      proveCold: phase('Cold proof', worker.proveCold),
+      recoverW5: phase('W5 recovery', worker.recoverW5),
+      build: phase('Building destination', worker.build),
+      seal: phase('Sealing destination', worker.seal),
+      publish: phase('Publishing destination', worker.publish),
+      relocateSecure: phase('Secure relocation', worker.relocateSecure),
+    },
     identity,
     {
       apply: options.apply,
       declareInternal: options.declareInternal,
       rebuild: options.rebuild,
     },
-    createInternalRootRelocationRepairs({
-      durability: desktopW5Durability,
-      windowsPrincipal,
-      ownedChildPath,
-      filesystemHost,
-    }),
+    {
+      ...repairs,
+      prepare: phase('Git checks', repairs.prepare),
+      ...(repairs.inspect
+        ? { inspect: phase('Git checks', repairs.inspect) }
+        : {}),
+    },
   );
   let cleanupCandidates: InternalRootCleanupReport | null = null;
   let cleanupReportError: string | undefined;
   try {
+    process.stderr.write('Migration: Cleanup report\n');
     cleanupCandidates = await reportInternalRootCleanup(
       identity,
       result.kind === 'complete' || result.journal?.phase === 'complete',
@@ -128,6 +182,7 @@ async function main(): Promise<void> {
       result.kind === 'inventory'
         ? result.inventory.bytes
         : result.journal.inventory.bytes,
+      abandonArchives,
     );
     process.stderr.write(formatInternalRootCleanupReport(cleanupCandidates));
   } catch (error: unknown) {

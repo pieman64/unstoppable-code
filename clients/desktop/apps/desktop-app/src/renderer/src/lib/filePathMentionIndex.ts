@@ -14,10 +14,12 @@ export interface FilePathMentionTarget {
 export interface FilePathMentionIndex {
   /**
    * One entry per file, keyed by its display path with `/` separators.
-   * Lookup maps `./`, absolute and backslash spellings onto these keys, so a
+   * Lookup maps `./`, absolute and Windows backslash spellings onto these keys, so a
    * large repository does not pay for every spelling up front.
    */
   aliases: Map<string, FilePathMentionTarget>;
+  /** Backslashes are separators only for a Windows absolute cwd. */
+  windowsPaths?: boolean;
   /**
    * The cwd as the files' absolute paths spell it, with `/` separators and a
    * trailing `/`. An absolute mention drops it before lookup.
@@ -50,8 +52,10 @@ const filePathMentionIndexCache = new WeakMap<
   Map<string, FilePathMentionIndex | null>
 >();
 
-function toSlashes(value: string): string {
-  return value.includes('\\') ? value.split('\\').join('/') : value;
+function toSlashes(value: string, windowsPaths: boolean | undefined): string {
+  return windowsPaths && value.includes('\\')
+    ? value.split('\\').join('/')
+    : value;
 }
 
 export function buildFilePathMentionIndex(
@@ -60,6 +64,8 @@ export function buildFilePathMentionIndex(
 ): FilePathMentionIndex | null {
   if (!cwd || repos.length === 0) return null;
 
+  const windowsPaths =
+    /^[A-Za-z]:[\\/]/.test(cwd) || /^(?:\\\\|\/\/)/.test(cwd);
   const aliases = new Map<string, FilePathMentionTarget>();
   const absolutePrefixes = new Set<string>();
   for (const repo of repos) {
@@ -71,7 +77,9 @@ export function buildFilePathMentionIndex(
       const prefixLength = absolutePath.length - formatted.length;
       const isTail = prefixLength > 0 && absolutePath.endsWith(formatted);
       if (isTail) {
-        absolutePrefixes.add(toSlashes(absolutePath.slice(0, prefixLength)));
+        absolutePrefixes.add(
+          toSlashes(absolutePath.slice(0, prefixLength), windowsPaths),
+        );
       }
       const target: FilePathMentionTarget = {
         absolutePath,
@@ -79,7 +87,7 @@ export function buildFilePathMentionIndex(
         displayPath: isTail ? absolutePath.slice(prefixLength) : formatted,
         filename: file.filename,
       };
-      const alias = toSlashes(target.displayPath.trim());
+      const alias = toSlashes(target.displayPath.trim(), windowsPaths);
       if (alias && !aliases.has(alias)) aliases.set(alias, target);
     }
   }
@@ -114,6 +122,7 @@ export function buildFilePathMentionIndex(
   });
   return {
     aliases,
+    windowsPaths,
     absolutePrefixes: Array.from(absolutePrefixes),
     bareAliasLengthsByFirstCode,
     delimiterAliasesByPrefix,
@@ -125,11 +134,16 @@ function aliasPrefixLength(
   candidate: string,
   index: FilePathMentionIndex,
 ): number {
-  if (candidate.startsWith('./') || candidate.startsWith('.\\')) return 2;
+  if (
+    candidate.startsWith('./') ||
+    (index.windowsPaths && candidate.startsWith('.\\'))
+  )
+    return 2;
   for (const prefix of index.absolutePrefixes ?? []) {
     if (
       candidate.length > prefix.length &&
-      toSlashes(candidate.slice(0, prefix.length)) === prefix
+      toSlashes(candidate.slice(0, prefix.length), index.windowsPaths) ===
+        prefix
     ) {
       return prefix.length;
     }
@@ -287,10 +301,13 @@ export function splitTextByFilePathMentions(
     (candidateRange = findNextCandidate(text, searchIndex, index)) !== null
   ) {
     const spelled = text.slice(candidateRange.start, candidateRange.end);
-    // Matching runs on the alias spelling. Replacing a backslash keeps
-    // offsets, so only the dropped prefix shifts them back into `text`.
+    // Windows separator normalization keeps offsets; POSIX backslashes
+    // remain literal inventory characters.
     const skipped = aliasPrefixLength(spelled, index);
-    const candidate = toSlashes(skipped > 0 ? spelled.slice(skipped) : spelled);
+    const candidate = toSlashes(
+      skipped > 0 ? spelled.slice(skipped) : spelled,
+      index.windowsPaths,
+    );
     // Exact inventory names win over suffix syntax, including literal : and #.
     const delimiter = firstLocationDelimiter(candidate);
     const prefix = delimiter > 0 ? candidate.slice(0, delimiter) : candidate;

@@ -45,14 +45,14 @@ import {
 import {
   collectPipelineCapabilityRefs,
   getPipelinePluginDefaultRef,
-} from '../../pipelines/plugin-collections';
+} from '@canopy/execution-engine/pipelines/plugin-collections';
 import { getShareablePluginRefKey } from '@canopy/execution-engine/plugin-refs';
 import {
   containsSecretMaterial,
   SECRET_ASSIGNMENT_KEYS_SOURCE,
 } from '@canopy/execution-engine/lib/redaction';
-import { hashPipelinePackageYaml } from './package-contract';
-import { assignStepIds } from '../../pipelines/normalize-pipeline';
+import { hashPipelinePackageYaml } from '@canopy/execution-engine/node/pipelines/package-contract';
+import { assignStepIds } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
   extractInvocationTokens,
   isExplicitPathInvocationToken,

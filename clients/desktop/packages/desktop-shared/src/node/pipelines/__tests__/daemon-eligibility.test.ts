@@ -15,7 +15,7 @@ import { listBuiltinActions, resolveAction } from '../action-resolver';
 import {
   getProjectActionsDir,
   getProjectActionsDirCandidates,
-} from '../config-paths';
+} from '@canopy/execution-engine/node/pipelines/config-paths';
 import {
   classifyDaemonPipeline,
   type DaemonPipelineClassifierContext,

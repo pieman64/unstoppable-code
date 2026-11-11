@@ -639,6 +639,14 @@ export function StatusPartsSpecimen(): JSX.Element {
               </SpecimenCell>
             ),
           )}
+          <SpecimenCell label="Shared by you, organization">
+            <PipelineSourceLabel audience="organization">
+              Custom
+            </PipelineSourceLabel>
+          </SpecimenCell>
+          <SpecimenCell label="Shared by you, public link">
+            <PipelineSourceLabel audience="private">Custom</PipelineSourceLabel>
+          </SpecimenCell>
           <SpecimenCell label="Long provenance" wide>
             <PipelineSourceLabel>
               Project workflow from the release automation collection

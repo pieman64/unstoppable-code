@@ -10,7 +10,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { IN_PROCESS_WORKER_TARGET } from '@canopy/protocol/canopy-core';
+import {
+  IN_PROCESS_LEASE_TERMS,
+  IN_PROCESS_WORKER_TARGET,
+} from '@canopy/protocol/canopy-core';
 import {
   validateNamespaceBackupRecord,
   type NamespaceBackupRecord,
@@ -149,6 +152,46 @@ describe('operation ledger persistence qualification', () => {
     ledger.recordSourceHead('github.pr', 'subject-1', 'head-2');
     expect(ledger.sourceHead('github.pr', 'subject-1')).toBe('head-2');
     expect(ledger.sourceHead('github.pr', 'subject-2')).toBeNull();
+  });
+
+  it('keeps delegation lease rows readable across schema-3 builds', () => {
+    ledger.registerTarget(IN_PROCESS_WORKER_TARGET);
+    const held = ledger.acquireLease(
+      IN_PROCESS_WORKER_TARGET.targetId,
+      IN_PROCESS_LEASE_TERMS,
+    );
+    ledger.close();
+    const db = new DatabaseSync(dbPath);
+    const stored = db
+      .prepare('SELECT record_json FROM delegation_leases WHERE lease_id = ?')
+      .get(held.leaseId)?.record_json;
+    db.close();
+    // A build from before the remote executor fields parses this row with a
+    // strict schema, so a run's lease writes exactly the keys it always has.
+    const row: unknown = JSON.parse(String(stored));
+    expect(Object.keys(row ?? {}).sort()).toEqual([
+      'acquiredAt',
+      'binding',
+      'expiresAt',
+      'leaseId',
+      'releaseReason',
+      'releasedAt',
+      'renewAfterMs',
+      'runEpoch',
+      'signal',
+      'targetId',
+      'ttlMs',
+    ]);
+    ledger = open();
+    ledger.acquireLease(
+      IN_PROCESS_WORKER_TARGET.targetId,
+      IN_PROCESS_LEASE_TERMS,
+    );
+    expect(ledger.getLease(held.leaseId)).toEqual({
+      ...held,
+      releasedAt: new Date(now).toISOString(),
+      releaseReason: 'process-ended',
+    });
   });
 
   it('commits writes made atomically together, or none of them', () => {

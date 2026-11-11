@@ -4,9 +4,9 @@ import type {
   PipelineOwnershipWorktreeTarget,
 } from '@canopy/desktop-shared/node/pipelines/executor';
 import type { PipelineHostActionCaller } from '@canopy/desktop-shared/node/pipelines/executor/types';
-import { PipelineHostRefusal } from '@canopy/desktop-shared/pipelines/host-actions';
+import { PipelineHostRefusal } from '@canopy/execution-engine/pipelines/host-actions';
 import { isTopLevelGlobalRun } from '@canopy/desktop-shared/node/pipelines/executor';
-import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { getStoredPipelinePathWithSource } from '@canopy/desktop-shared/pipelines/store';
 import {
   PIPELINE_NOW_OWNED_ERROR_CODE,

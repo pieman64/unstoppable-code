@@ -874,7 +874,7 @@ export interface PipelineActionRuns {
   using: 'pipeline';
 }
 
-/** Node entry point a bundled host action runs when no host port is present. */
+/** Node entry point a bundled host action runs when no host port takes it. */
 export interface HostActionNodeFallback {
   using: 'node';
   main: string;
@@ -882,8 +882,9 @@ export interface HostActionNodeFallback {
 
 /**
  * A desktop host action behind `ExecutionRuntime.pipelineHostActions`; bundled
- * actions only. With a `fallback`, runtimes without the host port run the Node
- * entry point instead; a runtime with the port never runs the fallback.
+ * actions only. With a `fallback`, runtimes whose host port doesn't take the
+ * action (no port, or one that doesn't declare it) run the Node entry point
+ * instead; a port that takes the action never runs the fallback.
  */
 export interface HostActionRuns {
   using: 'host';
@@ -1011,6 +1012,8 @@ export interface ExecutionRerunContext {
 export type PipelineStatusReasonKind =
   | 'provider_sign_in'
   | 'app_shutdown'
+  /** A remote owner's delegation lease lapsed or it stopped answering (CAN-6102). */
+  | 'owner_lost'
   | 'input_required'
   | 'action_paused'
   | 'provider_authentication_required'
@@ -1020,6 +1023,7 @@ export type PipelineStatusReasonKind =
 export type PipelineStatusReasonCode =
   | 'provider_sign_in'
   | 'app_shutdown'
+  | 'owner_lost'
   | 'input_requested'
   | 'action_requested_pause'
   | 'authentication_failed'

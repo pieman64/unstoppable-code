@@ -7,7 +7,7 @@ import {
 import { CodeGraphReadFailureError } from '@canopy/code-graph/host/read-failure';
 import { createCodeGraphReadServiceWorker } from '@canopy/code-graph/host/read-worker';
 import { getWorktreeCodeGraphDbPath } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
-import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getBundledCodeGraphDir } from '@canopy/execution-engine/pipelines/config-paths';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import {

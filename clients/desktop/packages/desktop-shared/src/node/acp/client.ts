@@ -29,6 +29,7 @@ import {
   type SetSessionConfigOptionRequest,
   type SetSessionConfigOptionResponse,
 } from '@agentclientprotocol/sdk';
+import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import { AcpClientError } from './errors';
 import { AcpUpdatePressure, createAcpStream } from './stream';
 import type {
@@ -52,6 +53,67 @@ function rpcCodeOf(error: unknown): number | undefined {
     typeof error.code === 'number'
     ? error.code
     : undefined;
+}
+
+const PROVIDER_MESSAGE_MAX_CHARS = 500;
+
+/** Bounds the agent-controlled text before the redaction passes run over it. */
+const PROVIDER_MESSAGE_SCAN_CHARS = 4_000;
+
+/**
+ * The SDK's bare JSON-RPC wrappers carry no information. A bare "Invalid
+ * request" is also how the SDK itself rejects a malformed response.
+ */
+const JSON_RPC_BOILERPLATE =
+  /^(?:Internal error|Invalid request|Parse error)(?::\s*|$)/;
+
+/** Node, Python and Go stack traces start on a line of their own. */
+const STACK_TRACE_START =
+  /\n\s*(?:at\s|Traceback \(most recent call last\)|goroutine \d+ \[)/;
+
+/**
+ * The agent's own explanation of a failed request, such as "Insufficient
+ * account funds", bounded for display in a chat. Agents built on the ACP SDK
+ * report an uncaught error as "Internal error: <text>" or as "Internal error"
+ * with the text in `data.details`. Only JSON-RPC errors qualify, so transport
+ * faults never read as the agent's explanation. Stack traces are dropped,
+ * secrets are redacted, and the text is capped, because the agent controls it.
+ */
+function providerMessageOf(error: unknown): string | undefined {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    rpcCodeOf(error) === undefined
+  )
+    return undefined;
+  const message =
+    'message' in error && typeof error.message === 'string'
+      ? error.message.trim().replace(JSON_RPC_BOILERPLATE, '').trim()
+      : '';
+  const details =
+    'data' in error &&
+    typeof error.data === 'object' &&
+    error.data !== null &&
+    'details' in error.data &&
+    typeof error.data.details === 'string'
+      ? error.data.details
+      : '';
+  const text = redactSecrets(
+    (message || details)
+      .slice(0, PROVIDER_MESSAGE_SCAN_CHARS)
+      .split(STACK_TRACE_START, 1)[0]
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
+  if (!text) return undefined;
+  // Count code points so the cut never splits a surrogate pair.
+  const characters = Array.from(text);
+  return characters.length > PROVIDER_MESSAGE_MAX_CHARS
+    ? `${characters
+        .slice(0, PROVIDER_MESSAGE_MAX_CHARS - 1)
+        .join('')
+        .trimEnd()}…`
+    : text;
 }
 
 /** Core methods go through the typed calls that track sessions and turns. */
@@ -875,10 +937,17 @@ class AcpClientConnection implements AcpClient {
                 ? new AcpClientError('cancelled', 'ACP request cancelled')
                 : error instanceof AcpClientError
                   ? error
-                  : new AcpClientError('provider', 'ACP agent request failed', {
-                      method,
-                      rpcCode: rpcCodeOf(error),
-                    })),
+                  : new AcpClientError(
+                      'provider',
+                      // The reason is agent-authored, so only Copy details
+                      // may expose it. Keep the headline in our own copy.
+                      "Couldn't complete the agent request.",
+                      {
+                        method,
+                        rpcCode: rpcCodeOf(error),
+                        providerDetails: providerMessageOf(error),
+                      },
+                    )),
           );
         },
       );

@@ -1,4 +1,5 @@
 import { parsePortalWatcher } from '../index';
+import { openCodeAccountSnapshotSchema } from '../opencode-accounts';
 import {
   readChatWatcherFired,
   PORTAL_CAPABILITY_APP_ADVISOR,
@@ -2757,5 +2758,69 @@ describe('Watcher projection wire compatibility', () => {
       expect(parse({ ...pullRequest, additions: count })).toBeNull();
       expect(parse({ ...pullRequest, deletions: count })).toBeNull();
     }
+  });
+});
+
+describe('OpenCode account usage wire compatibility', () => {
+  const account = {
+    label: 'Fixture',
+    method: 'key',
+    selected: true,
+    needsSignIn: false,
+  };
+  const snapshot = (usage?: unknown): unknown => ({
+    status: 'ready',
+    updatedAt: '2026-11-07T12:00:00.000Z',
+    providers: [
+      {
+        id: 'opencode-go',
+        name: 'Go',
+        accounts: [{ ...account, ...(usage === undefined ? {} : { usage }) }],
+      },
+    ],
+  });
+  const ready = {
+    status: 'ready',
+    plan: 'OpenCode Go',
+    checkedAt: '2026-11-07T12:00:00.000Z',
+    windows: ['rolling', 'weekly', 'monthly'].map((id) => ({
+      id,
+      percent: 25,
+      resetsAt: '2026-11-08T12:00:00.000Z',
+    })),
+  };
+  it('accepts older metadata and preserves only bounded usage facts', () => {
+    expect(
+      openCodeAccountSnapshotSchema.parse(snapshot()).providers[0].accounts[0],
+    ).toEqual(account);
+    const parsed = openCodeAccountSnapshotSchema.parse(
+      snapshot({
+        ...ready,
+        token: 'must-not-project',
+        user: { secret: 'must-not-project' },
+      }),
+    );
+    expect(parsed.providers[0].accounts[0].usage).toEqual(ready);
+    expect(JSON.stringify(parsed)).not.toContain('must-not-project');
+  });
+  it('rejects incomplete ready usage and strips stale values from failure', () => {
+    expect(
+      openCodeAccountSnapshotSchema.safeParse(snapshot({ status: 'ready' }))
+        .success,
+    ).toBe(false);
+    expect(
+      openCodeAccountSnapshotSchema.safeParse(
+        snapshot({
+          ...ready,
+          windows: [ready.windows[0], ready.windows[0], ready.windows[0]],
+        }),
+      ).success,
+    ).toBe(false);
+    const result = openCodeAccountSnapshotSchema.parse(
+      snapshot({ ...ready, status: 'unavailable' }),
+    );
+    expect(result.providers[0].accounts[0].usage).toEqual({
+      status: 'unavailable',
+    });
   });
 });

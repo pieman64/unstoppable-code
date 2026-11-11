@@ -64,6 +64,7 @@ export const OPERATIONAL_STATUS_COLORS = {
     backgroundSubtle: 'bg-success-subtle',
     backgroundBadge: 'bg-success-subtle',
     backgroundMuted: 'bg-fg-success-strong/25',
+    backgroundPing: 'bg-fg-success-strong/60',
     border: 'border-fg-success-strong',
     ring: 'ring-fg-success-strong/20',
     ringQuiet: 'ring-fg-success-strong/10',

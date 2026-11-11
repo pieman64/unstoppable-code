@@ -499,6 +499,8 @@ export type PersistedChatBlock =
       authFailures?: AuthDependencyFailure[];
       /** Trusted launch-route context; text retains the original diagnostic. */
       errorCode?: ClaudeAiCreditsFallbackErrorCode;
+      /** Redacted ACP explanation, available through Copy details only. */
+      providerErrorDetails?: string;
       /**
        * The provider refused this turn because the signed-in account cannot
        * use its model (CAN-4716). Stamped from the trusted terminal event;

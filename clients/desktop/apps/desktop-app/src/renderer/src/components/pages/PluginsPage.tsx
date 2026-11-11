@@ -878,7 +878,8 @@ export function PluginsPage({
         curatedAutomations: capabilityInventory.curatedAutomations.rows,
         // Both agent lists follow the flag here too, so a list still in
         // flight when agents switch off never reaches the page.
-        // Owned shares must keep their shared rows even when copied locally.
+        // An owned share keeps its shared row, folded into its local copy, so
+        // "Shared by me" and direct links still resolve it.
         localAgents: sharedCustomAgentsEnabled
           ? capabilityInventory.localAgents
           : undefined,

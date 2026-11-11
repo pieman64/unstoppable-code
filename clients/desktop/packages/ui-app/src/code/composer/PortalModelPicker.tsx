@@ -4,6 +4,7 @@ import { useCallback, useMemo, type JSX, type RefObject } from 'react';
 import {
   getModelCatalogProviderLabel,
   MODEL_PICKER_AUTO_REASONS,
+  managedOpenCodeAutoUnavailableReason,
   ModelPickerMenu,
   modelLibraryUnlockHint,
   Notice,
@@ -512,12 +513,24 @@ export function PortalModelPicker({
     if (
       (selectedHarness ?? selectedOption?.harness ?? providerType) ===
       'opencode'
-    )
+    ) {
+      const reason = managedOpenCodeAutoUnavailableReason(
+        // A display row can merge a native account with a hosted model. Auto
+        // eligibility follows the saved route, never the merged row's funding.
+        catalog.find((option) => option.id === rawSelectedModelId),
+        catalog.filter((option) => {
+          const state = getRouteState(
+            resolveModelCatalogHarnessChoice(option, 'opencode'),
+          );
+          return !state.disabled && !state.locked;
+        }),
+      );
       return {
         ...autoOption,
-        unavailableReason: MODEL_PICKER_AUTO_REASONS.unsupportedHarness,
+        unavailableReason: unlockHint ?? reason,
         unavailableAction: undefined,
       };
+    }
     // Auto can route to any model, so it needs unlocked access.
     if (unlockHint !== undefined && onUnlock) {
       return {
@@ -569,6 +582,7 @@ export function PortalModelPicker({
   }, [
     autoOption,
     selectedHarness,
+    rawSelectedModelId,
     providerType,
     catalog,
     getRouteState,

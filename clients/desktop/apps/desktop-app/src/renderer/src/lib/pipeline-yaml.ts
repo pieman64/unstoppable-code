@@ -1,5 +1,5 @@
 import * as yaml from 'js-yaml';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import { getDraftValidation } from './pipelineEditor';
 

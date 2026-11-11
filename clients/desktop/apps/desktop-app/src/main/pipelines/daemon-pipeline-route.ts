@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import * as path from 'node:path';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import type { PlatformOperatingSystem } from '@canopy/core-runtime';
 import { CanopyOperationError } from '@canopy/core-runtime';
@@ -26,9 +27,12 @@ import {
   type DaemonModelAliasResolution,
 } from '@canopy/desktop-shared/node/pipelines/daemon-eligibility';
 import { resolveExecutionModelAliasPreferences } from '@canopy/desktop-shared/node/pipelines/executor/model-alias-preferences';
+import { resolveExecutionPluginCollections } from '@canopy/desktop-shared/node/pipelines/executor/plugin-collection-resolution';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import {
   getSecretValues,
+  pipelinePluginSelectionsSelectMcpServers,
   resolvePipelineModelAliasTarget,
 } from '@canopy/desktop-shared/node/pipelines/executor/step-runner';
 import {
@@ -44,6 +48,7 @@ import type {
   ExecutionState,
   Pipeline,
   PipelineModelAliasPreference,
+  ResolvedPipelinePluginCollectionSnapshot,
 } from '@canopy/execution-engine/types/pipeline';
 import {
   daemonUnreachableReason,
@@ -55,6 +60,11 @@ import {
 } from '../canopy-runtime/electron-daemon-access';
 import type { ElectronDaemonClient } from '../canopy-runtime/electron-daemon-host';
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
+import {
+  recordDaemonRoute,
+  recordDaemonRouteDecision,
+  type DaemonRouteNote,
+} from '../canopy-runtime/daemon-route-telemetry';
 import { isDaemonPipelineOwnerPossible } from '../canopy-runtime/electron-daemon-owner';
 import { getExecutionAccounting } from '../execution-accounting';
 import {
@@ -73,11 +83,12 @@ import { desktopPipelineHostActionsOf } from './pipeline-host-requests';
 import { isErrnoException } from '../lib/type-guards';
 import { attachDaemonPipelineOwnerRun } from './daemon-pipeline-model-owner';
 import { resolveCodexRuntimeEnvironmentProfile } from '../lib/user-environment-runtime';
-import { buildModelRegistrySnapshot } from '@canopy/desktop-shared/node/pipelines/executor/model-registry-snapshot';
+import { buildModelRegistrySnapshot } from '@canopy/execution-engine/node/pipelines/executor/model-registry-snapshot';
 import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   getBundledClaudeBinaryPath,
   getBundledCodexBinaryPath,
+  getBundledSkillsDir,
 } from './config-paths';
 
 /**
@@ -97,15 +108,21 @@ export interface DaemonPipelineRouteInput {
   readonly daemonLatched: boolean;
 }
 
+/** Why a renderer start stays in process, or `null` when it may go to the daemon. */
+export function daemonPipelineRouteExclusion(
+  input: DaemonPipelineRouteInput,
+): 'platform' | 'caller' | 'latched' | null {
+  if (!isDaemonPipelinePlatformEligible(input.platform)) return 'platform';
+  if (input.context?.localWindow !== true) return 'caller';
+  if (input.daemonLatched) return 'latched';
+  return null;
+}
+
 /** Whether a renderer start may go to the daemon, as code (D6). */
 export function isDaemonPipelineRouteEligible(
   input: DaemonPipelineRouteInput,
 ): boolean {
-  return (
-    isDaemonPipelinePlatformEligible(input.platform) &&
-    input.context?.localWindow === true &&
-    !input.daemonLatched
-  );
+  return daemonPipelineRouteExclusion(input) === null;
 }
 
 function isDaemonPipelinePlatformEligible(
@@ -126,11 +143,20 @@ function hostPlatform(): PlatformOperatingSystem | null {
 export function selectDaemonPipeline(
   context: DaemonPipelineRouteContext | undefined,
 ): boolean {
-  return isDaemonPipelineRouteEligible({
+  const exclusion = daemonPipelineRouteExclusion({
     platform: hostPlatform(),
     context,
     daemonLatched: getElectronDaemonHealth().isLatched(),
   });
+  if (exclusion !== null) recordDaemonRoute('workflows', exclusion);
+  return exclusion === null;
+}
+
+/** Records a launch the route could not build (CAN-5093 field evidence). */
+export function noteDaemonPipelineIneligible(
+  reason: DaemonPipelineIneligibleReason,
+): void {
+  recordDaemonRoute('workflows', reason);
 }
 
 export const DAEMON_PIPELINE_INELIGIBLE_REASONS = [
@@ -189,6 +215,9 @@ function modelStepLaunch(
       claude: getBundledClaudeBinaryPath(),
       codex: getBundledCodexBinaryPath(),
     },
+    // Where the app's builtin skills live; the daemon runs from another
+    // folder of the same bundle (CAN-5832).
+    bundledResourcesDir: path.dirname(getBundledSkillsDir()),
     modelCatalog: buildModelRegistrySnapshot(),
     ...(codexEnvironment && {
       codexEnvironment: {
@@ -240,11 +269,43 @@ async function resolveLaunchModelAliases(
       (agentId) =>
         resolveAgent ? resolveAgent(agentId, scope) : Promise.resolve(null),
     ).catch(() => null);
-    if (!target) continue;
+    // Standalone MCP servers stay in process (CAN-5832 D9, CAN-6011).
+    if (!target || target.mcpServers) continue;
     resolutions[alias.id] = { base: target.base, plugins: target.plugins };
     agents ||= target.agent;
   }
   return { ...(preferences && { preferences }), resolutions, agents };
+}
+
+/** A run's plugin collections as its executor will resolve them at start (CAN-5832). */
+interface LaunchPluginCollections {
+  readonly snapshots: Record<string, ResolvedPipelinePluginCollectionSnapshot>;
+}
+
+/**
+ * Resolves the run's collections with the executor's own function; null
+ * when that fails (the run then fails at start in process, as before) or a
+ * snapshot names a standalone MCP server, whose configuration can hold a
+ * credential and stays in the app (CAN-5832 D9, CAN-6011).
+ */
+async function resolveLaunchPluginCollections(
+  pipeline: Pipeline,
+  options: ExecutionOptions,
+): Promise<LaunchPluginCollections | null | undefined> {
+  if (!pipeline.plugin_collections?.length) return undefined;
+  // From the normalized pipeline, as the executor resolves them, so each
+  // snapshot is keyed by the trimmed id the executor looks up.
+  const resolved = await Promise.resolve()
+    .then(() =>
+      resolveExecutionPluginCollections(normalizePipeline(pipeline), options),
+    )
+    .catch(() => null);
+  if (!resolved) return null;
+  return Object.values(resolved.snapshots).some((snapshot) =>
+    pipelinePluginSelectionsSelectMcpServers(snapshot.selections),
+  )
+    ? null
+    : { snapshots: resolved.snapshots };
 }
 
 export async function buildDaemonPipelineLaunch(
@@ -294,12 +355,18 @@ export async function buildDaemonPipelineLaunch(
   const aliases = ownerPossible
     ? await resolveLaunchModelAliases(pipeline, options)
     : undefined;
+  const collections = ownerPossible
+    ? await resolveLaunchPluginCollections(pipeline, options)
+    : undefined;
   const classification = classifyDaemonPipeline(
     pipeline,
     {
       runtime: options.runtime,
       repoPath: options.repoPath ?? options.cwd,
       ...(aliases && { modelAliases: aliases.resolutions }),
+      ...(collections && {
+        pluginCollections: new Set(Object.keys(collections.snapshots)),
+      }),
     },
     {
       hostSteps:
@@ -313,14 +380,10 @@ export async function buildDaemonPipelineLaunch(
   if (!classification.eligible)
     return { ok: false, reason: classification.reason };
   const hasModelSteps = classification.modelSteps > 0;
-  // D6: these resolve in Electron main, and the terminal worker runs there.
-  // Model alias preferences reach the host in the launch (CAN-5832).
-  if (hasModelSteps) {
-    if (options.agentTerminalMode === true)
-      return { ok: false, reason: 'terminal_mode' };
-    if (Object.keys(options.pluginCollectionPreferences ?? {}).length > 0)
-      return { ok: false, reason: 'plugin_collections' };
-  }
+  // D6: the terminal worker runs in Electron main. Plugin collection and
+  // model alias preferences reach the host in the launch (CAN-5832).
+  if (hasModelSteps && options.agentTerminalMode === true)
+    return { ok: false, reason: 'terminal_mode' };
   const inputs: Record<string, string> = {};
   for (const [name, value] of Object.entries(options.inputs ?? {})) {
     if (typeof value !== 'string') return { ok: false, reason: 'limits' };
@@ -365,6 +428,13 @@ export async function buildDaemonPipelineLaunch(
           modelAliasPreferences: aliases.preferences,
         }),
         modelAliasResolutions: aliases.resolutions,
+      }),
+    ...(hasModelSteps &&
+      collections && {
+        ...(options.pluginCollectionPreferences !== undefined && {
+          pluginCollectionPreferences: options.pluginCollectionPreferences,
+        }),
+        pluginCollectionSnapshots: collections.snapshots,
       }),
   };
   // Only defined members cross; JSON drops nothing else the schema admits.
@@ -487,24 +557,41 @@ export type DaemonPipelineStartResult =
   | { readonly kind: 'daemon'; readonly handle: DaemonPipelineExecutionHandle }
   | { readonly kind: 'in_process' };
 
-/** Start a staged daemon launch, or report that it must run in process (D13). */
-export async function startPipelineInDaemon(args: {
-  readonly params: WorkerPipelineExecutionStartParams;
-  readonly launch: DaemonPipelineLaunch;
-  readonly secrets: RedeemedExecutionSecrets;
-  readonly options: ExecutionOptions;
-}): Promise<DaemonPipelineStartResult> {
+/** Start a staged daemon launch, or report that it must run in process (D13); recorded once (CAN-5093). */
+export function startPipelineInDaemon(
+  args: Parameters<typeof startPipelineRoute>[0],
+): Promise<DaemonPipelineStartResult> {
+  return recordDaemonRouteDecision('workflows', (note) =>
+    startPipelineRoute(args, note),
+  );
+}
+
+async function startPipelineRoute(
+  args: {
+    readonly params: WorkerPipelineExecutionStartParams;
+    readonly launch: DaemonPipelineLaunch;
+    readonly secrets: RedeemedExecutionSecrets;
+    readonly options: ExecutionOptions;
+  },
+  note: DaemonRouteNote<'workflows'>,
+): Promise<DaemonPipelineStartResult> {
   const { params, launch, secrets, options } = args;
-  if (!CanopyChildEnvironmentSchema.safeParse(secrets.env).success)
+  if (!CanopyChildEnvironmentSchema.safeParse(secrets.env).success) {
+    note('environment');
     return { kind: 'in_process' };
+  }
   const ownerBound = launch.pipelineLaunch.ownerBound === true;
   const hostActions = desktopPipelineHostActionsOf(options.runtime);
   if (ownerBound) {
-    if (!hostActions) return { kind: 'in_process' };
+    if (!hostActions) {
+      note('host_actions');
+      return { kind: 'in_process' };
+    }
     // Nothing was sent: an owner that cannot settle is no background warning.
     try {
       await ensureDaemonPipelineOwnerSettlement();
     } catch {
+      note('owner_unavailable');
       return { kind: 'in_process' };
     }
   }
@@ -550,7 +637,10 @@ export async function startPipelineInDaemon(args: {
     try {
       session = await client();
     } catch (error) {
-      if (noteDaemonPipelineFallback(error)) return { kind: 'in_process' };
+      if (noteDaemonPipelineFallback(error)) {
+        note('unreachable');
+        return { kind: 'in_process' };
+      }
       throw error;
     }
     const { secrets: _bindings, ...paramsWithoutSecrets } = params;
@@ -577,11 +667,14 @@ export async function startPipelineInDaemon(args: {
     } catch (error) {
       if (clientErrorCode(error) === 'worker.pipeline.hostUnavailable') {
         getElectronDaemonHealth().noteFallback('pipelines', 'host_unavailable');
+        note('host_unavailable');
         return { kind: 'in_process' };
       }
       // The daemon saw no owner subscription and ran nothing (CAN-5771).
-      if (clientErrorCode(error) === 'worker.pipeline.ownerUnavailable')
+      if (clientErrorCode(error) === 'worker.pipeline.ownerUnavailable') {
+        note('owner_unavailable');
         return { kind: 'in_process' };
+      }
       const dropped =
         session.signal.aborted && !owner.signal.aborted
           ? markUnreachable(error, 'connection_lost')
@@ -595,6 +688,8 @@ export async function startPipelineInDaemon(args: {
         throw pipelineStartFailedError(resendError);
       }
     }
+    // The daemon accepted the start: the run is the daemon's from here.
+    note('served');
     const { executionId } = params;
     const executionsDir = options.runtime.executionsDir;
     const state = await loadExecutionState(executionId, executionsDir);

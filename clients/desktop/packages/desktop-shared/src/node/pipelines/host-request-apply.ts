@@ -4,7 +4,7 @@ import {
   type WorkerPipelineHostResult,
   type WorkerPipelineHostStepValues,
 } from '@canopy/protocol/canopy-core';
-import { buildPipelineHostIdempotencyKey } from '../../pipelines/host-actions';
+import { buildPipelineHostIdempotencyKey } from '@canopy/execution-engine/pipelines/host-actions';
 import type { UsageInitiationSource } from '../../types';
 import type {
   PipelineAgentChatAddress,

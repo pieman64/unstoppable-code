@@ -18,7 +18,7 @@
  */
 import path from 'node:path';
 import { CHAT_AUTOMATION_JOB } from '@canopy/desktop-shared/lib/chat-automation-conversion';
-import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node/pipelines/package-contract';
+import { hashPipelinePackageYaml } from '@canopy/execution-engine/node/pipelines/package-contract';
 import type { PipelineHostActionCaller } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/types/pipeline';

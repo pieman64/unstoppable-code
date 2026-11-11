@@ -39,7 +39,7 @@ import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { RefreshSpinner } from '@/components/shared/loading';
 import { DialogModal } from '../shared';
-import { DiffBadge } from './DiffBadge';
+import { DiffCounts } from './DiffCounts';
 import { Tooltip } from '@canopy/ui-shared';
 
 interface SplitWorkspaceModalProps {
@@ -644,7 +644,7 @@ export function SplitWorkspaceModal({
                             className="shrink-0"
                             data-testid={`split-workspace-modal-repo-${repo.id}-diff`}
                           >
-                            <DiffBadge compact stats={repoStats} />
+                            <DiffCounts compact stats={repoStats} />
                           </span>
                         )}
                         {repoPreview && (

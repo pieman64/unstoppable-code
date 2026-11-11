@@ -5,9 +5,9 @@ import type {
   PipelineTriggerType,
 } from '@canopy/execution-engine/types/pipeline';
 import { getTriggerInputDefs } from '@canopy/execution-engine/types/pipeline';
-import { isPipelineInputValue } from '@canopy/desktop-shared/pipelines/json-values';
-import type { NormalizedPipeline } from '@canopy/desktop-shared/pipelines/types';
-import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { isPipelineInputValue } from '@canopy/execution-engine/pipelines/json-values';
+import type { NormalizedPipeline } from '@canopy/execution-engine/pipelines/types';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { getDefaultShellForRenderer } from './default-shell';
 
 export interface TriggerInputResolution {

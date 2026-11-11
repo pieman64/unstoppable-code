@@ -93,8 +93,15 @@ export function isVisibleReadMessage(
 }
 
 function referenceBasename(reference: FileReference): string {
+  // Infer the host spelling from the absolute locator, not this process:
+  // persisted Windows references are also read in browsers and on POSIX.
+  const separator =
+    reference.absolutePath.startsWith('/') &&
+    !reference.absolutePath.startsWith('//')
+      ? /\//
+      : /[\\/]/;
   for (const path of [reference.displayPath, reference.absolutePath]) {
-    const name = path?.trim().split(/[\\/]/).pop()?.trim();
+    const name = path?.trim().split(separator).pop()?.trim();
     if (name && name !== '.' && name !== '..' && !/^[A-Za-z]:$/.test(name)) {
       return name;
     }

@@ -32,7 +32,7 @@ import {
   readBoundedCodeGraphCustomLanguageFile,
   validateCustomLanguageEntries,
 } from '@canopy/code-graph/languages/custom-config';
-import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getBundledCodeGraphDir } from '@canopy/execution-engine/pipelines/config-paths';
 import { writeFileAtomically } from './atomic-file';
 import {
   cancelCodeGraphBaseMaintenance,

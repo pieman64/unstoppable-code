@@ -8,7 +8,7 @@ import {
   getInternalLegacySharedSecureDataDir,
   getPrimaryBrandDataDir,
   getResolvedCanopyDataDir,
-} from '@canopy/desktop-shared/canopy-paths';
+} from '@canopy/execution-engine/canopy-paths';
 import { getWorktreeCodeGraphDir as getSharedWorktreeCodeGraphDir } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
 import {
   pipelineAssetsDir,
@@ -28,7 +28,7 @@ import {
 export {
   getCursorRuntimeRootDir,
   getCursorRuntimeStateDir,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 import {
   getWorkspaceExternalPath,
   getWorkspaceType,
@@ -446,7 +446,7 @@ export function getDefaultPanelLayoutFilePath(
   );
 }
 
-export { getUserEnvironmentFilePath } from '@canopy/desktop-shared/canopy-paths';
+export { getUserEnvironmentFilePath } from '@canopy/execution-engine/canopy-paths';
 
 export function getOllamaModelCacheFilePath(): string {
   return join(getDataDir(), 'ollama-model-cache.json');
@@ -1658,6 +1658,15 @@ export function getWorkspaceWorkEntriesFilePath(workspaceId: string): string {
   return join(getChatWorkspaceRootDir(workspaceId), 'work-entries.json');
 }
 
+export function getWorkspaceWorkEntryAutoDeleteFilePath(
+  workspaceId: string,
+): string {
+  return join(
+    getChatWorkspaceRootDir(workspaceId),
+    'work-entry-auto-delete.json',
+  );
+}
+
 export function getWorkspaceChatTabsFilePath(
   workspaceId: string,
   worktreeId: string,
@@ -1683,20 +1692,6 @@ export function getChatJournalFilePath(
 
 export function getChatStateBackupFilePath(snapshotPath: string): string {
   return `${snapshotPath}.bak`;
-}
-
-export function getChatStateConflictFilePath(
-  snapshotPath: string,
-  timestamp = Date.now(),
-): string {
-  return `${snapshotPath}.conflict-${timestamp}`;
-}
-
-export function getChatJournalQuarantineFilePath(
-  journalPath: string,
-  timestamp = Date.now(),
-): string {
-  return `${journalPath}.quarantine-${timestamp}`;
 }
 
 function getWorkspaceChatArchivesDir(workspaceId: string): string {

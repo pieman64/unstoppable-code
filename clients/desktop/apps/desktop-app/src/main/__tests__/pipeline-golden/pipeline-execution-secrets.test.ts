@@ -4,7 +4,7 @@ import { inspect } from 'node:util';
 import log from 'electron-log/main.js';
 import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import { createDefaultEnvironmentConfig } from '@canopy/desktop-shared/lib/user-environment';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
 import type { WorkerPipelineExecutionStartParams } from '@canopy/protocol/canopy-core';
 import { executionSecretFingerprints } from '@canopy/core-runtime/node/execution-secrets';

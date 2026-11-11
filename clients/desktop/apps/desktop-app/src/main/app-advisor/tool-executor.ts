@@ -445,7 +445,8 @@ export async function executeAppAdvisorTool(
   }
   if (
     canonicalKey === 'ask_user_question' ||
-    canonicalKey === 'set_auto_archive'
+    canonicalKey === 'set_auto_archive' ||
+    canonicalKey === 'set_work_entry_auto_delete'
   ) {
     return executeCanopyInjectedTool(canonicalKey, rawArgs, runtime, context);
   }

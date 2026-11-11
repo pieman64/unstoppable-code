@@ -11,6 +11,7 @@ import {
   SECONDARY_SURFACE_OPEN_CLASS,
 } from '../lib/row-chips';
 import { KbdChip } from './KbdChip';
+import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 
 export type ButtonVariant =
   | 'primary'
@@ -22,6 +23,7 @@ export type ButtonVariant =
   | 'ghost-accent'
   | 'ghost-destructive'
   | 'ghost-warning'
+  | 'ghost-armed'
   | 'warning'
   | 'destructive';
 
@@ -220,6 +222,8 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
   // A quiet action that resolves a warning beside other actions (Resolve
   // conflicts in a header, Install on a plugin row), where the filled
   // `warning` would outweigh its neighbours.
+  // Pending agent-armed intent: retain unread ink while hovered, without a destructive fill.
+  'ghost-armed': `bg-transparent ${OPERATIONAL_STATUS_COLORS.unread.foreground} hover:bg-subtle ${DISABLED_NO_FILL_CLASS_NAME}`,
   'ghost-warning': `bg-transparent fg-warning hover:bg-warning-subtle hover:fg-warning ${DISABLED_NO_FILL_CLASS_NAME}`,
   warning: `bg-warning-subtle fg-warning hover:bg-warning-subtle/80 active:bg-warning-subtle ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-warning-subtle`,
   destructive: `bg-destructive fg-emphasis hover:bg-destructive-hover ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-destructive`,
@@ -337,6 +341,7 @@ const FILL_ROW_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
     'group-hover/checklist:bg-destructive-subtle group-hover/checklist:fg-destructive',
   'ghost-warning':
     'group-hover/checklist:bg-warning-subtle group-hover/checklist:fg-warning',
+  'ghost-armed': 'group-hover/checklist:bg-subtle',
   warning: 'group-hover/checklist:bg-warning-subtle/80',
   destructive: 'group-hover/checklist:bg-destructive-hover',
 };
@@ -360,6 +365,7 @@ const GROUP_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
   'ghost-accent': 'enabled:group-hover/gitaction:bg-accent-subtle',
   'ghost-destructive': 'enabled:group-hover/gitaction:bg-destructive-subtle',
   'ghost-warning': 'enabled:group-hover/gitaction:bg-warning-subtle',
+  'ghost-armed': 'enabled:group-hover/gitaction:bg-subtle',
   warning: 'enabled:group-hover/gitaction:bg-warning-subtle/80',
   destructive: 'enabled:group-hover/gitaction:bg-destructive-hover',
 };
@@ -379,6 +385,7 @@ const PRESSED_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
   'ghost-accent': 'enabled:aria-pressed:bg-accent-subtle',
   'ghost-destructive': 'enabled:aria-pressed:bg-destructive-subtle',
   'ghost-warning': 'enabled:aria-pressed:bg-warning-subtle',
+  'ghost-armed': 'enabled:aria-pressed:bg-subtle',
   warning: 'enabled:aria-pressed:bg-warning-subtle/80',
   destructive: 'enabled:aria-pressed:bg-destructive-hover',
 };

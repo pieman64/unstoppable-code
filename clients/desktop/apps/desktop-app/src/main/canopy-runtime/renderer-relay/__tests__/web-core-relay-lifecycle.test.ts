@@ -2,17 +2,25 @@ import type {
   CanopyCallerDescriptor,
   CanopyJsonRpcMessage,
 } from '@canopy/protocol/canopy-core';
-import type {
-  SettingsBridgeRequestInit,
-  SettingsBridgeState,
-} from '../../../canopy-cloud/settings-session';
 import {
   WEB_CORE_CONNECTIONS_PATH,
   createWebCoreBindingProvider,
-  type WebCoreBridgeSession,
 } from '../../../canopy-cloud/web-core-connection';
+
+/** What the stub reads from a request the binding sends. */
+interface StubRequest {
+  readonly method?: string;
+  readonly body?: unknown;
+  readonly signal?: AbortSignal | null;
+}
 import { createWebCoreRendererRelay } from '../../../ipc/canopy-core-relay';
 import type { RendererRelay, RendererRelayEvent } from '../relay';
+
+/** The URL a fetch was called with; the binding always passes a URL. */
+const urlOf = (input: URL | RequestInfo): URL =>
+  input instanceof URL
+    ? input
+    : new URL(typeof input === 'string' ? input : input.url);
 
 /** The web core's unleased connection lifetime (apps/web connections.ts). */
 const UNLEASED_TTL_MS = 90_000;
@@ -67,7 +75,7 @@ class StubWebCore {
     return this.opened;
   }
 
-  handle(path: string, init: SettingsBridgeRequestInit): Response {
+  handle(path: string, init: StubRequest): Response {
     if (path === WEB_CORE_CONNECTIONS_PATH && init.method === 'POST') {
       this.opened += 1;
       const id = `conn-${this.opened}`;
@@ -78,7 +86,10 @@ class StubWebCore {
         backlog: [],
         subscriptions: new Map(),
       });
-      return Response.json({ connectionId: id }, { status: 201 });
+      return Response.json(
+        { connectionId: id, connectionToken: `cwc_${id}` },
+        { status: 201 },
+      );
     }
     const [id, leg] = path
       .slice(WEB_CORE_CONNECTIONS_PATH.length + 1)
@@ -97,10 +108,7 @@ class StubWebCore {
     return Response.json(this.answer(connection, request));
   }
 
-  private events(
-    connection: StubConnection,
-    init: SettingsBridgeRequestInit,
-  ): Response {
+  private events(connection: StubConnection, init: StubRequest): Response {
     const encoder = new TextEncoder();
     let pushId = 0;
     const body = new ReadableStream<Uint8Array>({
@@ -227,7 +235,11 @@ class StubWebCore {
             streams: ['core.chat.task.events'],
           },
           limits: {},
-          authentication: { required: true, methods: [] },
+          authentication: {
+            required: true,
+            methods: [{ kind: 'desktop-key' }],
+            principal: { userId: 'account-1', brandId: 'canopy' },
+          },
         });
       case 'core.client.lease.acquire':
       case 'core.client.lease.renew': {
@@ -290,15 +302,6 @@ class StubWebCore {
   }
 }
 
-function fakeBridge(server: StubWebCore): WebCoreBridgeSession {
-  return {
-    state: 'ready' satisfies SettingsBridgeState,
-    fetch: (path, init) => Promise.resolve(server.handle(path, init)),
-    retainStream: () => () => undefined,
-    onStateChange: () => () => undefined,
-  };
-}
-
 const CALLER: CanopyCallerDescriptor = {
   principalId: 'local-desktop',
   clientInstanceId: 'main',
@@ -330,7 +333,15 @@ function webCoreRelay(server: StubWebCore): RendererRelay {
   return createWebCoreRendererRelay({
     bindingProvider: createWebCoreBindingProvider({
       isEnabled: () => true,
-      acquireSession: () => Promise.resolve(fakeBridge(server)),
+      readCredentials: () =>
+        Promise.resolve({
+          baseUrl: 'https://cloud.example.com',
+          apiKey: 'csk_test',
+          accountId: 'account-1',
+        }),
+      onAccountChange: () => () => undefined,
+      fetch: (input, init = {}) =>
+        Promise.resolve(server.handle(urlOf(input).pathname, init)),
     }),
     resolveSurface: () => ({ surface: 'main', caller: CALLER }),
   });

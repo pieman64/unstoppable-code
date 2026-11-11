@@ -4,7 +4,7 @@ import {
   type CanopyCallerDescriptor,
   type PipelineDefinition,
 } from '@canopy/protocol/canopy-core';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/executor';
 import type {
   Pipeline,

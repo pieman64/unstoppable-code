@@ -92,35 +92,61 @@ function withCommandTargetScope<TPayload extends object>(
   };
 }
 
-export async function handlePortalTerminalOpen(
+export function handlePortalTerminalOpen(
   command: PortalCommandEnvelope<
     PortalCommandPayloadMap['portal.terminal.open']
   >,
   context: PortalAdapterContext,
-): Promise<void> {
+): void {
   if (!isSpawnRequest(command.payload)) {
     context.fail(command, 'invalid_payload', 'Invalid terminal open payload.');
     return;
   }
-  let session;
-  try {
-    session = await spawnTerminalAfterShellPrewarm(command.payload);
-  } catch (error) {
-    failTerminalError(context, command, error);
-    return;
-  }
-  const entity = terminalSessionToPortalEntity(session);
-  emitTerminalDelta(context, command, {
-    scope: 'terminal',
-    target: {
-      workspaceLocalId: session.projectId,
-      worktreeLocalId: session.worktreeId,
-      terminalLocalId: session.id,
-    },
-    entities: [entity],
-    generatedAt: new Date().toISOString(),
-  });
-  context.complete(command, session);
+  const request = command.payload;
+  // A pending checkout must not hold the serial command loop: a later
+  // archive can be the operation that cancels its setup. The session manager
+  // retains this command's receipt until the detached open settles.
+  void (async (): Promise<void> => {
+    try {
+      const session = await spawnTerminalAfterShellPrewarm(
+        request,
+        undefined,
+        context.canMutateResources,
+      );
+      if (context.canMutateResources?.() === false) {
+        closeTerminal({
+          terminalId: session.id,
+          projectId: session.projectId,
+          worktreeId: session.worktreeId,
+        });
+        throw new TerminalServiceError(
+          'invalid_target',
+          'The terminal request is no longer active.',
+        );
+      }
+      const entity = terminalSessionToPortalEntity(session);
+      emitTerminalDelta(context, command, {
+        scope: 'terminal',
+        target: {
+          workspaceLocalId: session.projectId,
+          worktreeLocalId: session.worktreeId,
+          terminalLocalId: session.id,
+        },
+        entities: [entity],
+        generatedAt: new Date().toISOString(),
+      });
+      context.complete(command, session);
+    } catch (error) {
+      // The original session's event sink discards stale results. A temporary
+      // reconnect can also refuse mutations, but still needs a failure receipt.
+      context.fail(
+        command,
+        error instanceof TerminalServiceError ? error.code : 'execution_failed',
+        error instanceof Error ? error.message : String(error),
+        false,
+      );
+    }
+  })();
 }
 
 export function handlePortalTerminalWrite(

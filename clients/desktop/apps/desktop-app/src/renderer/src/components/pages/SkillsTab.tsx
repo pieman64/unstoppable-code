@@ -19,7 +19,7 @@ import {
   useState,
 } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { DetailBackChip } from '../shared/DetailBackChip';
+import { DetailBackButton } from '../shared/DetailBackButton';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { parseGitHubRepo } from '../../lib/format';
 import { runCancellableModalLoad } from './entityEditModalUtils';
@@ -743,7 +743,7 @@ export function SkillDetailModal({
             onNavigateBack || (notice && presentation !== 'page') ? (
               <>
                 {onNavigateBack && (
-                  <DetailBackChip onNavigateBack={onNavigateBack} />
+                  <DetailBackButton onNavigateBack={onNavigateBack} />
                 )}
                 {presentation !== 'page' && notice}
               </>
@@ -2097,7 +2097,7 @@ export function CustomSkillEditor({
         />
         <div className="flex flex-col px-5 gap-2">
           <div className="flex flex-col gap-0">
-            <DetailBackChip onNavigateBack={cancel} />
+            <DetailBackButton onNavigateBack={cancel} />
             <div
               className="flex justify-end gap-2"
               data-testid="skill-editor-page-actions"

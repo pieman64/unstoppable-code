@@ -16,9 +16,11 @@ import {
   Button,
   ComposerDrawerSection,
   Count,
+  Dot,
   OverlayScrollArea,
   SubagentViewTreeAction,
   Tooltip,
+  type DotTone,
   type SubagentChatTarget,
 } from '@canopy/ui-shared/components';
 import { PipelineIcon } from '@canopy/ui-shared/icons';
@@ -29,10 +31,7 @@ import {
   GitHubIcon,
   GitPullRequestIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import {
-  OPERATIONAL_STATUS_COLORS,
-  isTerminalBackgroundProcessStatus,
-} from '@canopy/ui-shared/lib';
+import { isTerminalBackgroundProcessStatus } from '@canopy/ui-shared/lib';
 import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
@@ -173,14 +172,18 @@ const RUN_KIND_LABELS: Record<BackgroundTrayRunKind, string> = {
   'github-pr': 'Pull requests',
 };
 
-/** The leading dot while nothing runs: the most pressing state first. */
-const DOT_CLASS_NAMES = {
-  'needs-input': 'bg-fg-warning',
-  failed: OPERATIONAL_STATUS_COLORS.failed.background,
-  cancelled: OPERATIONAL_STATUS_COLORS.paused.background,
-  completed: OPERATIONAL_STATUS_COLORS.paused.background,
-  succeeded: OPERATIONAL_STATUS_COLORS.success.background,
-} as const;
+/**
+ * The leading dot while nothing runs: the most pressing state first. A
+ * succeeded run you have not seen is a new result, so it takes `unread` like
+ * other unseen results (`success` is for live connections).
+ */
+const DOT_TONES = {
+  'needs-input': 'attention',
+  failed: 'danger',
+  cancelled: 'filter',
+  completed: 'filter',
+  succeeded: 'unread',
+} as const satisfies Record<string, DotTone>;
 
 const DOT_LABELS = {
   'needs-input': 'Needs input',
@@ -741,12 +744,11 @@ export function BackgroundTray({
                     backgroundTasks={running}
                   />
                 ) : (
-                  <span
-                    role="img"
-                    aria-label={DOT_LABELS[dot]}
-                    className={`h-2 w-2 rounded-full ${DOT_CLASS_NAMES[dot]}`}
+                  <Dot
+                    tone={DOT_TONES[dot]}
+                    size="large"
+                    label={DOT_LABELS[dot]}
                     data-testid="background-tray-dot"
-                    data-tone={dot}
                   />
                 )}
               </span>
@@ -942,9 +944,9 @@ function CollapsedKinds({
               )}
               {ofKind.length > 1 && <Count value={ofKind.length} aria-hidden />}
               {runDot !== null && (
-                <span
-                  aria-hidden="true"
-                  className={`absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full ${DOT_CLASS_NAMES[runDot]}`}
+                <Dot
+                  tone={runDot === 'failed' ? 'danger' : 'attention'}
+                  className="absolute right-0.5 top-0.5"
                 />
               )}
             </span>

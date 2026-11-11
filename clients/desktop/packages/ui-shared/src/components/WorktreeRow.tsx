@@ -1,3 +1,5 @@
+import type { WorkEntryAutoDeleteRowState } from '@canopy/protocol';
+import { SidebarAutoDeleteBadge } from './SidebarAutoDeleteBadge';
 import { Dot, type DotTone } from './Badge';
 import { ChoiceMark } from './Choice';
 import type {
@@ -325,6 +327,10 @@ export interface WorktreeRowProps {
    * leading slot keeps its priority chain. Other layouts ignore it.
    */
   pinnedToTop?: boolean;
+  /** Agent-armed removal intent, outside the live-status priority chain. */
+  autoDelete?: WorkEntryAutoDeleteRowState;
+  onAutoDeleteActivate?: () => void;
+  autoDeleteReadOnly?: boolean;
   /**
    * When the worktree last had activity (epoch ms or ISO string). Set, an
    * idle sidebar row shows its compact age (`5m`, `3h`, `2d`) on the right of
@@ -862,7 +868,7 @@ export function WorktreeRowPrimaryIndicator({
 
 interface OperationalStatusDotProps {
   label: string;
-  colorClass: string;
+  tone: DotTone;
   testId?: string;
   host?: RowStatusBadgeHostHandlers;
   describedBy?: string;
@@ -870,7 +876,7 @@ interface OperationalStatusDotProps {
 
 function OperationalStatusDot({
   label,
-  colorClass,
+  tone,
   testId,
   host,
   describedBy,
@@ -878,15 +884,12 @@ function OperationalStatusDot({
   return (
     <RowStatusBadge
       label={label}
-      className={`inline-flex h-6 w-6 items-center justify-center rounded-md ${colorClass}`}
+      className="inline-flex h-6 w-6 items-center justify-center rounded-md"
       testId={testId}
       host={host}
       describedBy={describedBy}
     >
-      <span
-        className="h-1.5 w-1.5 rounded-full bg-current"
-        aria-hidden="true"
-      />
+      <Dot tone={tone} />
     </RowStatusBadge>
   );
 }
@@ -1464,6 +1467,8 @@ export interface WorktreeRowActionChipProps {
  * it consumes no layout width. Individual actions own their hover treatment;
  * the host deliberately adds no surface, border, or shadow.
  */
+const WorktreeRowInlineActions = createContext(false);
+
 export function WorktreeRowActionChip({
   displayMode = 'list',
   menuOpen = false,
@@ -1472,6 +1477,7 @@ export function WorktreeRowActionChip({
   testIdSuffix,
   children,
 }: WorktreeRowActionChipProps): JSX.Element {
+  const inline = useContext(WorktreeRowInlineActions);
   return (
     <div
       data-testid={withTestIdSuffix('worktree-row-action-chip', testIdSuffix)}
@@ -1479,23 +1485,25 @@ export function WorktreeRowActionChip({
       data-row-menu-active={menuOpen ? 'true' : undefined}
       data-always-visible={alwaysVisible || undefined}
       className={
-        displayMode === 'list'
-          ? // Fine-pointer controls align with the label line: the subtitle
-            // block below it is a fixed mt-0.5 + h-4 = 1.125rem. Coarse
-            // pointers instead center the 44px hitbox in the 44px row; lifting
-            // that full hitbox overlaps the workspace-header actions above it.
-            `absolute right-1 top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center justify-end gap-0.5 group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2 ${
-              // While the row's own menu is open the actions are hidden: the
-              // menu already identifies its row, and its trigger holds focus,
-              // so `group-focus-within` would otherwise keep the whole cluster
-              // lit for as long as the menu is up. Opacity on the chip beats
-              // the children's own reveal classes, and every control stays
-              // mounted and focusable — the trigger is the menu's anchor.
-              // The old z-40 lift (so a hovered sibling row could not paint
-              // over these) is redundant once they are invisible.
-              menuOpen ? 'opacity-0' : ''
-            }`
-          : `flex w-full items-center gap-0.5 ${menuOpen ? 'opacity-0' : ''}`
+        inline
+          ? 'relative inline-flex shrink-0 items-center justify-end gap-0.5'
+          : displayMode === 'list'
+            ? // Fine-pointer controls align with the label line: the subtitle
+              // block below it is a fixed mt-0.5 + h-4 = 1.125rem. Coarse
+              // pointers instead center the 44px hitbox in the 44px row; lifting
+              // that full hitbox overlaps the workspace-header actions above it.
+              `absolute right-1 top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center justify-end gap-0.5 group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2 ${
+                // While the row's own menu is open the actions are hidden: the
+                // menu already identifies its row, and its trigger holds focus,
+                // so `group-focus-within` would otherwise keep the whole cluster
+                // lit for as long as the menu is up. Opacity on the chip beats
+                // the children's own reveal classes, and every control stays
+                // mounted and focusable — the trigger is the menu's anchor.
+                // The old z-40 lift (so a hovered sibling row could not paint
+                // over these) is redundant once they are invisible.
+                menuOpen ? 'opacity-0' : ''
+              }`
+            : `flex w-full items-center gap-0.5 ${menuOpen ? 'opacity-0' : ''}`
       }
     >
       {children}
@@ -1761,6 +1769,9 @@ function WorktreeRowImpl(
     lastKnownPrStatus,
     sharedWithTeammates = false,
     pinnedToTop = false,
+    autoDelete,
+    onAutoDeleteActivate,
+    autoDeleteReadOnly = false,
     lastActivityAt,
     isCreatingPr = false,
     prCreatingSlot,
@@ -2174,7 +2185,7 @@ function WorktreeRowImpl(
       // tab is working while this one still needs the user.
       <OperationalStatusDot
         label="Question waiting"
-        colorClass={SIDEBAR_INDICATOR_COLORS.warning}
+        tone="attention"
         testId="worktree-row-question"
         {...unreadBadge}
       />
@@ -2183,7 +2194,7 @@ function WorktreeRowImpl(
       // parked on the user, so the loader would misreport it as healthy.
       <OperationalStatusDot
         label="Approval needed"
-        colorClass={SIDEBAR_INDICATOR_COLORS.warning}
+        tone="attention"
         testId="worktree-row-tool-approval"
         {...toolApprovalBadge}
       />
@@ -2232,14 +2243,14 @@ function WorktreeRowImpl(
     ) : awaitingApproval && !isDone ? (
       <OperationalStatusDot
         label="Review plan"
-        colorClass={SIDEBAR_INDICATOR_COLORS.blue}
+        tone="unread"
         testId="worktree-row-awaiting-approval"
         {...approvalBadge}
       />
     ) : hasUnread && !isDone ? (
       <OperationalStatusDot
         label="Unread messages"
-        colorClass={SIDEBAR_INDICATOR_COLORS.blue}
+        tone="unread"
         testId="worktree-row-unread"
         {...unreadBadge}
       />
@@ -2248,49 +2259,49 @@ function WorktreeRowImpl(
     ) : hasScheduledMessages && !isDone ? (
       <OperationalStatusDot
         label="Scheduled messages"
-        colorClass={SIDEBAR_INDICATOR_COLORS.blue}
+        tone="unread"
         testId="worktree-row-scheduled-messages"
         {...scheduledBadge}
       />
     ) : showHealthWarning ? (
       <OperationalStatusDot
         label={healthIssue?.reason ?? 'Worktree issue'}
-        colorClass={SIDEBAR_INDICATOR_COLORS.destructive}
+        tone="danger"
       />
     ) : pipelineStatus === 'unseen-failure' ? (
       <OperationalStatusDot
         label={pipelineStatusAriaLabel(pipelineStatus)}
-        colorClass={SIDEBAR_INDICATOR_COLORS.destructive}
+        tone="danger"
       />
     ) : pipelineStatus === 'unseen' ? (
       <OperationalStatusDot
         label={pipelineStatusAriaLabel(pipelineStatus)}
-        colorClass={SIDEBAR_INDICATOR_COLORS.success}
+        tone="unread"
       />
     ) : pipelineStatus === 'paused' ? (
       <OperationalStatusDot
         label={pipelineStatusAriaLabel(pipelineStatus)}
-        colorClass={SIDEBAR_INDICATOR_COLORS.neutral}
+        tone="filter"
       />
     ) : terminalStatus === 'unseen-failure' ? (
       <OperationalStatusDot
         label={terminalStatusAriaLabel(terminalStatus)}
-        colorClass={SIDEBAR_INDICATOR_COLORS.destructive}
+        tone="danger"
       />
     ) : terminalStatus === 'unseen' ? (
       <OperationalStatusDot
         label={terminalStatusAriaLabel(terminalStatus)}
-        colorClass={SIDEBAR_INDICATOR_COLORS.blue}
+        tone="unread"
       />
     ) : splitStatus === 'review' || splitStatus === 'done' ? (
       <OperationalStatusDot
         label={splitStatusAriaLabel(splitStatus)}
-        colorClass={SIDEBAR_INDICATOR_COLORS.blue}
+        tone="unread"
       />
     ) : prNeedsAttention ? (
       <OperationalStatusDot
         label="Pull request needs attention"
-        colorClass={SIDEBAR_INDICATOR_COLORS.destructive}
+        tone="danger"
       />
     ) : showPrBadge && lastKnownPrStatus?.ciStatus === 'pending' ? (
       <OperationalStatusLoader label="Pull request checks running" />
@@ -3376,7 +3387,9 @@ function WorktreeRowImpl(
           className={`min-w-0 flex-1 self-center ${isTearingDownVisual ? 'opacity-50' : ''} ${
             // Coarse pointers center the always-visible 44px chip hitbox over
             // the whole two-line block, so its reserve stays on the wrapper.
-            actionChipSlot !== undefined ? 'pointer-coarse:pr-12' : ''
+            actionChipSlot !== undefined && !autoDelete
+              ? 'pointer-coarse:pr-12'
+              : ''
           }`}
         >
           {/* Fine-pointer hover chips align with the label line only, so the
@@ -3388,7 +3401,9 @@ function WorktreeRowImpl(
             // the row never changes height when the slot appears, empties,
             // or hides under the hover action chips.
             className={`flex min-h-5 items-center gap-1 ${
-              actionChipSlot !== undefined ? actionChipHoverPadding : ''
+              actionChipSlot !== undefined && !autoDelete
+                ? actionChipHoverPadding
+                : ''
             }`}
           >
             {/* Done titles keep the same text color as every other row — the
@@ -3400,6 +3415,18 @@ function WorktreeRowImpl(
             >
               {branchLabel}
             </p>
+            {autoDelete && (
+              <>
+                <WorktreeRowInlineActions.Provider value={true}>
+                  {actionChipSlot}
+                </WorktreeRowInlineActions.Provider>
+                <SidebarAutoDeleteBadge
+                  autoDelete={autoDelete}
+                  onActivate={onAutoDeleteActivate}
+                  readOnly={autoDeleteReadOnly}
+                />
+              </>
+            )}
             {/* The pin is persistent metadata like the shared badge, so it
                 takes the same lane, first in line: a pinned idle row shows it
                 where the ••• appears, and a shared or busy row steps it left
@@ -3942,7 +3969,7 @@ function WorktreeRowImpl(
           {popoverSlots}
         </div>
 
-        {actionChipSlot}
+        {!autoDelete && actionChipSlot}
         {multiSelected && <span className="sr-only">Selected</span>}
       </div>
     );

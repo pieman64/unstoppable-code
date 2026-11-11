@@ -9,10 +9,10 @@ import {
   MAX_RETRIES_LIMIT,
   isExpressionTemplate,
   resolvePipelineModelAliasLenient,
-} from '@canopy/desktop-shared/pipelines/normalize-pipeline';
-import { normalizePipelineScopes } from '@canopy/desktop-shared/pipelines/scope';
+} from '@canopy/execution-engine/pipelines/normalize-pipeline';
+import { normalizePipelineScopes } from '@canopy/execution-engine/pipelines/scope';
 import { normalizePipelineRunTarget } from '@canopy/desktop-shared/pipelines/target';
-import { normalizeMatrixStrategy } from '@canopy/desktop-shared/pipelines/matrix';
+import { normalizeMatrixStrategy } from '@canopy/execution-engine/pipelines/matrix';
 import { resolveKnownModel } from '@canopy/desktop-shared/types';
 import { AGENT_MODEL_PREFIX } from '@canopy/execution-engine/types/agent-models';
 import {

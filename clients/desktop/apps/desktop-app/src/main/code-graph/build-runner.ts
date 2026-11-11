@@ -10,7 +10,7 @@ import {
   getCodeGraphGenerationTimeoutMs,
   isCodeGraphAvailableForWorkspace,
 } from '../lib/code-graph-availability';
-import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getBundledCodeGraphDir } from '@canopy/execution-engine/pipelines/config-paths';
 import { getExecutionAccounting } from '../execution-accounting';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { resolveWorktreeCodeGraphRepositories } from '../lib/worktree-repo-entries';

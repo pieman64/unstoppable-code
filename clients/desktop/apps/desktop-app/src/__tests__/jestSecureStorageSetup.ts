@@ -7,28 +7,31 @@ jest.mock('../main/lib/linux-secret-service', () => {
   function isAvailabilityProbe(value: unknown): value is () => unknown {
     return typeof value === 'function';
   }
-  return {
-    getLinuxSecretServiceState(): 'secure' | 'unavailable' {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const electron: unknown = require('electron');
-        if (
-          typeof electron !== 'object' ||
-          electron === null ||
-          !('safeStorage' in electron)
-        )
-          return 'unavailable';
-        const storage = electron.safeStorage;
-        return typeof storage === 'object' &&
-          storage !== null &&
-          'isEncryptionAvailable' in storage &&
-          isAvailabilityProbe(storage.isEncryptionAvailable) &&
-          storage.isEncryptionAvailable() === true
-          ? 'secure'
-          : 'unavailable';
-      } catch {
+  function getLinuxSecretServiceState(): 'secure' | 'unavailable' {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const electron: unknown = require('electron');
+      if (
+        typeof electron !== 'object' ||
+        electron === null ||
+        !('safeStorage' in electron)
+      )
         return 'unavailable';
-      }
-    },
+      const storage = electron.safeStorage;
+      return typeof storage === 'object' &&
+        storage !== null &&
+        'isEncryptionAvailable' in storage &&
+        isAvailabilityProbe(storage.isEncryptionAvailable) &&
+        storage.isEncryptionAvailable() === true
+        ? 'secure'
+        : 'unavailable';
+    } catch {
+      return 'unavailable';
+    }
+  }
+  return {
+    getLinuxSecretServiceState,
+    getLinuxSecretServiceStateAsync: (): Promise<'secure' | 'unavailable'> =>
+      Promise.resolve(getLinuxSecretServiceState()),
   };
 });

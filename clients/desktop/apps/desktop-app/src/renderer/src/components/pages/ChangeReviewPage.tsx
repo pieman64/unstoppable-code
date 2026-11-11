@@ -11,12 +11,11 @@ import { CHAT_UNIT_LABEL, CHAT_UNIT_LABEL_PLURAL } from '@canopy/protocol';
 import {
   ACTIVITY_POINTER_DRAG_ACTIVATION_CONSTRAINT,
   FollowUpButton,
-  InputRequiredBadge,
-  PipelineRunStatusPill,
-  PlanModifiedBadge,
+  pipelineRunStatusBadge,
 } from '@canopy/ui-app';
 import {
   Stack,
+  Badge,
   BubbleCopyBadge,
   ChatComposerToolbarChip,
   ChatPreviewPopover,
@@ -496,10 +495,14 @@ function PipelineRowChipsAfter(): JSX.Element {
     <Stack gap="inline">
       <Surface variant="group" data-testid="change-review-badge-row">
         <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
-          <PipelineRunStatusPill status="running" />
-          <PipelineRunStatusPill status="success" muted />
-          <PlanModifiedBadge />
-          <InputRequiredBadge />
+          <Badge {...pipelineRunStatusBadge('running')}>running</Badge>
+          <Badge {...pipelineRunStatusBadge('success', { muted: true })}>
+            success
+          </Badge>
+          <Badge tone="special">Plan updated</Badge>
+          <Badge tone="warning" aria-label="Workflow input required">
+            Input required
+          </Badge>
           <AdvisorEtaBadge
             snapshot={DEMO_ADVISOR_SNAPSHOT}
             pipelineStatus="running"

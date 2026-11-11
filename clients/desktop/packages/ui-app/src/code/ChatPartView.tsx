@@ -29,6 +29,7 @@ import {
 import type { TranscriptContentField } from '@canopy/protocol/canopy-core/core';
 import {
   Markdown,
+  ErrorBanner,
   ClaudeAiCreditsFallbackErrorNotice,
   CodexAccountModelNotice,
   TRANSCRIPT_MARKDOWN_OPTIONS,
@@ -111,6 +112,15 @@ import { Notice } from '@canopy/ui-shared/components/Notice';
  * interrupted; inactivity, a disconnect or `live === false` never sets it.
  */
 export const ToolTurnSettledContext = createContext(false);
+
+/**
+ * The host brand's tool namespace. App tools under a non-default brand's
+ * namespace (and the namespace-gated ones) map to their app rows only when
+ * the host supplies it, as it supplies `appIcon`.
+ */
+export const ToolNamespaceContext = createContext<string | undefined>(
+  undefined,
+);
 
 export interface ChatPartViewProps {
   readonly part: PortalChatPart;
@@ -753,6 +763,9 @@ function ChatPartViewImpl({
   const composerQuestions = useContext(ComposerAskUserQuestionsContext);
   const outputReader = useContext(ToolOutputReaderContext);
   const turnSettled = useContext(ToolTurnSettledContext);
+  const trustedMcpNamespace = useContext(ToolNamespaceContext);
+  const toolScope =
+    trustedMcpNamespace === undefined ? undefined : { trustedMcpNamespace };
   const modsSkippedHost = useClaudeModsSkippedHost();
   const clean = useCleanChatLook();
   // Smooth streaming (Labs) paces live text; without it, text parts render
@@ -778,8 +791,13 @@ function ChatPartViewImpl({
       const toolName =
         readString(data, 'toolName') ?? readString(data, 'name') ?? 'tool';
       const input = readToolInput(data);
-      const family = getToolDisplayFamily(toolName, input, part.toolFamily);
-      const { label } = getToolDisplayInfo(toolName, input);
+      const family = getToolDisplayFamily(
+        toolName,
+        input,
+        part.toolFamily,
+        toolScope,
+      );
+      const { label } = getToolDisplayInfo(toolName, input, toolScope);
       const result = readToolResult(data);
       const rawResult = data['result'];
       const identity = isRecord(rawResult)
@@ -789,7 +807,7 @@ function ChatPartViewImpl({
         outputReader && identity && result ? (
           <ToolOutputSlot
             identity={identity}
-            input={getToolRowInput(toolName, input)}
+            input={getToolRowInput(toolName, input, toolScope)}
             result={result}
           />
         ) : undefined;
@@ -939,7 +957,7 @@ function ChatPartViewImpl({
           toolName={toolName}
           appIcon={appIcon}
           label={label}
-          input={getToolRowInput(toolName, input)}
+          input={getToolRowInput(toolName, input, toolScope)}
           result={result ?? (turnSettled ? interruptedToolCallResult() : null)}
           expandedSlot={outputSlot}
           pendingSpinner={<ThinkingSpinner />}
@@ -981,6 +999,17 @@ function ChatPartViewImpl({
     }
 
     case 'text': {
+      if (typeof data.providerErrorDetails === 'string') {
+        return (
+          <div data-chat-notice>
+            <ErrorBanner
+              error={readPartText(data)}
+              details={data.providerErrorDetails}
+              testId="chat-provider-error"
+            />
+          </div>
+        );
+      }
       if (isClaudeAiCreditsFallbackErrorCode(data.errorCode)) {
         return <ClaudeAiCreditsFallbackErrorNotice />;
       }

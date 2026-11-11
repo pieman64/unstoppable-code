@@ -19,6 +19,10 @@ export {
   readCodexAccountModelAccessFailure,
 } from './model-access';
 export {
+  ACCOUNT_PROXY_SETTINGS_REFERENCE,
+  isAccountProxySettingsFailure,
+} from './account-proxy-failure';
+export {
   CANOPY_AUTH_FAILURE_EVENT_TYPE,
   isAuthDependencyFailure,
   isAuthDependencyFailureShape,

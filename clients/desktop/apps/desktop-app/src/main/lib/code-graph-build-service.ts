@@ -3,7 +3,7 @@ import {
   getWorktreeCodeGraphDbPath,
   getWorktreeCodeGraphDir,
 } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
-import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getBundledCodeGraphDir } from '@canopy/execution-engine/pipelines/config-paths';
 import type { CodeGraphBuildOptions } from '@canopy/desktop-shared/types/code-graph';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
 import { createCodeGraphWorktreeBuildService } from '@canopy/code-graph/host/worktree-build-service';

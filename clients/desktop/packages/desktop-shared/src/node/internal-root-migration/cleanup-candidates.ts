@@ -1,11 +1,14 @@
 import { lstat, readFile, readdir, realpath, rm } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { InternalRootIdentity } from '@canopy/core-runtime/node/internal-root-migration';
 import {
   internalRootCleanupCategories as cleanupCategories,
   isInternalRootCleanupStagingName,
 } from '@canopy/core-runtime/node/internal-root-journal';
-import type { RelocationGit } from '@canopy/core-runtime/node/relocation';
+import {
+  isWithin,
+  type RelocationGit,
+} from '@canopy/core-runtime/node/relocation';
 import {
   readWorkspaceIndex,
   readWorkspaceManifest,
@@ -19,8 +22,13 @@ import {
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
 } from '../../types';
+import { abandonedArchivePaths } from './abandoned-paths';
 import { inspectDestructiveJournals } from '../w5-destructive-journal';
-import { inertArchiveGroup } from './lifecycle-policy';
+import {
+  inertArchiveGroup,
+  archiveName,
+  isAbandonedArchive,
+} from './lifecycle-policy';
 import {
   assertPrivateMigrationFile,
   durableJson,
@@ -142,6 +150,7 @@ async function size(path: string): Promise<number> {
 export async function collectInternalRootCleanupCandidates(
   identity: InternalRootIdentity,
   options: {
+    readonly abandonArchives?: readonly string[];
     readonly applied: boolean;
     readonly git: RelocationGit;
     /** Reuse the migration inventory; never walk the restore root just to size it. */
@@ -150,6 +159,26 @@ export async function collectInternalRootCleanupCandidates(
 ): Promise<InternalRootCleanupReport> {
   const entries = new Map<string, InternalRootCleanupCandidate>();
   const warnings: string[] = [];
+  const abandoned = (
+    await inspectDestructiveJournals(identity.source)
+  ).records.filter(({ record }) =>
+    isAbandonedArchive(record, options.abandonArchives ?? []),
+  );
+  const abandonedCheckouts = new Map<string, string>();
+  for (const { name, record } of abandoned) {
+    const archive = archiveName(record);
+    if (!archive || !record.worktreeId) continue;
+    for (const path of await abandonedArchivePaths(identity.source, [
+      {
+        name,
+        abandoned: {
+          workspaceId: record.workspaceId,
+          worktreeId: record.worktreeId,
+        },
+      },
+    ]))
+      abandonedCheckouts.set(path, archive);
+  }
   const checkedGit = new Set<string>();
   const opaqueDirectories = new Set<string>();
   const warn = (path: string): void => {
@@ -165,6 +194,25 @@ export async function collectInternalRootCleanupCandidates(
     worktreePath?: string,
   ): Promise<void> => {
     if (entries.has(path)) return;
+    if (
+      [...entries.values()].some(
+        (entry) =>
+          entry.category === 'abandoned-archive' &&
+          path.startsWith(`${entry.path}${sep}`),
+      )
+    )
+      return;
+    if (
+      category !== 'abandoned-archive' &&
+      [...entries.values()].some(
+        (entry) =>
+          entry.category === 'abandoned-archive' &&
+          entry.path.startsWith(`${path}${sep}`),
+      )
+    ) {
+      warn(path);
+      return;
+    }
     entries.set(path, {
       path,
       bytes: await size(path),
@@ -194,6 +242,36 @@ export async function collectInternalRootCleanupCandidates(
       );
       if (checkedGit.has(common)) return;
       checkedGit.add(common);
+      for (const { record } of isWithin(identity.destination, common)
+        ? []
+        : abandoned) {
+        const archive = archiveName(record);
+        if (!archive) continue;
+        for (const namespace of [
+          'refs/app/archived-containers',
+          'refs/canopy-migration-abandoned/archived-containers',
+        ]) {
+          const refs = await options.git(checkout, [
+            'for-each-ref',
+            '--format=%(refname) %(objectname)',
+            `${namespace}/${archive}/`,
+          ]);
+          for (const line of refs.trim().split('\n').filter(Boolean)) {
+            const [ref, oid] = line.split(' ');
+            if (!ref || !oid) continue;
+            const path = `${common}#${ref}`;
+            entries.set(path, {
+              path,
+              bytes: 0,
+              category: 'abandoned-archive',
+              disposition: 'review before deleting',
+              reason: `Abandoned archive ${archive}: Git ref ${ref} at ${oid}; review with git update-ref, not filesystem deletion.`,
+              copy: isWithin(identity.source, common) ? 'old-root' : 'external',
+              restoreSource: identity.source,
+            });
+          }
+        }
+      }
       const admin = join(common, 'worktrees');
       if (!(await canonicalDirectory(admin))) return;
       const listed = await options.git(checkout, [
@@ -225,7 +303,10 @@ export async function collectInternalRootCleanupCandidates(
         const worktree = dirname(
           resolve(path, backlink.raw.replace(/\r?\n$/, '')),
         );
-        if (!missing.has(worktree)) continue;
+        const abandonedName = [...abandonedCheckouts].find(([root]) =>
+          isWithin(root, worktree),
+        )?.[1];
+        if (!missing.has(worktree) && !abandonedName) continue;
         const inRoot = (root: string): boolean => {
           const part = relative(root, path);
           return (
@@ -237,8 +318,10 @@ export async function collectInternalRootCleanupCandidates(
         };
         await add(
           path,
-          'prunable-git-worktree',
-          'Git marks this absent checkout prunable; review retained index or staged state before dropping its administrative entry.',
+          abandonedName ? 'abandoned-archive' : 'prunable-git-worktree',
+          abandonedName
+            ? `Abandoned archive ${abandonedName}: retained Git worktree record; review before deleting.`
+            : 'Git marks this absent checkout prunable; review retained index or staged state before dropping its administrative entry.',
           inRoot(identity.source)
             ? 'old-root'
             : inRoot(identity.destination)
@@ -260,6 +343,24 @@ export async function collectInternalRootCleanupCandidates(
       if (!(await canonicalDirectory(root))) {
         warn(root);
         continue;
+      }
+      for (const { name, record } of root === identity.source
+        ? abandoned
+        : []) {
+        const worktreeId = record.worktreeId;
+        if (!worktreeId) continue;
+        const reason = `Abandoned archive ${archiveName(record)}: retained evidence or payload; review before deleting.`;
+        const paths = await abandonedArchivePaths(root, [
+          { name, abandoned: { workspaceId: record.workspaceId, worktreeId } },
+        ]);
+        for (const path of new Set(paths)) {
+          if (!(await statIfPresent(path))) continue;
+          if ((await realpath(dirname(path))) !== dirname(path)) {
+            warn(path);
+            continue;
+          }
+          await add(path, 'abandoned-archive', reason, copy);
+        }
       }
       const w5 = join(root, 'w5');
       const inspectW5 = await canonicalDirectory(w5);
@@ -534,6 +635,8 @@ export async function collectInternalRootCleanupCandidates(
         }
       };
       // Bound directory/Git work; ordinary checkout files need no per-file stat.
+      for (const path of abandonedCheckouts.keys())
+        if (path.startsWith(`${root}${sep}`)) await inspectGit(path);
       const pending = [root];
       while (pending.length) {
         const next = await Promise.all(pending.splice(-8).map(visit));

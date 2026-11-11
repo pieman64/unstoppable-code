@@ -1,4 +1,4 @@
-import { MAX_ITERATIONS_LIMIT } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { MAX_ITERATIONS_LIMIT } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 
 export function parseMaxIterationsInput(
   value: string,

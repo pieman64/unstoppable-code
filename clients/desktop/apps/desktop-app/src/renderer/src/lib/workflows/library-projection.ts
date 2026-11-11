@@ -9,10 +9,12 @@ import type {
 } from '@canopy/execution-engine/types/pipeline';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { pipelineSharePath } from '@canopy/protocol/pipelines';
+import { authorShareRemoteIds } from '@canopy/protocol/sharing';
 import {
   describeFiveFieldCron,
   type WorkflowLastRunState,
 } from '@canopy/ui-shared/lib';
+import { ownShareAudienceText } from '@canopy/ui-shared/components';
 import {
   describePipelineTriggers,
   describeRunUnavailable,
@@ -54,6 +56,8 @@ export interface LibrarySharedAutomation {
   readonly triggerKind: 'cron' | 'one_time';
   readonly actionType: AutomationAction['type'];
   readonly sharer?: LibrarySharer;
+  /** Cloud account that created the share. */
+  readonly createdById?: string;
   /** ISO 8601. */
   readonly updatedAt?: string;
 }
@@ -84,6 +88,12 @@ export interface LibraryProjectionInput {
   readonly installedRemoteIds?: ReadonlySet<string>;
   /** Installs in flight, by share id; their Add is disabled. */
   readonly installingRemoteIds?: ReadonlySet<string>;
+  /**
+   * Signed-in Canopy Cloud account id. A share it created that exactly one
+   * local pipeline or automation links to folds into that local row; absent
+   * folds nothing.
+   */
+  readonly viewerId?: string | null;
   /** Epoch milliseconds. */
   readonly now: number;
   readonly locale?: string;
@@ -263,7 +273,9 @@ function projectPipelineRow(
     ...(pipeline.description ? { searchText: pipeline.description } : {}),
     source,
     ...(source === 'mine'
-      ? {}
+      ? pipeline.remote
+        ? { sourceLabel: ownShareAudienceText(pipeline.remote.shareScope) }
+        : {}
       : {
           sourceLabel:
             source === 'shared'
@@ -494,7 +506,11 @@ function projectAutomationRow(
     summary: chain.summary,
     // A copy keeps its suffix even after the share is revoked.
     source: installed ? 'shared' : 'mine',
-    ...(installed ? { sourceLabel: sharedByLabel(sharer) } : {}),
+    ...(installed
+      ? { sourceLabel: sharedByLabel(sharer) }
+      : activity.remote
+        ? { sourceLabel: 'Shared by you' }
+        : {}),
     ...(sharer?.isPerson ? { sourceIsPerson: true } : {}),
     ...(attention ? { attention } : {}),
     ...(lastRun ? { lastRun } : {}),
@@ -699,6 +715,48 @@ export function workflowDeletePlan(
   return { ok: true, schedules };
 }
 
+/**
+ * CAN-6035: how many workflow pages call the user pipeline `pipelineId`
+ * through `builtin/run-pipeline`, so its Delete can warn that they will fail.
+ * Main counts only the refs a workflow page's YAML fixes (`workflowCallers`).
+ */
+export function workflowCallerCount(
+  pipelineId: string | undefined,
+  pipelines: readonly PipelineInfo[],
+): number {
+  if (pipelineId === undefined) return 0;
+  return (
+    pipelines.find(
+      (pipeline) => pipeline.source === 'user' && pipeline.id === pipelineId,
+    )?.workflowCallers ?? 0
+  );
+}
+
+/** The Library Delete confirmation's sentence for a deletable row. */
+export function workflowDeleteMessage({
+  scheduleCount,
+  running,
+  callers,
+}: {
+  readonly scheduleCount: number;
+  readonly running: boolean;
+  readonly callers: number;
+}): string {
+  const removes =
+    scheduleCount > 1
+      ? `Deletes the workflow and its ${String(scheduleCount)} schedules.`
+      : running
+        ? 'A run is in progress and will be stopped.'
+        : null;
+  const breaks =
+    callers > 0
+      ? `${String(callers)} ${callers === 1 ? 'workflow that calls' : 'workflows that call'} it will fail.`
+      : null;
+  return [removes, breaks, 'This cannot be undone.']
+    .filter((sentence) => sentence !== null)
+    .join(' ');
+}
+
 /** Every Library row for the current context, automations then pipelines. */
 export function projectLibraryRows(
   input: LibraryProjectionInput,
@@ -741,6 +799,29 @@ export function projectLibraryRows(
     ...(input.ownedPipelineIds ?? []),
     ...pages.keys(),
   ]);
+  // The user's own share and the local copy it links to are one row: the
+  // local copy. Shared rows never carry `remote`, so these sets hold author
+  // links only; each fold still checks the share's creator. Only a listed
+  // local copy absorbs its share, so a copy in another context leaves it.
+  const viewerId = input.viewerId;
+  const authorAutomationIds = authorShareRemoteIds(input.activities, viewerId);
+  // Only a listed local copy absorbs its share: one hidden under its
+  // automation or Workflow page leaves the share visible.
+  const listedPipelines = withoutAutomationOwnedPipelines(
+    input.pipelines,
+    hiddenPipelineIds,
+  );
+  const authorPipelineIds = authorShareRemoteIds(listedPipelines, viewerId);
+  const pipelines = listedPipelines.filter(
+    (pipeline) =>
+      !(
+        viewerId &&
+        pipeline.source === 'shared' &&
+        pipeline.createdBy?.id === viewerId &&
+        pipeline.remoteId &&
+        authorPipelineIds.has(pipeline.remoteId)
+      ),
+  );
   return [
     ...input.activities
       .filter((activity) => !folded.has(activity.id))
@@ -749,10 +830,16 @@ export function projectLibraryRows(
       ),
     ...pageRows,
     ...input.sharedAutomations
-      .filter((share) => !installedRemoteIds.has(share.remoteId))
+      .filter(
+        (share) =>
+          !installedRemoteIds.has(share.remoteId) &&
+          !(
+            viewerId &&
+            share.createdById === viewerId &&
+            authorAutomationIds.has(share.remoteId)
+          ),
+      )
       .map((share) => projectSharedAutomationRow(share, input)),
-    ...withoutAutomationOwnedPipelines(input.pipelines, hiddenPipelineIds).map(
-      (pipeline) => projectPipelineRow(pipeline, input, latest),
-    ),
+    ...pipelines.map((pipeline) => projectPipelineRow(pipeline, input, latest)),
   ];
 }

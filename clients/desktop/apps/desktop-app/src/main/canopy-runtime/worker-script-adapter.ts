@@ -4,6 +4,7 @@ import type {
   WorkerScriptHandlers,
 } from '@canopy/core-runtime/node/script/execution';
 import { createWorkerScriptHandlers } from '@canopy/core-runtime/node/script/execution';
+import { recordDaemonRoute } from './daemon-route-telemetry';
 import {
   currentDaemonScriptRoute,
   isDaemonScriptRunEligible,
@@ -53,11 +54,10 @@ export function createWorkerScriptAdapter(
       // executor receipt of this handler's result.
       'worker.script.execute': async (params, context) => {
         const route = currentDaemonScriptRoute();
-        if (
-          route !== undefined &&
-          isDaemonScriptRunEligible(params) &&
-          route.claim()
-        ) {
+        const runEligible = isDaemonScriptRunEligible(params);
+        if (route !== undefined && !runEligible)
+          recordDaemonRoute('scripts', 'run_kind');
+        if (route !== undefined && runEligible && route.claim()) {
           const daemon = await import('../lib/daemon-script-route');
           const { result, servedByDaemon } = await daemon.executeScriptInDaemon(
             {

@@ -18,7 +18,10 @@ import type {
   PipelineHostMessage,
   PipelineHostRequest,
 } from '@canopy/core-runtime/node/pipeline/host';
-import type { CanopyJsonValue } from '@canopy/protocol/canopy-core';
+import {
+  WorkerPipelineExecutionGetResultSchema,
+  type CanopyJsonValue,
+} from '@canopy/protocol/canopy-core';
 import * as executor from '../../executor';
 import { loadExecutionState } from '../../executor/execution-state';
 import type { ExecutionHandle } from '../../executor/types';
@@ -180,6 +183,72 @@ describe('servePipelineHost', () => {
     const logs = stepLogs('run-shell');
     expect(logs).toContain('value=from-core');
     expect(logs).not.toContain('secret-canary-31f9');
+  });
+
+  it('answers the detail and list reads from the store it writes (CAN-6117)', async () => {
+    await request({
+      op: 'start',
+      start: launchOf(
+        'run-detail',
+        [{ id: 'secret', run: 'echo "token=$TOKEN"' }],
+        { secretEnv: { TOKEN: 'secret-canary-9d2e' } },
+      ),
+    });
+    await waitFor(isTerminalExecution('run-detail'));
+
+    const got = await request({
+      op: 'get',
+      executionId: 'run-detail',
+      detail: true,
+    });
+    if (got.kind !== 'response' || !got.ok) throw new Error('Expected a view.');
+    const view = WorkerPipelineExecutionGetResultSchema.parse(got.value);
+    expect(view.execution).toMatchObject({
+      executionId: 'run-detail',
+      status: 'success',
+    });
+    expect(view.detail?.jobs).toEqual([
+      expect.objectContaining({
+        jobId: 'j',
+        status: 'success',
+        variants: [
+          expect.objectContaining({
+            jobId: 'j',
+            steps: [
+              expect.objectContaining({
+                stepId: 'secret',
+                status: 'success',
+                exitCode: 0,
+              }),
+            ],
+          }),
+        ],
+      }),
+    ]);
+    const serialized = JSON.stringify(view);
+    expect(serialized).not.toContain(worktree);
+    expect(serialized).not.toContain(dataRoot);
+    expect(serialized).not.toContain('secret-canary-9d2e');
+
+    const listed = await request({
+      op: 'list',
+      query: { worktreeId: 'worktree', detail: false, after: null, limit: 10 },
+    });
+    expect(listed).toMatchObject({
+      ok: true,
+      value: {
+        executions: [{ execution: view.execution }],
+        more: false,
+      },
+    });
+    const other = await request({
+      op: 'list',
+      query: { worktreeId: 'other', detail: false, after: null, limit: 10 },
+    });
+    expect(other).toMatchObject({
+      ok: true,
+      value: { executions: [], more: false },
+    });
   });
 
   it('refuses a model step before anything runs', async () => {

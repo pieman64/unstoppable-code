@@ -384,7 +384,7 @@ let state: CanopyPortalState = {
 };
 
 let commandCursor = 0;
-// Detached pipeline commands may advance the live polling cursor so later
+// Detached commands may advance the live polling cursor so later
 // commands keep flowing, but the durable cursor stays behind the earliest
 // detached sequence until its terminal event has a completed-command record.
 // A restart therefore redelivers an interrupted command instead of losing it.
@@ -1149,6 +1149,7 @@ function commandCursorSafeToPersist(): number {
  */
 function isDetachedCommand(type: string): boolean {
   return (
+    type === 'portal.terminal.open' ||
     type === 'portal.pipeline.run' ||
     type === 'portal.pipeline.cancel' ||
     type === 'portal.pipeline.resume' ||
@@ -2286,11 +2287,17 @@ async function applyPollResponse(
 
     const commandEvents: PortalEventEnvelope[] = [];
     const commandSessionId = state.sessionId;
+    const commandSessionGeneration = portalSessionIdentityGeneration;
     let deferred = false;
     let finalizing = false;
     let acceptingCommandEvents = true;
     const finalizeDeferredCommand = async (): Promise<void> => {
-      if (finalizing || state.sessionId !== commandSessionId || pollAbort)
+      if (
+        finalizing ||
+        state.sessionId !== commandSessionId ||
+        portalSessionIdentityGeneration !== commandSessionGeneration ||
+        pollAbort
+      )
         return;
       finalizing = true;
       acceptingCommandEvents = false;
@@ -2312,7 +2319,12 @@ async function applyPollResponse(
       await flushOutbox().catch(() => undefined);
     };
     const enqueueCommandEvent = (event: PortalEventEnvelope): void => {
-      if (state.sessionId !== commandSessionId || pollAbort) return;
+      if (
+        state.sessionId !== commandSessionId ||
+        portalSessionIdentityGeneration !== commandSessionGeneration ||
+        pollAbort
+      )
+        return;
       const enqueuedEvent = enqueueEvent(event);
       if (acceptingCommandEvents) {
         if (enqueuedEvent) commandEvents.push(enqueuedEvent);
@@ -2328,6 +2340,7 @@ async function applyPollResponse(
     const canReadSession = (): boolean =>
       state.status === 'active' &&
       state.sessionId === commandSessionId &&
+      portalSessionIdentityGeneration === commandSessionGeneration &&
       !pollAbort;
     const pairingAtCommand = phonePairingTelemetry;
     await handlePortalCommand(command, {

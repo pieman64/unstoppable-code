@@ -1,3 +1,5 @@
+import { publishAutoDeleteActivity } from '../lib/work-entry-auto-delete/activity';
+import { collectScheduledAutomationTargetKeys } from '../lib/auto-archive';
 import type { ShareOperationResult } from '@canopy/protocol/sharing';
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import {
@@ -325,6 +327,17 @@ export function registerAutomationsHandlers(
     ensureAppAdvisorWindow: accessors.ensureAppAdvisorWindow,
     sendAppAdvisorWindowCommand: accessors.sendAppAdvisorWindowCommand,
     onChange: (stored: AutomationsListResponse) => {
+      publishAutoDeleteActivity(
+        'automations',
+        collectScheduledAutomationTargetKeys(
+          stored.activities,
+          new Set(
+            stored.recentRuns
+              .filter((run) => run.status === 'running')
+              .map((run) => run.activityId),
+          ),
+        ),
+      );
       // Windows edit a converted automation as its chat action (CAN-4551),
       // with its workflow-page facts counted across every context (CAN-5782).
       void service.allActivities().then(

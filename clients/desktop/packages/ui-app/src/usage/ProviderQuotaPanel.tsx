@@ -31,6 +31,7 @@ interface ProviderQuotaPanelProps {
 
 /** A short state beside a proxy account that cannot serve now. */
 function accountState(account: PortalProviderUsageAccount): string | null {
+  if (account.signInRequired) return 'Needs sign-in';
   switch (account.status) {
     case 'disabled':
       return 'Turned off';

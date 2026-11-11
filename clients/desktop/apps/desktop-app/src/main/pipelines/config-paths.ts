@@ -4,7 +4,7 @@ import {
   getBundledBinDir,
   listMissingBundledBinaries,
   type BundledBinaryMember,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 
 export function getBundledDelegationFileBrokerPath(): string {
   const binDir = getBundledBinDir();
@@ -68,4 +68,4 @@ export {
   registerSecretsEnvInjector,
   registerUserEnvironmentInjector,
   resetLoginShellPathCache,
-} from '@canopy/desktop-shared/pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';

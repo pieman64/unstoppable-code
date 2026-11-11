@@ -3,7 +3,7 @@ import {
   SETUP_WITHDRAWN,
   createSetupWithdrawal,
   stepTimedOutMessage,
-} from '@canopy/desktop-shared/node/pipelines/step-timeout';
+} from '@canopy/execution-engine/node/pipelines/step-timeout';
 import type {
   CursorPromptRunnerRequest,
   CursorPromptRunnerResult,

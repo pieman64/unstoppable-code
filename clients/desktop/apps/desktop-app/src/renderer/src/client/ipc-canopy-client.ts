@@ -67,6 +67,7 @@ export function createDesktopCapabilities(
     feedbackDiagnostics: true,
     workspaceRecovery: true,
     sharedMultiRepo: true,
+    workEntryAutoDelete: 'manage',
     githubConnection: true,
     localExecution: true,
     // Try it setup may open account OAuth in the in-app pane; the host also
@@ -278,7 +279,7 @@ export function createDesktopCanopyClient(
 ): CanopyClient {
   const marketplaceSources = createDesktopMarketplaceSources(capabilities);
   const settings = createHostedSettings(capabilities);
-  return createIpcCanopyClient(desktopTransport, {
+  const client = createIpcCanopyClient(desktopTransport, {
     capabilities,
     openExternalUrl: (url) => {
       void window.api.browser.openExternal({ url });
@@ -316,6 +317,23 @@ export function createDesktopCanopyClient(
     ...(marketplaceSources ? { marketplaceSources } : {}),
     ...(settings ? { settings } : {}),
   });
+  return Object.assign(client, {
+    // Older hosts have no bridge; blocked remote lists mean no arms.
+    listWorkEntryAutoDelete: () =>
+      window.api.workEntryAutoDelete?.list() ?? Promise.resolve([]),
+    subscribeWorkEntryAutoDelete: (listener) =>
+      window.api.workEntryAutoDelete?.onChanged(listener) ?? (() => undefined),
+    disarmWorkEntryAutoDelete: (request) =>
+      window.api.workEntryAutoDelete.disarm(request),
+    resolveWorkEntryAutoDeleteBranch: (request) =>
+      window.api.workEntryAutoDelete.resolveBranch(request),
+  } satisfies Pick<
+    CanopyClient,
+    | 'listWorkEntryAutoDelete'
+    | 'subscribeWorkEntryAutoDelete'
+    | 'disarmWorkEntryAutoDelete'
+    | 'resolveWorkEntryAutoDeleteBranch'
+  >);
 }
 
 /** Singleton desktop client injected into the renderer `CanopyClientProvider`. */

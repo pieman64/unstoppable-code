@@ -82,6 +82,9 @@ function build(
           'worker.pipeline.execution.get': (): never => {
             throw new Error('Not exercised.');
           },
+          'worker.pipeline.execution.list': (): never => {
+            throw new Error('Not exercised.');
+          },
           'worker.codeGraph.buildQueue.get': (): never => {
             throw new Error('Not exercised.');
           },

@@ -1,3 +1,4 @@
+import { useSidebarAutoDelete } from '@canopy/ui-app';
 import {
   memo,
   useCallback,
@@ -516,6 +517,11 @@ function SidebarWorkEntryRowContent({
   membershipDragEnabled,
   workEntryMultiSelect,
 }: SidebarWorkEntryRowProps): JSX.Element {
+  const autoDelete = useSidebarAutoDelete({
+    workspaceId,
+    targetId: entry.id,
+    name: entry.title,
+  });
   const selectedWorkEntry = useStandaloneChatStore(
     (s) =>
       s.activeChatProjectId === workspaceId && s.activeWorkEntryId === entry.id,
@@ -798,6 +804,8 @@ function SidebarWorkEntryRowContent({
             </ActionMenuRowStyle>
           ) : (
             <SidebarWorkEntryMenuItems
+              autoDelete={autoDelete.autoDelete}
+              onAutoDeleteDisarm={autoDelete.onAutoDeleteDisarm}
               workspaceId={workspaceId}
               entryId={entry.id}
               menu={menu}
@@ -847,6 +855,8 @@ function SidebarWorkEntryRowContent({
       );
     },
     [
+      autoDelete.autoDelete,
+      autoDelete.onAutoDeleteDisarm,
       groupMenu,
       isPinnedCopy,
       workspaceId,
@@ -904,6 +914,7 @@ function SidebarWorkEntryRowContent({
   return (
     <>
       <WorkEntryRow
+        {...autoDelete}
         title={entry.title}
         testId={rowTestId}
         entryId={entry.id}

@@ -2,7 +2,7 @@ import { isActivitySectionId } from '../../constants/activity';
 import type { W5FileStore } from '@canopy/core-runtime/node/w5/file-store';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { getCanopyDataDir } from '../../canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import type {
   ActivitySectionId,
   CoworkSidebarItem,

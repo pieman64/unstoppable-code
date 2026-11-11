@@ -19,7 +19,7 @@ import type {
 
 /**
  * Where each provider sends the browser back after sign-in: the fixed
- * `redirect_uri` CLIProxyAPI 8.0.28 registers, `http://localhost:54545/callback`
+ * `redirect_uri` CLIProxyAPI 8.0.61 registers, `http://localhost:54545/callback`
  * for Claude and `http://localhost:1455/auth/callback` for Codex.
  */
 const CLAUDE_CALLBACK_PATH = '/callback';

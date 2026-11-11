@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import {
   getBundledCodexBinaryPath,
   getEnhancedEnv,
-} from '../../pipelines/config-paths';
+} from '@canopy/execution-engine/pipelines/config-paths';
 
 const execFileAsync = promisify(execFile);
 const CATALOG_TIMEOUT_MS = 10_000;

@@ -12,7 +12,7 @@ jest.mock('electron', (): { readonly app: typeof mockApp } => ({
   },
 }));
 jest.mock(
-  '@canopy/desktop-shared/pipelines/config-paths',
+  '@canopy/execution-engine/pipelines/config-paths',
   (): { getBundledBinDir: () => string } => ({
     getBundledBinDir: (): string => '/opt/brand/bin',
   }),

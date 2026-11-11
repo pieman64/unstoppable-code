@@ -58,6 +58,8 @@ export const CLAUDE_LIFECYCLE = {
     elicitation_complete: 'informational',
     permission_denied: 'informational',
     mirror_error: 'informational',
+    // Emitted after a disk-full exit; the process is already gone.
+    session_writes_lost: 'informational',
     informational: 'informational',
   } satisfies Record<
     Extract<SDKMessage, { type: 'system' }>['subtype'],

@@ -27,7 +27,7 @@ import type {
   UserEnvironmentEntry,
   UserEnvironmentUiMode,
   WorkspaceEnvironmentAssignment,
-} from '../types/user-environment';
+} from '@canopy/execution-engine/types/user-environment';
 import { BRAND } from '@canopy/brand/current';
 
 const VALID_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;

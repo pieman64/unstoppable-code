@@ -8,10 +8,10 @@ import type {
   Pipeline,
   PipelinePreferenceLocator,
 } from '@canopy/execution-engine/types/pipeline';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { getStoredPipelinePathWithSource } from '@canopy/desktop-shared/pipelines/store';
 import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
-import { getBundledPipelinesDir } from '../config-paths';
+import { getBundledPipelinesDir } from '@canopy/execution-engine/node/pipelines/config-paths';
 import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/types/pipeline';
 
 export interface ResolvedChildPipeline {

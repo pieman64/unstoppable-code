@@ -454,6 +454,12 @@ export const DESKTOP_OPERATIONS = {
     // Counts and outcomes only; never prompts, titles or skill names.
     contextKeys: ['action', 'occurrence_count', 'outcome', 'candidate_count'],
   },
+  // Phase 4 daemon route outcomes (CAN-5093): fixed family, host and reason codes only.
+  'canopy.daemon_route': {
+    kind: 'product',
+    posthogEvent: 'daemon:route_select',
+    contextKeys: ['route_family', 'route_host', 'route_reason'],
+  },
 } as const satisfies Record<string, ProductOperationPolicy>;
 
 export type DesktopOperationName = keyof typeof DESKTOP_OPERATIONS;

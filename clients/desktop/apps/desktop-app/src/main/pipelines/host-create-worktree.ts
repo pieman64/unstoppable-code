@@ -26,13 +26,13 @@ import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/
 import {
   PipelineHostRefusal,
   type PipelineHostFailureReason,
-} from '@canopy/desktop-shared/pipelines/host-actions';
+} from '@canopy/execution-engine/pipelines/host-actions';
 import {
   createWorktreeIdentifierOutputs,
   emptyCreateWorktreeOutputs,
   type CreateWorktreeInputs,
   type WorktreeSetupState,
-} from '@canopy/desktop-shared/pipelines/host-create-worktree';
+} from '@canopy/execution-engine/pipelines/host-create-worktree';
 import type {
   PipelineHostActionCaller,
   PipelineHostActionControls,

@@ -3,7 +3,7 @@ import {
   CLIENT_FEATURE_FLAGS,
   type FeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
-import { getEnhancedEnv } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 
 // Cited by behavior-inventory/claude-mod-admission.yaml: desktop startup's
 // installClaudeModAdmissionHost() keeps the default-off admission flag's

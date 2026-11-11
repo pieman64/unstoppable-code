@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import * as yaml from 'js-yaml';
 
 let mockRoot = '';
-jest.mock('../config-paths', () => ({
+jest.mock('@canopy/execution-engine/pipelines/config-paths', () => ({
   getUserPipelinesDir: (): string => join(mockRoot, 'pipelines'),
   getUserPipelineIndexPath: (): string =>
     join(mockRoot, 'pipelines', 'index.json'),

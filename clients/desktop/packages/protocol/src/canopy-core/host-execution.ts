@@ -173,7 +173,7 @@ const modelRegistryValue = z
  * values the step runner gives action subprocesses, by branded environment
  * name. Not a secret; every action subprocess's environment carries it.
  */
-const WorkerPipelineModelCatalogSchema = z
+export const WorkerPipelineModelCatalogSchema = z
   .strictObject({
     CLAUDE_MODELS: modelRegistryValue.optional(),
     CODEX_MODELS: modelRegistryValue.optional(),
@@ -192,6 +192,27 @@ const WorkerPipelineModelCatalogSchema = z
     'The model catalog exceeds its limit.',
   );
 
+/** What each of a pipeline's model aliases names for one run (CAN-5832). */
+export const WorkerPipelineModelAliasResolutionsSchema = z
+  .record(
+    z.string().min(1).max(256),
+    z.strictObject({
+      base: z.string().min(1).max(512),
+      plugins: z.boolean(),
+    }),
+  )
+  .refine((aliases) => Object.keys(aliases).length <= 256);
+
+/** A run's plugin collection snapshots: selection references, never MCP configuration (CAN-5832). */
+export const WorkerPipelinePluginCollectionSnapshotsSchema = z
+  .record(z.string().min(1).max(256), CanopyJsonValueSchema)
+  .refine((collections) => Object.keys(collections).length <= 64);
+
+/** A launch's inputs, as the executor reads them. */
+export const WorkerPipelineLaunchInputsSchema = z
+  .record(z.string().min(1).max(256), z.string().max(65_536))
+  .refine((inputs) => Object.keys(inputs).length <= 256);
+
 /**
  * An absolute host path: POSIX, or a Windows drive path (CAN-5091). A path
  * that starts with two separators, in either direction, is refused: on
@@ -208,28 +229,31 @@ const HostPathSchema = z
       !value.includes('\0'),
   );
 
+/** The admitted pipeline document a launch runs: JSON data within its size limit. */
+export const WorkerPipelineLaunchSnapshotSchema = z
+  .record(z.string(), z.unknown())
+  .refine(
+    (pipeline) =>
+      Object.values(pipeline).every((value) =>
+        isSnapshotValue(value, 1, new Set()),
+      ),
+    // Abort, so the size check below never serializes a cycle.
+    { message: 'Expected JSON-safe data.', abort: true },
+  )
+  .refine(
+    (pipeline) =>
+      utf8ByteLength(JSON.stringify(pipeline)) <=
+      WORKER_PIPELINE_LAUNCH_SNAPSHOT_MAX_BYTES,
+    'The pipeline snapshot exceeds its limit.',
+  );
+
 /**
  * What a pipeline start runs, host-local (CAN-5086): the snapshot core
  * admitted, its resolved paths, its launch environment and the secret
  * environment its core redeemed. It never enters params, records or logs.
  */
 export const WorkerPipelineHostLaunchSchema = z.strictObject({
-  pipeline: z
-    .record(z.string(), z.unknown())
-    .refine(
-      (pipeline) =>
-        Object.values(pipeline).every((value) =>
-          isSnapshotValue(value, 1, new Set()),
-        ),
-      // Abort, so the size check below never serializes a cycle.
-      { message: 'Expected JSON-safe data.', abort: true },
-    )
-    .refine(
-      (pipeline) =>
-        utf8ByteLength(JSON.stringify(pipeline)) <=
-        WORKER_PIPELINE_LAUNCH_SNAPSHOT_MAX_BYTES,
-      'The pipeline snapshot exceeds its limit.',
-    ),
+  pipeline: WorkerPipelineLaunchSnapshotSchema,
   cwd: HostPathSchema,
   /** The core's own built bundled actions (`getBundledActionsDir()`), so both hosts run one copy. */
   bundledActionsDir: HostPathSchema,
@@ -246,10 +270,7 @@ export const WorkerPipelineHostLaunchSchema = z.strictObject({
   env: CanopyChildEnvironmentSchema,
   /** `ExecutionOptions.secretEnv`: masked in step output. */
   secretEnv: CanopyChildEnvironmentSchema,
-  inputs: z
-    .record(z.string().min(1).max(256), z.string().max(65_536))
-    .refine((inputs) => Object.keys(inputs).length <= 256)
-    .optional(),
+  inputs: WorkerPipelineLaunchInputsSchema.optional(),
   target: CanopyJsonValueSchema.optional(),
   pipelinePreferenceLocator: CanopyJsonValueSchema.optional(),
   sharedPipelineSource: CanopyJsonValueSchema.optional(),
@@ -273,6 +294,11 @@ export const WorkerPipelineHostLaunchSchema = z.strictObject({
   providerBinaries: z
     .strictObject({ claude: HostPathSchema, codex: HostPathSchema })
     .optional(),
+  /**
+   * The app's own bundled resources, where its `builtin:app` skills live, for
+   * model steps that load plugins (CAN-5832); like providerBinaries (D21).
+   */
+  bundledResourcesDir: HostPathSchema.optional(),
   /** The model registry its model steps resolve against (CAN-5095). */
   modelCatalog: WorkerPipelineModelCatalogSchema.optional(),
   /** The run's Codex app-server environment, when it has a Codex step (CAN-5095 D20). */
@@ -289,16 +315,16 @@ export const WorkerPipelineHostLaunchSchema = z.strictObject({
    * resolved it at launch: the base model, and whether the alias adds plugins.
    * The host classifies with it; each step still resolves its alias (CAN-5832).
    */
-  modelAliasResolutions: z
-    .record(
-      z.string().min(1).max(256),
-      z.strictObject({
-        base: z.string().min(1).max(512),
-        plugins: z.boolean(),
-      }),
-    )
-    .refine((aliases) => Object.keys(aliases).length <= 256)
-    .optional(),
+  modelAliasResolutions: WorkerPipelineModelAliasResolutionsSchema.optional(),
+  /** `ExecutionOptions.pluginCollectionPreferences`: the run's draft preferences, as its state records them (CAN-5832). */
+  pluginCollectionPreferences: CanopyJsonValueSchema.optional(),
+  /**
+   * The run's plugin collection snapshots, resolved by its core at launch
+   * with the run's stored and draft preferences, as its executor resolves
+   * them at start: selection references, never MCP configuration (CAN-5832).
+   */
+  pluginCollectionSnapshots:
+    WorkerPipelinePluginCollectionSnapshotsSchema.optional(),
 });
 export type WorkerPipelineHostLaunch = z.output<
   typeof WorkerPipelineHostLaunchSchema

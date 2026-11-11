@@ -73,17 +73,17 @@ interface CreateTaskModalProps {
 
 const SEARCH_DEBOUNCE_MS = 300;
 
-interface CreateFromPillProps {
+interface CreateFromControlProps {
   mode: CreateFromMode;
   linearAvailable: boolean;
   onChange: (mode: CreateFromMode) => void;
 }
 
-function CreateFromPill({
+function CreateFromControl({
   mode,
   linearAvailable,
   onChange,
-}: CreateFromPillProps): JSX.Element {
+}: CreateFromControlProps): JSX.Element {
   const linearSettingsLocation = useSettingsLocationLabel('integrations');
   const options: readonly SegmentedControlOption<CreateFromMode>[] = [
     { value: 'new', label: 'New', dataTestId: 'create-task-mode-new' },
@@ -774,7 +774,7 @@ export function CreateTaskModal({
               />
             </div>
 
-            <CreateFromPill
+            <CreateFromControl
               mode={mode}
               linearAvailable={linearAvailable}
               onChange={handleModeChange}

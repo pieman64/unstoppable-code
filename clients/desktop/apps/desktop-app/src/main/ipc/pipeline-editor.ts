@@ -8,7 +8,7 @@ import {
   type PipelineEditorSaveSnapshot,
   type PipelineEditorSaveTarget,
 } from '@canopy/desktop-shared/types';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { validateId } from '../lib/validation';
 import { registerIpcHandler } from './register';
 

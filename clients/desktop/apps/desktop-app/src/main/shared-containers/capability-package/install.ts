@@ -55,7 +55,7 @@ import type { ShareablePluginRef } from '@canopy/protocol/plugins';
 import type { SharedAutomationDocument } from '@canopy/protocol/automations';
 import { computePipelinePackageDigestSync } from '@canopy/desktop-shared/node';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { buildInstallAutomationRequest } from '@canopy/desktop-shared/lib/automation-install';
 import type {
   AutomationAction,

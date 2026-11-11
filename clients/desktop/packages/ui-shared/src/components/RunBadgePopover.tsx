@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Dot, type DotTone } from './Badge';
 import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
 import { RichHoverCard } from './RichHoverTooltip';
 import { Stack } from './Stack';
@@ -10,8 +11,8 @@ export interface RunBadgeRow {
   statusText: string;
   /** Tailwind text-* class applied to `statusText`. */
   statusClass: string;
-  /** Tailwind bg-* class applied to the leading dot. */
-  dotClass: string;
+  /** The leading dot's tone. */
+  dotTone: DotTone;
 }
 
 export interface RunBadgePopoverProps {
@@ -53,9 +54,7 @@ export function RunBadgePopover({
           <div className="flex flex-col gap-1.5">
             {rows.map((row) => (
               <div key={row.id} className="flex items-center gap-1.5 text-xs">
-                <span
-                  className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${row.dotClass}`}
-                />
+                <Dot tone={row.dotTone} />
                 <span className="truncate fg-primary">{row.label}</span>
                 <span className={`ml-auto shrink-0 ${row.statusClass}`}>
                   {row.statusText}

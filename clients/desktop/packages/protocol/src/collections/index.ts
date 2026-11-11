@@ -562,6 +562,8 @@ export interface CollectionIndexEntry {
   mcpServerCount: number;
   /** True when the local Collection is bound to a current Cloud share. */
   hasExistingShare?: boolean;
+  /** Author-side link to the Collection's current Cloud share. */
+  remote?: ShareRemoteMetadata;
   /** Set when the Collection was added from a Cloud share. */
   sharedSource?: CollectionIndexSharedSource;
   /** Provenance existed even if an older/malformed projection cannot be read. Never infer created ownership. */

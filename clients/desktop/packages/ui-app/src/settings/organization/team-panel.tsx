@@ -31,7 +31,7 @@ import {
   listOrganizations,
   respondToInvitation,
 } from './team-api';
-import { TeamRoleBadge } from './team-role-badge';
+import { ROLE_LABEL } from './team-role-label';
 import { OrganizationLogo } from './OrganizationLogo';
 import { joinClassNames } from './join-class-names';
 import { useMembershipChangeFollowUp } from './membership-change';
@@ -260,7 +260,7 @@ export function TeamPanel({
                         </p>
                         <div className="flex flex-wrap items-center gap-2">
                           <StatusBadge variant="warning" label="Invited" />
-                          <TeamRoleBadge role={invite.role} />
+                          <Badge>{ROLE_LABEL[invite.role]}</Badge>
                           {invite.organizationTeamName && (
                             <Badge>{invite.organizationTeamName}</Badge>
                           )}
@@ -400,7 +400,7 @@ function OrganizationRow({
             <span className="truncate text-s font-medium fg-primary">
               {org.name}
             </span>
-            <TeamRoleBadge role={org.role} />
+            <Badge>{ROLE_LABEL[org.role]}</Badge>
           </div>
           <p className="text-xs fg-secondary">
             {org.memberCount} {org.memberCount === 1 ? 'member' : 'members'} ·{' '}

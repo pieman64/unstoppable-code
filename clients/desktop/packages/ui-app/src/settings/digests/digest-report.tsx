@@ -15,7 +15,7 @@ import { SettingsLink, useSettingsPrivacy } from '../host';
 import { joinClassNames } from './digest-class-names';
 import { cadenceLabel, formatDigestPeriod } from './digest-format';
 import { readContributorMetrics, readHeadlineMetrics } from './digest-metrics';
-import { TrendChip } from '../organization/statistics/TrendChip';
+import { TrendIndicator } from '../organization/statistics/TrendIndicator';
 import { Surface } from '@canopy/ui-shared/components';
 
 /**
@@ -177,7 +177,7 @@ export function DigestReport({
               `0%` signal.
             */}
             {metric.value !== null && (
-              <TrendChip
+              <TrendIndicator
                 current={metric.value}
                 previous={metric.previousValue}
                 scheme="flex"

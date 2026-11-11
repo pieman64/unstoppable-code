@@ -118,13 +118,21 @@ export function assertInternalRootColdProcesses(
   const crashReporters = active.filter(
     (row) => basename(row.executable) === 'chrome_crashpad_handler',
   );
+  const crashPattern = crashReporters
+    .map((row) =>
+      row.executable
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/chrome_crashpad_handler$/, '[c]hrome_crashpad_handler'),
+    )
+    .join('|')
+    .replace(/'/g, "'\\''");
   const crashRecovery = crashReporters.length
-    ? ` Crash reporter remains (PIDs ${crashReporters.map((row) => row.pid).join(', ')}). After quitting the app, run: pkill -f '[c]hrome_crashpad_handler'`
+    ? ` Crash reporter remains (PIDs ${crashReporters.map((row) => row.pid).join(', ')}). After quitting the app, run: pkill -f '${crashPattern}'`
     : '';
   if (active.length)
     throw new InternalRootMigrationRefused(
       'writer-active',
-      `Product executables remain (PIDs ${active.map((row) => row.pid).join(', ')}). Stop the app, CLI, daemon and helpers before retrying.${crashRecovery}`,
+      `Product executables remain (PIDs ${active.map((row) => `${row.pid} (${row.executable})`).join(', ')}). Stop the app, CLI, daemon and helpers before retrying.${crashRecovery}`,
     );
 }
 
@@ -185,28 +193,49 @@ export function assertInternalRootColdOpenFiles(
       throw new Error('Incomplete open-file inspection');
   }
   let pid = 0;
+  let command = '';
   let sawSelf = false;
-  for (const raw of stdout.split('\0')) {
-    const field = raw.replace(/^\n/, '');
-    if (!field) continue;
-    if (field.startsWith('p')) {
-      if (!/^p[1-9]\d*$/.test(field)) throw new Error('Invalid lsof PID');
-      pid = Number(field.slice(1));
-      if (exemptPids.has(pid)) sawSelf = true;
-    } else if (field.startsWith('n')) {
-      if (!pid) throw new Error('Missing lsof PID');
-      if (exemptPids.has(pid) || !field.startsWith('n/')) continue;
-      const path = canonicalOpenFilePath(
-        field.slice(1).replace(/ \(deleted\)$/, ''),
-      );
-      if (roots.some((root) => under(path, root)))
-        throw new InternalRootMigrationRefused(
-          'writer-active',
-          `Process ${pid} has an open file or working directory under an affected tree.`,
-        );
-    } else if (!field.startsWith('f'))
-      throw new Error('Unrecognized lsof field');
+  const blockers = new Map<number, string>();
+  try {
+    for (const raw of stdout.split('\0')) {
+      const field = raw.replace(/^\n/, '');
+      if (!field) continue;
+      if (field.startsWith('p')) {
+        if (!/^p[1-9]\d*$/.test(field)) throw new Error('Invalid lsof PID');
+        pid = Number(field.slice(1));
+        command = '';
+        if (exemptPids.has(pid)) sawSelf = true;
+      } else if (field.startsWith('c')) {
+        command = field.slice(1);
+      } else if (field.startsWith('n')) {
+        if (!pid) throw new Error('Missing lsof PID');
+        if (exemptPids.has(pid) || !field.startsWith('n/')) continue;
+        let path: string;
+        try {
+          path = canonicalOpenFilePath(
+            field.slice(1).replace(/ \(deleted\)$/, ''),
+          );
+        } catch (error) {
+          if (!blockers.size) throw error;
+          continue;
+        }
+        if (roots.some((root) => under(path, root)) && !blockers.has(pid))
+          blockers.set(
+            pid,
+            `Process ${pid} (${command || 'unknown executable'}) has an open file or working directory under an affected tree: ${JSON.stringify(path)}.`,
+          );
+      } else if (!field.startsWith('f'))
+        throw new Error('Unrecognized lsof field');
+    }
+  } catch (error) {
+    // A known writer still takes precedence over a later inspection failure.
+    if (!blockers.size) throw error;
   }
+  if (blockers.size)
+    throw new InternalRootMigrationRefused(
+      'writer-active',
+      [...blockers.values()].join(' '),
+    );
   if (!sawSelf) throw new Error('Incomplete user open-file table');
 }
 
@@ -269,7 +298,7 @@ export async function proveInternalRootCold(
       );
     const inspection = run(
       '/usr/sbin/lsof',
-      ['-nP', '-a', '-u', String(process.getuid?.()), '-F0pfn'],
+      ['-nP', '-a', '-u', String(process.getuid?.()), '-F0pcfn'],
       { timeout: 30_000, maxBuffer: 128 * 1024 * 1024 },
     );
     const exemptPids = new Set([process.pid]);

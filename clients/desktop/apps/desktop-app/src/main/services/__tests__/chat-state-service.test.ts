@@ -2348,7 +2348,7 @@ describe('chat state service', () => {
     const secondVisualId = 'vis_123e4567-e89b-42d3-a456-426614174001';
     const html = '<!doctype html><title>Saved view</title>';
 
-    it('keeps Claude names, Codex names, and Cursor ledger identity separate per event', async () => {
+    it('keeps Claude names, Codex names, and ACP ledger identity separate per event', async () => {
       const { target, repository } = serviceWithRepository({
         claudeToolNames: new Set(['mcp__canopy__ShowVisual']),
         codexToolNames: new Set(['canopy_show_visual']),
@@ -2408,8 +2408,11 @@ describe('chat state service', () => {
           },
         ],
         ['cursor', cursorData('cursor')],
+        ['opencode', cursorData('opencode')],
         ['copilot', cursorData('cursor')],
       ] as const) {
+        // Each event's own admission, never an earlier provider's.
+        admission.mockClear();
         await target.ingestProviderEvent({
           ...SCOPE,
           chatId: 'chat-1',
@@ -2448,7 +2451,7 @@ describe('chat state service', () => {
               toolName: 'canopy_show_visual',
             }),
           ).toBeUndefined();
-        if (providerType === 'cursor')
+        if (providerType === 'cursor' || providerType === 'opencode')
           expect(
             resolver?.({
               toolUseId: 'untrusted',

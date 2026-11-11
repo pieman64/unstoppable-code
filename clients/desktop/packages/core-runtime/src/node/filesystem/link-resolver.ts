@@ -19,6 +19,7 @@ import {
 import { CanopyOperationError } from '../../runtime/errors';
 import { hasGitPathSegment } from './directory-reader';
 import type { FilesystemRoot } from './root-catalog';
+import { isSafeFilesystemRelativePath } from './relative-path';
 
 // Ported from the desktop `file-reference:resolve` (markdown) and Portal
 // `resolvePortalFileLink` (transcript) resolvers (CAN-5038); the
@@ -201,7 +202,9 @@ function normalizeTranscriptRelativePath(
   | { ok: false; reason: 'unsupported' | 'outsideRoots' } {
   if (win32.isAbsolute(value) || /^[a-zA-Z]:/.test(value))
     return { ok: false, reason: 'unsupported' };
-  const normalizedInput = value.replace(/\\/g, '/');
+  // Only Windows treats a backslash as a separator. On POSIX it is a
+  // filename character, including when percent-decoded from a transcript.
+  const normalizedInput = sep === '\\' ? value.replace(/\\/g, '/') : value;
   if (posix.isAbsolute(normalizedInput))
     return { ok: false, reason: 'unsupported' };
   if (normalizedInput.split('/').some((segment) => segment === '..'))
@@ -257,7 +260,14 @@ export function decodeTranscriptLink(href: string): TranscriptLinkTarget {
     }
     if (/^[\\/]{2}/.test(encodedPath)) return unsupported;
     try {
-      decoded = decodeURIComponent(encodedPath);
+      // Relative transcript text historically accepts Windows separators on
+      // every host. Normalize those before decoding so %5C still names a
+      // literal POSIX backslash. Absolute host paths retain their spelling.
+      const linkPath =
+        posix.isAbsolute(encodedPath) || win32.isAbsolute(encodedPath)
+          ? encodedPath
+          : encodedPath.replace(/\\/g, '/');
+      decoded = decodeURIComponent(linkPath);
     } catch {
       return unsupported;
     }
@@ -278,24 +288,6 @@ function trimTrailingSeparators(pathValue: string): string {
   return trimmed === '' ? pathValue : trimmed;
 }
 
-/**
- * `isSafePortableRelativePath`'s rules at the link path bound instead of its
- * 4,096 characters, which a legal Windows base can exceed.
- */
-function isSafeLinkBasePath(value: string): boolean {
-  return (
-    value.length > 0 &&
-    value.length <= WORKER_FILESYSTEM_LINK_MAX_PATH_LENGTH &&
-    !value.startsWith('/') &&
-    !value.includes('\\') &&
-    !value.includes('\0') &&
-    !/^[A-Za-z]:/.test(value) &&
-    value
-      .split('/')
-      .every((segment) => segment !== '' && segment !== '.' && segment !== '..')
-  );
-}
-
 /** The host path of a root-relative base file. */
 function rootedBasePath(
   roots: readonly FilesystemLinkRoot[],
@@ -303,7 +295,12 @@ function rootedBasePath(
 ): string {
   const root = roots.find((entry) => entry.id === base.fileRootId);
   if (!root) throw filesystemLinkError('notFound');
-  if (!isSafeLinkBasePath(base.relativePath))
+  if (
+    !isSafeFilesystemRelativePath(
+      base.relativePath,
+      WORKER_FILESYSTEM_LINK_MAX_PATH_LENGTH,
+    )
+  )
     throw filesystemLinkError('unsupported');
   // Concatenated, not joined: `join` would collapse a UNC root's `//`.
   return `${trimTrailingSeparators(root.absolutePath)}/${base.relativePath}`;

@@ -14,7 +14,7 @@ import {
   writeFileAtomically,
   type AdmittedWriterTarget,
 } from './atomic-file';
-import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { getChatWorkspaceRootDir } from './paths';
 import { isRecord } from './type-guards';
 import {

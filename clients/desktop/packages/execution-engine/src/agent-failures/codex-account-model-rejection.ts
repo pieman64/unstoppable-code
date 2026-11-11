@@ -19,7 +19,8 @@ const MODEL_UNSUPPORTED_PATTERN =
  * variant (`unauthorized`, `usageLimitExceeded`, ...) is a different failure,
  * whatever its text says.
  */
-const TOLERATED_ERROR_INFO = new Set(['badRequest', 'other']);
+// Codex 0.165+ reports the refusal's `model_not_found` code as `modelNotFound`.
+const TOLERATED_ERROR_INFO = new Set(['badRequest', 'other', 'modelNotFound']);
 
 /**
  * Connection variants Codex uses to forward an upstream HTTP status. The

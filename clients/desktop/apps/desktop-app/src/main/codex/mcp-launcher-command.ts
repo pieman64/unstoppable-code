@@ -4,7 +4,7 @@ import { BRAND } from '@canopy/brand/current';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import type { CodexMcpLauncherCommand } from '@canopy/desktop-shared/node/codex-runtime';
 import { daemonName } from '@canopy/protocol/brand';
-import { getBundledBinDir } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getBundledBinDir } from '@canopy/execution-engine/pipelines/config-paths';
 
 /**
  * The daemon executable, run in its hidden launcher mode (CAN-4117). Same

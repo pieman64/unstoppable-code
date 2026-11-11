@@ -8,6 +8,7 @@ jest.mock('../../lib/chat-visuals-feature-flag', () => ({
     providerType === 'claude',
 }));
 
+import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import { McpHttpProxyService } from '../http-proxy-service';
 import { listCanopyRouteTools } from '../canopy-route-tools';
 import { canopyRouteFixtures } from './helpers/canopy-route-fixtures';
@@ -109,6 +110,22 @@ describe('Canopy route tools (CAN-4125)', () => {
           ]),
       ),
     ).toEqual(golden);
+  });
+
+  // set_work_entry_auto_delete removes the caller's whole work entry, so a
+  // managed delegate never lists it even though its listing falls back to the
+  // terminal set; root chats in worktrees, Cowork and Orchestrator do.
+  it('only root chat routes list SetWorkEntryAutoDelete', () => {
+    const name =
+      CANOPY_INJECTED_TOOL_REGISTRY.set_work_entry_auto_delete.displayName;
+    const lists = (route: string): boolean =>
+      JSON.stringify(listed[route]?.main).includes(`"name":"${name}"`);
+    expect(lists('managed-delegate-full')).toBe(false);
+    expect(lists('managed-delegate-bare')).toBe(false);
+    expect(lists('delegate-exclusive')).toBe(false);
+    expect(lists('native-sdk-full')).toBe(true);
+    expect(lists('native-sdk-standalone-full')).toBe(true);
+    expect(lists('advisor-claude')).toBe(true);
   });
 
   it("the listing function is the session server's listing", () => {

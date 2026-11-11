@@ -9,6 +9,7 @@ export * from './workspace/commands';
 export * from './workspace/guarded-commands';
 export * from './workspace/metadata-commands';
 export * from './archive/commands';
+export * from './archive/operations';
 export * from './workspace/source-composition-commands';
 export * from './workspace/events';
 export * from './workspace/host-paths';

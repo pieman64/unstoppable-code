@@ -1,6 +1,11 @@
 import { join } from 'node:path';
 import { readdir, realpath } from 'node:fs/promises';
-import { inertArchiveGroup } from '@canopy/desktop-shared/node/internal-root-migration/lifecycle-policy';
+import {
+  inertArchiveGroup,
+  isAbandonedArchive,
+  assertAbandonedArchivesMatch,
+  abandonArchiveSuggestion,
+} from '@canopy/desktop-shared/node/internal-root-migration/lifecycle-policy';
 import { inspectDestructiveJournals } from '@canopy/desktop-shared/node/w5-destructive-journal';
 import {
   InternalRootMigrationRefused,
@@ -112,11 +117,17 @@ export async function settleInternalRootW5(
   workerEntry: string,
   qualification: InternalRootColdRecovery,
   options: {
+    readonly abandonArchives?: readonly string[];
     readonly ownedChildPath?: string;
     readonly windowsProcessPath?: string;
   } = {},
 ): Promise<'settled' | 'nothing-to-settle'> {
+  const abandonArchives = options.abandonArchives ?? [];
   await qualification.assertHeld();
+  assertAbandonedArchivesMatch(
+    (await inspectDestructiveJournals(source)).records,
+    abandonArchives,
+  );
   const windows = hostOperatingSystem() === 'win32';
   if (
     windows &&
@@ -174,11 +185,15 @@ export async function settleInternalRootW5(
     const journals = await inspectDestructiveJournals(source);
     const unfinished: string[] = [];
     for (const { record } of journals.records) {
-      if (record.state === 'completed') continue;
+      if (
+        record.state === 'completed' ||
+        isAbandonedArchive(record, abandonArchives)
+      )
+        continue;
       const group = await inertArchiveGroup(source, record);
       if (!group)
         unfinished.push(
-          `${record.operation} workspace=${recoveryDiagnostic(record.workspaceId.slice(0, 160))} worktree=${recoveryDiagnostic((record.worktreeId ?? '(workspace)').slice(0, 160))} state=${record.state}`,
+          `${record.operation} workspace=${recoveryDiagnostic(record.workspaceId.slice(0, 160))} worktree=${recoveryDiagnostic((record.worktreeId ?? '(workspace)').slice(0, 160))} state=${record.state}${abandonArchiveSuggestion(record)}`,
         );
       else
         process.stderr.write(
@@ -280,7 +295,11 @@ export async function settleInternalRootW5(
     const journals = await inspectDestructiveJournals(source);
     const unfinished: Array<(typeof journals.records)[number]> = [];
     for (const entry of journals.records) {
-      if (entry.record.state === 'completed') continue;
+      if (
+        entry.record.state === 'completed' ||
+        isAbandonedArchive(entry.record, abandonArchives)
+      )
+        continue;
       const group = await inertArchiveGroup(source, entry.record);
       if (!group) unfinished.push(entry);
       else {
@@ -308,7 +327,7 @@ export async function settleInternalRootW5(
     )
       throw new InternalRootMigrationRefused(
         'recovery-required',
-        `W5 remains unresolved: commits ${boundedDiagnostics(diagnosis.commits.map((row) => String(row.commitId)))}, reservations ${diagnosis.reservations.length}, file issues ${fileIssues.length} [${boundedDiagnostics(fileIssues.map((issue) => `${issue.reason}: ${issue.path}`))}], lifecycle journals ${unfinished.length} [${boundedDiagnostics(unfinished.map(({ record }) => `${record.operation} workspace=${field(record.workspaceId)} worktree=${field(record.worktreeId ?? '(workspace)')} state=${record.state}`))}], log ${diagnosis.logIssue ?? 'readable'}. Use offline W5 recovery at the ORIGINAL root; never replay uncertain effects.`,
+        `W5 remains unresolved: commits ${boundedDiagnostics(diagnosis.commits.map((row) => String(row.commitId)))}, reservations ${diagnosis.reservations.length}, file issues ${fileIssues.length} [${boundedDiagnostics(fileIssues.map((issue) => `${issue.reason}: ${issue.path}`))}], lifecycle journals ${unfinished.length} [${boundedDiagnostics(unfinished.map(({ record }) => `${record.operation} workspace=${field(record.workspaceId)} worktree=${field(record.worktreeId ?? '(workspace)')} state=${record.state}${abandonArchiveSuggestion(record)}`))}], log ${diagnosis.logIssue ?? 'readable'}. Use offline W5 recovery at the ORIGINAL root; never replay uncertain effects.`,
       );
     await qualification.assertHeld();
     return 'settled';

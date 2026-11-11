@@ -42,7 +42,7 @@ import {
   Notice,
 } from '@canopy/ui-shared/components';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
-import { DiffBadge } from '@/components/worktree/DiffBadge';
+import { DiffCounts } from '@/components/worktree/DiffCounts';
 import { DiffFileTree } from '@/components/activity/DiffFileTree';
 import { DiffContentView } from '@/components/activity/DiffContentView';
 import {
@@ -328,7 +328,7 @@ export function ArchivedChangesView({
             </span>
           )}
           {gitChanges?.status === 'complete' ? (
-            <DiffBadge
+            <DiffCounts
               stats={{
                 insertions: gitChanges.insertions,
                 deletions: gitChanges.deletions,

@@ -1,6 +1,11 @@
 import { join } from 'node:path';
 import { readdir, realpath } from 'node:fs/promises';
-import { inertArchiveGroup } from '@canopy/desktop-shared/node/internal-root-migration/lifecycle-policy';
+import {
+  inertArchiveGroup,
+  isAbandonedArchive,
+  assertAbandonedArchivesMatch,
+  abandonArchiveSuggestion,
+} from '@canopy/desktop-shared/node/internal-root-migration/lifecycle-policy';
 import { inspectDestructiveJournals } from '@canopy/desktop-shared/node/w5-destructive-journal';
 import { statIfPresent } from '@canopy/desktop-shared/node/internal-root-migration/filesystem';
 import { isToleratedInternalRootW5Issue } from './internal-root-migration-w5-adoption';
@@ -9,6 +14,7 @@ import { diagnoseW5State } from './w5-maintenance-diagnosis';
 /** Inventory only: SQLite diagnosis uses a disposable copy, never the live writer. */
 export async function diagnoseInternalRootW5(
   source: string,
+  abandonArchives: readonly string[] = [],
 ): Promise<readonly string[]> {
   const diagnosis = await diagnoseW5State(source, 'w5-owned', true);
   const blockers: string[] = [];
@@ -70,10 +76,15 @@ export async function diagnoseInternalRootW5(
       blockers.push(`W5 history exists without its log: ${history.join(', ')}`);
   }
   const journals = await inspectDestructiveJournals(source);
+  assertAbandonedArchivesMatch(journals.records, abandonArchives);
   for (const issue of journals.issues)
     blockers.push(`${issue.reason}: ${issue.path}`);
   for (const { record } of journals.records) {
-    if (record.state === 'completed') continue;
+    if (
+      record.state === 'completed' ||
+      isAbandonedArchive(record, abandonArchives)
+    )
+      continue;
     const group = await inertArchiveGroup(source, record);
     if (group) {
       process.stderr.write(
@@ -81,7 +92,7 @@ export async function diagnoseInternalRootW5(
       );
     } else
       blockers.push(
-        `${record.operation} workspace=${record.workspaceId} worktree=${record.worktreeId ?? '(workspace)'} state=${record.state}`,
+        `${record.operation} workspace=${record.workspaceId} worktree=${record.worktreeId ?? '(workspace)'} state=${record.state}${abandonArchiveSuggestion(record)}`,
       );
   }
   return blockers

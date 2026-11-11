@@ -43,9 +43,9 @@ import {
   initModelHarnessAssignments,
   initOllamaModels,
 } from '@canopy/desktop-shared/types';
-import { serializePipelinePreferenceLocator } from '../../../../pipelines/plugin-collections';
+import { serializePipelinePreferenceLocator } from '@canopy/execution-engine/pipelines/plugin-collections';
 import { loadExecutionState } from '../../executor/execution-state';
-import { buildModelRegistrySnapshot } from '../../executor/model-registry-snapshot';
+import { buildModelRegistrySnapshot } from '@canopy/execution-engine/node/pipelines/executor/model-registry-snapshot';
 import {
   createPipelineOwnerClient,
   type PipelineOwnerClient,
@@ -118,6 +118,8 @@ let channel: MemoryChannel;
 let dataRoot: string;
 let worktree: string;
 let home: string;
+/** The app's bundled resources, with one builtin skill (CAN-5832). */
+let resources: string;
 let mock: { origin: string; child: ChildProcess };
 let owner: OwnerTable;
 let ownerSaw: string[];
@@ -246,6 +248,7 @@ function launchOf(
       secretEnv: {},
       ownerBound: true,
       providerBinaries: { claude: CLAUDE, codex: CODEX },
+      bundledResourcesDir: resources,
       modelCatalog: snapshot(),
       ...extra,
     },
@@ -383,6 +386,14 @@ beforeAll(async () => {
   );
   if (built.status !== 0) throw new Error('The builtin actions did not build.');
   home = realpathSync(mkdtempSync(join(tmpdir(), 'host-model-home-')));
+  resources = realpathSync(mkdtempSync(join(tmpdir(), 'host-model-res-')));
+  mkdirSync(join(resources, 'skills', 'canopy-5832-skill'), {
+    recursive: true,
+  });
+  writeFileSync(
+    join(resources, 'skills', 'canopy-5832-skill', 'SKILL.md'),
+    '---\nname: canopy-5832-skill\ndescription: A builtin test skill.\n---\nSay hello.\n',
+  );
   mkdirSync(join(home, '.codex'));
   // App-servers take their Codex home from the host process only.
   process.env.CODEX_HOME = join(home, '.codex');
@@ -411,6 +422,7 @@ beforeAll(async () => {
 afterAll(() => {
   mock?.child.kill();
   rmSync(home, { recursive: true, force: true });
+  rmSync(resources, { recursive: true, force: true });
   for (const key of Object.keys(process.env))
     if (!(key in savedEnv)) delete process.env[key];
   Object.assign(process.env, savedEnv);
@@ -699,18 +711,24 @@ describe('daemon pipeline host model steps (CAN-5095)', () => {
       await request({ op: 'start', start: aliasLaunch('run-1') }),
     ).toMatchObject({ ok: true });
     await executionIn('run-1', ['success', 'failure']);
-    for (const stepId of ['inline', 'agent'])
-      expect((await storedStep('run-1', stepId)).status).toBe('success');
+    for (const stepId of ['inline', 'agent']) {
+      const step = await storedStep('run-1', stepId);
+      expect({ status: step.status, error: step.error }).toEqual({
+        status: 'success',
+        error: undefined,
+      });
+    }
     expect(stepLogs('run-1')).toContain(REPLY);
     // The run preference, not the workflow default, named the inline base.
     expect(asked).not.toContain('unset-model');
     expect(new Set(asked)).toEqual(new Set([DEFAULT_CLAUDE_MODEL]));
     expect(ownerSaw).toContain('owner.model.agentAlias');
 
-    // An Agent that adds plugins after the launch fails its step closed.
+    // An Agent that names a standalone MCP server after the launch fails
+    // its step closed (CAN-5832 D9, CAN-6011).
     agentSelections = {
       ...NO_PLUGINS,
-      pluginRefs: [{ marketplaceId: 'market', pluginName: 'reviewer' }],
+      mcpServerRefs: [{ serverId: 'github', configId: 'default' }],
     };
     expect(
       await request({ op: 'start', start: aliasLaunch('run-2') }),
@@ -720,7 +738,7 @@ describe('daemon pipeline host model steps (CAN-5095)', () => {
     const agent = await storedStep('run-2', 'agent');
     expect(agent.status).toBe('failure');
     expect(agent.error).toContain(
-      "This Agent's plugins don't run in the background service.",
+      "This Agent's MCP servers don't run in the background service.",
     );
   });
 
@@ -797,6 +815,94 @@ describe('daemon pipeline host model steps (CAN-5095)', () => {
       (await loadExecutionState('run-1', join(dataRoot, 'pipeline-executions')))
         ?.model_alias_preferences,
     ).toEqual({ fast: { mode: 'reset' } });
+  });
+
+  it("a Claude step's plugin collection resolves from the launch's snapshot", async () => {
+    // CAN-5832: the run's core resolved it at launch; the step materializes it.
+    owner = (raised): OwnerAnswer => {
+      const body = raised.request;
+      if (body.action === 'owner.model.routing')
+        return {
+          value: {
+            kind: 'model.routing',
+            override: {
+              provider: 'claude',
+              model: body.model ?? DEFAULT_CLAUDE_MODEL,
+              modelGatewayRouted: false,
+              accountProxyRouted: false,
+            },
+          },
+          values: { env: claudeRouteEnv() },
+        };
+      return defaultOwner(raised);
+    };
+    const snapshot = {
+      // A builtin skill resolves from the app's bundled resources, which the
+      // launch names (CAN-5832 review): the daemon runs from another folder.
+      selections: {
+        ...NO_PLUGINS,
+        skillRefs: [
+          { sourceId: 'builtin:app', skillName: 'canopy-5832-skill' },
+        ],
+      },
+      missingOptionalDefaults: [
+        { defaultKey: 'plugin:review', warning: 'Review is optional here.' },
+      ],
+      unresolvedRequiredDefaults: [],
+    };
+    const collectionLaunch = (
+      executionId: string,
+      snapshots: Record<string, CanopyJsonValue>,
+    ): PipelineHostLaunch => {
+      const launch = launchOf(
+        executionId,
+        [agentPrompt({ plugin_collection_id: 'review' })],
+        { pluginCollectionSnapshots: snapshots },
+      );
+      return {
+        ...launch,
+        launch: {
+          ...launch.launch,
+          pipeline: {
+            ...launch.launch.pipeline,
+            plugin_collections: [
+              { id: 'review', name: 'Review', defaults: [] },
+            ],
+          },
+        },
+      };
+    };
+    expect(
+      await request({
+        op: 'start',
+        start: collectionLaunch('run-1', { review: snapshot }),
+      }),
+    ).toMatchObject({ ok: true });
+    await executionIn('run-1', ['success', 'failure']);
+    expect((await storedStep('run-1', 'ask')).status).toBe('success');
+    expect(stepLogs('run-1')).toContain(
+      '[plugin-collection] Review is optional here.',
+    );
+    expect(stepLogs('run-1')).not.toContain('canopy-5832-skill" (source');
+    expect(
+      (await loadExecutionState('run-1', join(dataRoot, 'pipeline-executions')))
+        ?.resolved_plugin_collections?.review,
+    ).toEqual(snapshot);
+    // A snapshot that names a standalone MCP server never reaches a step.
+    expect(
+      await request({
+        op: 'start',
+        start: collectionLaunch('run-2', {
+          review: {
+            ...snapshot,
+            selections: {
+              ...NO_PLUGINS,
+              mcpServerRefs: [{ serverId: 'github', configId: 'default' }],
+            },
+          },
+        }),
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'start_failed' } });
   });
 
   it('a Codex Agent alias that adds no plugins runs on the host runtime', async () => {
@@ -1248,6 +1354,17 @@ describe('the launch model catalog (CAN-5095)', () => {
   const codexStep = agentPrompt({
     model: DEFAULT_CODEX_MODEL,
     permission_preset: 'read_only',
+  });
+
+  it("a launch with model steps that does not name the app's resources is refused", async () => {
+    expect(
+      await request({
+        op: 'start',
+        start: launchOf('run-1', [agentPrompt()], {
+          bundledResourcesDir: undefined,
+        }),
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'start_failed' } });
   });
 
   it('a launch with model steps and no catalog is refused before anything runs', async () => {

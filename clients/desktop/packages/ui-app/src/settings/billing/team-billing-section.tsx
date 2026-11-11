@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge } from '@canopy/ui-shared/components/Badge';
 import {
   useCallback,
   useEffect,
@@ -55,8 +56,7 @@ import {
 } from './billing-card-body-skeleton';
 import { CreditsUsedThisPeriod } from './credits-used-this-period';
 import { InvoicesSection, INVOICES_PAGE_LIMIT } from './invoices-section';
-import { TrialBadge } from './trial-badge';
-import { PlanPill } from './plan-pill';
+import { trialBadgeLabel } from './trial-badge-label';
 import { AutoTopUpSummary } from './auto-top-up-summary';
 import {
   useBillingSettingsSlots,
@@ -502,15 +502,16 @@ function PlanCard({
                     <Heading level={2} variant="section">
                       Subscription plan
                     </Heading>
-                    <PlanPill
-                      planDisplayName={planName}
-                      dataTestId="team-billing-plan-pill"
-                    />
+                    <Badge data-testid="team-billing-plan-pill">
+                      {planName}
+                    </Badge>
                     {trialActive && summary.trial ? (
-                      <TrialBadge
-                        endsAt={summary.trial.endsAt}
-                        dataTestId="team-billing-trial-chip"
-                      />
+                      <Badge
+                        tone="warning"
+                        data-testid="team-billing-trial-chip"
+                      >
+                        {trialBadgeLabel(summary.trial.endsAt)}
+                      </Badge>
                     ) : null}
                   </div>
 

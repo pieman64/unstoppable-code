@@ -2082,7 +2082,21 @@ function toChatActiveSessionInfo(
         }
       : {}),
     ...(entry.lastEventType ? { lastEventType: entry.lastEventType } : {}),
+    ...(entry.session.settingApplication
+      ? { settingApplication: { ...entry.session.settingApplication } }
+      : {}),
+    ...turnSettingsInfo(key, entry),
   };
+}
+
+/** The applied settings of a running turn, for a pending-change comparison. */
+function turnSettingsInfo(
+  key: string,
+  entry: ActiveSession,
+): Pick<ChatActiveSessionInfo, 'turnSettings'> {
+  if (!sessionTurnActive(key, entry)) return {};
+  const applied = entry.session.getAppliedTurnSettings?.();
+  return applied ? { turnSettings: { ...applied } } : {};
 }
 
 export function getActiveSessionInfos(

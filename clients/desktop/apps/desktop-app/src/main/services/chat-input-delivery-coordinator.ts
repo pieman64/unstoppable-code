@@ -46,7 +46,7 @@ import type {
   PersistedPendingQuestion,
   PersistedChatTab,
 } from '@canopy/desktop-shared/types';
-import type { ChatScopeKey } from './chat-state-repository';
+import type { ChatScopeKey } from './chat-state-contracts';
 import type { CanonicalChatState } from './chat-state-reducer';
 import type { AgentSession, SteeringTarget } from '../agents/types';
 import {

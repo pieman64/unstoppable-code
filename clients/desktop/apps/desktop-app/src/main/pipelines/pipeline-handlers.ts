@@ -150,13 +150,13 @@ import {
   encodeMatrixIpcErrorMessage,
   getTriggerTypes,
 } from '@canopy/execution-engine/types/pipeline';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { buildSharedPipelineId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import {
   normalizePipeline,
   validatePipelineRuntimeIdentifier,
-} from '@canopy/desktop-shared/pipelines/normalize-pipeline';
-import { getDefaultShellTypeForCurrentProcess } from '@canopy/desktop-shared/node/pipelines/default-shell';
+} from '@canopy/execution-engine/pipelines/normalize-pipeline';
+import { getDefaultShellTypeForCurrentProcess } from '@canopy/execution-engine/node/pipelines/default-shell';
 import { listBuiltinActions, resolveAction } from './action-resolver';
 import {
   beginExecutionPause,
@@ -183,7 +183,7 @@ import {
   type StepLogLocator,
   type StepLogReadOptions,
 } from '@canopy/desktop-shared/node/pipelines/executor';
-import { readStepLogFile } from '@canopy/desktop-shared/node/pipelines/executor/step-log-positions';
+import { readStepLogFile } from '@canopy/execution-engine/node/pipelines/executor/step-log-positions';
 import { createElectronExecutionRuntime } from './execution-runtime';
 import {
   discoverProjectPipelines,
@@ -243,7 +243,7 @@ import { resolvePipelinePluginCollections } from './plugin-collection-resolver';
 import {
   buildPipelineDefaultDisplay,
   collectPipelineCapabilityRefs,
-} from '@canopy/desktop-shared/pipelines/plugin-collections';
+} from '@canopy/execution-engine/pipelines/plugin-collections';
 import {
   loadShareablePluginCatalog,
   matchShareablePluginRef,
@@ -1683,6 +1683,12 @@ export function registerPipelineHandlers(): void {
         async () => {
           try {
             await deleteSharedPipeline(request.remoteId);
+            // The Portal shared list memoizes cloud rows and hides the
+            // author's linked share; once the link is cleared below, a stale
+            // memo would list the deleted share as a separate row.
+            const { clearSharedPipelineListCache } =
+              await import('../services/pipelines-service');
+            clearSharedPipelineListCache();
             const cleared = service.clearPipelineRemoteMetadataByRemoteId(
               request.remoteId,
             );

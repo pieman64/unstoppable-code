@@ -2,7 +2,7 @@
 // the run's start, rebuilding the executor's caller and controls and
 // enforcing the deadline and timeout finalizer as the executor does in process.
 import type { WorkerPipelineHostRequest } from '@canopy/protocol/canopy-core';
-import { buildPipelineHostIdempotencyKey } from '../../../pipelines/host-actions';
+import { buildPipelineHostIdempotencyKey } from '@canopy/execution-engine/pipelines/host-actions';
 import { hostArtifactsDir } from '../executor/host-action-runner';
 import type {
   PipelineHostActionCaller,

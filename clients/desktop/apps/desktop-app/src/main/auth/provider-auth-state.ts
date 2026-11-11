@@ -886,6 +886,7 @@ function codexAccountToAuthStatus(
       error: null,
       accountEmail: account.email,
       planType: account.planType,
+      workspaceName: account.workspaceName,
       accountKind: 'subscription',
     };
   }

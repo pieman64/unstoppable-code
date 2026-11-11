@@ -1,5 +1,5 @@
 import { withGitRequestContextEnv } from '@canopy/desktop-shared/node/git-request-context';
-import { getEnhancedEnv } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import {
   CanopyHostExecutionSchema,
   type CanopyHostExecution,

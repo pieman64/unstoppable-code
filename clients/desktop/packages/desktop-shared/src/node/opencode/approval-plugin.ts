@@ -51,10 +51,68 @@ async function jsonSchema(input) {
     throw new Error('Unsupported OpenCode tool schema.');
   return input;
 }
+// Usage credentials stay inside this native process. Only the exact Go API
+// endpoint is supported; a custom endpoint reusing its name must never leak a
+// credential to OpenCode. Console OAuth and arbitrary providers are unsupported.
+const nativeList = value => Array.isArray(value) ? value : value.data;
+const sameConnection = (left, right) => left == null && right == null || !!left && !!right &&
+  left.type === right.type && (left.type === 'env' ? left.name === right.name : left.id === right.id && left.method === right.method);
+function supportsGoUsage(provider, integrationId) {
+  return provider.id === 'opencode-go' && integrationId === 'opencode-go' &&
+    typeof provider.settings?.baseURL === 'string' &&
+    provider.settings.baseURL.replace(/\\/$/, '') === 'https://opencode.ai/zen/go/v1';
+}
+async function accountUsage(ctx, provider, integrationId, connection) {
+  if (!supportsGoUsage(provider, integrationId)) return { status: 'unsupported' };
+  if (!connection) return { status: 'not-selected' };
+  if (connection.status?.status === 'needs_auth') return { status: 'sign-in-required' };
+  if (connection.type !== 'env' && connection.method !== 'key') return { status: 'unsupported' };
+  const stillSelected = async () => {
+    const current = nativeList(await ctx.provider.list()).find(value => value.id === provider.id);
+    return current && supportsGoUsage(current, current.integrationID ?? current.id) &&
+      sameConnection(connection, await ctx.integration.connection.active(integrationId));
+  };
+  try {
+    const credential = await ctx.integration.connection.resolve(connection);
+    if (credential?.type !== 'key' || typeof credential.key !== 'string' || !credential.key)
+      return { status: 'unavailable' };
+    if (!await stillSelected()) return { status: 'unavailable' };
+    const response = await fetch('https://opencode.ai/zen/go/v1/usage', {
+      headers: { authorization: 'Bearer ' + credential.key },
+      redirect: 'error', signal: AbortSignal.timeout(3000),
+    });
+    if (!await stillSelected()) { await response.body?.cancel(); return { status: 'unavailable' }; }
+    if (response.status === 401) { await response.body?.cancel(); return { status: 'sign-in-required' }; }
+    if (!response.ok) { await response.body?.cancel(); return { status: 'unavailable' }; }
+    if (!response.body) return { status: 'unavailable' };
+    // Decode once so a multi-byte character split across chunks stays intact.
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of response.body) {
+      size += chunk.byteLength;
+      if (size > 16 * 1024) throw new Error('Usage response too large.');
+      chunks.push(Buffer.from(chunk));
+    }
+    const result = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const windows = ['rolling', 'weekly', 'monthly'].map(id => {
+      const window = result?.usage?.[id];
+      if (!window || !['ok', 'rate-limited'].includes(window.status) ||
+          typeof window.percent !== 'number' || !Number.isFinite(window.percent) || window.percent < 0 ||
+          typeof window.resetsAt !== 'string' || !Number.isFinite(Date.parse(window.resetsAt)))
+        throw new Error('Invalid usage response.');
+      // A rate-limited window is exhausted until it resets; overage reads as full.
+      const percent = window.status === 'rate-limited' ? 100 : Math.min(window.percent, 100);
+      return { id, percent, resetsAt: new Date(window.resetsAt).toISOString() };
+    });
+    if (!await stillSelected()) return { status: 'unavailable' };
+    return { status: 'ready', plan: 'OpenCode Go', checkedAt: new Date().toISOString(), windows };
+  } catch { return { status: 'unavailable' }; }
+}
+
 // Inserted into the existing authenticated metadata handler. The native v2
 // client returns { location, data }; the plugin host can return a direct list.
 async function accountMetadata(ctx) {
-  const list = (value) => Array.isArray(value) ? value : value.data;
+  const list = nativeList;
   const label = (value) => typeof value === 'string' ? value.slice(0, 320) : '';
   const [providerResult, integrationResult] = await Promise.all([
     ctx.provider.list(), ctx.integration.list(),
@@ -70,6 +128,14 @@ async function accountMetadata(ctx) {
   const selected = new Map(await Promise.all(integrationIds.map(async id =>
     [id, await ctx.integration.connection.active(id)]
   )));
+  const usage = new Map(await Promise.all(providers.map(async provider => [provider.id,
+    await accountUsage(ctx, provider, integrationId(provider), selected.get(integrationId(provider))),
+  ])));
+  // A refresh must never label an old connection as the newly selected account.
+  for (const id of integrationIds) {
+    if (!sameConnection(selected.get(id), await ctx.integration.connection.active(id)))
+      throw new Error('OpenCode account changed during refresh.');
+  }
   return { providers: providers.map(provider => {
     const active = selected.get(integrationId(provider));
     const connections = integrations.get(integrationId(provider))?.connections ?? [];
@@ -82,6 +148,10 @@ async function accountMetadata(ctx) {
         selected: !!active && active.type === connection.type &&
           (connection.type === 'env' ? active.name === connection.name : active.id === connection.id),
         needsSignIn: connection.status?.status === 'needs_auth',
+        usage: active && active.type === connection.type &&
+          (connection.type === 'env' ? active.name === connection.name : active.id === connection.id)
+          ? usage.get(provider.id) : { status: supportsGoUsage(provider, integrationId(provider)) &&
+            (connection.type === 'env' || connection.method === 'key') ? 'not-selected' : 'unsupported' },
       })),
     };
   }) };

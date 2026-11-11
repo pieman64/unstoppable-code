@@ -16,7 +16,7 @@ import {
   pipelineRefsKey,
   rawCapabilitySimilarityKey,
 } from '@/lib/relatedCapabilities';
-import { collectPipelineCapabilityRefs } from '@canopy/desktop-shared/pipelines/plugin-collections';
+import { collectPipelineCapabilityRefs } from '@canopy/execution-engine/pipelines/plugin-collections';
 import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import type {
   Pipeline,

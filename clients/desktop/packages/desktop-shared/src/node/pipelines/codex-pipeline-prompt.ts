@@ -1,4 +1,4 @@
-import { stepTimedOutMessage } from '@canopy/desktop-shared/node/pipelines/step-timeout';
+import { stepTimedOutMessage } from '@canopy/execution-engine/node/pipelines/step-timeout';
 import {
   classifyAgentFailure,
   classifyRetryableCodexTransportFailure,

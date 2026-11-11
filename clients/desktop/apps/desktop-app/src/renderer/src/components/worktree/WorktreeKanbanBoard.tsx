@@ -36,11 +36,11 @@ interface KanbanCard {
   worktree: WorktreeData;
 }
 
-interface ProjectChipProps {
+interface ProjectLabelProps {
   project: SidebarItem;
 }
 
-function ProjectChip({ project }: ProjectChipProps): JSX.Element {
+function ProjectLabel({ project }: ProjectLabelProps): JSX.Element {
   const isMultiRepo = project.type === 'multi-repo';
   const displayName = getWorkspaceDisplayName(project);
   return (
@@ -254,7 +254,7 @@ export function WorktreeKanbanBoard({
           }
         >
           <div className="flex items-center justify-between gap-2 px-1">
-            <ProjectChip project={project} />
+            <ProjectLabel project={project} />
             <KanbanStatusIndicator
               uiStatus={status}
               projectId={project.id}

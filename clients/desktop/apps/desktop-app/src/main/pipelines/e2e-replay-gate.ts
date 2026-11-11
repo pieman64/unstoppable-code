@@ -5,7 +5,7 @@ import type { RecordStoreFactory } from '@canopy/desktop-shared/node/pipelines/e
 import {
   SpillingRecordStore,
   type RecordStore,
-} from '@canopy/desktop-shared/node/pipelines/executor/record-store';
+} from '@canopy/execution-engine/node/pipelines/executor/record-store';
 
 /**
  * UI-automation-only synchronization for a stored record's replay.

@@ -1,20 +1,48 @@
 'use client';
 
-import type { JSX } from 'react';
+import { Fragment, type JSX } from 'react';
 import type {
   OpenCodeAccountMethod,
   OpenCodeAccountSnapshot,
+  OpenCodeAccountUsage,
 } from '@canopy/protocol/portal';
+import { useMinuteClock } from '../lib/useMinuteClock';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Button } from './Button';
 import { StatusLabel } from './StatusLabel';
-import { UsageGroup, UsageRow, UsageRowList } from './UsageGroup';
+import {
+  UsageGroup,
+  UsageRow,
+  UsageRowList,
+  UsageWindowRow,
+} from './UsageGroup';
 
 const METHOD_LABELS: Record<OpenCodeAccountMethod, string> = {
   key: 'API key',
   oauth: 'Browser sign-in',
   external: 'External credentials',
   env: 'Environment variable',
+};
+
+function usageDescription(usage: OpenCodeAccountUsage | undefined): string {
+  switch (usage?.status) {
+    case 'ready':
+      return usage.plan ?? 'Usage';
+    case 'not-selected':
+      return 'Select this account in OpenCode to view usage';
+    case 'sign-in-required':
+      return 'Sign in again to view usage';
+    case 'unavailable':
+      return 'Usage is unavailable. Refresh to try again.';
+    default:
+      return 'This provider does not report plan or usage limits here';
+  }
+}
+
+const WINDOW_LABELS = {
+  rolling: 'Rolling usage',
+  weekly: 'Weekly usage',
+  monthly: 'Monthly usage',
 };
 
 interface OpenCodeAccountCardProps {
@@ -32,6 +60,7 @@ export function OpenCodeAccountCard({
   snapshot,
   onManageProviders,
 }: OpenCodeAccountCardProps): JSX.Element {
+  const nowMs = useMinuteClock();
   const rows = snapshot.providers.flatMap((provider) =>
     provider.accounts.length === 0
       ? [
@@ -47,30 +76,49 @@ export function OpenCodeAccountCard({
           />,
         ]
       : provider.accounts.map((account, index) => (
-          <UsageRow
+          <Fragment
             key={`${provider.id}:${account.method}:${account.label}:${index}`}
-            testId="opencode-account-row"
-            title={
-              <span className={REPLAY_BLOCK_CLASS}>
-                {provider.name || 'Provider name unavailable'}
-              </span>
-            }
-            detail={
-              <>
-                <span className={`block truncate ${REPLAY_BLOCK_CLASS}`}>
-                  {account.label || 'Account name unavailable'}
+          >
+            <UsageRow
+              testId="opencode-account-row"
+              title={
+                <span className={REPLAY_BLOCK_CLASS}>
+                  {provider.name || 'Provider name unavailable'}
                 </span>
-                {METHOD_LABELS[account.method]}
-                {account.selected && ' · Selected for this provider'}
-                {account.needsSignIn && (
-                  <>
-                    {' · '}
-                    <StatusLabel>Sign in again</StatusLabel>
-                  </>
-                )}
-              </>
-            }
-          />
+              }
+              detail={
+                <>
+                  <span className={`block truncate ${REPLAY_BLOCK_CLASS}`}>
+                    {account.label || 'Account name unavailable'}
+                  </span>
+                  {METHOD_LABELS[account.method]}
+                  {account.selected && ' · Selected for this provider'}
+                  {account.needsSignIn && (
+                    <>
+                      {' · '}
+                      <StatusLabel>Sign in again</StatusLabel>
+                    </>
+                  )}
+                  <span className="block">
+                    {usageDescription(account.usage)}
+                  </span>
+                </>
+              }
+            />
+            {account.usage?.status === 'ready' &&
+              (account.usage.windows ?? []).map((window) => (
+                <UsageWindowRow
+                  key={window.id}
+                  nowMs={nowMs}
+                  window={{
+                    key: `${provider.id}-${index}-${window.id}`,
+                    title: WINDOW_LABELS[window.id],
+                    usedPercent: window.percent,
+                    resetsAt: window.resetsAt,
+                  }}
+                />
+              ))}
+          </Fragment>
         )),
   );
   return (
@@ -80,10 +128,6 @@ export function OpenCodeAccountCard({
       testId="opencode-account-card"
     >
       <UsageRowList>
-        <UsageRow
-          title="Limits"
-          detail="Plan and usage limits are unavailable here"
-        />
         {snapshot.status === 'unavailable' ? (
           <UsageRow
             title="Accounts"

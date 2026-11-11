@@ -13,7 +13,7 @@ import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
 import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
-import { getPipelinePluginDefaultKey } from '@canopy/desktop-shared/pipelines/plugin-collections';
+import { getPipelinePluginDefaultKey } from '@canopy/execution-engine/pipelines/plugin-collections';
 import type { ShareablePluginCatalog } from '../plugins/shareable-plugin-resolution';
 import { getAgentModelsFilePath, getMcpServerFilePath } from '../lib/paths';
 import { readCanopyCloudAccountWithStatus } from '../lib/canopy-cloud-account-store';

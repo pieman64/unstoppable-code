@@ -12,7 +12,7 @@ import {
 import {
   isChatTabPluginSelections,
   normalizePluginSelections,
-} from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+} from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type {
   PortalTaskFirstChat,
   PortalTaskFirstChatResult,

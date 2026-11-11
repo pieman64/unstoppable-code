@@ -19,7 +19,7 @@ import {
   type PrInstructionMode,
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
-import { parseRepoMap } from '@canopy/desktop-shared/pipelines/base-branch-env';
+import { parseRepoMap } from '@canopy/execution-engine/pipelines/base-branch-env';
 import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import {
   describeJsonParseFailure,

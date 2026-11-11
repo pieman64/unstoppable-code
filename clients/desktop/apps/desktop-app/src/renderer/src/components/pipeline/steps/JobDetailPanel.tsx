@@ -3,7 +3,7 @@ import type { Job } from '@canopy/execution-engine/types/pipeline';
 import { normalizeNeeds } from '@canopy/execution-engine/types/pipeline';
 import { isValidPipelineIdentifier } from '../../../lib/pipelineEditor';
 import { parseMaxIterationsInput } from '../../../lib/jobDetailPanel';
-import { MAX_RETRIES_LIMIT } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { MAX_RETRIES_LIMIT } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
   Surface,
   Button,

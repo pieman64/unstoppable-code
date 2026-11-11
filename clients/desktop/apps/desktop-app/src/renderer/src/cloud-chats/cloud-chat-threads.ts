@@ -6,6 +6,7 @@ import {
 } from '@canopy/app-state/core-cowork';
 import type { ChatStoreState } from '@canopy/app-state';
 import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
+import { projectAgentTaskTranscript } from '@canopy/agent-transcript/agent-tasks';
 import { projectPersistedChatTranscript } from '@canopy/desktop-shared/portal/persisted-chat-projection';
 import { createRelayCoreCoworkInvoker } from './relay-invoker';
 
@@ -34,13 +35,20 @@ function isPersistedChatMessage(value: unknown): value is PersistedChatMessage {
 export const projectCloudChatMessages: ProjectCloudChatMessages = ({
   chatKey,
   messages,
+  tasks,
 }) =>
-  projectPersistedChatTranscript({
-    scope: 'worktree',
-    chatId: chatKey,
+  // Subagent rows nest into their spawn call's card (CAN-5976).
+  projectAgentTaskTranscript({
     messages: messages.filter(isPersistedChatMessage),
-    // This renderer shows the transcript itself: nothing truncated.
-    fidelity: 'local',
+    tasks,
+    project: (rows) =>
+      projectPersistedChatTranscript({
+        scope: 'worktree',
+        chatId: chatKey,
+        messages: [...rows],
+        // This renderer shows the transcript itself: nothing truncated.
+        fidelity: 'local',
+      }),
   });
 
 interface ChatStoreHandle {

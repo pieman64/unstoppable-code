@@ -12,7 +12,7 @@ import type {
 import {
   buildPipelineDefaultDisplay,
   getPipelinePluginDefaultKey,
-} from '@canopy/desktop-shared/pipelines/plugin-collections';
+} from '@canopy/execution-engine/pipelines/plugin-collections';
 import type {
   ShareablePluginCatalog,
   ShareablePluginMatch,

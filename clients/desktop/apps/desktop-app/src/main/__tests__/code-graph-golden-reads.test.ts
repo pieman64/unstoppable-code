@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { CodeGraphEngine } from '@canopy/code-graph/engine';
 import { fingerprintCustomLanguageInputs } from '@canopy/code-graph/languages/custom-config';
-import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getBundledCodeGraphDir } from '@canopy/execution-engine/pipelines/config-paths';
 import { createFixtureRepository } from '@canopy/code-graph/__tests__/golden/fixture-repository';
 import {
   expectCodeGraphGolden,

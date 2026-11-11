@@ -14,7 +14,7 @@ import type { Pipeline, Step } from '@canopy/execution-engine/types/pipeline';
 import {
   getProjectActionsDir,
   getProjectActionsDirCandidates,
-} from '../config-paths';
+} from '@canopy/execution-engine/node/pipelines/config-paths';
 import {
   classifyDaemonPipeline,
   type DaemonPipelineClassifierContext,

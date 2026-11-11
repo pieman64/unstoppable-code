@@ -12,7 +12,7 @@ jest.mock('@canopy/core-platform/directory-flush', () => {
   return { ...actual, flushDirectory: jest.fn(actual.flushDirectory) };
 });
 
-import { normalizePipeline } from '../../../../pipelines/normalize-pipeline';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { recoverOrphanedPipelineExecutions } from '../crash-recovery';
 import * as executionState from '../execution-state';
 import {

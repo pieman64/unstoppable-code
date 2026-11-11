@@ -187,6 +187,10 @@ import {
   type CoreMemoryHost,
 } from './core-memory-adapter';
 import {
+  createCoreArchiveAdapter,
+  type CoreArchiveHost,
+} from './core-archive-adapter';
+import {
   createCoreWatcherAdapter,
   type CoreWatcherHost,
 } from './core-watcher-adapter';
@@ -444,6 +448,8 @@ export interface CreateDesktopRuntimeOptions {
   configHost?: CoreConfigHost;
   /** Local memory behind `core.memory.*`; tests may inject one. */
   memoryHost?: CoreMemoryHost;
+  /** Archived containers behind the `core.archive` reads and lock; tests may inject one. */
+  archiveHost?: CoreArchiveHost;
   /** Watcher service behind `core.initiatedWork.watcher.*`; tests may inject one. */
   watcherHost?: CoreWatcherHost;
   /** Catalog and reload lifecycle behind `core.agent.deferredTools.*`; tests may inject one. */
@@ -1393,6 +1399,7 @@ export function createDesktopRuntime(
   );
   const configAdapter = createCoreConfigAdapter(options.configHost);
   const memoryAdapter = createCoreMemoryAdapter(options.memoryHost);
+  const archiveAdapter = createCoreArchiveAdapter(options.archiveHost);
   const watcherAdapter = createCoreWatcherAdapter(options.watcherHost);
   const deferredToolsAdapter = createCoreDeferredToolsAdapter(
     options.deferredToolsHost,
@@ -1605,6 +1612,7 @@ export function createDesktopRuntime(
     terminalSettingsAdapter,
     configAdapter,
     memoryAdapter,
+    archiveAdapter,
     watcherAdapter,
     deferredToolsAdapter,
     visualStageAdapter,
@@ -1781,6 +1789,7 @@ export function createDesktopRuntime(
       ownedAdapter('core.terminal.settings', terminalSettingsAdapter),
       ownedAdapter('core.config', configAdapter),
       ownedAdapter('core.memory', memoryAdapter),
+      ownedAdapter('core.archive', archiveAdapter),
       ownedAdapter('core.initiatedWork.watcher', watcherAdapter),
       ownedAdapter('core.agent.deferredTools', deferredToolsAdapter),
       ownedAdapter('core.chat.visual.stage', visualStageAdapter),

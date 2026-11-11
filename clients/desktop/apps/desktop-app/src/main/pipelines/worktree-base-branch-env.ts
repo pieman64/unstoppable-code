@@ -1,4 +1,4 @@
-import { serializeRepoMap } from '@canopy/desktop-shared/pipelines/base-branch-env';
+import { serializeRepoMap } from '@canopy/execution-engine/pipelines/base-branch-env';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
 import { setBrandEnv } from '@canopy/execution-engine/brand/env';
 import { resolveEffectiveBaseBranchesForWorktree } from '../lib/worktree-base-branches';

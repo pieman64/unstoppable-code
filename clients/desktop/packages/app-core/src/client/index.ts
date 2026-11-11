@@ -5,6 +5,7 @@ export * from './terminal-client';
 export * from './billing-client';
 export * from './external-agents-client';
 export * from './chat-workflow-capabilities';
+export * from './pipeline-cloud-runs';
 export * from './marketplace-sources-client';
 export * from './marketplace-source-add';
 

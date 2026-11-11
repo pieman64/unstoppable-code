@@ -14,7 +14,7 @@ import { SYNTHETIC_OAUTH_TOKEN } from '../shared/followup-policy.mjs';
 import { isInside } from '../shared/synthetic-root.mjs';
 import { NO_PROXY_VALUE } from './refusing-proxy.mjs';
 import * as environmentModule from '@canopy/desktop-shared/node/delegation/environment';
-import * as configPathsModule from '@canopy/desktop-shared/pipelines/config-paths';
+import * as configPathsModule from '@canopy/execution-engine/pipelines/config-paths';
 
 /** Concrete Claude id from package.json claude-code.models (cursorModelId of the `sonnet` entry). */
 export const REQUESTED_MODEL = 'claude-sonnet-5-5';

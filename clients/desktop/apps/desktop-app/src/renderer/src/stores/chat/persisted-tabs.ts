@@ -837,7 +837,13 @@ export function applyQueuedHookPlaceholderTabSettings(
 }
 
 export function splitFilePathSegments(filePath: string): string[] {
-  return filePath.split(/[\\/]+/).filter((segment) => segment.length > 0);
+  const windowsPath =
+    /^[a-z]:[\\/]/i.test(filePath) ||
+    filePath.startsWith('\\\\') ||
+    filePath.startsWith('//');
+  return filePath
+    .split(windowsPath ? /[\\/]+/ : /\/+/)
+    .filter((segment) => segment.length > 0);
 }
 
 export function getFilePathSuffix(

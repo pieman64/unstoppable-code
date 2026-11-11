@@ -47,6 +47,7 @@ export {
   openCodeAccountSnapshotSchema,
   type OpenCodeAccountSnapshot,
   type OpenCodeAccountMethod,
+  type OpenCodeAccountUsage,
 } from './opencode-accounts';
 import type {
   ScriptActionsListRequest,
@@ -4133,6 +4134,8 @@ export type PortalCollectionRow = CollectionIndexEntry & {
   shareable?: boolean;
   /** True when the local Collection is already bound to a Cloud share. */
   hasExistingShare?: boolean;
+  /** Author-side identity for matching a positively owned shared Collection. */
+  shareRemoteId?: string;
 };
 
 /** Result of `portal.collections.list`. */
@@ -7247,6 +7250,11 @@ export interface PortalPipelineMetadata {
   origin?: PortalPipelineOrigin;
   triggerTypes?: Array<'dispatch' | 'plan_ready' | 'task_ready'>;
   scopes?: Array<'global' | 'directory' | 'worktree'>;
+  /**
+   * Audience of a local pipeline's own Cloud share, so the picker can show
+   * that the row is shared. Absent when unshared or on older desktops.
+   */
+  shareScope?: 'private' | 'team' | 'organization';
   taskReadyInputs?: Record<string, PortalPipelineInputDefinition>;
   planReadyInputs?: Record<string, PortalPipelineInputDefinition>;
 }
@@ -7389,6 +7397,12 @@ export function projectPortalPipelineMetadata(
           item === 'global' || item === 'directory' || item === 'worktree',
       )
     : [];
+  const shareScope =
+    raw.shareScope === 'private' ||
+    raw.shareScope === 'team' ||
+    raw.shareScope === 'organization'
+      ? raw.shareScope
+      : undefined;
   const taskReadyInputs = projectPortalPipelineInputs(raw.taskReadyInputs);
   const planReadyInputs = projectPortalPipelineInputs(raw.planReadyInputs);
   return {
@@ -7397,6 +7411,7 @@ export function projectPortalPipelineMetadata(
     ...(origin ? { origin } : {}),
     ...(triggerTypes.length > 0 ? { triggerTypes } : {}),
     ...(scopes.length > 0 ? { scopes } : {}),
+    ...(shareScope ? { shareScope } : {}),
     ...(Object.keys(taskReadyInputs).length > 0 ? { taskReadyInputs } : {}),
     ...(Object.keys(planReadyInputs).length > 0 ? { planReadyInputs } : {}),
   };
@@ -7418,6 +7433,8 @@ export interface PortalPipelineSummary extends PortalPipelineMetadata {
    * this field).
    */
   shareable?: boolean;
+  /** Author-side share id, for matching a positively owned shared pipeline. */
+  shareRemoteId?: string;
   /**
    * True for a user pipeline a live desktop automation owns (CAN-4551): the
    * Portal lists it under that automation, not as a pipeline. The desktop
@@ -9291,6 +9308,11 @@ export interface PortalProviderUsageAccount {
   /** Plan display label, e.g. `Claude Max 20x`, or `API key`. */
   planLabel?: string;
   status: PortalProviderUsageAccountStatus;
+  /**
+   * The proxy can no longer renew this account's sign-in; sent with status
+   * `error`, which older hosts show. Sign in again in proxy settings.
+   */
+  signInRequired?: true;
   /** ISO timestamp when a cooling account can serve again. */
   availableAt?: string;
   usageSource?: PortalProviderUsageAccountSource;

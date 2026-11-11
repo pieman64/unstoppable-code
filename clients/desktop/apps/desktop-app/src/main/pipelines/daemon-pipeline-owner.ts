@@ -126,6 +126,8 @@ export function ensureDaemonPipelineOwnerSettlement(): Promise<void> {
 
 async function open(): Promise<void> {
   const client = await getDaemonPipelineOwnerClient();
+  // A stop while the client was coming must not leave a live subscription.
+  if (disposed) throw new Error('Workflow host steps are closed.');
   const opened: OwnerSubscription = { client };
   // Set before the stream opens: its first frames can precede the open result.
   subscription = opened;
@@ -223,6 +225,11 @@ async function settle(
     logMainProcessError('Pipeline host request failed', error);
     answer = { result: FAILED_UNEXPECTEDLY };
   }
+  // A call the abort ended (withdrawn, its mirror settled, or the app is
+  // quitting) gets no answer: its failure would fail a run the daemon pauses
+  // once its owner is gone (CAN-6033). A call that finished first still
+  // answers, so its effects are not repeated on a replay.
+  if (apply.abort.signal.aborted && answer.result.status === 'failure') return;
   await respond(client, request, answer);
 }
 
@@ -372,12 +379,21 @@ export function abortDaemonPipelineHostCalls(executionId: string): void {
     if (held.request.executionId === executionId) unsent.delete(requestId);
 }
 
-export async function disposeDaemonPipelineOwnerSettlement(): Promise<void> {
+/**
+ * Stops settling host requests: aborts every in-flight host call, which then
+ * sends no answer, and closes the owner subscription. The daemon pauses its
+ * owner-bound runs once the owner has been gone a while (CAN-6033).
+ */
+export function stopDaemonPipelineOwnerSettlement(): void {
   disposed = true;
   for (const apply of inFlight.values()) apply.abort.abort();
   unsent.clear();
   const current = subscription;
   subscription = null;
   current?.stream?.close();
+}
+
+export async function disposeDaemonPipelineOwnerSettlement(): Promise<void> {
+  stopDaemonPipelineOwnerSettlement();
   await disposeDaemonPipelineOwner();
 }

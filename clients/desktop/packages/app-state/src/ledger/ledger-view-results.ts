@@ -13,9 +13,6 @@ import { sameLedgerValue } from './ledger-structural-sharing';
  * becomes something to show, and the search text the Ledger accepts.
  */
 
-/** Search text is cut to the Ledger's query limit, in code points. */
-const LEDGER_VIEW_QUERY_MAX_CODE_POINTS = 256;
-
 /** Why a read gave nothing to show. Never an empty result. */
 export type LedgerViewProblem =
   | {
@@ -47,20 +44,7 @@ export function thrownResult(error: unknown): LedgerViewResult<never> {
 }
 
 /** Query text as the Ledger accepts it: no control characters, bounded. */
-export function normalizeQuery(text: string): string {
-  let result = '';
-  for (const character of text) {
-    const codePoint = character.codePointAt(0) ?? 0;
-    result +=
-      codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
-        ? ' '
-        : character;
-  }
-  return Array.from(result.trim())
-    .slice(0, LEDGER_VIEW_QUERY_MAX_CODE_POINTS)
-    .join('')
-    .trim();
-}
+export { normalizeLedgerViewQuery as normalizeQuery } from '@canopy/protocol/ledger-view';
 
 /** Adds labels to those a view already holds. */
 export function withActors(

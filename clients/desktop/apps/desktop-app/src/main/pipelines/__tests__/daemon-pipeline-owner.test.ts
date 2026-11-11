@@ -39,6 +39,25 @@ function mockClient(): FakeOwnerClient {
     },
   };
 }
+import type * as HostRequestApply from '@canopy/desktop-shared/node/pipelines/host-request-apply';
+
+/** Runs after the real apply settles and before the answer is sent. */
+let mockAfterApply: ((executionId: string) => void) | undefined;
+jest.mock('@canopy/desktop-shared/node/pipelines/host-request-apply', () => {
+  const actual: typeof HostRequestApply = jest.requireActual(
+    '@canopy/desktop-shared/node/pipelines/host-request-apply',
+  );
+  return {
+    ...actual,
+    applyPortableHostRequest: async (
+      options: Parameters<typeof actual.applyPortableHostRequest>[0],
+    ): ReturnType<typeof actual.applyPortableHostRequest> => {
+      const answer = await actual.applyPortableHostRequest(options);
+      mockAfterApply?.(options.request.executionId);
+      return answer;
+    },
+  };
+});
 jest.mock('../../canopy-runtime/electron-daemon-owner', () => ({
   getDaemonPipelineOwnerClient: (): Promise<unknown> => {
     const next = mockClients.length > 1 ? mockClients.shift() : mockClients[0];
@@ -69,7 +88,7 @@ import {
   hostRequestEnvelope,
   portableHostActionRequest,
 } from '@canopy/desktop-shared/node/pipelines/host-request-portable';
-import { buildPipelineHostIdempotencyKey } from '@canopy/desktop-shared/pipelines/host-actions';
+import { buildPipelineHostIdempotencyKey } from '@canopy/execution-engine/pipelines/host-actions';
 import { markUnreachable } from '../../canopy-runtime/electron-daemon-connection';
 import {
   DaemonPipelineExecutionHandle,
@@ -109,6 +128,26 @@ function fakeHost(behave: () => Promise<PipelineHostActionResult>): FakeHost {
 }
 
 const never = (): Promise<never> => new Promise<never>(() => undefined);
+
+/** A host whose call, like wait-for-agent-reply, ends only when it is aborted. */
+function abortEndedHost(): FakeHost {
+  const signals: AbortSignal[] = [];
+  return {
+    signals,
+    actions: {
+      run: (_request, _caller, signal): Promise<PipelineHostActionResult> => {
+        signals.push(signal);
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => reject(new Error('The wait was aborted.')),
+            { once: true },
+          );
+        });
+      },
+    },
+  };
+}
 
 /** A followed owner-bound mirror of one daemon run, with `host` as its start's desktop host. */
 function follow(host: FakeHost): string {
@@ -440,6 +479,75 @@ describe('daemon pipeline owner settlement (CAN-5771)', () => {
       result: { message: DAEMON_PIPELINE_NOT_STARTED_HERE_MESSAGE },
     });
     expect(host.signals).toHaveLength(1);
+  });
+
+  it('an aborted host call sends the daemon no answer (CAN-6033)', async () => {
+    const withdrawnHost = abortEndedHost();
+    const withdrawn = requestFor(follow(withdrawnHost));
+    deliver(withdrawn);
+    const settledHost = abortEndedHost();
+    const settledId = follow(settledHost);
+    deliver(requestFor(settledId));
+    await waitFor(
+      () =>
+        withdrawnHost.signals.length === 1 && settledHost.signals.length === 1,
+    );
+    deliver({
+      withdrawn: true,
+      executionId: withdrawn.executionId,
+      requestId: withdrawn.requestId,
+    });
+    abortDaemonPipelineHostCalls(settledId);
+    await new Promise((done) => setTimeout(done, 100));
+    expect(
+      owner.calls.filter(
+        ([name]) => name === 'worker.pipeline.hostRequest.respond',
+      ),
+    ).toEqual([]);
+  });
+
+  it('a host call that succeeded before its abort still answers the daemon (CAN-6033)', async () => {
+    const host = fakeHost(() =>
+      Promise.resolve({ status: 'success', outputs: { branch_name: 'b' } }),
+    );
+    const request = requestFor(follow(host));
+    mockAfterApply = abortDaemonPipelineHostCalls;
+    try {
+      deliver(request);
+      await waitFor(() => owner.calls.length === 1);
+    } finally {
+      mockAfterApply = undefined;
+    }
+    expect(host.signals[0]?.aborted).toBe(true);
+    expect(owner.calls[0]?.[0]).toBe('worker.pipeline.hostRequest.respond');
+    expect(owner.calls[0]?.[1]).toMatchObject({
+      requestId: request.requestId,
+      result: { status: 'success' },
+    });
+  });
+
+  it('a stop while the owner session is still opening leaves no subscription (CAN-6033)', async () => {
+    const fresh = mockClient();
+    const opened: string[] = [];
+    const openStream = fresh.openStream.bind(fresh);
+    fresh.openStream = (name, params, options): Promise<{ close(): void }> => {
+      opened.push(name);
+      return openStream(name, params, options);
+    };
+    const frames = mockOnFrame;
+    mockClients.unshift(fresh);
+    try {
+      await jest.isolateModulesAsync(async () => {
+        const isolated = await import('../daemon-pipeline-owner');
+        const opening = isolated.ensureDaemonPipelineOwnerSettlement();
+        isolated.stopDaemonPipelineOwnerSettlement();
+        await opening.catch(() => undefined);
+      });
+    } finally {
+      mockClients.splice(mockClients.indexOf(fresh), 1);
+      mockOnFrame = frames;
+    }
+    expect(opened).toEqual([]);
   });
 
   it('a settled mirror aborts its execution’s host calls', async () => {

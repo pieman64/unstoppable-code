@@ -600,6 +600,7 @@ export function persistedParts(
     if (
       block.type === 'text' &&
       (limits.includeText ||
+        block.providerErrorDetails !== undefined ||
         isClaudeAiCreditsFallbackErrorCode(block.errorCode) ||
         isCodexAccountModelAccessFailure(block.modelAccessFailure))
     ) {
@@ -610,6 +611,9 @@ export function persistedParts(
         {
           kind: 'text',
           data: {
+            ...(block.providerErrorDetails !== undefined
+              ? { providerErrorDetails: block.providerErrorDetails }
+              : {}),
             ...(isClaudeAiCreditsFallbackErrorCode(block.errorCode)
               ? { errorCode: block.errorCode }
               : {}),
@@ -928,6 +932,7 @@ export function persistedMessageToPortalMessage(
   const joinedText = input.message.blocks
     .flatMap((block) =>
       block.type === 'text' &&
+      block.providerErrorDetails === undefined &&
       !isClaudeAiCreditsFallbackErrorCode(block.errorCode) &&
       !isCodexAccountModelAccessFailure(block.modelAccessFailure)
         ? [
@@ -1153,6 +1158,9 @@ function portalPartToPersistedBlocks(
             {
               type: 'text',
               text: data.text,
+              ...(typeof data.providerErrorDetails === 'string'
+                ? { providerErrorDetails: data.providerErrorDetails }
+                : {}),
               ...(isClaudeAiCreditsFallbackErrorCode(data.errorCode)
                 ? { errorCode: data.errorCode }
                 : {}),

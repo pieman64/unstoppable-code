@@ -127,6 +127,7 @@ const gatewayModelConfigSchema = z
     gatewayOnly: z.boolean(),
     contextWindow: positiveInteger,
     supportsPromptCaching: z.boolean(),
+    supportsImages: z.boolean().optional(),
     supportedThinkingLevels: supportedThinkingLevelsSchema,
     toolSchemaProfile: z.enum(['standard', 'flat']),
   })

@@ -66,7 +66,7 @@ import type {
   UsageInitiationSource,
 } from '@canopy/desktop-shared/types';
 import { setBrandEnv } from '@canopy/execution-engine/brand/env';
-import { filterPipelinePackageOverlayForStep } from '../package-runtime';
+import { filterPipelinePackageOverlayForStep } from '@canopy/execution-engine/node/pipelines/package-runtime';
 import { recordedLedgerAgentSession } from './pipeline-ledger';
 
 export interface RunJobOptions {

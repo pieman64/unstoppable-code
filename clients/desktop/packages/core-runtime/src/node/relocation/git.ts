@@ -56,6 +56,7 @@ export interface RelocationGitPlan {
 async function observe(
   git: RelocationGit,
   path: string,
+  ignoredWorktrees: readonly string[] = [],
 ): Promise<RelocationGitCheckout> {
   let entry: string[] | undefined;
   for (const record of (
@@ -65,6 +66,8 @@ async function observe(
     const listed = fields
       .find((field) => field.startsWith('worktree '))
       ?.slice(9);
+    if (listed && ignoredWorktrees.some((root) => isWithin(root, listed)))
+      continue;
     if (
       listed &&
       (sep === '\\'
@@ -143,11 +146,14 @@ export async function prepareRelocationGit(
   options: {
     readonly portableFilesystem?: boolean;
     readonly reportedMissingPrunable?: Set<string>;
+    readonly ignoredWorktrees?: readonly string[];
   } = {},
 ): Promise<RelocationGitPlan> {
   const checkouts: RelocationGitCheckout[] = [];
   const backlinks = new Map<string, string>();
   for (const requestedPath of new Set(paths)) {
+    if (options.ignoredWorktrees?.some((root) => isWithin(root, requestedPath)))
+      continue;
     const path = await canonicalGitPath(requestedPath, 'symlink-checkout');
     if (checkouts.some((checkout) => checkout.path === path)) continue;
     const dotGit = join(path, '.git');
@@ -157,7 +163,7 @@ export async function prepareRelocationGit(
       (dotGitState.isFile() && dotGitState.nlink !== 1)
     )
       throw new RelocationRefusedError('symlink-git-directory');
-    const checkout = await observe(git, path);
+    const checkout = await observe(git, path, options.ignoredWorktrees);
     if (options.portableFilesystem) {
       const configuration = await git(path, ['config', '--null', '--list']);
       if (
@@ -227,6 +233,13 @@ export async function prepareRelocationGit(
     for (const record of listed.split('\0\0')) {
       const fields = record.split('\0');
       if (
+        fields.some(
+          (field) =>
+            field.startsWith('worktree ') &&
+            options.ignoredWorktrees?.some((root) =>
+              isWithin(root, field.slice(9)),
+            ),
+        ) ||
         fields.includes('bare') ||
         (await isMissingPrunableGitWorktree(
           fields,
@@ -370,7 +383,10 @@ export async function qualifyRelocationGit(
   git: RelocationGit,
   transition: RelocationTransition,
   plan: RelocationGitPlan,
-  options: { readonly portableFilesystem?: boolean } = {},
+  options: {
+    readonly portableFilesystem?: boolean;
+    readonly ignoredWorktrees?: readonly string[];
+  } = {},
 ): Promise<void> {
   const expected = plan.checkouts.map((row) => ({
     ...row,

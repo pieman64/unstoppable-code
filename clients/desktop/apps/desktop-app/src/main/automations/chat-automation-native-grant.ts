@@ -243,8 +243,8 @@ async function defaultFacts(): Promise<NativeGrantRunFacts> {
     import('../pipelines/pipeline-local-metadata-store'),
     import('../pipelines/pipeline-service'),
     import('@canopy/desktop-shared/node/pipelines/executor/execution-state'),
-    import('@canopy/desktop-shared/pipelines/normalize-pipeline'),
-    import('@canopy/desktop-shared/node/pipelines/default-shell'),
+    import('@canopy/execution-engine/pipelines/normalize-pipeline'),
+    import('@canopy/execution-engine/node/pipelines/default-shell'),
     import('../lib/paths'),
   ]);
   return {

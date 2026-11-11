@@ -113,7 +113,7 @@ afterEach(async () => {
   rmSync(ledgerDir, { recursive: true, force: true });
 });
 
-describe('SetAutoArchive through core.chat.update (CAN-6014)', () => {
+describe('SetChatAutoArchive through core.chat.update (CAN-6014)', () => {
   it("sets and clears only the session's own chat; a chat or tab in tool input is refused", async () => {
     await expect(
       executeCanopyInjectedTool(
@@ -122,7 +122,7 @@ describe('SetAutoArchive through core.chat.update (CAN-6014)', () => {
         session(),
       ),
     ).resolves.toEqual({
-      text: 'Invalid arguments for SetAutoArchive.',
+      text: 'Invalid arguments for SetChatAutoArchive.',
       isError: true,
     });
     expect(await markers()).toEqual({ 'chat-1': false, 'chat-2': false });
@@ -149,7 +149,7 @@ describe('SetAutoArchive through core.chat.update (CAN-6014)', () => {
         {} as CanopyInjectedToolRuntime,
       ),
     ).resolves.toEqual({
-      text: 'SetAutoArchive is only available for chats.',
+      text: 'SetChatAutoArchive is only available for chats.',
       isError: true,
     });
     expect(await markers()).toEqual({ 'chat-1': false, 'chat-2': false });
@@ -231,7 +231,7 @@ describe('SetAutoArchive through core.chat.update (CAN-6014)', () => {
         session(),
       ),
     ).resolves.toEqual({
-      text: 'Invalid arguments for SetAutoArchive.',
+      text: 'Invalid arguments for SetChatAutoArchive.',
       isError: true,
     });
     expect(await markers()).toEqual({ 'chat-1': false, 'chat-2': false });

@@ -65,7 +65,7 @@ import {
   validateId,
   validatePipelineDefinitionLocator,
 } from '../lib/validation';
-import { validatePipelineRuntimeIdentifier } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { validatePipelineRuntimeIdentifier } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { assertNotSplitLocked } from './split-lock-service';
 import { PortalServiceError } from './portal-service-error';
 import { buildPipelineFailureDebugPrompt } from '@canopy/desktop-shared/lib/pipelineFailureDebugPrompt';
@@ -102,14 +102,18 @@ import {
 } from '../pipelines/canopy-server-client';
 import { getSharedPackageReadinessFromDetail } from '../pipelines/pipeline-package-service';
 import { getSharedPipelineSaveImpact } from '../pipelines/shared-pipeline-save-impact';
-import { subscribeCanopyCloudAccountChanges } from '../lib/canopy-cloud-account-store';
+import {
+  loadCanopyCloudAccountPublicState,
+  subscribeCanopyCloudAccountChanges,
+} from '../lib/canopy-cloud-account-store';
+import { authorShareRemoteIds } from '@canopy/protocol/sharing';
 import {
   preserveOrganizationPublicLink,
   requirePortalShareAccountId,
   toPortalExistingShare,
 } from '../lib/resource-share-context';
 import type { PortalSharingExistingShare } from '@canopy/protocol/portal';
-import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   buildSharedPipelineId,
@@ -815,11 +819,19 @@ interface SharedPipelineListMemo {
   rows: UnstampedSharedPipelineSummary[];
 }
 
-/** A shared row before it is stamped with the target it is being listed for. */
+/**
+ * A shared row before it is stamped with the target it is being listed for.
+ * `createdById` and `remoteId` feed the author filter in
+ * {@link listSharedPipelineSummaries} and are stripped before stamping.
+ */
 type UnstampedSharedPipelineSummary = Omit<
   PortalPipelineSummary,
   'workspaceLocalId' | 'worktreeLocalId'
->;
+> & {
+  createdById?: string;
+  /** The raw cloud id `pipelineId` wraps, so the filter never parses it. */
+  remoteId: string;
+};
 
 let sharedPipelineListMemo: SharedPipelineListMemo | null = null;
 let sharedPipelineListInFlight: Promise<
@@ -917,6 +929,8 @@ async function fetchSharedPipelineSummaries(): Promise<
       .map((row): UnstampedSharedPipelineSummary => {
         return {
           pipelineId: buildSharedPipelineId(CANOPY_CLOUD_SERVER_ID, row.id),
+          remoteId: row.id,
+          createdById: row.createdBy.id,
           name: row.name,
           ...(row.description ? { description: row.description } : {}),
           // Long-standing shape: `source` is the FILENAME, and a shared
@@ -947,6 +961,8 @@ async function fetchPersonalSharedPipelineSummaries(): Promise<
     .slice(0, SHARED_PIPELINE_LIST_LIMIT)
     .map((row) => ({
       pipelineId: buildSharedPipelineId(CANOPY_CLOUD_SERVER_ID, row.id),
+      remoteId: row.id,
+      createdById: row.createdBy.id,
       name: row.name,
       ...(row.description ? { description: row.description } : {}),
       source: '',
@@ -1094,34 +1110,97 @@ async function loadPersonalSharedPipelineSummaries(): Promise<
  * about the LOCAL inventory it is publishing. A signed-out desktop, an offline
  * one, or a cloud blip must not fail the whole document and wipe every local
  * pipeline from the portal; it just means no shared rows this pass.
+ *
+ * The viewer's own share that exactly one of `localPipelines` links to is
+ * dropped: the author sees one row for what they shared, the local one, which
+ * carries `shareRemoteId` and `shareScope` (see {@link summarizePipelines}).
+ * Pass only the local rows the list publishes (see
+ * {@link publishedLocalPipelines}), so a share never folds into a row the
+ * author cannot see. The filter runs after the memo so it always reads current
+ * local links.
  */
 async function listSharedPipelineSummaries(
   target: PipelineListTarget,
+  localPipelines: readonly PipelineInfo[],
   options: { deadlineMs?: number; personalOnly?: boolean } = {},
 ): Promise<PortalPipelineSummary[]> {
+  // The author filter's account read rides the same deadline as the fetch.
   const load = (
     options.personalOnly
       ? loadPersonalSharedPipelineSummaries()
       : loadSharedPipelineSummaries()
-  ).catch((error: unknown): UnstampedSharedPipelineSummary[] => {
-    if (
-      options.personalOnly &&
-      error instanceof Error &&
-      error.message.includes('context-mismatch')
-    ) {
-      throw error;
-    }
-    return [];
-  });
-  const rows =
+  )
+    .catch((error: unknown): UnstampedSharedPipelineSummary[] => {
+      if (
+        options.personalOnly &&
+        error instanceof Error &&
+        error.message.includes('context-mismatch')
+      ) {
+        throw error;
+      }
+      return [];
+    })
+    .then((rows) => withoutAuthorLinkedShares(rows, localPipelines));
+  const visible =
     options.deadlineMs === undefined
       ? await load
       : await raceSharedPipelineDeadline(load, options.deadlineMs);
-  return rows.map((row) => ({
-    ...row,
-    workspaceLocalId: target.workspaceLocalId,
-    worktreeLocalId: target.worktreeLocalId,
-  }));
+  return visible.map((unstamped) => {
+    const {
+      createdById: _createdById,
+      remoteId: _remoteId,
+      ...row
+    } = unstamped;
+    void _createdById;
+    void _remoteId;
+    return {
+      ...row,
+      workspaceLocalId: target.workspaceLocalId,
+      worktreeLocalId: target.worktreeLocalId,
+    };
+  });
+}
+
+/**
+ * Drop shares the signed-in account created that one listed local pipeline
+ * links to. A signed-out desktop, or an account read that fails, folds
+ * nothing; the list never fails for it.
+ */
+async function withoutAuthorLinkedShares(
+  rows: UnstampedSharedPipelineSummary[],
+  localPipelines: readonly PipelineInfo[],
+): Promise<UnstampedSharedPipelineSummary[]> {
+  if (rows.length === 0) return rows;
+  let viewerId: string | undefined;
+  try {
+    const state = await loadCanopyCloudAccountPublicState();
+    viewerId =
+      state.hasApiKey === true && state.account ? state.account.id : undefined;
+  } catch {
+    return rows;
+  }
+  if (!viewerId) return rows;
+  const authorIds = authorShareRemoteIds(localPipelines, viewerId);
+  if (authorIds.size === 0) return rows;
+  return rows.filter(
+    (row) => !(row.createdById === viewerId && authorIds.has(row.remoteId)),
+  );
+}
+
+/**
+ * The local pipelines a list publishes as pipeline rows: the summary was
+ * produced (and kept, for a budgeted list) and is not folded under its
+ * automation.
+ */
+function publishedLocalPipelines(
+  pipelines: readonly PipelineInfo[],
+  published: readonly (PortalPipelineSummary | null)[],
+): PipelineInfo[] {
+  const ids = new Set<string>();
+  for (const summary of published) {
+    if (summary && !summary.ownedByAutomation) ids.add(summary.pipelineId);
+  }
+  return pipelines.filter((pipeline) => ids.has(pipeline.id));
 }
 
 /**
@@ -1175,8 +1254,10 @@ export async function listPipelines(
     worktreeId: target.worktreeLocalId,
   };
   // One checkout discovery serves the listing and every row's read.
-  const summaries = await withSharedProjectDiscovery(async () =>
-    summarizePipelines(target, await listPortalPipelineInfos(scope), {
+  let infos: PipelineInfo[] = [];
+  const summaries = await withSharedProjectDiscovery(async () => {
+    infos = await listPortalPipelineInfos(scope);
+    return summarizePipelines(target, infos, {
       loadDefinition: (pipeline) =>
         readDesktopPipeline(
           pipeline.id,
@@ -1186,17 +1267,21 @@ export async function listPipelines(
           (data) => data.content,
           (): null => null,
         ),
-    }),
-  );
+    });
+  });
   return [
     ...summaries.filter((summary) => summary !== null),
     // Appended last so a prefix-cut for the result budget drops shared rows
     // before it drops a local pipeline (CAN-3021). Deadline-bounded because
     // this list backs the portal worktree snapshot: see
     // `raceSharedPipelineDeadline`.
-    ...(await listSharedPipelineSummaries(target, {
-      deadlineMs: LIVE_SHARED_PIPELINE_DEADLINE_MS,
-    })),
+    ...(await listSharedPipelineSummaries(
+      target,
+      publishedLocalPipelines(infos, summaries),
+      {
+        deadlineMs: LIVE_SHARED_PIPELINE_DEADLINE_MS,
+      },
+    )),
   ];
 }
 
@@ -1270,9 +1355,11 @@ export async function listPipelinesStrict(
   // budget drops first and a shared row can never evict a local pipeline.
   // They are fetched fail-soft, so a signed-out or offline desktop publishes
   // the local inventory unchanged instead of failing the pass.
-  const shared = await listSharedPipelineSummaries(target, {
-    personalOnly: true,
-  });
+  const shared = await listSharedPipelineSummaries(
+    target,
+    publishedLocalPipelines(merged, pipelines),
+    { personalOnly: true },
+  );
   const localPipelineCount = pipelines.length;
   for (const summary of shared) {
     if (!exceedsSerializedBudget(summary, STRICT_PIPELINE_SUMMARY_MAX_BYTES)) {
@@ -1406,6 +1493,14 @@ async function summarizePipelines(
             : {}),
           scopes: pipeline.scopes ?? ['directory'],
           ...(canSharePortalPipeline(pipeline) ? { shareable: true } : {}),
+          // The author-side link, so the web can fold the author's own share
+          // into this row and label it with its audience.
+          ...(pipeline.remote
+            ? {
+                shareRemoteId: pipeline.remote.remoteId,
+                shareScope: pipeline.remote.shareScope,
+              }
+            : {}),
           ...(pipeline.source === 'user' && owned.has(pipeline.id)
             ? { ownedByAutomation: true }
             : {}),

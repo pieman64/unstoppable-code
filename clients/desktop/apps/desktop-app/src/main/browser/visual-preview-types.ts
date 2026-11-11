@@ -123,12 +123,13 @@ export const VISUAL_PREVIEW_LIMITS = {
 
 /**
  * Per-provider budgets. Codex rejects a whole dynamic tool response over
- * 64 KiB, so its budget covers the serialized response; Cursor gets no image
- * until a real run shows the model receives MCP images as images.
+ * 64 KiB, so its budget covers the serialized response; the ACP harnesses
+ * (Cursor and OpenCode) get no image until a real run shows the model
+ * receives MCP images as images.
  */
 export const VISUAL_PREVIEW_BUDGETS = {
   codexResponseBytes: 60 * 1024,
   codexTextBytes: 12 * 1024,
   claudeImageBytes: 256 * 1024,
-  cursorImageBytes: 0,
+  acpImageBytes: 0,
 } as const;
