@@ -2,15 +2,22 @@ import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/settings-list/canopy_settings_row.dart';
 import 'package:mobile/core/design-system/settings-list/canopy_settings_section.dart';
 import 'package:mobile/data/protocol/generated/provider_usage.dart';
-import 'package:mobile/ui/core/design_tokens.dart';
+import 'package:mobile/ui/features/account/view_models/opencode_usage_policy.dart';
+import 'package:mobile/ui/features/account/view_models/usage_limits_policy.dart';
+import 'package:mobile/ui/features/account/views/widgets/usage_limit_window_card.dart';
 import 'package:mobile/ui/core/dimens.dart';
 
 /// Display-only native metadata, matching the desktop/Portal account card.
 /// Each provider can have its own selected account; none is a global identity.
 class OpenCodeAccountsSection extends StatelessWidget {
-  const OpenCodeAccountsSection({required this.snapshot, super.key});
+  const OpenCodeAccountsSection({
+    required this.snapshot,
+    required this.now,
+    super.key,
+  });
 
   final OpenCodeAccountSnapshot snapshot;
+  final DateTime now;
 
   @override
   Widget build(BuildContext context) {
@@ -42,7 +49,7 @@ class OpenCodeAccountsSection extends StatelessWidget {
                 else
                   // Lead with the provider, as the shared desktop/Portal card
                   // does, so two accounts labelled "Personal" stay distinct.
-                  for (final account in provider.accounts)
+                  for (final account in provider.accounts) ...[
                     CanopySettingsRow(
                       title: _providerName(provider),
                       subtitle: [
@@ -52,16 +59,24 @@ class OpenCodeAccountsSection extends StatelessWidget {
                         _methodLabel(account.method),
                         if (account.selected) 'Selected for this provider',
                         if (account.needsSignIn) 'Sign in again on desktop',
+                        openCodeUsageDescription(account.usage),
                       ].join(' · '),
                     ),
+                    for (final window in openCodeUsageWindows(account.usage))
+                      Padding(
+                        padding: const EdgeInsets.all(AppDimens.padding8),
+                        child: UsageLimitWindowCard(
+                          window: window,
+                          resetPassed: isUsageResetPassed(window, now),
+                          resetLabel: switch (usageResetAt(window)) {
+                            final resetAt? =>
+                              'Resets ${_formatReset(context, resetAt)}',
+                            null => null,
+                          },
+                        ),
+                      ),
+                  ],
           ],
-        ),
-        const SizedBox(height: AppDimens.padding8),
-        Text(
-          'Plan and usage limits are unavailable from OpenCode.',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            color: AppColors.of(context).foregroundMuted,
-          ),
         ),
       ],
     );
@@ -77,3 +92,9 @@ String _methodLabel(OpenCodeAccountMethod method) => switch (method) {
   OpenCodeAccountMethod.external => 'External credentials',
   OpenCodeAccountMethod.env => 'Environment variable',
 };
+
+String _formatReset(BuildContext context, DateTime value) {
+  final local = value.toLocal();
+  final labels = MaterialLocalizations.of(context);
+  return '${labels.formatShortDate(local)} ${labels.formatTimeOfDay(TimeOfDay.fromDateTime(local))}';
+}

@@ -9,7 +9,6 @@ import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/ui/core/workspace_context_label.dart';
 import 'package:mobile/ui/core/widgets/chat_list_notice.dart';
 import 'package:mobile/ui/features/account/views/account_screen.dart';
-import 'package:mobile/ui/features/desktop_app/view_models/desktop_app_prompt_controller.dart';
 import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
 import 'package:mobile/ui/core/navigation/home_recent_chat_controller.dart';
 import 'package:mobile/ui/features/home/views/activity_refresh_binding.dart';
@@ -279,8 +278,6 @@ class _HomeShellState extends State<HomeShell>
                             offset: Offset(-(1 - t) * menuWidth * 0.25, 0),
                             child: _RecentChatsBuilder(
                               builder: (context, recentChats, notice) {
-                                final desktopApp = context
-                                    .watch<DesktopAppPromptController?>();
                                 final remoteConnected = context
                                     .select<RemoteControlViewModel, bool>(
                                       (remote) => remote.isConnected,
@@ -324,17 +321,6 @@ class _HomeShellState extends State<HomeShell>
                                       ? () => tabController.select(
                                           HomeTab.account,
                                         )
-                                      : null,
-                                  onGetDesktopApp:
-                                      desktopApp != null && desktopApp.canOffer
-                                      ? () {
-                                          _closeMenu();
-                                          // The shell's context: the
-                                          // drawer unmounts as it closes.
-                                          unawaited(
-                                            desktopApp.open(this.context),
-                                          );
-                                        }
                                       : null,
                                 );
                               },

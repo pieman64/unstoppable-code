@@ -44,7 +44,6 @@ class HomeNavigationDrawer extends StatelessWidget {
     this.onOpenChat,
     this.onNewChat,
     this.onOpenSettings,
-    this.onGetDesktopApp,
     super.key,
   });
 
@@ -76,10 +75,6 @@ class HomeNavigationDrawer extends StatelessWidget {
 
   /// Opens Settings from the pinned Settings button; null hides the button.
   final VoidCallback? onOpenSettings;
-
-  /// Opens the desktop app prompt from its row (CAN-4424); null hides the
-  /// row, as it is while a desktop is paired.
-  final VoidCallback? onGetDesktopApp;
 
   /// Gap between the pinned buttons and the drawer's side and bottom safe
   /// edges.
@@ -256,28 +251,6 @@ class HomeNavigationDrawer extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(bottom: 4),
             child: extraDestination,
-          ),
-        if (onGetDesktopApp case final onGetDesktopApp?)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: ListTile(
-              key: const ValueKey('home-nav-desktop-app'),
-              leading: CanopyIcon(
-                glyph: CanopyGlyph.monitorDown,
-                tint: colorScheme.onSurfaceVariant,
-              ),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              title: const Text(
-                'Get the desktop app',
-                style: TextStyle(
-                  fontWeight: AppTypography.emphasisWeight,
-                  fontVariations: AppTypography.emphasisVariations,
-                ),
-              ),
-              onTap: onGetDesktopApp,
-            ),
           ),
         if (recentChats.isNotEmpty || recentChatsNotice != null) ...[
           Padding(

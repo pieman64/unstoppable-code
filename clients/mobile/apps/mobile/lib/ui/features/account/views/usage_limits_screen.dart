@@ -98,7 +98,10 @@ class _UsageLimitsScreenState extends State<UsageLimitsScreen> {
                     ],
                     if (_viewModel.projection?.openCodeAccounts
                         case final accounts?)
-                      OpenCodeAccountsSection(snapshot: accounts),
+                      OpenCodeAccountsSection(
+                        snapshot: accounts,
+                        now: _viewModel.now(),
+                      ),
                   ],
                 ),
               ),

@@ -273,6 +273,9 @@
   /* CometSpinner: one unhurried turn of the comet ring every 1.2s, the
    * dot spinners' cycle. */
   --animate-comet-spin: comet-spin 1.2s linear infinite;
+  /* RunningGlyph: a working glyph (the Orchestrator's orbit) turns at half
+   * the comet's pace, so a 16px glyph reads as working, not frantic. */
+  --animate-glyph-spin: comet-spin 2.4s linear infinite;
   /* ProgressBar while indeterminate: a third of the track sweeps across it
    * and leaves before the next pass, on the dot spinners' cycle. */
   --animate-progress-indeterminate: progress-indeterminate 1.2s
@@ -1712,9 +1715,11 @@ body {
 /* Skeletons (`Skeleton`) draw through skullet, whose
  * stylesheet the token entry points import. Its blocks and measured bones read
  * these properties: the muted surface in every theme, a slow pulse rather than
- * a sweep, and capsule bars over text. They are set on skullet's own elements,
- * not the root, so a surface that redefines `--bg-muted` reaches its
- * skeletons. The pulse never starts under reduced motion; the fill stays. */
+ * a sweep, and capsule bars over text that run from the cap height to the
+ * baseline, the height of a line's capitals (10px for 14px type), so a bar
+ * reads as text rather than as a pill. They are set on skullet's own
+ * elements, not the root, so a surface that redefines `--bg-muted` reaches
+ * its skeletons. The pulse never starts under reduced motion; the fill stays. */
 [skullet-bar],
 [skullet-loading],
 [skullet-rect] {
@@ -1723,6 +1728,8 @@ body {
   --skullet-animation: pulse;
   --skullet-speed: slow;
   --skullet-radius: 9999px;
+  --skullet-text-top: cap-height;
+  --skullet-text-bottom: baseline;
 }
 
 /* An element kept as itself inside a measured skeleton (`SKELETON_KEEP`)
@@ -1770,6 +1777,14 @@ body {
 
 [data-skeleton-fidelity='low'] [data-skeleton-drop] {
   display: none !important;
+}
+
+/* An empty slot `Skeleton` leaves out (`skullet-ignore`) measures at its own
+ * size: without the sample line skullet writes into empty text elements. */
+[data-skeleton-fidelity='low']
+  [skullet-loading]
+  [skullet-ignore]:empty::before {
+  content: none !important;
 }
 
 /* A busy button's hidden label (`canopy-reserved-label`): `LoadingButton`

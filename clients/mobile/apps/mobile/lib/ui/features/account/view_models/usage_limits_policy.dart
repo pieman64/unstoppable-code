@@ -6,6 +6,7 @@ library;
 import 'package:flutter/foundation.dart';
 import 'package:mobile/data/protocol/generated/provider_usage.dart';
 import 'package:mobile/ui/core/format.dart';
+import 'package:mobile/ui/features/account/view_models/opencode_usage_policy.dart';
 
 /// Desktop thresholds (`USAGE_ALERT_WARNING_THRESHOLD` and
 /// `USAGE_ALERT_CRITICAL_THRESHOLD` in
@@ -163,12 +164,19 @@ DateTime? nextUsageResetAfter(
   DateTime now,
 ) {
   DateTime? next;
-  for (final entry in projection?.providers ?? const []) {
-    for (final window in entry.windows) {
-      final resetAt = usageResetAt(window);
-      if (resetAt == null || !resetAt.isAfter(now)) continue;
-      if (next == null || resetAt.isBefore(next)) next = resetAt;
-    }
+  final windows = [
+    for (final entry in projection?.providers ?? <PortalProviderUsageEntry>[])
+      ...entry.windows,
+    for (final provider
+        in projection?.openCodeAccounts?.providers ??
+            <OpenCodeAccountProvider>[])
+      for (final account in provider.accounts)
+        ...openCodeUsageWindows(account.usage),
+  ];
+  for (final window in windows) {
+    final resetAt = usageResetAt(window);
+    if (resetAt == null || !resetAt.isAfter(now)) continue;
+    if (next == null || resetAt.isBefore(next)) next = resetAt;
   }
   return next;
 }

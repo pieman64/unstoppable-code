@@ -162,19 +162,22 @@ enum PortalProviderUsageRefreshProvider {
 }
 
 class OpenCodeAccount {
-  const OpenCodeAccount({required this.label, required this.method, required this.needsSignIn, required this.selected});
+  const OpenCodeAccount({required this.label, required this.method, required this.needsSignIn, required this.selected, this.usage});
 
   final String label;
   final OpenCodeAccountMethod method;
   final bool needsSignIn;
   /// Reported by the native active-connection API, never inferred from order.
   final bool selected;
+  /// Read from the selected provider's usage API, never derived from chat tokens.
+  final OpenCodeAccountUsage? usage;
 
   factory OpenCodeAccount.fromJson(Map<String, dynamic> json) => OpenCodeAccount(
         label: json['label'] as String,
         method: OpenCodeAccountMethod.fromWire(json['method'] as String),
         needsSignIn: json['needsSignIn'] as bool,
         selected: json['selected'] as bool,
+        usage: json['usage'] == null ? null : OpenCodeAccountUsage.fromJson(json['usage'] as Map<String, dynamic>),
       );
 }
 
@@ -207,9 +210,40 @@ class OpenCodeAccountSnapshot {
       );
 }
 
+/// The runtime schema requires all usage fields for ready and strips them on failure.
+class OpenCodeAccountUsage {
+  const OpenCodeAccountUsage({this.checkedAt, this.plan, required this.status, this.windows});
+
+  final String? checkedAt;
+  final String? plan;
+  final String status;
+  final List<OpenCodeUsageWindow>? windows;
+
+  factory OpenCodeAccountUsage.fromJson(Map<String, dynamic> json) => OpenCodeAccountUsage(
+        checkedAt: json['checkedAt'] as String?,
+        plan: json['plan'] as String?,
+        status: json['status'] as String,
+        windows: json['windows'] == null ? null : _parseList(json['windows'], (e) => OpenCodeUsageWindow.fromJson(e as Map<String, dynamic>)),
+      );
+}
+
+class OpenCodeUsageWindow {
+  const OpenCodeUsageWindow({required this.id, required this.percent, required this.resetsAt});
+
+  final String id;
+  final num percent;
+  final String resetsAt;
+
+  factory OpenCodeUsageWindow.fromJson(Map<String, dynamic> json) => OpenCodeUsageWindow(
+        id: json['id'] as String,
+        percent: (json['percent'] as num?) ?? 0,
+        resetsAt: json['resetsAt'] as String,
+      );
+}
+
 /// One account the multi-account proxy shares for a provider. Display fields only: no credential file names, proxy messages, connection ids or URLs. Absent `usageSource` with no windows means usage is unavailable, never 0%.
 class PortalProviderUsageAccount {
-  const PortalProviderUsageAccount({this.availableAt, this.error, required this.id, this.label, this.lastUpdatedAt, this.planLabel, this.retryAt, required this.status, this.usageSource, required this.windows});
+  const PortalProviderUsageAccount({this.availableAt, this.error, required this.id, this.label, this.lastUpdatedAt, this.planLabel, this.retryAt, this.signInRequired, required this.status, this.usageSource, required this.windows});
 
   /// ISO timestamp when a cooling account can serve again.
   final String? availableAt;
@@ -225,6 +259,8 @@ class PortalProviderUsageAccount {
   final String? planLabel;
   /// ISO timestamp before which the desktop will not ask again.
   final String? retryAt;
+  /// The proxy can no longer renew this account's sign-in; sent with status `error`, which older hosts show. Sign in again in proxy settings.
+  final bool? signInRequired;
   final PortalProviderUsageAccountStatus status;
   final PortalProviderUsageAccountSource? usageSource;
   final List<PortalProviderUsageWindow> windows;
@@ -237,6 +273,7 @@ class PortalProviderUsageAccount {
         lastUpdatedAt: json['lastUpdatedAt'] as String?,
         planLabel: json['planLabel'] as String?,
         retryAt: json['retryAt'] as String?,
+        signInRequired: json['signInRequired'] as bool?,
         status: PortalProviderUsageAccountStatus.fromWire(json['status'] as String),
         usageSource: json['usageSource'] == null ? null : PortalProviderUsageAccountSource.fromWire(json['usageSource'] as String),
         windows: _parseList(json['windows'], (e) => PortalProviderUsageWindow.fromJson(e as Map<String, dynamic>)),
