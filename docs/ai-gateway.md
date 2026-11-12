@@ -39,7 +39,8 @@ every other model, turn on **Use only my AI gateway**.
 There are two other ways to set it up:
 
 - **First run:** on the desktop app's first screen, select
-  **Use your own AI gateway**.
+  **Use an AI gateway**, or select one of the gateway logos beside it to go
+  straight to that gateway's key.
 - **From a chat:** ask the agent, for example "Set up my AI gateway at
   gateway.example.com." An approval card asks "Connect AI gateway
   **gateway.example.com**?" Type your key into the card's masked field and
@@ -67,8 +68,14 @@ shared between members.
 - **Your API key** is encrypted with your operating system's secure storage and
   stays on your desktop. We never store it.
 - **The gateway URL, name, and model list** are saved to your account, or to
-  your organization for a shared gateway. So you need to be signed in to use a
-  gateway today.
+  your organization for a shared gateway.
+- **Signed out, or as a guest,** you can still set up a gateway. Its URL, name,
+  and model list are saved on this computer with its key, and nothing about it
+  goes to our servers.
+- **When you sign in,** a gateway you set up while signed out moves to your
+  account if your account doesn't have one yet. If it already has one, your
+  account's gateway is used, and the one on this computer comes back when you
+  sign out.
 - **Only Claude Code and Codex chats in the desktop app** can use gateway
   models.
 

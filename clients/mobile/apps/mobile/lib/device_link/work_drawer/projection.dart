@@ -1,5 +1,6 @@
 import 'package:mobile/data/models/computer_activity/pipeline_run.dart';
 import '../chats/state.dart';
+import '../pipelines/chat_activity.dart';
 import 'package:mobile/data/models/composer_work.dart';
 
 Map<String, dynamic> workObject(Object? value) =>
@@ -392,20 +393,14 @@ List<WorkItem> projectWork({
       ),
     );
   }
-  final receipts = <String>{};
-  for (final message in chat.messages) {
-    for (final block in message.blocks) {
-      for (final receipt in workRows(block['agentArtifacts'])) {
-        if (receipt['kind'] == 'pipeline_run') {
-          final id = workText(receipt['executionId']);
-          if (id != null) receipts.add(id);
-        }
-      }
-    }
-  }
+  final receipts = devicePipelineReceiptIds(chat.ref, chat.messages);
   for (final run in pipelines) {
-    if (!receipts.contains(run.localId) &&
-        !(run.chatTurns?.any((t) => t.chatId == chat.ref.id) ?? false)) {
+    if (run.hidden ||
+        !run.isRoot ||
+        run.workspaceLocalId != chat.ref.projectId ||
+        run.worktreeLocalId != chat.ref.worktreeId ||
+        (!receipts.contains(run.localId) &&
+            !(run.chatTurns?.any((t) => t.chatId == chat.ref.id) ?? false))) {
       continue;
     }
     final terminal = const [

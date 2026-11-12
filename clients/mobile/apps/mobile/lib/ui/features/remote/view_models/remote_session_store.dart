@@ -3,6 +3,7 @@ import 'package:mobile/data/models/remote_pipeline_run.dart';
 import 'package:mobile/data/models/remote_portal_event.dart';
 import 'package:mobile/data/models/remote_pr_progress.dart';
 import 'package:mobile/data/models/remote_session.dart';
+import 'package:mobile/data/models/remote_overview_sections.dart';
 import 'package:mobile/data/models/remote_shell_delta.dart';
 
 import 'chat_transcript_store.dart';
@@ -268,14 +269,7 @@ final class RemoteSessionStore {
   /// Workspaces in saved desktop sidebar order, independent of transport order.
   List<RemoteWorkspace> get workspaces {
     final sorted = List<RemoteWorkspace>.of(_snapshot?.workspaces ?? const []);
-    sorted.sort((left, right) {
-      // Older desktops may omit order. Put those entries last and use identity
-      // to break ties so refreshes and renamed workspaces cannot shuffle rows.
-      final byOrder = (left.order ?? double.infinity).compareTo(
-        right.order ?? double.infinity,
-      );
-      return byOrder != 0 ? byOrder : left.localId.compareTo(right.localId);
-    });
+    sorted.sort(compareRemoteWorkspaces);
     return List.unmodifiable(sorted);
   }
 

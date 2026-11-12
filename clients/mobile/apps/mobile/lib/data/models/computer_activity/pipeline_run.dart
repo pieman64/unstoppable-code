@@ -36,6 +36,7 @@ class RemotePipelineRunStep {
     required this.status,
     this.attempt,
     this.iteration,
+    this.recovery,
     this.outputTail,
   });
 
@@ -44,6 +45,7 @@ class RemotePipelineRunStep {
   final String status;
   final int? attempt;
   final int? iteration;
+  final int? recovery;
 
   /// Bounded tail of this step's combined stdout/stderr (<= 2 KB on the
   /// wire). A larger read is requested with `portal.pipeline.log_request`,
@@ -60,6 +62,7 @@ class RemotePipelineRunStep {
       status: _string(value['status']),
       attempt: _intOrNull(value['attempt']),
       iteration: _intOrNull(value['iteration']),
+      recovery: _intOrNull(value['recovery']),
       outputTail: _stringOrNull(value['outputTail']),
     );
   }
@@ -70,6 +73,7 @@ class RemotePipelineRunStep {
     status: status,
     attempt: attempt,
     iteration: iteration,
+    recovery: recovery,
     outputTail: tail,
   );
 }
@@ -618,6 +622,7 @@ List<RemotePipelineRunStep> _mergeSteps(
           when step.outputTail == null &&
               step.attempt == before.attempt &&
               step.iteration == before.iteration &&
+              step.recovery == before.recovery &&
               before.outputTail != null)
         step.withOutputTail(before.outputTail)
       else

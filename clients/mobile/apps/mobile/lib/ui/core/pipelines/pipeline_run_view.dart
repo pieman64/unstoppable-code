@@ -198,12 +198,8 @@ class _Header extends StatelessWidget {
         Wrap(
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            // No desktop producer populates `triggerSource` yet — the
-            // protocol comment on `PortalPipelineRun.triggerSource` sanctions
-            // the icon above falling back to the manual glyph, but not a
-            // text claim like "Started manually" for a run whose actual
-            // trigger is simply unknown. The time must still render on its
-            // own when the trigger sentence is hidden.
+            // Older hosts and projections may omit the trigger. Show time
+            // without claiming a manual start when the trigger is unknown.
             if (run.triggerSource != null) ...[
               Text(
                 pipelineTriggerLabel(run.triggerSource),
@@ -505,7 +501,7 @@ class _GroupTile extends StatelessWidget {
                 // A different step, retry or iteration needs a fresh content load.
                 key: ValueKey(
                   'pipeline-run-pane:${entry.jobId}:${entry.step.stepId}:'
-                  '${entry.step.attempt}:${entry.step.iteration}',
+                  '${entry.step.attempt}:${entry.step.iteration}:${entry.step.recovery}',
                 ),
                 padding: const EdgeInsets.fromLTRB(16, 4, 0, 8),
                 child: _LogPane(

@@ -51,6 +51,8 @@ RemoteWorktree deviceWorktreeRow(DeviceWorktree worktree) {
     ...?projected,
     'localId': worktree.id,
     'workspaceLocalId': worktree.projectId,
+    'order': worktree.order,
+    'hidden': worktree.hidden,
     'pipelineStatus': ?worktree.pipelineStatus,
     if (chatStateKnown) ...{
       'isStreaming': worktree.isStreaming,

@@ -4,7 +4,6 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:provider/provider.dart';
-import 'package:mobile/brand/brand.g.dart';
 import 'package:mobile/config/api_environment.dart';
 import 'package:mobile/config/app_config.dart';
 import 'package:mobile/config/demo_mode.dart';
@@ -367,22 +366,6 @@ class _SignInScreenState extends State<SignInScreen> {
           style: theme.textTheme.headlineSmall?.copyWith(
             fontWeight: AppTypography.emphasisWeight,
             fontVariations: AppTypography.emphasisVariations,
-          ),
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          "Connect your computer to work with your projects and chats.",
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'New to ${Brand.displayName}? Continuing creates your account.',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
           ),
           textAlign: TextAlign.center,
         ),

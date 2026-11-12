@@ -6,6 +6,7 @@ import '../protocol.dart';
 import 'row_projection.dart';
 import 'models.dart';
 import 'package:mobile/data/models/remote_session.dart';
+import 'package:mobile/data/models/remote_overview_sections.dart';
 
 export 'models.dart';
 
@@ -14,6 +15,9 @@ final class DeviceWorktreesRepository {
   DeviceWorktreesRepository(this.ipc, {this.onChanged});
   final DesktopIpc ipc;
   final void Function()? onChanged;
+
+  /// Non-archived inventory, including hidden rows for attention. Browser and
+  /// search consumers apply DeviceContextScope's visibility rules.
   List<DeviceWorktree> worktrees = [];
   List<DeviceProject> projects = [];
   Set<String> codeProjectIds = {};
@@ -120,12 +124,13 @@ final class DeviceWorktreesRepository {
           // An absent owner in an existing legacy workspace row is Personal.
           // An absent row, failed snapshot or unrecognized owner stays unknown.
           ownerContext: workspace?.ownerContext,
+          order: workspace?.order ?? _order(project['order']),
         ),
       );
       for (final row in (project['worktrees'] as List? ?? []).map(
         deviceLinkObject,
       )) {
-        if (row['hidden'] == true || row['archivedAt'] != null) continue;
+        if (row['archivedAt'] != null) continue;
         final key =
             '${deviceLinkString(project, 'id')}/${deviceLinkString(row, 'id')}';
         final projection = projections[key];
@@ -135,16 +140,12 @@ final class DeviceWorktreesRepository {
           id: deviceLinkString(row, 'id'),
           // The projection applies desktop's title rules ("New worktree",
           // branch display mappings).
-          name:
-              (projection?['label'] ??
-                      projection?['branch'] ??
-                      row['label'] ??
-                      row['branchName'] ??
-                      'Worktree')
-                  as String,
+          name: _worktreeName(projection, row),
           savedStatus: row['status'] as String?,
           projection: projection,
           pipelineStatus: pipelines[key],
+          order: _order(projection?['order']) ?? _order(row['order']),
+          hidden: row['hidden'] == true || projection?['hidden'] == true,
         );
         final cached = _cachedWorktrees[key];
         if (cached != null) {
@@ -161,6 +162,24 @@ final class DeviceWorktreesRepository {
         next.add(worktree);
       }
     }
+    final workspaceRows = {
+      for (final project in nextProjects) project.id: project.workspace,
+    };
+    nextProjects.sort(
+      (left, right) => compareRemoteWorkspaces(
+        workspaceRows[left.id]!,
+        workspaceRows[right.id]!,
+      ),
+    );
+    final worktreeRows = {
+      for (final worktree in next) worktree.key: deviceWorktreeRow(worktree),
+    };
+    next.sort(
+      (left, right) => compareRemoteWorktrees(
+        worktreeRows[left.key]!,
+        worktreeRows[right.key]!,
+      ),
+    );
     // Fresh inventory and owner evidence are enough to display the roster.
     // Chat details can take many round trips on computers with many worktrees.
     worktrees = next;
@@ -190,6 +209,24 @@ final class DeviceWorktreesRepository {
 
   static Map<String, dynamic> _map(Object? value) =>
       value is Map<String, dynamic> ? value : const {};
+
+  static num? _order(Object? value) =>
+      value is num && value.isFinite ? value : null;
+
+  static String _worktreeName(
+    Map<String, dynamic>? projection,
+    Map<String, dynamic> row,
+  ) {
+    for (final value in [
+      projection?['label'],
+      projection?['branch'],
+      row['label'],
+      row['branchName'],
+    ]) {
+      if (value is String && value.trim().isNotEmpty) return value.trim();
+    }
+    return 'Worktree';
+  }
 
   Future<void> load(DeviceWorktree worktree) async {
     final generation = _generation;
@@ -244,12 +281,10 @@ final class DeviceWorktreesRepository {
           )
           .toList();
       final pending = [...approvals, ...questions];
-      final plan = (tabs['tabs'] as List).whereType<Map>().any(
-        (t) => t['pendingPlanExit'] != null,
-      );
+      final plan = openTabs.any((t) => t['pendingPlanExit'] != null);
       worktree.pendingQuestion = questions.isNotEmpty;
       worktree.pendingApproval =
-          approvals.isNotEmpty || states.contains('awaiting_input');
+          approvals.isNotEmpty || states.contains('awaiting_input') || plan;
       worktree.isStreaming = states.any(
         ['queued', 'starting', 'streaming', 'completing'].contains,
       );
