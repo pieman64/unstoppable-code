@@ -16,6 +16,7 @@ declare const __CANOPY_RELEASE_FLAVOR__: string;
 declare const __CANOPY_INTERNAL_RELEASE_INDICATOR__: string;
 declare const __CANOPY_UPDATE_BASE_URL__: string;
 declare const __CANOPY_SOURCE_BUILD__: boolean;
+declare const __CANOPY_APP_VERSION__: string;
 declare const __CANOPY_E2E__: boolean;
 declare const __CANOPY_POSTHOG_ENABLED__: boolean;
 declare const __CANOPY_OLLAMA_ENABLED__: boolean;

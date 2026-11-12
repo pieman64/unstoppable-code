@@ -1,4 +1,3 @@
-import { app } from 'electron';
 import {
   IPC_CHANNELS,
   type DependencyVersions,
@@ -72,8 +71,8 @@ export function registerUpdateHandlers(): void {
       if (override) return override;
     }
     return getCanopyReleaseFlavor() === 'internal'
-      ? getInternalReleaseIndicatorForDisplay(app.getVersion())
-      : app.getVersion();
+      ? getInternalReleaseIndicatorForDisplay(__CANOPY_APP_VERSION__)
+      : __CANOPY_APP_VERSION__;
   });
   registerIpcHandler(
     IPC_CHANNELS.updateGetDependencyVersions,
