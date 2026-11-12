@@ -4,6 +4,7 @@ import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
 import 'package:mobile/ui/core/navigation/home_back_handlers.dart';
 import 'package:mobile/ui/core/activity/worktree_activity_context.dart';
 import 'computer_connect/activity_drawer.dart';
+import 'pipelines/chat_activity.dart';
 import 'computer_connect/work_composer.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -485,58 +486,68 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                             Positioned.fill(
                               child: AttachmentThumbnailScope(
                                 thumbnails: model.attachmentThumbnails,
-                                child: ChatFeed(
-                                  key: ValueKey(
-                                    'device-chat-transcript-${state.ref.key}',
-                                  ),
-                                  chatId: state.ref.id,
-                                  topContentInset: notices.isEmpty
-                                      ? CanopyScaffold.contentPaddingOf(
-                                          context,
-                                        ).top
-                                      : 0,
-                                  bottomActionInset: hasTabs
-                                      ? CanopyOverlayAction.stackOffset
-                                      : 0,
-                                  messages: deviceChatPresentation(
-                                    state.ref.id,
-                                    state.messages,
-                                  ),
-                                  expandedTurns: _expanded,
-                                  turnInProgress: state.running,
-                                  onToggleTurn: (id) => setState(() {
-                                    if (!_expanded.remove(id)) {
-                                      _expanded.add(id);
-                                    }
-                                  }),
-                                  onLoadOlder:
-                                      state.before != null && model.online
-                                      ? () => unawaited(model.chats.loadOlder())
-                                      : null,
-                                  loadingOlder: model.chats.loadingOlder,
-                                  trailing: [
-                                    for (final question in questions)
-                                      PendingQuestionCard(
-                                        key: ValueKey(
-                                          'question-${question.requestId}',
-                                        ),
-                                        request: question,
-                                        onSubmit:
-                                            model.online && !model.deciding
-                                            ? (answers) => unawaited(
-                                                model.answer(
-                                                  question.requestId,
-                                                  answers,
-                                                ),
-                                              )
-                                            : null,
-                                        onDismiss: () => unawaited(
-                                          model.dismissQuestion(
-                                            question.requestId,
+                                child: DevicePipelineChatActivity(
+                                  repository: model.activity.pipelines,
+                                  ref: widget.worktree == null
+                                      ? null
+                                      : state.ref,
+                                  messages: state.messages,
+                                  online: model.online && model.chats.ready,
+                                  builder: (footers) => ChatFeed(
+                                    turnFooters: footers,
+                                    key: ValueKey(
+                                      'device-chat-transcript-${state.ref.key}',
+                                    ),
+                                    chatId: state.ref.id,
+                                    topContentInset: notices.isEmpty
+                                        ? CanopyScaffold.contentPaddingOf(
+                                            context,
+                                          ).top
+                                        : 0,
+                                    bottomActionInset: hasTabs
+                                        ? CanopyOverlayAction.stackOffset
+                                        : 0,
+                                    messages: deviceChatPresentation(
+                                      state.ref.id,
+                                      state.messages,
+                                    ),
+                                    expandedTurns: _expanded,
+                                    turnInProgress: state.running,
+                                    onToggleTurn: (id) => setState(() {
+                                      if (!_expanded.remove(id)) {
+                                        _expanded.add(id);
+                                      }
+                                    }),
+                                    onLoadOlder:
+                                        state.before != null && model.online
+                                        ? () =>
+                                              unawaited(model.chats.loadOlder())
+                                        : null,
+                                    loadingOlder: model.chats.loadingOlder,
+                                    trailing: [
+                                      for (final question in questions)
+                                        PendingQuestionCard(
+                                          key: ValueKey(
+                                            'question-${question.requestId}',
+                                          ),
+                                          request: question,
+                                          onSubmit:
+                                              model.online && !model.deciding
+                                              ? (answers) => unawaited(
+                                                  model.answer(
+                                                    question.requestId,
+                                                    answers,
+                                                  ),
+                                                )
+                                              : null,
+                                          onDismiss: () => unawaited(
+                                            model.dismissQuestion(
+                                              question.requestId,
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                  ],
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),

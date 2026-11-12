@@ -110,13 +110,13 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
         // The repository establishes the target before its first await. Open
         // the shared chat shell now, so loading and failures are visible.
         final opening = controller.chats.open(ref);
-        if (mounted) await _showChat(worktree.name);
+        if (mounted) await _showChat(worktree);
         await opening;
         return;
       } else {
         await controller.chats.chats.createTab(worktree.projectId, worktree.id);
       }
-      if (mounted) await _showChat(worktree.name);
+      if (mounted) await _showChat(worktree);
     } catch (cause) {
       if (mounted) {
         setState(
@@ -199,10 +199,15 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
     ),
   );
 
-  Future<void> _showChat([String? worktreeName]) {
+  Future<void> _showChat([DeviceWorktree? worktree]) {
     final controller = widget.controller;
     final ref = controller.chats.state?.ref;
-    if (ref == null || !_includesChat(ref)) {
+    final included = worktree == null
+        ? ref != null && _includesChat(ref)
+        : _includes(worktree) &&
+              ref?.projectId == worktree.projectId &&
+              ref?.worktreeId == worktree.id;
+    if (ref == null || !included) {
       _explainPendingScope();
       return Future.value();
     }
@@ -210,7 +215,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
       MaterialPageRoute(
         builder: (_) => DeviceChatScreen(
           model: widget.controller.chats,
-          locationLabel: worktreeName,
+          locationLabel: worktree?.name,
           worktree: controller.activityContext(ref),
         ),
       ),

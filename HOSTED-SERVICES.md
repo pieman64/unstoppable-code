@@ -297,9 +297,10 @@ selection, and organization memory.
   requested, and keeps only the chosen model and a digest.
 - For organization memory, our server sends transcripts shared with your
   organization through Vercel AI Gateway to process, embed, and rank them.
-- If you connect your own AI gateway, its URL, name, and model list are saved
-  to your account. We never store your API key. If you connect from the web,
-  our server uses it once to list your models.
+- If you connect your own AI gateway while signed in, its URL, name, and model
+  list are saved to your account. Signed out, they stay on your computer. We
+  never store your API key. If you connect from the web, our server uses it
+  once to list your models.
 
 **Without it:** you can't use AI credits, hosted models, **Auto**, or
 organization memory.
@@ -400,18 +401,18 @@ Vercel skills audit, without your account.
 
 ## Running without our services
 
-| Feature                                 | Fully local | Bring your own | Hosted by us    |
-| --------------------------------------- | ----------- | -------------- | --------------- |
-| Chats on your own plan                  | Yes         |                |                 |
-| Local models                            | Yes         |                |                 |
-| Worktrees, pipelines, and local memory  | Yes         |                |                 |
-| Your own AI gateway                     |             | Yes            | Stores settings |
-| AI credits, hosted models, and **Auto** |             |                | Yes             |
-| Sign-in, organizations, and policies    |             |                | Yes             |
-| Remote Control and Remote access        |             |                | Yes             |
-| Cloud chats                             |             |                | Yes             |
-| Sharing and the marketplace             |             |                | Yes             |
-| Push notifications                      |             |                | Yes             |
+| Feature                                 | Fully local | Bring your own | Hosted by us                          |
+| --------------------------------------- | ----------- | -------------- | ------------------------------------- |
+| Chats on your own plan                  | Yes         |                |                                       |
+| Local models                            | Yes         |                |                                       |
+| Worktrees, pipelines, and local memory  | Yes         |                |                                       |
+| Your own AI gateway                     |             | Yes            | Stores settings when you're signed in |
+| AI credits, hosted models, and **Auto** |             |                | Yes                                   |
+| Sign-in, organizations, and policies    |             |                | Yes                                   |
+| Remote Control and Remote access        |             |                | Yes                                   |
+| Cloud chats                             |             |                | Yes                                   |
+| Sharing and the marketplace             |             |                | Yes                                   |
+| Push notifications                      |             |                | Yes                                   |
 
 "Fully local" means it works without our services. Chats on your own plan
 still go to your provider.
@@ -421,7 +422,6 @@ If you point the apps away from our services, you lose or need to replace:
 - [ ] Sign-in and accounts
 - [ ] Organization policies
 - [ ] AI credits and hosted models
-- [ ] AI gateway settings, which are stored on your account today
 - [ ] Remote Control and Remote access
 - [ ] Sharing and the marketplace
 - [ ] Cloud chats

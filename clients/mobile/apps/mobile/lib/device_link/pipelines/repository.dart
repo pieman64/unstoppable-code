@@ -44,6 +44,7 @@ final class DevicePipelineRepository {
   bool _connected = false, _disposed = false;
   int _generation = 0;
   bool get connected => _connected;
+  int get connectionGeneration => _generation;
   String errorMessage(Object error) => error is RemoteControlException
       ? error.message
       : error is DeviceLinkException
@@ -192,6 +193,7 @@ final class DevicePipelineRepository {
         _request(ref, 'executions', {'limit': 50}),
         _request(ref, 'list'),
       ]);
+      if (generation != _generation || _disposed) return;
       final rows = values[0]?['runs'], pipelines = values[1]?['pipelines'];
       if (rows is! List || pipelines is! List) {
         throw const RemoteControlException(
@@ -209,6 +211,9 @@ final class DevicePipelineRepository {
         }
       }
       _runs[key] = next;
+      for (final id in next.keys) {
+        _rowVersions[_key(ref, id)] = ++_revision;
+      }
       _pipelines[key] = [
         for (final raw in pipelines)
           if (RemotePipelineDescriptor.fromJson(raw) case final descriptor?
@@ -226,7 +231,10 @@ final class DevicePipelineRepository {
   Future<RemotePipelineRun?> get(DeviceChatRef ref, String id) {
     final key = _key(ref, id), existing = _pending[_key(ref, id)];
     if (existing != null) return existing;
-    final generation = _generation, eventVersion = _eventVersions[key] ?? 0;
+    final generation = _generation,
+        rowVersion = _rowVersions[key] ?? 0,
+        eventVersion = _eventVersions[key] ?? 0;
+    var superseded = false;
     late final Future<RemotePipelineRun?> pending;
     pending = () async {
       try {
@@ -237,18 +245,27 @@ final class DevicePipelineRepository {
           );
         }
         final next = _parse(ref, row, id: id);
+        // Pushes invalidate reads but do not install a newer observation.
+        // Accept this reply during streaming, then re-read if a push arrived.
+        if (rowVersion != (_rowVersions[key] ?? 0)) {
+          superseded = true;
+          return run(ref, id);
+        }
         _put(ref, next);
         _errors.remove(key);
         return next;
       } catch (error) {
-        if (generation == _generation && !_disposed) {
+        if (generation == _generation &&
+            rowVersion == (_rowVersions[key] ?? 0) &&
+            eventVersion == (_eventVersions[key] ?? 0) &&
+            !_disposed) {
           _errors[key] = errorMessage(error);
         }
         return null;
       } finally {
         if (identical(_pending[key], pending)) _pending.remove(key);
         if (generation == _generation &&
-            eventVersion != (_eventVersions[key] ?? 0) &&
+            (superseded || eventVersion != (_eventVersions[key] ?? 0)) &&
             _watching.containsKey(_scope(ref))) {
           _queue(ref, id);
         }
@@ -295,7 +312,9 @@ final class DevicePipelineRepository {
   ) async {
     final key = _key(ref, id);
     if (_actions.containsKey(key)) return;
-    final generation = _generation;
+    final generation = _generation,
+        rowVersion = _rowVersions[key] ?? 0,
+        eventVersion = _eventVersions[key] ?? 0;
     _actions[key] = action;
     _notify();
     try {
@@ -303,7 +322,17 @@ final class DevicePipelineRepository {
         'executionId': id,
         'commandId': chatId(),
       });
-      if (value != null) _put(ref, _parse(ref, value, id: id));
+      if (value != null) {
+        final next = _parse(ref, value, id: id);
+        if (rowVersion == (_rowVersions[key] ?? 0)) {
+          _put(ref, next);
+          if (eventVersion != (_eventVersions[key] ?? 0)) _queue(ref, id);
+        } else {
+          // The mutation was sent once. Reconcile its outcome by reading,
+          // without letting its late reply replace a newer observation.
+          _queue(ref, id);
+        }
+      }
       _actionErrors.remove(key);
     } catch (error) {
       if (generation == _generation && !_disposed) {
@@ -369,7 +398,19 @@ final class DevicePipelineRepository {
     DeviceChatRef ref,
     String id,
     RemotePipelineContentSource source,
-  ) => _existing.content(ref, id, source.toJson());
+  ) async {
+    if (!_connected || _disposed) {
+      throw const RemoteControlException('Connect to a computer first.');
+    }
+    final generation = _generation;
+    final document = await _existing.content(ref, id, source.toJson());
+    if (_disposed || !_connected || generation != _generation) {
+      throw const RemoteControlException(
+        'The computer connection changed. Refresh to retry.',
+      );
+    }
+    return document;
+  }
 
   void _event(Map<String, dynamic> event) {
     if (!_connected || event['name'] != 'ipc.push') return;

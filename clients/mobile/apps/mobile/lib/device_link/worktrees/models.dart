@@ -1,5 +1,6 @@
 import '../chats/models.dart';
 import 'package:mobile/data/models/workspace_context.dart';
+import 'package:mobile/data/models/remote_session.dart';
 
 final class DeviceProject {
   DeviceProject({
@@ -10,10 +11,24 @@ final class DeviceProject {
     this.temporary = false,
     this.alwaysShow = true,
     this.ownerContext,
+    this.order,
   });
   final String id, name, type;
   final String? color;
   final bool temporary, alwaysShow;
+  final num? order;
+
+  /// Transport-neutral overview input shared with Remote Control.
+  RemoteWorkspace get workspace => RemoteWorkspace(
+    localId: id,
+    name: name,
+    type: RemoteWorkspaceType.fromWire(type),
+    color: color,
+    temporary: temporary,
+    alwaysShow: alwaysShow,
+    order: order,
+    ownerContext: ownerContext,
+  );
 
   /// From the desktop session's workspace projection. Null means ownership
   /// could not be established, including when the snapshot is unavailable.
@@ -29,9 +44,13 @@ final class DeviceWorktree {
     required this.savedStatus,
     this.projection,
     this.pipelineStatus,
+    this.order,
+    this.hidden = false,
   });
   final String projectId, projectName, id, name;
   final String? savedStatus;
+  final num? order;
+  final bool hidden;
 
   /// This worktree's `desktop:session-snapshot` row. Absent on hosts that
   /// cannot project it.

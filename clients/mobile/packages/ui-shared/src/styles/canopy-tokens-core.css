@@ -199,6 +199,7 @@
   --color-fg-warning-strong: var(--fg-warning-strong);
   --color-fg-destructive-strong: var(--fg-destructive-strong);
   --color-fg-special-strong: var(--fg-special-strong);
+  --color-fg-accent-strong: var(--fg-accent-strong);
   --color-fg-info: var(--fg-info);
   --color-fg-blue: var(--fg-blue);
   --color-fg-purple: var(--fg-purple);
@@ -550,6 +551,16 @@
   background-color: var(--bg-transparent);
 }
 
+/* The composer work card's reveal: wiped up from the pills' edge (closed:
+ * clipped to nothing from the top), whole when open. */
+@utility drawer-card-clip-closed {
+  clip-path: inset(100% 0 0 0);
+}
+
+@utility drawer-card-clip-open {
+  clip-path: inset(0 0 0 0);
+}
+
 /* Canonical selected-tab underline. Keeping this as a named utility prevents
  * component-specific border colors from drifting away from the accent line. */
 /* The usage meter's hover fill (UsageIndicator): drawn at its open width
@@ -709,15 +720,8 @@
 
   --fg-success: var(--fg-positive);
   --fg-warning: var(--fg-attention);
-  --fg-info: var(--fg-blue);
-  /* Intent ink for small text (11px and below), which the intent inks do not
-   * carry at 4.5:1 on light surfaces: badges, run-state labels, and status
-   * dots. Dark mode keeps the intent inks, which already do. Info needs none:
-   * its blue is already this step. */
-  --fg-success-strong: var(--primitive-green-600);
-  --fg-warning-strong: var(--primitive-orange-600);
-  --fg-destructive-strong: var(--primitive-red-600);
-  --fg-special-strong: var(--primitive-purple-600);
+  /* fg-info and the -strong intent inks are generated per theme, so they
+   * clear 4.5:1 on page surfaces and on their own tint (token-graph.mjs). */
 
   /* The inverse tooltip tone: a reversed black sheet in light mode. Dark mode
    * swaps it for the regular tooltip surface instead of a white sheet. */
@@ -741,10 +745,6 @@
   --fg-tooltip-inverse: var(--fg-primary);
   --fg-blue: var(--primitive-blue-300);
   --fg-orange: var(--primitive-orange-300);
-  --fg-success-strong: var(--fg-success);
-  --fg-warning-strong: var(--fg-warning);
-  --fg-destructive-strong: var(--fg-destructive);
-  --fg-special-strong: var(--fg-special);
 }
 
 /* Codex fast-mode chip treatment, shared by the desktop renderer and the web

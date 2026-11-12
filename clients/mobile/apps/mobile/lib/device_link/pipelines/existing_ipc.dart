@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'display.dart';
+export 'display.dart' show pipelineDisplay;
 import 'package:mobile/data/models/computer_activity/pipeline_content.dart';
 import '../chats/dto.dart';
 import '../chats/models.dart';
@@ -169,15 +171,16 @@ final class DevicePipelineIpc {
       return pipelineDisplay(result);
     }
     if (action == 'log') {
-      final output = await content(ref, id, {
+      final output = await _content(id, {
         'kind': 'step_output',
         'jobId': args['jobId'] as String,
         'stepId': args['stepId'] as String,
-      });
+      }, current);
       final display = pipelineDisplay(current);
       for (final job in display['jobs'] as List) {
-        if (job['jobId'] == args['jobId']) {
-          for (final step in job['steps'] as List) {
+        for (final physical in [job, ...job['variants'] as List? ?? const []]) {
+          if (physical['jobId'] != args['jobId']) continue;
+          for (final step in physical['steps'] as List) {
             if (step['stepId'] == args['stepId']) {
               step['outputTail'] = pipelineOutputTail(output.text);
             }
@@ -196,7 +199,14 @@ final class DevicePipelineIpc {
     String id,
     Map<String, Object> source,
   ) async {
-    final current = await state(ref, id);
+    return _content(id, source, await state(ref, id));
+  }
+
+  Future<RemotePipelineContentDocument> _content(
+    String id,
+    Map<String, Object> source,
+    Map<String, dynamic> current,
+  ) async {
     if (source['kind'] == 'report') {
       final outputs = deviceLinkObject(
         current['report_outputs'] ?? <String, dynamic>{},
@@ -232,6 +242,9 @@ final class DevicePipelineIpc {
           'executionId': id,
           'jobId': source['jobId'],
           'stepId': source['stepId'],
+          'attempt': pipelineAttempt(deviceLinkObject(job)),
+          'iteration': pipelineIteration(deviceLinkObject(job)),
+          'recovery': step['recovery_count'] ?? 0,
           if (step['log_file'] is String) 'logFilePath': step['log_file'],
         },
         {'format': 'text'},
@@ -246,52 +259,6 @@ final class DevicePipelineIpc {
   }
 }
 
-Map<String, dynamic> pipelineDisplay(Map<String, dynamic> row) {
-  final snapshot = row['pipeline_snapshot'];
-  final definitions = row['job_definitions'];
-  return {
-    'localId': row['id'],
-    'pipelineId': row['pipeline_id'],
-    'workspaceLocalId': row['project_id'],
-    'worktreeLocalId': row['worktree_id'],
-    'pipelineName':
-        row['pipeline_name'] ??
-        (snapshot is Map ? snapshot['name'] : null) ??
-        row['pipeline_id'],
-    'status': row['status'],
-    'startedAt': row['started_at'],
-    'finishedAt': row['completed_at'],
-    'parentExecutionId': row['parent_execution_id'],
-    'hidden': row['hidden'] == true,
-    'statusReasons': row['status_reasons'] ?? const [],
-    'pendingPauses': row['pending_pauses'] ?? const [],
-    if (row['jobs'] is Map)
-      'jobs': [
-        for (final job in (row['jobs'] as Map).entries)
-          if (job.value is Map)
-            {
-              'jobId': job.key,
-              'name': definitions is Map && definitions[job.key] is Map
-                  ? (definitions[job.key] as Map)['name'] ?? job.key
-                  : job.key,
-              'status': (job.value as Map)['status'],
-              'steps': [
-                for (final step
-                    in ((job.value as Map)['steps'] as Map? ?? {}).entries)
-                  if (step.value is Map)
-                    {
-                      'stepId': step.key,
-                      'name': pipelineStepName(definitions, job.key, step.key),
-                      'status': (step.value as Map)['status'],
-                      'attempt': (job.value as Map)['retry_count'] ?? 0,
-                      'iteration': (job.value as Map)['iteration_count'] ?? 1,
-                    },
-              ],
-            },
-      ],
-  };
-}
-
 String pipelineOutputTail(String text) {
   final bytes = utf8.encode(text);
   if (bytes.length <= 2048) return text;
@@ -300,17 +267,4 @@ String pipelineOutputTail(String text) {
     start++;
   }
   return utf8.decode(bytes.sublist(start));
-}
-
-String pipelineStepName(Object? definitions, Object? jobId, Object? stepId) {
-  final job = definitions is Map ? definitions[jobId] : null;
-  final steps = job is Map ? job['steps'] : null;
-  if (steps is List) {
-    for (final step in steps) {
-      if (step is Map && step['id'] == stepId && step['name'] is String) {
-        return step['name'] as String;
-      }
-    }
-  }
-  return stepId.toString();
 }

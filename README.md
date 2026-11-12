@@ -67,6 +67,11 @@ repository.
 - **Linux** packages are `.deb` files for Ubuntu 24.04 LTS or newer. Arch
   Linux installs from a pacman repository; see the
   [download page](https://unstoppable.ai/download).
+- **macOS with Homebrew:** run
+  `brew install --cask unstoppableweb/tap/unstoppable-code`. Homebrew picks
+  the right build for your Mac, and the app keeps itself up to date. See
+  [Install with Homebrew](https://unstoppable.ai/support/getting-started/install-the-app#install-with-homebrew)
+  and the [tap](https://github.com/unstoppableweb/homebrew-tap).
 - **Not sure which Mac you have?** See
   [Install the desktop app](https://unstoppable.ai/support/getting-started/install-the-app).
 
