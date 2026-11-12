@@ -1,3 +1,4 @@
+import log from 'electron-log';
 import { prepareCanopySecureStorage } from '@canopy/desktop-shared/node/build-storage-startup';
 import {
   ELECTRON_MIGRATION_ROLE,
@@ -362,6 +363,11 @@ export async function createElectronDaemonHost(
     enabled: ELECTRON_MIGRATION_ROLE.enabled,
   });
   const launch = createCanopyDaemonHostLaunch({
+    onDiagnostic: (event) => {
+      if (event.stage === 'daemon-exit' && event.code === 0)
+        log.info('Background service launch diagnostic', event);
+      else log.warn('Background service launch diagnostic', event);
+    },
     secureStorageLayout: 'nested-v1',
     ...(migration && { migration }),
     dataRoot,

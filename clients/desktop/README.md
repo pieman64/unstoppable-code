@@ -28,8 +28,9 @@ differs from the app you download:
   in that build.
 - **Some helpers aren't included:** the bundled command-line tool and the
   native dictation helper are left out of this source.
-- **macOS and Linux only:** building from source on Windows isn't supported
-  yet. Our CI builds and launches this source on macOS and Ubuntu 24.04.
+- **CI platforms:** our CI builds and launches this source on macOS and Ubuntu
+  24.04. Windows source builds are experimental; see the Windows instructions
+  below.
 
 ## Requirements
 
@@ -48,6 +49,45 @@ xcode-select --install
 On Linux, install a C/C++ toolchain and Python 3 for the native modules. On
 Ubuntu, that's `sudo apt-get install build-essential python3`. Ubuntu 24.04 is
 the version our CI uses.
+
+## Build on Windows
+
+Windows source builds are experimental and have been verified on Windows 11
+with Visual Studio Build Tools 2022. Install the **Desktop development with
+C++** workload, an x64 MSVC toolset, a Windows 10 or 11 SDK, and the
+**Spectre-mitigated libraries** for the MSVC toolset. The Spectre libraries are
+needed to build `node-pty`.
+
+Use Node.js 24.22.1 and the pnpm version pinned in this folder's
+`package.json` (12.11.2 in this source snapshot). Open **Developer PowerShell
+for VS 2022** or **x64 Native Tools Command Prompt for VS 2022** so MSVC and the
+Windows SDK are available in the build environment. Then run these commands
+from `clients/desktop`:
+
+```powershell
+node --version
+corepack enable pnpm
+pnpm --version
+pnpm install --frozen-lockfile --ignore-scripts
+$env:CANOPY_ELECTRON_VITE_MAX_OLD_SPACE_SIZE = '8192'
+pnpm run build:public
+pnpm run setup:public
+pnpm run start:public
+```
+
+The version commands should report Node.js `v24.22.1` and pnpm `12.11.2`.
+`build:public` compiles the app into `out/`; `setup:public` prepares Electron
+and rebuilds native modules for it; `start:public` launches the unpackaged app.
+Keep the build heap at 8192 MB: a 4096 MB override ran out of V8 heap during
+the Windows build.
+
+This produces a runnable development build, not an installer. The public source
+export omits the core daemon (`unstoppable-coded.exe`) and release packaging
+helpers, so daemon-dependent file and folder operations may not work in this
+build. Code Integrity or Smart App Control can also block unsigned native
+modules in an unpackaged build; check the Windows Code Integrity log for the
+blocked module if a native feature fails. Do not disable those protections to
+build or run the app.
 
 ## Run the app
 

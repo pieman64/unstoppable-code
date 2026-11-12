@@ -55,6 +55,15 @@ export interface CanopyDaemonMigrationLaunch {
 
 /** Trusted host inputs only; never renderer- or operation-supplied. */
 export interface CanopyDaemonHostLaunchOptions {
+  /** Trusted-host diagnostics: fixed stages and bounded numbers, never child output. */
+  readonly onDiagnostic?: (event: {
+    readonly stage:
+      | 'runtime-directory'
+      | 'process-identity'
+      | 'owned-child-spawn'
+      | 'daemon-exit';
+    readonly code?: number | null;
+  }) => void;
   /** Absolute canonical data root. */
   readonly dataRoot: string;
   readonly runtimeMode: 'prod' | 'rc' | 'dev';
@@ -123,6 +132,20 @@ export function createCanopyDaemonHostLaunch(
 ): CanopyDaemonHostLaunch {
   const { dataRoot, executable, platform, supervision } = options;
   const { expectedEndpoint } = options;
+  const diagnose = (
+    stage:
+      | 'runtime-directory'
+      | 'process-identity'
+      | 'owned-child-spawn'
+      | 'daemon-exit',
+    code?: number | null,
+  ): void => {
+    try {
+      options.onDiagnostic?.({ stage, ...(code !== undefined && { code }) });
+    } catch {
+      /* Diagnostics must never change launch or cleanup behavior. */
+    }
+  };
   const paths = platform === 'win32' ? path.win32 : path.posix;
   if (!paths.isAbsolute(dataRoot) || !paths.isAbsolute(executable))
     throw canopyConnectError(
@@ -155,6 +178,7 @@ export function createCanopyDaemonHostLaunch(
       await verifyRuntime(signal);
     } catch (error) {
       signal.throwIfAborted();
+      diagnose('runtime-directory');
       if (error instanceof CanopyClientError) throw error;
       throw failure('Core runtime directory validation failed.');
     }
@@ -241,6 +265,7 @@ export function createCanopyDaemonHostLaunch(
       if (observed.state === 'running')
         return { startIdentity: observed.startIdentity };
       if (observed.state === 'absent') return null;
+      diagnose('process-identity');
       throw canopyConnectError(
         'capability_unavailable',
         'Core process identity is unverifiable on this host.',
@@ -315,6 +340,7 @@ export function createCanopyDaemonHostLaunch(
           ? options.migration.spawn(spawnRequest, migrationAuth, command.signal)
           : children.spawn(spawnRequest)
       ).catch((error: unknown) => {
+        diagnose('owned-child-spawn');
         if (field(error, 'code') === 'unavailable')
           throw Object.assign(
             canopyConnectError('unavailable', 'Core cleanup failed.'),
@@ -329,6 +355,17 @@ export function createCanopyDaemonHostLaunch(
             )
           : failure('Core executable could not be started.');
       });
+      void child.exited.then(
+        ({ code }) =>
+          diagnose(
+            'daemon-exit',
+            code === null ||
+              (Number.isSafeInteger(code) && code >= 0 && code <= 0xffffffff)
+              ? code
+              : undefined,
+          ),
+        () => diagnose('daemon-exit'),
+      );
       ownerCredential?.recordSpawn({ pid: child.pid });
       const daemon: CanopySpawnedDaemon = {
         pid: child.pid,
